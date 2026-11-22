@@ -324,6 +324,46 @@ pub enum DeploymentWarning {
     Deploy { warning: DeployWarning },
 }
 
+impl DeploymentWarning {
+    /// The Deploy's own warning, when it is one.
+    #[must_use]
+    pub fn as_deploy(&self) -> Option<&DeployWarning> {
+        match self {
+            Self::Deploy { warning } => Some(warning),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. } => None,
+        }
+    }
+
+    /// Why the Deploy couldn't check the Ingress Proxies, when that is what it warns of.
+    #[must_use]
+    pub fn ingress_unchecked(&self) -> Option<&str> {
+        match self {
+            Self::IngressUnchecked { cause } => Some(cause),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::Deploy { .. } => None,
+        }
+    }
+
+    /// Whether it holds only names the Config Store wrote, such as a variable a Deploy
+    /// left out, rather than text a Server reported.
+    #[must_use]
+    pub fn is_named(&self) -> bool {
+        match self {
+            Self::Fragile { .. } | Self::NotSet { .. } | Self::NotSetInFile { .. } => true,
+            Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. }
+            | Self::Deploy { .. } => false,
+        }
+    }
+}
+
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
 /// creates or starts one; it never replaces or removes what runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

@@ -530,16 +530,13 @@ async fn connect_context_chosen(
         &ployz_core::MachineLayout::production().socket(),
     )?;
     let connections = selected.connections.clone();
-    let connector = crate::connect::SystemConnector::default()
-        .with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(
-        crate::connect::connect_selected_with(selected, std::sync::Arc::new(connector))
-            .await?
-            .with_full_routes(crate::cluster::FullRoutes::chosen(
-                connections,
-                direct.is_some(),
-            )),
-    )
+    let connector = crate::cli::connector(matches);
+    Ok(crate::connect::connect_selected_with(selected, connector)
+        .await?
+        .with_full_routes(crate::cluster::FullRoutes::chosen(
+            connections,
+            direct.is_some(),
+        )))
 }
 
 /// Re-establish a management connection after setup has already started.
@@ -962,7 +959,7 @@ mod tests {
 
     #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
-        use crate::ui::progress::{Diagnostic, LogTail};
+        use crate::failure::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};
         let failed = MachineId::random();
         let original = MachineId::random();

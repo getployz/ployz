@@ -9,7 +9,6 @@ use std::time::{Duration, Instant, SystemTime};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ployz_core::{
     ContainerId, DeployWarning, InPlaceChange, MachineId, ObservationKind, QualifiedService,
-    ServiceName,
 };
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
@@ -17,6 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::{Mode, Tone, escaped_lines};
+use crate::failure::Diagnostic;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const REDRAW: Duration = Duration::from_millis(100);
@@ -219,7 +219,7 @@ impl State {
         matches!(self, Self::Pending | Self::Running(_))
     }
 
-    fn word(&self) -> &'static str {
+    pub(crate) fn word(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running(phase) => match phase {
@@ -720,7 +720,7 @@ fn word(row: &Row, frame: &Frame) -> String {
 
 /// Copies a completed Service's cleanup left running, with why: a switch whose
 /// Deploy did not finish, or a removal that could not reach a Server.
-fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'a String> {
+fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'a str> {
     let Subject::Service(graph) = &row.subject else {
         return BTreeMap::new();
     };
@@ -730,32 +730,15 @@ fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'
     frame
         .notices
         .iter()
-        .filter_map(|warning| match warning {
-            DeployWarning::LeftRunning {
-                service,
-                container_id,
-                reason,
-                ..
-            } if *service == graph.service => Some((container_id, reason)),
-            DeployWarning::LeftRunning { .. }
-            | DeployWarning::StorageHeadroom { .. }
-            | DeployWarning::UnbudgetedDiskUsage
-            | DeployWarning::ObservationFailed { .. }
-            | DeployWarning::ObservationOmitted { .. }
-            | DeployWarning::StorageObservationUnknown { .. }
-            | DeployWarning::IngressHostname { .. }
-            | DeployWarning::ObserverRelativeHostnameConflict
-            | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. }
-            | DeployWarning::NotInStore { .. } => None,
-        })
+        .filter_map(DeployWarning::left_running)
+        .filter(|(service, ..)| **service == graph.service)
+        .map(|(_, container_id, _, reason)| (container_id, reason))
         .collect()
 }
 
 /// Servers a completed removal could not check for a copy of its Service, by name,
 /// less those a copy left running already names.
-fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &String>) -> BTreeSet<String> {
+fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &str>) -> BTreeSet<String> {
     let Subject::Service(graph) = &row.subject else {
         return BTreeSet::new();
     };
@@ -765,25 +748,9 @@ fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &String>) -
     let named: BTreeSet<&str> = frame
         .notices
         .iter()
-        .filter_map(|warning| match warning {
-            DeployWarning::LeftRunning {
-                container_id,
-                machine,
-                ..
-            } if left.contains_key(container_id) => Some(machine.as_str()),
-            DeployWarning::LeftRunning { .. }
-            | DeployWarning::StorageHeadroom { .. }
-            | DeployWarning::UnbudgetedDiskUsage
-            | DeployWarning::ObservationFailed { .. }
-            | DeployWarning::ObservationOmitted { .. }
-            | DeployWarning::StorageObservationUnknown { .. }
-            | DeployWarning::IngressHostname { .. }
-            | DeployWarning::ObserverRelativeHostnameConflict
-            | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. }
-            | DeployWarning::NotInStore { .. } => None,
-        })
+        .filter_map(DeployWarning::left_running)
+        .filter(|(_, container_id, ..)| left.contains_key(container_id))
+        .map(|(_, _, machine, _)| machine)
         .collect();
     frame
         .notices
@@ -1446,49 +1413,6 @@ pub(crate) fn settled_text(frame: &Frame) -> String {
     String::from_utf8(output).unwrap()
 }
 
-/// Additional execution evidence printed only after the outer command adds context.
-#[derive(Debug, Default)]
-pub(crate) struct Diagnostic {
-    pub failed_machine: Option<MachineId>,
-    /// How a new Container that replaced none failed to start on `failed_machine`. `None`
-    /// when the outcome there is unknown, as after a lost connection or a listing that
-    /// failed, or when an old Container was brought back in its place.
-    pub start_failure: Option<StartFailure>,
-    pub failures: Vec<Detail>,
-    pub logs: Vec<LogTail>,
-    pub compensation: Vec<Detail>,
-}
-
-/// How a Deploy's new Container failed to start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StartFailure {
-    /// Docker refused it a port something else holds, so it never ran.
-    PortTaken,
-    /// Its health check saw it stop, or never turn healthy. It may still run, or run again
-    /// under Docker's restart policy, until it's gone from its Server.
-    Unhealthy,
-}
-
-/// One distinct failed task or observed compensation action.
-#[derive(Debug)]
-pub(crate) struct Detail {
-    pub message: String,
-    pub causes: Vec<String>,
-}
-
-/// Scrubbed log evidence. `None` means no Container was involved, so there is no log
-/// to show or withhold.
-#[derive(Debug)]
-pub(crate) struct LogTail {
-    /// The runtime identity, which a rename keeps; JSON reports it.
-    pub service: QualifiedService,
-    /// The Service's name now, which the human header shows.
-    pub name: ServiceName,
-    pub machine: MachineId,
-    pub server: String,
-    pub log: Option<LogText>,
-}
-
 impl Diagnostic {
     pub(crate) fn write(&self, writer: &mut dyn Write) -> io::Result<()> {
         for failure in &self.failures {
@@ -1530,16 +1454,5 @@ impl Diagnostic {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn json(&self) -> serde_json::Value {
-        let detail =
-            |value: &Detail| serde_json::json!({"message": value.message, "cause": value.causes});
-        serde_json::json!({
-            "failed_machine": self.failed_machine,
-            "failures": self.failures.iter().map(detail).collect::<Vec<_>>(),
-            "logs": self.logs.iter().map(|tail| serde_json::json!({"service": tail.service, "machine_id": tail.machine, "server": tail.server, "log": tail.log})).collect::<Vec<_>>(),
-            "compensation": self.compensation.iter().map(detail).collect::<Vec<_>>(),
-        })
     }
 }

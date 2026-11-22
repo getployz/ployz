@@ -24,8 +24,8 @@ use crate::{
     connect::{Client, ConnectError},
     deploy::{ProxyPlacement, RestartTolerant, SlotAction, set_each},
     failure::Failure,
+    failure::{Detail, Diagnostic, StartFailure},
     sealing_pin::SealTo,
-    ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
 /// How many Servers a role change sets the Ingress Proxy on at once. A cutover or pin

@@ -13,7 +13,7 @@ use crate::{
     cloud::account::{Credential, StoreCallError},
     cloud::login::{CredentialStore, LoginError},
     cluster::{Call, FullRoutes},
-    connect::{Client, ConnectError, Connector, SystemConnector},
+    connect::{Client, ConnectError, Connector},
     context::{Connection, ConnectionSource, ContextError, SelectedConnections},
     failure::ConnectFailure,
 };
@@ -51,9 +51,8 @@ pub(super) async fn connect_full(
             .map(|direct| direct.parse())
             .collect::<Result<Vec<Connection>, _>>()
             .map_err(ConnectError::from)?;
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        return connect_each(connections, Arc::new(connector)).await;
+        let connector = crate::cli::connector(matches);
+        return connect_each(connections, connector).await;
     }
     let direct = direct.first().copied();
     let access = access(matches, context).await?;
@@ -65,10 +64,9 @@ pub(super) async fn connect_full(
     ) {
         Ok(mut selected) => {
             selected.connections = as_device(selected.connections, &key)?;
-            let connector =
-                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+            let connector = crate::cli::connector(matches);
             let connections = selected.connections.clone();
-            crate::connect::connect_selected_with(selected, Arc::new(connector))
+            crate::connect::connect_selected_with(selected, connector)
                 .await
                 .map(|client| {
                     client.with_full_routes(FullRoutes::chosen(connections, direct.is_some()))
@@ -268,28 +266,10 @@ pub(super) async fn connect_avoiding(
     leaving: &Machine,
 ) -> Result<(Client, ployz_core::MachineId), Error> {
     let mut selected = entries(matches, context).await?;
-    let via = selected.source.clone();
     selected
         .connections
         .retain(|connection| connection.machine_id() != Some(&leaving.id));
-    if !selected.connections.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut client =
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
-        let entry = client
-            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
-            .await?
-            .machine_id;
-        if entry != leaving.id {
-            return Ok((client, entry));
-        }
-    }
-    Err(Error::conflict(format!(
-        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
-         Connect through another Server, then retry. No changes made.",
-        leaving.name
-    )))
+    enter_avoiding(matches, selected, None, leaving).await
 }
 
 /// [`connect_full`], entered through a Server other than `leaving` while another one is
@@ -310,29 +290,40 @@ pub(super) async fn connect_full_avoiding(
         return Ok((client, entry, false));
     };
     let routes = client.full_routes().spread();
-    let every = routes.connections().to_vec();
-    let others: Vec<Connection> = every
-        .iter()
-        .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
-        .cloned()
-        .collect();
-    let via = client.connection_source().clone();
-    if !others.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let selected = SelectedConnections {
-            source: via.clone(),
-            connections: others,
-        };
-        let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
-            .await?
-            .with_full_routes(routes);
+    let selected = SelectedConnections {
+        source: client.connection_source().clone(),
+        connections: routes
+            .connections()
+            .iter()
+            .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
+            .cloned()
+            .collect(),
+    };
+    let (client, entry) = enter_avoiding(matches, selected, Some(routes), leaving).await?;
+    Ok((client, entry, true))
+}
+
+/// Enter through `selected`, which leaves `leaving` out, keeping `routes` when given: the
+/// client and its entry, or a conflict when no other Server answers as the entry.
+async fn enter_avoiding(
+    matches: &ArgMatches,
+    selected: SelectedConnections,
+    routes: Option<FullRoutes>,
+    leaving: &Machine,
+) -> Result<(Client, ployz_core::MachineId), Error> {
+    let via = selected.source.clone();
+    if !selected.connections.is_empty() {
+        let mut client =
+            crate::connect::connect_selected_with(selected, crate::cli::connector(matches)).await?;
+        if let Some(routes) = routes {
+            client = client.with_full_routes(routes);
+        }
         let entry = client
             .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
         if entry != leaving.id {
-            return Ok((client, entry, true));
+            return Ok((client, entry));
         }
     }
     Err(Error::conflict(format!(
@@ -364,9 +355,9 @@ pub(super) async fn connect_only(
     if selected.connections.is_empty() {
         return Ok(None);
     }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    let connector = crate::cli::connector(matches);
     Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
+        crate::connect::connect_selected_with(selected, connector).await?,
     ))
 }
 
@@ -650,8 +641,8 @@ async fn dial_connections(
         source: ConnectionSource::Cloud,
         connections,
     };
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+    let connector = crate::cli::connector(matches);
+    crate::connect::connect_selected_with(selected, connector).await
 }
 
 pub(super) fn no_servers() -> Error {
