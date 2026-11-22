@@ -403,6 +403,14 @@ export const startupConfigFailure = (env?: Record<string, string>): string | und
   return `Invalid configuration. Fix these environment variables:\n${error.message}`;
 };
 
+/** Stops the process with the startup report when the environment is bad, before a route or job runs on it. */
+export const exitOnBadConfig = () => {
+  const failure = startupConfigFailure();
+  if (failure === undefined) return;
+  console.error(failure);
+  process.exit(1);
+};
+
 export class AppConfig extends Context.Service<AppConfig>()("ployz/AppConfig", {
   make: makeAppConfig,
 }) {

@@ -24,7 +24,7 @@ import {
 import {
   Auth,
   type AuthService,
-} from "#/server/auth.server";
+} from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { testConfigLayer } from "#/test/config-environment";

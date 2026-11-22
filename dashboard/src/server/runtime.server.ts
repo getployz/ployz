@@ -14,10 +14,10 @@ import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
 import { GithubTokensLive } from "#/modules/github/github-token.server";
 import { InngestLive } from "#/modules/inngest/client";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { SecretEncryptionLive } from "#/server/secret-encryption.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { RedactedLogsLive, redactSpanExits } from "#/server/log-redaction";
 

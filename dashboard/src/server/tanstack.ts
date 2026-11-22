@@ -1,7 +1,7 @@
 import { createMiddleware, createServerOnlyFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { encodePublicBoundaryError } from "#/server/public-error";
 import { currentRequestScope, RequestScope } from "#/server/request-scope.server";
 import { runAppEffect } from "#/server/run.server";

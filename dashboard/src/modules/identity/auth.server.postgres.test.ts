@@ -2,7 +2,7 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
-import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken } from "#/server/auth.server";
+import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken } from "#/modules/identity/auth.server";
 import { Unauthorized } from "#/server/public-error";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";

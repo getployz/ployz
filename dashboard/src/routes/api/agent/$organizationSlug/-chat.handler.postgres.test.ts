@@ -7,7 +7,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { member } from "#/modules/identity/tables";
 import { handleAgentChat } from "#/routes/api/agent/$organizationSlug/-chat.handler";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { storeTestCloudWith } from "#/test/store-cloud";

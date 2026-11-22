@@ -6,7 +6,7 @@ import { FULL_GRANT, granted, outsideEnvironments, type TokenGrant } from "#/mod
 import { member } from "#/modules/identity/tables";
 import type { SupportShows } from "#/modules/support-access/support-access";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";

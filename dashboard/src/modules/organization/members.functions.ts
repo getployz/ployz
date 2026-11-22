@@ -6,7 +6,7 @@ import { type CommandName, runCommand } from "#/modules/commands/commands.server
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { acceptInvite, readInvite } from "#/modules/organization/invitation.server";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Validation } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";

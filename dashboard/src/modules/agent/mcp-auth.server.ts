@@ -10,7 +10,7 @@ import { jwt } from "better-auth/plugins";
 import { Option, Schema } from "effect";
 
 export const MCP_SCOPES = ["ployz", "offline_access"] as const;
-export const CONNECT_PAGE = "/connect";
+const CONNECT_PAGE = "/connect";
 
 export const mcpEndpoints = (appUrl: URL) => ({
   issuer: new URL("/api/auth", appUrl).href,
@@ -184,7 +184,7 @@ const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
 });
 
 /** Whether a browser that allowed consent `consentId` is still signed in. */
-export type GrantSignedIn = (consentId: string) => Promise<boolean>;
+type GrantSignedIn = (consentId: string) => Promise<boolean>;
 
 export const hostedMcpPlugins = (appUrl: URL, signedIn: GrantSignedIn) => {
   const { issuer, resource } = mcpEndpoints(appUrl);

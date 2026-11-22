@@ -12,7 +12,7 @@ import { member, session as sessionTable } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";

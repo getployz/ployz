@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Data, Effect } from "effect";
 import { claimSignInCookie } from "#/modules/identity/claim-sign-in.server";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { runAppEffect } from "#/server/run.server";
 
 // Sign in and Deploy on the marketing site link here: one click from the page to GitHub's consent screen.

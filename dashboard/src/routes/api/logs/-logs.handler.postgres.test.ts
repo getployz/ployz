@@ -10,7 +10,7 @@ import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { FULL_GRANT, type TokenGrant } from "#/modules/identity/token-grant";
 import { handleLogsRead } from "#/routes/api/logs/-logs.handler";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";

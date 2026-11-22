@@ -26,7 +26,8 @@ import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
 import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { SecretEncryptionLive } from "#/server/secret-encryption.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** An Inngest client whose sends succeed and go nowhere. */
 export const sendsNowhere = () => {

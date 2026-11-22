@@ -3,7 +3,7 @@ import { deleteCookie, getCookie, getRequest } from "@tanstack/react-start/serve
 import { Effect, Schema } from "effect";
 import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/identity/claim.server";
 import { CLAIM_SIGN_IN_COOKIE, startedClaimSignIn } from "#/modules/identity/claim-sign-in.server";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const ClaimInput = Schema.Struct({ secret: Schema.String });

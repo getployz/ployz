@@ -1,7 +1,7 @@
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Auth, AuthenticationUnavailable, type AuthService, type AuthSession } from "#/server/auth.server";
+import { Auth, AuthenticationUnavailable, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
 import * as runner from "#/server/run.server";
 import { handleGithubSignIn } from "./github";
 
