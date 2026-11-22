@@ -507,7 +507,7 @@ fn invalid_routing(error: &RoutingMetadataError) -> http::Response<Body> {
 /// its request stream is read, so no source or recipe is taken. Only `Build` is one today,
 /// and a test holds the table to that, since the refusal below is `Build`'s.
 fn refuse_operator(request: &http::Request<Body>) -> Option<http::Response<Body>> {
-    if !Provenance::of_headers(request.headers()).operator() {
+    if Provenance::of_headers(request.headers()).scope() == ployz_core::ManagementScope::Full {
         return None;
     }
     // No route here accepts a compressed request, so tonic answers any other encoding

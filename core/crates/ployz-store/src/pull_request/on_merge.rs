@@ -877,7 +877,7 @@ pub(crate) fn land(
                 };
                 outcomes.insert(into.id, outcome);
             }
-            Err(error) if automation::skippable(&error) => {
+            Err(error) if crate::error::skippable(&error) => {
                 all = false;
                 unlanded.push(Unlanded {
                     project: into.project.clone(),

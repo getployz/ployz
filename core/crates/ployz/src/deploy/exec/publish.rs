@@ -1,17 +1,16 @@
-use super::machine_ops::MachineOperations;
+use super::report::{Left, left_by};
 use super::{DeployOperation, cleanup};
-use super::{
-    Left, OperationFailure, Ran, Rows, health_error, inspect, machine_error, operation_at,
-};
+use super::{OperationFailure, Ran, Shared, health_error, inspect, machine_error, operation_at};
 use crate::deploy::cleanup::{ACK_POLL, EmptyPolicy, NotIn, RotationFailure};
+use crate::deploy::machine_calls::MachineOperations;
 use crate::deploy::progress::Progress;
 use crate::deploy::schedule::{ServiceGroup, Stage};
 use futures_util::future::join_all;
 use ployz_core::{
     AnonymousVolumes, ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId,
-    QualifiedService, RpcError, RpcErrorCode, UpdateOrder,
+    QualifiedService, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -26,11 +25,34 @@ pub(super) async fn ack_tick(cancellation: &CancellationToken, since: Option<Ins
     }
 }
 
+/// Each Service whose publish ended with only gap Servers' proxies unconfirmed.
+/// Those proxies may still route any of its old copies, so none is retired.
+#[derive(Default)]
+pub(super) struct GappedPublishes(
+    std::sync::Mutex<BTreeMap<QualifiedService, cleanup::Unconfirmed>>,
+);
+
+impl GappedPublishes {
+    fn record(&self, service: &QualifiedService, gapped: &cleanup::Unconfirmed) {
+        self.0
+            .lock()
+            .expect("gapped lock")
+            .insert(service.clone(), gapped.clone());
+    }
+
+    /// The proxies that never confirmed `service`'s publish, when only gap Servers'
+    /// did not.
+    pub(super) fn get(&self, service: &QualifiedService) -> Option<cleanup::Unconfirmed> {
+        self.0.lock().expect("gapped lock").get(service).cloned()
+    }
+}
+
 pub(super) enum Done {
     Task(usize, Result<Ran, OperationFailure>),
     /// A Rolling step's new copy is In and listed, so the next step may begin.
     Admitted(usize),
-    Publish(usize, Published),
+    /// The group's publish of its Service ended.
+    Publish(usize, ServiceName, Published),
 }
 
 pub(super) enum Published {
@@ -61,7 +83,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
     progress: &Progress,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     copies: GroupCopies<'_>,
     cancellation: &CancellationToken,
 ) -> Published {
@@ -69,10 +91,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
     if new.is_empty() {
         return Published::Listed;
     }
-    let routed = *service != QualifiedService::system_ingress();
-    // System ingress copies stay Pending for life and no route lists them.
+    let routed = shared.plan.routed(service);
     let gapped = if routed {
-        match route_new(client, operations, rows, service, &new, cancellation).await {
+        match route_new(client, operations, shared, service, &new, cancellation).await {
             Ok(gapped) => gapped,
             Err(published) => return published,
         }
@@ -80,10 +101,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
         None
     };
     if let Some(gapped) = &gapped {
-        rows.gapped
-            .lock()
-            .expect("gapped lock")
-            .insert(service.clone(), gapped.clone());
+        shared.gapped.record(service, gapped);
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     let mut listed_on: BTreeSet<MachineId> = new
@@ -110,17 +128,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
                     container_id: *container_id,
                     rotation: CopyRotation::Pending,
                 };
-                let left = match error {
-                    ExecutionError::Machine { error, .. } => Left::Failed(error),
-                    error @ (ExecutionError::Health { .. }
-                    | ExecutionError::DependencyHealth { .. }
-                    | ExecutionError::Hook { .. }
-                    | ExecutionError::NewerServing { .. }
-                    | ExecutionError::Cancelled) => {
-                        Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
-                    }
-                };
-                rows.leave_running(progress, &copy, left);
+                shared.report.leave_running(progress, &copy, left_by(error));
                 continue;
             }
         };
@@ -136,7 +144,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
             && let Some(routing) =
                 gaps_still_routing(client, &copy, gapped.machines.iter().copied()).await
         {
-            rows.leave_running(progress, &copy, Left::NotConfirmed(routing));
+            shared
+                .report
+                .leave_running(progress, &copy, Left::NotConfirmed(routing));
             continue;
         }
         // The owner refuses this Out (LastIn) until its own view lists a new copy.
@@ -163,7 +173,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 Err(error) => Some(Left::Failed(error)),
             };
             if let Some(left) = left {
-                rows.leave_running(progress, &copy, left);
+                shared.report.leave_running(progress, &copy, left);
                 continue;
             }
             listed_on.insert(copy.machine_id);
@@ -185,13 +195,17 @@ pub(super) async fn publish_group<C: MachineOperations>(
         match sent {
             Ok(None) => unlisting.push(copy),
             Ok(Some(refusal)) => {
-                rows.leave_running(progress, &copy, Left::Refused(refusal));
+                shared
+                    .report
+                    .leave_running(progress, &copy, Left::Refused(refusal));
             }
             Err(error) => {
                 unconfirmed.get_or_insert_with(|| {
                     machine_error(MachineAction::StopContainer, error.clone())
                 });
-                rows.leave_running(progress, &copy, Left::Failed(error));
+                shared
+                    .report
+                    .leave_running(progress, &copy, Left::Failed(error));
             }
         }
     }
@@ -203,7 +217,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
             // A cancelled wait leaves the copies running but is no failure to report.
             Ok(Err(RotationFailure::Cancelled)) => (Some(Left::Interrupted), None),
             Ok(Err(failure)) => {
-                let (left, error) = rows.failed(failure, MachineAction::ReadRoutes);
+                let (left, error) = shared.report.failed(failure, MachineAction::ReadRoutes);
                 (Some(left), Some(error))
             }
             Err(error) => (
@@ -215,7 +229,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
-                    rows.leave_running(progress, copy, left.clone());
+                    shared.report.leave_running(progress, copy, left.clone());
                 }
             }
         }
@@ -231,7 +245,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     .await;
     for (copy, removed) in gone.iter().zip(removed) {
         if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-            rows.leave_running(progress, copy, left);
+            shared.report.leave_running(progress, copy, left);
         }
     }
     match (unconfirmed, gapped) {
@@ -298,7 +312,7 @@ pub(super) fn rolling_step(
 pub(super) async fn route_new<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     service: &QualifiedService,
     new: &[(usize, MachineId, ContainerId)],
     cancellation: &CancellationToken,
@@ -317,7 +331,9 @@ pub(super) async fn route_new<C: MachineOperations>(
                     .spec()
                     .expect("a started copy has a spec");
                 let error =
-                    match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
+                    match cleanup::bring_in(client, &copy, spec, Some(shared.plan.run().clone()))
+                        .await
+                    {
                         Ok(brought) => match brought.not_in() {
                             Ok(()) => return Ok(()),
                             Err(NotIn::Health(health)) => health_error(*container_id, health, spec),
@@ -336,7 +352,7 @@ pub(super) async fn route_new<C: MachineOperations>(
     .await;
     brought.into_iter().collect::<Result<Vec<()>, _>>()?;
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
-    let gaps = rows.gaps(service);
+    let gaps = shared.gens.gaps(service);
     match cleanup::wait_listed_beside(
         client,
         first_machine,

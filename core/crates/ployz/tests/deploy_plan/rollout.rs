@@ -592,7 +592,7 @@ fn global_replacement_stops_other_containers_with_conflicting_host_ports_first()
 
 #[test]
 fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
-    use ployz::deploy::{ServiceGroup, Stage};
+    use ployz::deploy::{GroupRole, ServiceGroup, Stage};
     use ployz_core::{DependencyCondition, DeployIntent, ServiceDependency};
 
     let mut db = requested(ServiceMode::Replicated {
@@ -642,16 +642,20 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
         plan.groups(),
         [
             ServiceGroup {
-                service: Some(db.name.clone()),
-                dependencies: Vec::new(),
+                role: GroupRole::Service {
+                    service: db.name.clone(),
+                    dependencies: Vec::new(),
+                    publish: true,
+                },
                 steps: vec![Stage::Serial(0), Stage::Parallel(vec![1, 2])],
-                publish: true,
             },
             ServiceGroup {
-                service: Some(web.name),
-                dependencies: vec![db.name],
+                role: GroupRole::Service {
+                    service: web.name,
+                    dependencies: vec![db.name],
+                    publish: true,
+                },
                 steps: vec![Stage::Parallel(vec![3])],
-                publish: true,
             },
         ]
     );
@@ -702,7 +706,13 @@ fn replacement_walk(
     let [group] = groups else {
         panic!("expected one Service group: {groups:?}");
     };
-    assert!(group.publish, "every replacement order publishes");
+    assert!(
+        matches!(
+            group.role,
+            ployz::deploy::GroupRole::Service { publish: true, .. }
+        ),
+        "every replacement order publishes"
+    );
     let steps = group
         .steps
         .iter()

@@ -565,7 +565,6 @@ pub(crate) fn freeze(
         full,
         prune,
         namespace,
-        credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
         sourceless,
         shipped: lowered.shipped,
@@ -614,6 +613,18 @@ pub(crate) struct Lowered {
     /// then Config file references whose resolved value may break the file or is
     /// left empty.
     pub(crate) warnings: Vec<DeploymentWarning>,
+}
+
+impl Lowered {
+    /// The specs it creates: a `narrowed` one only those it ships, while the rest ride
+    /// along unchanged.
+    pub(crate) fn created(self, narrowed: bool) -> Vec<ployz_core::RequestedServiceSpec> {
+        let mut target = self.intent.target;
+        if narrowed {
+            target.retain(|spec| self.shipped.contains(&spec.name));
+        }
+        target
+    }
 }
 
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]

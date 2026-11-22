@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::{AutoDeployed, Automated, Skipped};
+use crate::automation::{self, Automated, Skipped};
 use crate::branch::idle::Deadline;
 use crate::branch::{self, CreateBranch, Setup, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
@@ -95,6 +95,17 @@ pub struct PullRequest {
     pub target_head: Option<CommitSha>,
     /// When GitHub last changed it.
     pub updated: crate::GithubTimestamp,
+}
+
+impl PullRequest {
+    /// Its head as a push of its branch.
+    pub(crate) fn head_push(&self) -> deployment::GitPush {
+        deployment::GitPush {
+            repository_id: self.repository_id,
+            branch: self.head_branch.clone(),
+            head: self.head.clone(),
+        }
+    }
 }
 
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
@@ -1232,32 +1243,14 @@ fn open(
         else {
             continue;
         };
-        if !admits {
-            automated.skipped.push(Skipped {
-                environment: start.summary.id.clone(),
-                reason: NEEDS_APPROVAL.to_owned(),
-            });
-            continue;
-        }
-        if trusted.runnable().is_err() {
-            automated.skipped.push(Skipped {
-                environment: start.summary.id.clone(),
-                reason: crate::trusted::NO_SERVERS.to_owned(),
-            });
-            continue;
-        }
-        match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted))) {
-            Ok(Some(deployed)) => automated.admitted.push(deployed),
-            Ok(None) => {}
-            Err(error) if crate::automation::skippable(&error) => {
-                // The plan can't make one: nothing to retry until someone changes it.
-                automated.skipped.push(Skipped {
-                    environment: start.summary.id.clone(),
-                    reason: error.message,
-                });
-            }
-            Err(error) => return Err(error),
-        }
+        let deployed = if !admits {
+            Ok(Some(automation::Deploy::NeedsApproval))
+        } else if trusted.runnable().is_err() {
+            Ok(Some(automation::Deploy::NoServers))
+        } else {
+            crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted)))
+        };
+        automation::record(&start.summary.id, deployed, automated)?;
     }
     Ok(())
 }
@@ -1270,7 +1263,7 @@ fn create(
     start: &Environment,
     plan: &Stored,
     (event, trusted): (&PullRequest, &Trusted),
-) -> Result<Option<AutoDeployed>, RpcError> {
+) -> Result<Option<automation::Deploy>, RpcError> {
     let Some(made) = make(tx, who, start, plan, (event, trusted))? else {
         return Ok(None);
     };
@@ -1283,14 +1276,14 @@ fn create(
         .working
         .services
         .iter()
-        .filter(|service| ours(event, &service.config.source))
+        .filter(|service| {
+            service
+                .config
+                .source
+                .builds_repository(event.repository_id.get())
+        })
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
-    let push = crate::deployment::GitPush {
-        repository_id: event.repository_id,
-        branch: event.head_branch.clone(),
-        head: event.head.clone(),
-    };
     let deployment = crate::automation::auto_admit(
         tx,
         who,
@@ -1299,19 +1292,11 @@ fn create(
         (cluster_domain.as_ref(), &pins),
         crate::deployment::Admission::New {
             id: &crate::id::DeploymentId::fresh(),
-            push: Some(&push),
+            push: Some(&event.head_push()),
         },
         trusted,
     )?;
-    Ok(Some(AutoDeployed {
-        environment: environment.summary.id.clone(),
-        deployment,
-    }))
-}
-
-/// Whether `source` builds from the pull request's repository.
-fn ours(event: &PullRequest, source: &ServiceSource) -> bool {
-    source.builds_repository(event.repository_id.get())
+    Ok(Some(automation::Deploy::Admitted(Box::new(deployment))))
 }
 
 /// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated
@@ -1332,7 +1317,7 @@ fn make(
     (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
-    let ours = |source: &ServiceSource| ours(event, source);
+    let ours = |source: &ServiceSource| source.builds_repository(event.repository_id.get());
     let mut copy: Vec<NodeName> = working
         .services
         .iter()

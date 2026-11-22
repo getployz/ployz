@@ -18,7 +18,6 @@ use crate::domain;
 use crate::error;
 use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
-use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
@@ -553,7 +552,7 @@ fn deploy(
         },
         trusted,
     )?;
-    let mut frozen = match narrowed {
+    let frozen = match narrowed {
         Some(frozen) => frozen,
         None => {
             let retire = deployment::dropped(tx, id, &saved_intent, &landing)?;
@@ -572,7 +571,6 @@ fn deploy(
             )?
         }
     };
-    frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
         uploader: who.principal.clone(),
@@ -590,7 +588,7 @@ fn deploy(
             upload,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         saved,
         &frozen,
     )?;
@@ -683,7 +681,7 @@ fn reapply(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    let Some((revision, saved, mut frozen)) = unchanged(
+    let Some((revision, saved, frozen)) = unchanged(
         tx,
         who,
         (id, &running),
@@ -727,8 +725,6 @@ fn reapply(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    refuse_shared_writes(&environment, (&shipping, |_: &_| true), Shipping::Saved)?;
-    frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
     let summary = deployment::admit(
         tx,
         who,
@@ -738,7 +734,7 @@ fn reapply(
             None,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         revision,
         &frozen,
     )?;

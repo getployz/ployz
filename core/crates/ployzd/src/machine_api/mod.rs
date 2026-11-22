@@ -212,11 +212,12 @@ fn refuse_local(request: &mut http::Request<Body>) -> Option<http::Response<Body
         .extensions()
         .get::<tonic::transport::server::UdsConnectInfo>()
         .is_some();
-    let provenance = if local && !Provenance::of_headers(request.headers()).operator() {
-        Provenance::new(ManagementScope::Full, false)
-    } else {
-        Provenance::new(ManagementScope::Operator, false)
-    };
+    let provenance =
+        if local && Provenance::of_headers(request.headers()).scope() == ManagementScope::Full {
+            Provenance::new(ManagementScope::Full, false)
+        } else {
+            Provenance::new(ManagementScope::Operator, false)
+        };
     if !local && request.uri().path() == op::SetManagementClient::PATH {
         return Some(
             ployz_core::rpc::hinted_status(

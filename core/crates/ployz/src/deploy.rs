@@ -15,12 +15,13 @@ use thiserror::Error;
 
 pub(crate) mod cleanup;
 mod exec;
-pub(crate) use exec::{
-    Answer, CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
-    health_error, move_container, set_each,
+mod machine_calls;
+pub(crate) use exec::{MoveEnd, MoveError, health_error, move_container};
+pub(crate) use machine_calls::{
+    Answer, CopyLifecycle, MachineOperations, ProxyPlacement, RestartTolerant, set_each,
 };
 #[cfg(test)]
-pub(crate) use exec::{RedialFailure, Session};
+pub(crate) use machine_calls::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
@@ -39,7 +40,7 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
-pub use schedule::{ServiceGroup, Stage};
+pub use schedule::{GroupRole, ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
 #[cfg(test)]

@@ -67,14 +67,13 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CloudRouted`] through the management tunnel and
-    /// [`Error::NotHeld`] without a key.
+    /// Returns [`super::Error::NeedsFullScope`] for an Operator, [`Error::CloudRouted`]
+    /// through the management tunnel and [`Error::NotHeld`] without a key.
     pub(crate) fn wrap_sealing_key(
         &self,
         WrapSealingKeyRequest { code }: WrapSealingKeyRequest,
-        cloud_routed: bool,
     ) -> Result<SealingKeyWrapped, super::Error> {
-        if cloud_routed {
+        if self.full_caller()?.cloud_routed() {
             return Err(Error::CloudRouted.into());
         }
         self.require_management_access()?;
@@ -103,8 +102,9 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CloudRouted`] through the management tunnel,
-    /// [`super::Error::NotParticipating`] before participation,
+    /// Returns [`super::Error::NeedsFullScope`] for an Operator, [`Error::CloudRouted`]
+    /// through the management tunnel, [`super::Error::NotParticipating`] before
+    /// participation,
     /// [`Error::NothingAwaited`] or [`Error::NoBackup`] without a key to recover or
     /// a backup to open, a restore refusal, [`Error::HeldAnother`] when this
     /// Machine holds a different key, [`Error::Unreadable`] when its key file
@@ -113,9 +113,8 @@ impl LocalMachine {
     pub(crate) async fn recover_sealing_key(
         &self,
         request: RecoverSealingKeyRequest,
-        cloud_routed: bool,
     ) -> Result<SealingKeyRecovered, super::Error> {
-        if cloud_routed {
+        if self.full_caller()?.cloud_routed() {
             return Err(Error::CloudRouted.into());
         }
         self.finish_mutation(move |local| async move { local.recover_admitted(request).await })

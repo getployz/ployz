@@ -161,58 +161,6 @@ in_environment!(
     Publish,
 );
 
-/// A payload a replay is keyed by: the ID the caller minted for it.
-pub(crate) trait Keyed: InEnvironment {
-    fn key(&self) -> &str;
-}
-
-impl Keyed for CreateService {
-    fn key(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-impl Keyed for crate::CreateGitService {
-    fn key(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-impl Keyed for CreateVolume {
-    fn key(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-impl Keyed for CreateConfig {
-    fn key(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-impl Keyed for Publish {
-    fn key(&self) -> &str {
-        self.id.as_deref().unwrap_or_default()
-    }
-}
-
-/// An answer that names the Environment it staged into.
-pub(crate) trait Staged {
-    fn environment_id(&self) -> &crate::EnvironmentId;
-}
-
-macro_rules! staged {
-    ($($answer:ty),+ $(,)?) => {$(
-        impl Staged for $answer {
-            fn environment_id(&self) -> &crate::EnvironmentId {
-                &self.environment.id
-            }
-        }
-    )+};
-}
-
-staged!(ServiceStaged, VolumeStaged, ConfigStaged, Published);
-
 /// Register every command. A row reads:
 /// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] if SAME]
 /// needs PERMISSION agent CLAIM => CALL;`
@@ -304,16 +252,18 @@ macro_rules! commands {
                         let $c = self;
                         let ids: Vec<&str> =
                             [$(Option::<&str>::from($id)),*].into_iter().flatten().collect();
-                        if !ids.is_empty() {
+                        if let Some(&id) = ids.first() {
                             let fits = |at: &mut Call<'_>, first: &$answer| {
-                                $($same)::+(&mut *at.tx, at.who, self, first)
+                                $($same)::+(&mut *at.tx, at.who, self, first, id)
                             };
                             let answer = replayable(at, self, &ids, fits, run)?;
-                            return refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()));
+                            at.trusted.refuse_written_outside_environments(&mut *at.tx, &answer)?;
+                            return Ok(answer);
                         }
                     )?
                     let answer = run(at)?;
-                    refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()))
+                    at.trusted.refuse_written_outside_environments(&mut *at.tx, &answer)?;
+                    Ok(answer)
                 }
 
                 fn to_command(&self) -> Value {
@@ -726,54 +676,6 @@ pub struct Committed {
     pub checks: Vec<crate::PullRequestRef>,
 }
 
-impl Written {
-    /// The Environment it wrote, if it wrote one that still exists.
-    #[must_use]
-    pub fn environment(&self) -> Option<&crate::EnvironmentId> {
-        match self {
-            Self::Environment(created) => Some(&created.environment.id),
-            Self::Service(staged) | Self::ServiceRenamed(staged) | Self::ServiceRemoved(staged) => {
-                Some(&staged.environment.id)
-            }
-            Self::Volume(staged) | Self::VolumeRemoved(staged) | Self::VolumeRenamed(staged) => {
-                Some(&staged.environment.id)
-            }
-            Self::Config(staged) | Self::ConfigRemoved(staged) | Self::ConfigRenamed(staged) => {
-                Some(&staged.environment.id)
-            }
-            Self::Edited(edited) => Some(&edited.environment.id),
-            Self::Published(published) => Some(&published.environment.id),
-            Self::Discarded(discarded) => Some(&discarded.environment.id),
-            Self::HistoryStaged(staged) => Some(&staged.environment.id),
-            Self::Deployment(deployment) => Some(&deployment.environment_id),
-            Self::Rule(rule) => Some(&rule.environment.id),
-            Self::Domain(staged) => Some(&staged.environment.id),
-            Self::DomainAdded(added) => Some(&added.written.environment.id),
-            Self::Taken(taken) => Some(&taken.into.id),
-            Self::Synced(synced) => Some(&synced.into.id),
-            Self::Undone(undone) => Some(&undone.into.id),
-            Self::Removed(removed) => Some(&removed.environment.id),
-            Self::NeverSynced(marked) => Some(&marked.environment.id),
-            Self::OnMerge(on_merge) => Some(&on_merge.environment.id),
-            Self::Batch(batched) => batched.results.last().and_then(Self::environment),
-            // A new Project or Branch has no pull request yet; the rest write no
-            // Environment's config, or delete it.
-            Self::Project(_)
-            | Self::ProjectRenamed(_)
-            | Self::Automated(_)
-            | Self::Branch(_)
-            | Self::BuildOrder(_)
-            | Self::RegionNamed(_)
-            | Self::DefaultEnvironment(_)
-            | Self::BranchSetup(_)
-            | Self::Protected(_)
-            | Self::Removal(_)
-            | Self::RemovalCancelled(_)
-            | Self::PrPlans(_) => None,
-        }
-    }
-}
-
 /// What each command of a [`Batch`] did, in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Batched {
@@ -781,15 +683,33 @@ pub struct Batched {
     pub results: Vec<Written>,
 }
 
-/// What a command did.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "written", rename_all = "snake_case")]
-#[ts(rename = "ConfigWritten")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one per command, serialized at once: boxing a Deployment saves nothing"
-)]
-pub enum Written {
+/// Register every answer: a [`Written`] variant and the answer it holds, which names
+/// the Environments it touched through [`Answer`].
+macro_rules! written {
+    ($($(#[doc = $doc:literal])* $variant:ident($answer:ty),)*) => {
+        /// What a command did.
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+        #[serde(tag = "written", rename_all = "snake_case")]
+        #[ts(rename = "ConfigWritten")]
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "one per command, serialized at once: boxing a Deployment saves nothing"
+        )]
+        pub enum Written {
+            $($(#[doc = $doc])* $variant($answer),)*
+        }
+
+        impl Answer for Written {
+            fn touched(&self) -> Vec<Touched<'_>> {
+                match self {
+                    $(Self::$variant(answer) => answer.touched(),)*
+                }
+            }
+        }
+    };
+}
+
+written! {
     /// A Project was created.
     Project(ProjectCreated),
     ProjectRenamed(ProjectSummary),
@@ -857,16 +777,106 @@ pub enum Written {
     Batch(Batched),
 }
 
-fn refuse_outside_environments<A: Clone>(
-    at: &mut Call<'_>,
-    answer: A,
-    written: impl FnOnce(A) -> Written,
-) -> Result<A, RpcError> {
-    if at.trusted.environments.is_some() {
-        at.trusted
-            .refuse_written_outside_environments(&mut *at.tx, &written(answer.clone()))?;
+impl Written {
+    /// The Environment whose config it wrote, if it wrote one that still exists.
+    #[must_use]
+    pub fn environment(&self) -> Option<&crate::EnvironmentId> {
+        self.config()
     }
-    Ok(answer)
+}
+
+/// An Environment a write touched.
+pub(crate) enum Touched<'a> {
+    /// Its config: Working State, Saved State or a Deployment.
+    Config(&'a crate::EnvironmentId),
+    /// Whether it is protected, which is no config.
+    Protection(&'a crate::EnvironmentId),
+    /// A Branch a Sync closed, which may be gone already.
+    Closed(&'a crate::EnvironmentName),
+}
+
+/// A command's answer, naming every Environment the command touched. A token
+/// limited to some Environments writes only through an answer that names some, all
+/// of them its own.
+pub(crate) trait Answer {
+    fn touched(&self) -> Vec<Touched<'_>>;
+
+    /// The Environment whose config it wrote, if any.
+    fn config(&self) -> Option<&crate::EnvironmentId> {
+        self.touched()
+            .into_iter()
+            .find_map(|touched| match touched {
+                Touched::Config(id) => Some(id),
+                Touched::Protection(_) | Touched::Closed(_) => None,
+            })
+    }
+}
+
+/// Each answer and the Environments it touched. Under `none`: a new Project or
+/// Branch, which has no pull request yet, and the writes outside any one
+/// Environment's config.
+macro_rules! touched {
+    (none: $($none:ty),*; $($answer:ty => |$it:ident| [$($touched:expr),*];)*) => {
+        $(impl Answer for $answer {
+            fn touched(&self) -> Vec<Touched<'_>> {
+                let $it = self;
+                vec![$($touched),*]
+            }
+        })*
+        $(impl Answer for $none {
+            fn touched(&self) -> Vec<Touched<'_>> {
+                Vec::new()
+            }
+        })*
+    };
+}
+
+touched! {
+    none:
+        ProjectCreated,
+        ProjectSummary,
+        crate::Automated,
+        crate::Branched,
+        crate::BuildOrderView,
+        crate::Region,
+        crate::EnvironmentsView,
+        crate::Removal,
+        crate::RemovalCancelled,
+        crate::PrPlansView;
+    EnvironmentCreated => |it| [Touched::Config(&it.environment.id)];
+    ServiceStaged => |it| [Touched::Config(&it.environment.id)];
+    VolumeStaged => |it| [Touched::Config(&it.environment.id)];
+    ConfigStaged => |it| [Touched::Config(&it.environment.id)];
+    Edited => |it| [Touched::Config(&it.environment.id)];
+    Published => |it| [Touched::Config(&it.environment.id)];
+    Discarded => |it| [Touched::Config(&it.environment.id)];
+    HistoryStaged => |it| [Touched::Config(&it.environment.id)];
+    crate::DeploymentSummary => |it| [Touched::Config(&it.environment_id)];
+    crate::RuleView => |it| [Touched::Config(&it.environment.id)];
+    crate::DomainStaged => |it| [Touched::Config(&it.environment.id)];
+    crate::DomainAdded => |it| [Touched::Config(&it.written.environment.id)];
+    crate::Taken => |it| [Touched::Config(&it.into.id)];
+    crate::Undone => |it| [Touched::Config(&it.into.id)];
+    crate::Removed => |it| [Touched::Config(&it.environment.id)];
+    crate::NeverSynced => |it| [Touched::Config(&it.environment.id)];
+    crate::OnMerge => |it| [Touched::Config(&it.environment.id)];
+    crate::ProtectedView => |it| [Touched::Protection(&it.environment)];
+}
+
+impl Answer for crate::Synced {
+    fn touched(&self) -> Vec<Touched<'_>> {
+        let mut touched = vec![Touched::Config(&self.into.id)];
+        if self.closing {
+            touched.push(Touched::Closed(&self.from.name));
+        }
+        touched
+    }
+}
+
+impl Answer for Batched {
+    fn touched(&self) -> Vec<Touched<'_>> {
+        self.results.iter().flat_map(Answer::touched).collect()
+    }
 }
 
 /// Run `create` once for the caller-minted `ids`. Replaying the identical command
