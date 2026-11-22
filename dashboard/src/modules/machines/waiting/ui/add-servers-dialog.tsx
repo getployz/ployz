@@ -14,8 +14,8 @@ import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { ClusterSetup } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup";
-import { InstallTabs } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/copy-block";
+import { ClusterSetup } from "./cluster-setup";
+import { InstallTabs } from "./copy-block";
 import { ADD_SERVERS_REFUSED, useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;

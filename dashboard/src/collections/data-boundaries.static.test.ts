@@ -69,7 +69,7 @@ const SPINNER_FILES = {
   "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "modules/machines/waiting/ui/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "the tunnel setting up on the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
@@ -83,7 +83,7 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 /** Reads that are one step of a user command (preview, evidence, wait for completion), not page state. */
 const COMMAND_READ_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "try every Server and list what goes before the user confirms forgetting them",
@@ -155,7 +155,7 @@ const COMMAND_FILES = {
   "routes/connect.tsx": "the answer sends the browser to the agent's callback, a URL only the server builds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "components/shell/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
   "modules/ingress/cloudflare-setup.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
@@ -284,7 +284,7 @@ describe("data boundaries", () => {
           // Command hooks elsewhere are UI too: components wait through them. Data files only read.
           const path = relative(SRC, file);
           const isHookFile = /\bexport (function|const) use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && !(path in HOOK_FILES_NOT_COMMANDS);
-          const isUi = isRoute || file.startsWith(`${SRC}/components/`) || isHookFile;
+          const isUi = isRoute || file.endsWith(".tsx") || isHookFile;
           const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {
