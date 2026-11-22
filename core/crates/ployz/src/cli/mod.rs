@@ -65,7 +65,7 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .long_help("SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.")
             .value_parser(clap::value_parser!(u32).range(1..))
             // A fresh SSH login to a distant Server takes 4–5s on its own (Bali → Sydney measured 4.1–4.7s).
-            .default_value("20")
+            .default_value(crate::connect::DEFAULT_SSH_TIMEOUT.as_secs().to_string())
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
