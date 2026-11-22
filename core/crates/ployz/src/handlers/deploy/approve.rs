@@ -15,7 +15,7 @@ use ployz_core::{
     PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode, SCOPED_KEYS_CAPABILITY,
     SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
 };
-use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
+use ployz_store::{EnvironmentRef, PlanQuery, PlanView, PostedVersion, TagPin};
 use serde_json::json;
 
 use super::super::device::DeviceSigning;
@@ -96,11 +96,23 @@ pub(in crate::handlers) fn sign(
         let plan = store.read(&plan_query)?;
         return silent::sign(matches, store, (environment, plan), edits, &key).map(Some);
     }
+    let silent = silent::silent(matches);
+    // A silent deploy that goes out unsigned still ships only image edits.
+    let unsigned = |plan: Result<PlanView, Error>| -> Result<Option<DeviceApproval>, Error> {
+        if silent {
+            let plan = plan?;
+            silent::pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
+            silent::moves(&plan.regions).map_err(|refused| refused.error(matches))?;
+        }
+        Ok(None)
+    };
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(signing)) = DeviceSigning::load(&key) else {
-        return Ok(None);
+        return match silent {
+            true => unsigned(store.read(&plan_query)),
+            false => Ok(None),
+        };
     };
-    let silent = silent::silent(matches);
     if silent {
         silent::refuse_forget(matches)?;
     }
@@ -114,7 +126,7 @@ pub(in crate::handlers) fn sign(
         (probe.join().unwrap_or(Probe::Unknown), plan)
     });
     let enforcing = match probe {
-        Probe::Off => return Ok(None),
+        Probe::Off => return unsigned(plan),
         Probe::Unknown if flag(matches, "forget-older") => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
@@ -127,7 +139,7 @@ pub(in crate::handlers) fn sign(
                 "Couldn't ask your servers whether they enforce device approval, so this \
                  deploy isn't signed. Servers that enforce will refuse it.",
             );
-            return Ok(None);
+            return unsigned(plan);
         }
         Probe::NoClusterKey => {
             return Err(Error::coded(
