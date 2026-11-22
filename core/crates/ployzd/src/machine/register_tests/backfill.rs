@@ -388,8 +388,8 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
         SealingError::WireGuardKeyMismatch(id) if id == joiner.machine.id
     ));
     assert!(matches!(
-        refusal(unlisted),
-        SealingError::UnknownMachine(id) if id == unknown
+        unlisted,
+        LocalMachineError::JoinRefused(AuthorityRefusal::Unsigned { .. })
     ));
     assert!(matches!(refusal(not_held), SealingError::NotHeld));
     server.abort();
@@ -476,7 +476,6 @@ async fn share_without_approval_refuses_a_machine_that_is_no_member() {
             matches!(
                 refused,
                 LocalMachineError::JoinRefused(AuthorityRefusal::Unsigned { .. })
-                    | LocalMachineError::Sealing(SealingError::UnknownMachine(_))
             ),
             "{refused}"
         );
