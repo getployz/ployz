@@ -63,6 +63,9 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     let mut client = runtime.block_on(route::connect_full(leaf, context(leaf)))?;
     let roster = runtime.block_on(Roster::read(&mut client))?;
     roster.require_all()?;
+    // The Store reads and the prompt below can outlast the connection's idle timeout,
+    // so the trust write and the retirement each open their own.
+    drop(client);
     let cluster = roster.cluster()?;
     let seed = pending_key(&pending)?;
     let new = SigningPublicKey::from(key::public(&seed));
@@ -111,10 +114,15 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
             })
             .collect();
         let bundle = Bundle::sign(&signing, cluster, changes)?;
-        let (answers, gaps) = runtime.block_on(bundle.send(&client, &roster.reach));
+        // Each step still carries the prior read above, so a Member whose grant moved
+        // since refuses it.
+        let mut client = runtime.block_on(route::connect_full(leaf, context(leaf)))?;
+        let reached = runtime.block_on(Roster::read(&mut client))?;
+        reached.require_all()?;
+        let (answers, gaps) = runtime.block_on(bundle.send(&client, &reached.reach));
         if !gaps.is_complete() {
             let moved = gaps.failures.iter().any(grant_moved);
-            let servers = super::answered(&roster.reach, answers);
+            let servers = super::answered(&reached.reach, answers);
             return ui::finish_fanout("servers", &servers, &gaps, || {
                 ui::rows(&results(&servers));
                 match moved {
@@ -128,9 +136,6 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
             });
         }
     }
-    // Nothing drives this connection while the redeploys run, which can take minutes on
-    // this current-thread runtime, so the retirement opens its own.
-    drop(client);
     ui::stream(format_args!("PLOYZ_KEY={}", hex::encode(seed)));
     ui::note("Replace the old PLOYZ_KEY with this one where the key deploys from.");
     let resigner = DeviceSigning::from_seed(&seed);
