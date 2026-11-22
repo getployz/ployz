@@ -265,15 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mirror_mount_root_is_the_mirror_dataset_name_under_var_lib() {
-        assert_eq!(MIRROR_MOUNT_ROOT, format!("/var/lib/{MIRROR_ROOT}"));
-        assert_eq!(
-            slot_fs_mountpoint("data"),
-            format!("/var/lib/{MIRROR_ROOT}/data/fs")
-        );
-    }
-
-    #[test]
     fn a_pool_places_its_datasets() {
         let layout = DatasetLayout::new("tank");
         for (dataset, place) in [

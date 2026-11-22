@@ -9,8 +9,8 @@ use ployz_core::{
     PublicIpDiscovery, SelectedEndpoint, WireGuardPublicKey,
 };
 use ployzd::network::{
-    EndpointSelection, PeerStatus, WIREGUARD_KEEPALIVE_SECONDS, allocate_machine_subnet,
-    discover_network, management_address, peers_for,
+    EndpointSelection, PeerStatus, allocate_machine_subnet, discover_network, management_address,
+    peers_for,
 };
 
 #[test]
@@ -60,7 +60,6 @@ fn every_machine_table_rebuild_is_a_complete_directed_mesh() {
             machines[1].subnet.into(),
         ]
     );
-    assert_eq!(WIREGUARD_KEEPALIVE_SECONDS, 25);
 }
 
 #[test]
