@@ -402,8 +402,9 @@ answer, it names those servers, removes nothing and exits 3.
 If a key leaks, run `ployz key rm <code>`, then deploy from a terminal. Don't rotate a leaked
 key: a rotation signs again whatever the old key deployed, including anything someone shipped
 with it. After `key rm`, a container the key approved keeps running until it stops, and then its
-server refuses to start it, even when the key only redeployed the image a person approved, with
-`The key that approved this was rotated or removed; deploy again.`
+server refuses to start it again with
+`The key that approved this was rotated or removed; deploy again.` The one exception is a container
+whose exact spec a person also signed: it still starts.
 
 Removing the device that approved a version also stops CI and agent deploys built on that
 version, until a person deploys from a terminal again.

@@ -267,6 +267,27 @@ async fn a_kept_start_after_its_key_is_removed_says_the_key_went_and_to_deploy_a
     let kept = admitted_by_ci(&fixture, &opening_shared(&fixture)).await;
     assert_eq!(start(&fixture, &kept), Ok(()));
 
+    remove_ci(&fixture).await;
+    let refused = start(&fixture, &kept).unwrap_err();
+    assert_eq!(
+        super::refusal_text(&refused),
+        "The key that approved this was rotated or removed; deploy again."
+    );
+}
+
+/// A CI edit that runs exactly the spec a person signed still starts once the CI key is
+/// removed: the person signed this very spec.
+#[tokio::test]
+async fn a_kept_start_of_the_spec_a_person_signed_survives_its_key_removal() {
+    let fixture = fixture().await;
+    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+    let kept = admitted_by_ci(&fixture, &approved(&opening_shared(&fixture))).await;
+
+    remove_ci(&fixture).await;
+    assert_eq!(start(&fixture, &kept), Ok(()));
+}
+
+async fn remove_ci(fixture: &Fixture) {
     fixture
         .machine
         .owner
@@ -279,11 +300,6 @@ async fn a_kept_start_after_its_key_is_removed_says_the_key_went_and_to_deploy_a
         })
         .await
         .unwrap();
-    let refused = start(&fixture, &kept).unwrap_err();
-    assert_eq!(
-        super::refusal_text(&refused),
-        "The key that approved this was rotated or removed; deploy again."
-    );
 }
 
 #[tokio::test]
