@@ -24,6 +24,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/passkeys/passkeys.server.ts",
   "modules/identity/auth.server.ts",
   "server/api-route.ts",
+  "modules/agent/agent-calls.server.ts",
   "server/database.server.ts",
   "server/schema-compatibility.ts",
   "modules/marketing/marketing-proxy.server.ts",
