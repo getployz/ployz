@@ -8,10 +8,9 @@ import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volu
 import { SEED_OFF } from "#/modules/volume-run/plan";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, OrganizationSlugInput, runActor, strictValidator } from "#/server/tanstack";
 import { VolumeInput } from "#/modules/volume-run/volume-run";
 
-const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
 const Machine = rustMachineIdSchema;
 const Placement = Schema.Struct({ primary: Machine, mirrors: Schema.Array(Machine), deletes: Schema.Array(Machine) });
 const StageInput = Schema.Struct({
@@ -21,14 +20,14 @@ const StageInput = Schema.Struct({
 });
 
 export const listPlacementsServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Organization))
+  .middleware(authenticated)
+  .validator(strictValidator(OrganizationSlugInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => listPlacements(organization.id)),
   )));
 
 export const stagePlacementServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(StageInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => stagePlacement(organization.id, data)),
@@ -36,7 +35,7 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
   )));
 
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap((access) => discardPlacement(access.organization.id, access, data.volumeId, data.environment)),
@@ -44,7 +43,7 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   )));
 
 export const stageRestoreServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(StageRestoreInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(() => Effect.fail(new Conflict({ userFacing: true, message: SEED_OFF }))),
@@ -52,14 +51,14 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine), unrouted: Schema.optional(Schema.Array(Machine)) })))
+  .middleware(authenticated)
+  .validator(strictValidator(Schema.Struct({ ...OrganizationSlugInput.fields, server: Machine, accepting: Schema.Array(Machine), unrouted: Schema.optional(Schema.Array(Machine)) })))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => stageOffServer(organization.id, data.server, data.accepting, data.unrouted)),
     refusedPublicly,
   )));
 
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(DeleteCopyInput))
   .handler(({ context, data }) => runActor(context, refusedPublicly(deleteCopy(context.actor, data))));

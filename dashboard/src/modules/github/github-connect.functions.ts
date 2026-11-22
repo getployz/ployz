@@ -4,9 +4,8 @@ import { disconnectGithub } from "#/modules/config-store/store-github-repositori
 import { MAX_OFFERED_INSTALLATIONS, OFFER_MAX_LENGTH } from "#/modules/github/github-connect";
 import { acceptGithubOffer, listGithubOffer, listOrganizationGithub } from "#/modules/github/github-connect.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
-const authenticated = [publicErrorMiddleware, actorMiddleware] as const;
 const OrganizationScope = Schema.Struct({
   organizationSlug: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 });

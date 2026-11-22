@@ -6,8 +6,7 @@ import {
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
@@ -15,7 +14,7 @@ import {
 export const resetPendingOrganizationEnrollmentServerFn = createServerFn({
   method: "POST",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ResetPendingEnrollmentInput))
   .handler(({ context, data }) =>
     runActor(context, resetPendingOrganizationEnrollment(context.actor, data)),

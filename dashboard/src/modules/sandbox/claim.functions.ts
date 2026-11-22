@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
 import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/sandbox/claim.server";
 import { CLAIM_SIGN_IN_COOKIE, startedClaimSignIn } from "#/modules/sandbox/claim-sign-in.server";
 import { Auth } from "#/modules/identity/auth.server";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const ClaimInput = Schema.Struct({ secret: Schema.String });
 
@@ -32,6 +32,6 @@ export const readClaimServerFn = createServerFn({ method: "POST" })
   });
 
 export const claimOrganizationServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ClaimInput))
   .handler(({ data, context }) => runActor(context, claimOrganization(context.actor, data.secret)));

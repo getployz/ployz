@@ -14,13 +14,11 @@ import {
 } from "#/modules/github/github.server";
 import { listGithubBuildRepositories } from "#/modules/config-store/store-github-repositories.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
 
-const authenticated = [publicErrorMiddleware, actorMiddleware] as const;
 const OrganizationScope = Schema.Struct({
   organizationSlug: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 });

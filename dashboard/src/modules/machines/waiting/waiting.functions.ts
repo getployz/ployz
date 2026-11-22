@@ -7,7 +7,7 @@ import { OpenProbeSelectionInput, SELECTION_MAX } from "#/modules/machines/waiti
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 const ListWaitingServersInput = Schema.Struct({ organizationSlug: StrictOrganizationSlug });
 const ShowWaitingServerInput = Schema.Struct({ organizationSlug: StrictOrganizationSlug, id: Schema.String.check(Schema.isUUID()) });
@@ -17,22 +17,22 @@ const RejectWaitingServersInput = Schema.Struct({
 });
 
 export const openProbeSelectionServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(OpenProbeSelectionInput))
   .handler(({ context, data }) => runActor(context, openProbeSelection(context.actor, data)));
 
 export const listWaitingServersServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ListWaitingServersInput))
   .handler(({ context, data }) => runActor(context, listWaitingServers(context.actor, data)));
 
 export const showWaitingServerServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ShowWaitingServerInput))
   .handler(({ context, data }) => runActor(context, showWaitingServer(context.actor, data)));
 
 export const rejectWaitingServersServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(RejectWaitingServersInput))
   .handler(({ context, data }) => runActor(context, rejectWaitingServers(context.actor, data)));
 
@@ -43,21 +43,21 @@ const DashboardEnrollInput = Schema.Struct({
 });
 
 export const planServerEnrollmentServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(DashboardEnrollInput))
   .handler(({ context, data }) => runActor(context, previewServerEnrollment(context.actor, data)));
 
 export const startServerEnrollmentServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(DashboardEnrollInput))
   .handler(({ context, data }) => runActor(context, startServerEnrollment(context.actor, data)));
 
 export const serverEnrollmentStatusServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ListWaitingServersInput))
   .handler(({ context, data }) => runActor(context, readServerEnrollmentStatus(context.actor, data)));
 
 export const cancelServerEnrollmentServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ShowWaitingServerInput))
   .handler(({ context, data }) => runActor(context, cancelServerEnrollment(context.actor, data)));
