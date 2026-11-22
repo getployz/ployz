@@ -2,7 +2,8 @@ import type { ConfigCommand } from "@ployz/sdk";
 import { Effect } from "effect";
 import { expect, it } from "vitest";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
-import { type AgentCaller, runGated } from "./agent-runner.server";
+import { runGated } from "./agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 
 const caller: AgentCaller = {
   userId: "user", organization: { id: "org", slug: "shop" }, credential: { kind: "session", id: "session" }, role: "owner", support: null, via: "agent",

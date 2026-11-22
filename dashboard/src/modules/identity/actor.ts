@@ -39,6 +39,9 @@ export type Caller = Actor & {
   readonly via: "dashboard" | "cli" | "agent";
 };
 
+/** A Caller acting through an agent: the sidebar, or a remote MCP client. */
+export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
+
 type Holder = Pick<Caller, "role" | "support"> & Partial<Pick<Caller, "credential">>;
 
 const heldBy = (caller: Holder): Permission[] => {
