@@ -6,9 +6,9 @@
 use clap::ArgMatches;
 use ployz_core::authority::{
     Cap, CapSet, GrantKind, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope, PayloadDigest,
-    PlaceService, TrustedKeys,
+    PlaceService, TrustedKeys, version,
 };
-use ployz_core::{Namespace, ServiceName, ServiceVolumeReference, VolumeOrigin};
+use ployz_core::{Namespace, SealingPublicKey, ServiceName, ServiceVolumeReference, VolumeOrigin};
 use ployz_store::{
     EnvironmentName, EnvironmentRef, NamespaceQuery, Parent, ParentQuery, ProjectName,
     ServicesQuery,
@@ -187,7 +187,8 @@ fn uuid(id: &str) -> Result<Uuid, Error> {
 }
 
 /// The grant `typed` asks for, its places resolved in `places` and each Volume read from
-/// the newest version a person signed of its Service, checked under `trusted`.
+/// the newest version a person signed of its Service, opened as a Server opens a parent:
+/// under `trusted`, for Cluster `cluster`.
 ///
 /// # Errors
 /// Returns the Store's refusal, and refuses a Volume whose Service has no such version,
@@ -196,7 +197,7 @@ pub(super) fn wanted(
     store: &Store,
     typed: &Typed,
     places: Vec<Resolved>,
-    trusted: &TrustedKeys,
+    (trusted, cluster): (&TrustedKeys, SealingPublicKey),
 ) -> Result<Wanted, Error> {
     let mut volumes = Vec::new();
     let mut shown: Vec<String> = places.iter().map(|place| place.label.clone()).collect();
@@ -205,7 +206,7 @@ pub(super) fn wanted(
     }
     for resolved in &places {
         for (service, reference) in &typed.volumes {
-            let entry = root_volume(store, resolved, service, reference, trusted)?;
+            let entry = root_volume(store, resolved, (service, reference), (trusted, cluster))?;
             shown.push(format!(
                 "volume {service}/{reference} in {} ({})",
                 resolved.place.namespace, entry.name
@@ -233,9 +234,8 @@ pub(super) fn wanted(
 fn root_volume(
     store: &Store,
     resolved: &Resolved,
-    service: &ServiceName,
-    reference: &ServiceVolumeReference,
-    trusted: &TrustedKeys,
+    (service, reference): (&ServiceName, &ServiceVolumeReference),
+    (trusted, cluster): (&TrustedKeys, SealingPublicKey),
 ) -> Result<GrantVolume, Error> {
     let namespace = &resolved.place.namespace;
     let runtime = store
@@ -266,16 +266,8 @@ fn root_volume(
             "The version of {service} Ployz Cloud returned doesn't check against your servers' keys. Nothing changed."
         ))
     };
-    let version = statement.open().map_err(|_| forged())?;
-    let by_person = statement.approvers(trusted).is_ok_and(|approvers| {
-        !approvers.is_empty()
-            && approvers
-                .iter()
-                .all(|by| trusted.of(by).is_some_and(|key| key.kind().whole_cluster()))
-    });
-    if !by_person
-        || version.parent.is_some()
-        || version.service != runtime
+    let version = version::open_root(statement, trusted, cluster).map_err(|_| forged())?;
+    if version.service != runtime
         || &version.namespace != namespace
         || PayloadDigest::of(spec, namespace).ok() != Some(version.digest)
     {

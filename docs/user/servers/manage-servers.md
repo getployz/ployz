@@ -350,7 +350,8 @@ ployz key add --ci --env production --name github-actions
 - `--name` is a label for the key, such as the pipeline that holds it.
 
 `ployz key add` shows the key's code, each environment and volume it can reach, and the servers
-that will trust it, then asks. It needs a terminal and every server to answer. It prints
+that will trust it, then asks. It needs a terminal and every server to answer over your own
+connection: with `--connect`, name every server. It prints
 `PLOYZ_KEY=...` once. Store it as a secret where the key deploys from; see
 [Deploy from CI with a key](../deploy/deployments.md#deploy-from-ci-with-a-key).
 
@@ -363,16 +364,28 @@ To change where a key can deploy, run `ployz key scope` with its code and the ne
 ployz key scope mmg42klgyq --env production --service web
 ```
 
-A change that only narrows the key goes through without asking. One that widens it, or that a
-server doesn't answer for, asks first, and `--yes` makes it fail instead of asking. If a server's
-copy of the key changed while the command ran, it reads the key again and retries.
+The flags name the whole new grant. A volume or a name the key holds that you leave out is
+dropped, so name them again to keep them. `ployz key scope` always prints what the key holds now
+on each server and what it becomes.
+
+A change that only narrows the key goes through without asking. One that widens it, drops a
+volume or the name, or that a server doesn't answer for, asks first, and `--yes` makes it fail
+instead of asking. If a server's copy of the key changed while the command ran, it reads the key
+again, prints the change again and asks again if it needs to. A server that doesn't answer is
+named in the result, and the command exits 3.
 
 To swap a key for a new one with the same scope, for example on a schedule, run
 `ployz key rotate <code>`. It lists each service that runs a version the old key signed, with its
 image, when it was signed and its digest, and asks. Then it gives every server the new key,
-prints the new `PLOYZ_KEY=...`, redeploys those services under the new key, and removes the old
-key. Until then the old key keeps working. If a server misses the new key, run the same command
-again: it carries on with the same new key.
+prints the new `PLOYZ_KEY=...`, redeploys those services under the new key and follows each
+deploy to the end. It removes the old key only once every deploy applied on every server and each
+server still holds both keys as the rotation left them. Until then the old key keeps working. If
+it stops before that, run the same command again: it carries on with the same new key and skips
+services it already redeployed. If someone changed the key's scope while it ran, it stops and
+says so; check `ployz key ls` and run it again.
+
+`ployz key rm <code>` removes only CI and agent keys. It refuses a device's or passkey's code;
+remove those with `ployz device rm`.
 
 If a key leaks, run `ployz key rm <code>`, then deploy from a terminal. Don't rotate a leaked
 key: a rotation signs again whatever the old key deployed, including anything someone shipped

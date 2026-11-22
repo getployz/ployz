@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 
 use clap::{Arg, ArgGroup, ArgMatches, Command};
 use ployz_core::authority::{
-    Grant, GrantKind, GrantVolume, KeyChange, KeyKind, KeyName, KeyPlace, KeyPlaces, KeyScope,
-    NewKey, Prior, SigningPublicKey, Timestamp,
+    GRANT_MOVED, Grant, GrantKind, GrantVolume, KeyChange, KeyKind, KeyName, KeyPlace, KeyPlaces,
+    KeyRef, KeyScope, NewKey, Prior, SigningPublicKey, Timestamp,
 };
 use ployz_core::{
-    CheckCode, DeviceCode, DeviceKey, DeviceSet, Hint, InspectRequest, MachineId, MachineTarget,
-    RpcError, RpcErrorCode, SCOPED_KEYS_CAPABILITY, op,
+    CheckCode, DeviceCode, DeviceKey, DeviceSet, Hint, InspectRequest, KEY_STEP_CAPABILITY,
+    MachineFailure, MachineId, MachineTarget, RpcError, RpcErrorCode, SCOPED_KEYS_CAPABILITY,
+    SetDeviceRequest, op,
 };
 use serde::Serialize;
 
@@ -66,13 +67,17 @@ pub(crate) fn scope_command(command: Command) -> Command {
         "Change where a CI or agent key may deploy, on every server",
     ))
     .after_help(concat!(
-        "A change that only narrows the key goes through without asking. Anything that ",
-        "widens it, or a server that doesn't answer, asks first.\n\n",
+        "The flags name the whole new grant: a volume or name the key holds and the flags ",
+        "leave out is dropped. A change that only narrows the key goes through without ",
+        "asking. One that widens it, drops a volume or the name, or misses a server asks ",
+        "first.\n\n",
         "Examples:\n",
         "  ployz key scope mmg42klgyq --env production --service web",
     ))
     .arg(code_arg())
-    .arg(yes("Fail instead of asking when the change widens the key"))
+    .arg(yes(
+        "Fail instead of asking when the change widens the key or drops a volume or its name",
+    ))
 }
 
 pub(crate) fn remove_command(command: Command) -> Command {
@@ -81,6 +86,7 @@ pub(crate) fn remove_command(command: Command) -> Command {
         "Stop trusting a CI or agent key on every server, for good",
     )
     .after_help(concat!(
+        "It removes only CI and agent keys. Remove a device or passkey with ployz device rm.\n",
         "If the key leaked, deploy from a terminal afterwards.\n\n",
         "Examples:\n",
         "  ployz key rm mmg42klgyq",
@@ -138,8 +144,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let roster = runtime.block_on(Roster::read(&mut client))?;
     roster.require_all()?;
     let cluster = roster.cluster()?;
-    let trusted = roster.trusted()?;
-    let wanted = wanted::wanted(&store, &typed, places, trusted)?;
+    let wanted = wanted::wanted(&store, &typed, places, (roster.trusted()?, cluster))?;
     let seed = device::key::generate();
     let public = SigningPublicKey::from(device::key::public(&seed));
     show(kind, public, &wanted, &roster);
@@ -248,7 +253,6 @@ pub(crate) fn scope(root: &ArgMatches) -> Result<(), Error> {
     let runtime = runtime()?;
     let mut client = runtime.block_on(route::connect_full(leaf, context(leaf)))?;
     let mut settled: BTreeMap<MachineId, (String, DeviceSet)> = BTreeMap::new();
-    let mut asked = false;
     let mut resolved: Option<(Typed, Vec<wanted::Resolved>)> = None;
     for round in 1..=ROUNDS {
         let roster = runtime.block_on(Roster::read(&mut client))?;
@@ -261,45 +265,71 @@ pub(crate) fn scope(root: &ArgMatches) -> Result<(), Error> {
                 (typed, places)
             }
         };
-        let trusted = roster.trusted()?;
-        let wanted = wanted::wanted(&store, &typed, places.clone(), trusted)?;
+        let wanted = wanted::wanted(
+            &store,
+            &typed,
+            places.clone(),
+            (roster.trusted()?, roster.cluster()?),
+        )?;
         resolved = Some((typed, places));
         let held: Vec<(&Member, Option<&Grant>)> = roster
             .members
             .iter()
             .map(|member| (member, member.grant(code).map(|held| &held.grant)))
             .collect();
+        let after = Contents::wanted(&wanted);
+        let before = before(&held);
         let changes = edits(kind, key, &wanted, &held);
         if changes.is_empty() {
-            return finish_scope(code, &settled, &roster.gaps);
+            let scoped = scoped(code, before, after, &settled);
+            return finish_scope(&scoped, &roster.gaps);
         }
-        if !asked {
-            let grants: Vec<Option<&Grant>> = held.iter().map(|(_, grant)| *grant).collect();
-            if consent(code, &grants, roster.gaps.is_complete(), &wanted, yes)? == Consent::Ask {
-                show(kind, key, &wanted, &roster);
-                ui::confirm(
-                    &format!("Change key {code}?"),
-                    || widening(code),
-                    "Nothing changed.",
-                )?;
-            }
-            asked = true;
+        show_change(code, &before, &after, &roster);
+        // Asked again each round: a grant that moved is a new change to read.
+        let grants: Vec<Option<&Grant>> = held.iter().map(|(_, grant)| *grant).collect();
+        if let Consent::Ask(why) = consent(code, &grants, roster.gaps.is_complete(), &after, yes)? {
+            ui::confirm(
+                &format!("Change key {code}?"),
+                || why.refusal(code),
+                "Nothing changed.",
+            )?;
         }
         let bundle = Bundle::sign(&signing, roster.cluster()?, changes)?;
-        let (answers, gaps) = runtime.block_on(bundle.send(&client, &roster.reach));
+        let (answers, mut gaps) = runtime.block_on(bundle.send(&client, &roster.reach));
         for (machine_id, set) in answers {
             settled.insert(machine_id, (roster.reach.name(&machine_id), set));
         }
-        let moved = gaps
-            .failures
-            .iter()
-            .any(|failure| failure.error.code == RpcErrorCode::Conflict);
+        settled.retain(|machine_id, _| {
+            !gaps
+                .failures
+                .iter()
+                .any(|failure| failure.machine_id == *machine_id)
+        });
+        let moved = gaps.failures.iter().any(grant_moved);
         if !moved || round == ROUNDS {
-            return finish_scope(code, &settled, &gaps);
+            // A Member the read missed may still hold the old grant.
+            let unread = |machine_id: &MachineId| !settled.contains_key(machine_id);
+            let failures: Vec<_> = roster
+                .gaps
+                .failures
+                .iter()
+                .filter(|failure| unread(&failure.machine_id))
+                .cloned()
+                .collect();
+            let omitted: Vec<_> = roster.gaps.omitted.iter().copied().filter(unread).collect();
+            gaps.extend(&failures, &omitted);
+            let scoped = scoped(code, before, after, &settled);
+            return finish_scope(&scoped, &gaps);
         }
         ui::note("A server's copy of the key changed while this ran. Reading it again.");
     }
     unreachable!("the last round returns")
+}
+
+/// Whether a Member refused a key change because the grant it named had moved there,
+/// the one refusal a fresh read can settle.
+fn grant_moved(failure: &MachineFailure<RpcError>) -> bool {
+    failure.error.details.get(GRANT_MOVED).is_some()
 }
 
 /// The key `code` names in full, and its kind, as the Members hold it.
@@ -353,19 +383,153 @@ fn edits(
 }
 
 fn holds_exactly(grant: &Grant, wanted: &Wanted) -> bool {
-    grant.scope == wanted.scope && grant.volumes == wanted.volumes && grant.name == wanted.name
+    Contents::of(grant) == Contents::wanted(wanted)
+}
+
+/// What a grant gives, apart from when it was issued.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(super) struct Contents {
+    scope: KeyScope,
+    volumes: Vec<GrantVolume>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<KeyName>,
+}
+
+impl Contents {
+    pub(super) fn of(grant: &Grant) -> Self {
+        Self {
+            scope: grant.scope.clone(),
+            volumes: grant.volumes.clone(),
+            name: grant.name.clone(),
+        }
+    }
+
+    fn wanted(wanted: &Wanted) -> Self {
+        Self {
+            scope: wanted.scope.clone(),
+            volumes: wanted.volumes.clone(),
+            name: wanted.name.clone(),
+        }
+    }
+
+    /// One line for each place, each Volume and the name.
+    fn lines(&self) -> Vec<String> {
+        let mut lines = match &self.scope.places {
+            KeyPlaces::Cluster => vec!["deploys to every environment".to_owned()],
+            KeyPlaces::Only(places) => places
+                .iter()
+                .map(|place| match &place.service {
+                    Some(service) => {
+                        format!("deploys service {} in {}", service.name, place.namespace)
+                    }
+                    None => format!("deploys to {}", place.namespace),
+                })
+                .collect(),
+        };
+        lines.extend(
+            self.volumes
+                .iter()
+                .map(|volume| format!("mounts volume {}", volume.name)),
+        );
+        lines.push(match &self.name {
+            Some(name) => format!("named {name}"),
+            None => "no name".to_owned(),
+        });
+        lines
+    }
+}
+
+/// One grant as some Members hold it before a change; `None` where they hold none.
+#[derive(Serialize)]
+struct Held {
+    grant: Option<Contents>,
+    machines: Vec<MachineId>,
+}
+
+fn before(held: &[(&Member, Option<&Grant>)]) -> Vec<Held> {
+    let mut groups: Vec<Held> = Vec::new();
+    for (member, grant) in held {
+        let grant = grant.map(Contents::of);
+        match groups.iter_mut().find(|group| group.grant == grant) {
+            Some(group) => group.machines.push(member.key.id),
+            None => groups.push(Held {
+                grant,
+                machines: vec![member.key.id],
+            }),
+        }
+    }
+    groups
+}
+
+/// Print what the key holds now on each Member and what it becomes, before anything is
+/// signed, so a dropped Volume or name is never silent.
+fn show_change(code: DeviceCode, before: &[Held], after: &Contents, roster: &Roster) {
+    for held in before {
+        let servers = held
+            .machines
+            .iter()
+            .map(|machine_id| roster.reach.name(machine_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match &held.grant {
+            Some(grant) => {
+                ui::note(format_args!("Key {code} now, on {servers}:"));
+                for line in grant.lines() {
+                    ui::note(format_args!("  {line}"));
+                }
+            }
+            None => ui::note(format_args!("{servers} doesn't hold key {code}.")),
+        }
+    }
+    ui::note("It becomes:");
+    for line in after.lines() {
+        ui::note(format_args!("  {line}"));
+    }
 }
 
 /// Whether a scope change may go out without asking.
 #[derive(Debug, Eq, PartialEq)]
 enum Consent {
     Silent,
-    Ask,
+    Ask(Ask),
 }
 
-/// A change goes out without asking only when every Member answered and `wanted` sits
-/// inside the grant each holds. Anything else asks, and `--yes` refuses rather than
-/// widen a key unread.
+/// Why a scope change needs a person.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Ask {
+    /// A Member didn't answer, so what it holds is unknown.
+    Unanswered,
+    /// A Member holds none of the key, or less than the change gives.
+    Widens,
+    /// The flags leave out a Volume or the name a Member's grant holds.
+    Drops,
+}
+
+impl Ask {
+    fn refusal(self, code: DeviceCode) -> Error {
+        let why = match self {
+            Self::Unanswered => {
+                format!("A server didn't answer, so changing key {code} needs you at a terminal.")
+            }
+            Self::Widens => {
+                format!("This change widens key {code}, so it needs you at a terminal.")
+            }
+            Self::Drops => format!(
+                "This change drops a volume or the name key {code} holds, so it needs you at a terminal. To keep them, name them again with --volume and --name."
+            ),
+        };
+        Error::coded(
+            RpcErrorCode::ConfirmationRequired,
+            format!(
+                "{why} --yes only skips the ask for a change that only narrows. Nothing changed."
+            ),
+        )
+    }
+}
+
+/// A change goes out without asking only when every Member answered and `after` sits
+/// inside the grant each holds and keeps its Volumes and name. Anything else asks, and
+/// `--yes` refuses rather than change a key unread.
 ///
 /// # Errors
 /// Returns `confirmation_required` when the change would ask and `yes` is set.
@@ -373,27 +537,35 @@ fn consent(
     code: DeviceCode,
     held: &[Option<&Grant>],
     complete: bool,
-    wanted: &Wanted,
+    after: &Contents,
     yes: bool,
 ) -> Result<Consent, Error> {
-    let narrows = complete
-        && held
-            .iter()
-            .all(|grant| grant.is_some_and(|grant| inside(&wanted.scope, &wanted.volumes, grant)));
-    match (narrows, yes) {
-        (true, _) => Ok(Consent::Silent),
-        (false, true) => Err(widening(code)),
-        (false, false) => Ok(Consent::Ask),
+    let ask = if !complete {
+        Some(Ask::Unanswered)
+    } else if held
+        .iter()
+        .any(|grant| grant.is_none_or(|grant| !inside(&after.scope, &after.volumes, grant)))
+    {
+        Some(Ask::Widens)
+    } else if held.iter().flatten().any(|grant| drops(grant, after)) {
+        Some(Ask::Drops)
+    } else {
+        None
+    };
+    match (ask, yes) {
+        (None, _) => Ok(Consent::Silent),
+        (Some(ask), true) => Err(ask.refusal(code)),
+        (Some(ask), false) => Ok(Consent::Ask(ask)),
     }
 }
 
-fn widening(code: DeviceCode) -> Error {
-    Error::coded(
-        RpcErrorCode::ConfirmationRequired,
-        format!(
-            "This change widens key {code}, or a server didn't answer, so it needs you at a terminal. --yes only skips the ask for a change that narrows. Nothing changed."
-        ),
-    )
+/// Whether `after` leaves out a Volume or the name `grant` holds.
+fn drops(grant: &Grant, after: &Contents) -> bool {
+    grant
+        .volumes
+        .iter()
+        .any(|volume| !after.volumes.contains(volume))
+        || (grant.name.is_some() && grant.name != after.name)
 }
 
 /// Whether `scope` and `volumes` ask for nothing `grant` doesn't already give.
@@ -416,12 +588,22 @@ fn place_inside(place: &KeyPlace, held: &KeyPlace) -> bool {
         && (held.service.is_none() || held.service == place.service)
 }
 
-fn finish_scope(
-    code: DeviceCode,
+/// A scope change's result: the grants before, the grant after, and what each Member did.
+#[derive(Serialize)]
+struct Scoped {
+    key: DeviceCode,
+    before: Vec<Held>,
+    after: Contents,
+    servers: Vec<Answer>,
+}
+
+fn scoped(
+    key: DeviceCode,
+    before: Vec<Held>,
+    after: Contents,
     settled: &BTreeMap<MachineId, (String, DeviceSet)>,
-    gaps: &Gaps,
-) -> Result<(), Error> {
-    let servers: Vec<Answer> = settled
+) -> Scoped {
+    let servers = settled
         .iter()
         .map(|(machine_id, (server, outcome))| Answer {
             machine_id: *machine_id,
@@ -429,13 +611,27 @@ fn finish_scope(
             outcome: *outcome,
         })
         .collect();
-    if servers.is_empty() && gaps.is_complete() {
+    Scoped {
+        key,
+        before,
+        after,
+        servers,
+    }
+}
+
+fn finish_scope(scoped: &Scoped, gaps: &Gaps) -> Result<(), Error> {
+    if scoped.servers.is_empty() && gaps.is_complete() {
         return ui::done(
-            &serde_json::json!({ "key": code, "servers": servers }),
-            format_args!("Key {code} already holds that scope on every server."),
+            scoped,
+            format_args!(
+                "Key {} already holds that scope on every server.",
+                scoped.key
+            ),
         );
     }
-    ui::finish_fanout("servers", &servers, gaps, || ui::rows(&results(&servers)))
+    ui::finish_fanout("scope", scoped, gaps, || {
+        ui::rows(&results(&scoped.servers));
+    })
 }
 
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -621,10 +817,138 @@ fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
     })
 }
 
-/// Remove a key with `ployz device rm`'s handler, which already marks a CI or agent key
-/// removed on every Server by its full key.
+/// Stop trusting a CI or agent key on every Member, by its full key. A code that names a
+/// Device or passkey is refused: `ployz device rm` removes those.
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
-    device::remove(root)
+    let leaf = leaf_matches(root);
+    let code = typed_code(leaf)?;
+    runtime()?.block_on(async {
+        let mut client = route::connect_full(leaf, context(leaf)).await?;
+        let reach = Reach::every_member(&mut client).await?;
+        let (seen, _) = reach
+            .fan_out(|machine_id| seen_on(client.clone(), machine_id, code))
+            .await;
+        let key = grant_key(code, &seen)?;
+        let (removed, gaps) = remove_everywhere(&client, &reach, key).await;
+        let servers = answered(&reach, removed);
+        ui::finish_fanout("servers", &servers, &gaps, || ui::rows(&results(&servers)))
+    })
+}
+
+/// What one Member holds under a code.
+struct Seen {
+    /// The CI and agent keys it trusts or removed for good under the code, in full.
+    keys: Vec<SigningPublicKey>,
+    /// Whether it trusts a Device or passkey under the code.
+    personal: bool,
+}
+
+async fn seen_on(
+    client: Client,
+    machine_id: MachineId,
+    code: DeviceCode,
+) -> Result<Option<Seen>, RpcError> {
+    let target = MachineTarget::from(&machine_id);
+    if !client
+        .supports(Some(&target), KEY_STEP_CAPABILITY)
+        .await
+        .map_err(crate::connect::rpc_error)?
+    {
+        return Ok(None);
+    }
+    let details = client
+        .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    let personal = details.devices.iter().any(|key| key.code() == code)
+        || details
+            .passkeys
+            .iter()
+            .any(|trusted| trusted.passkey.code() == code);
+    let held = details
+        .grants
+        .iter()
+        .map(|trusted| trusted.grant.key)
+        .filter(|key| key.code() == code);
+    // A key removed for good stays named in full, so a run again reaches the Members the
+    // first missed.
+    let removed = details
+        .removed_keys
+        .iter()
+        .filter_map(|removed| match removed {
+            KeyRef::Signing { key } if key.code() == code => Some(SigningPublicKey::from(*key)),
+            KeyRef::Signing { .. } | KeyRef::Passkey { .. } => None,
+        });
+    Ok(Some(Seen {
+        keys: held.chain(removed).collect(),
+        personal,
+    }))
+}
+
+/// The one CI or agent key the Members name under `code`.
+///
+/// # Errors
+/// Refuses a Device's or passkey's code, a code no Member names, and one naming two keys.
+fn grant_key(code: DeviceCode, seen: &[(MachineId, Seen)]) -> Result<SigningPublicKey, Error> {
+    if seen.iter().any(|(_, seen)| seen.personal) {
+        return Err(Error::conflict(format!(
+            "{code} is a device or passkey, not a CI or agent key. Nothing was removed."
+        ))
+        .hint(Hint::Next(format!("ployz device rm {code}"))));
+    }
+    let mut keys: Vec<SigningPublicKey> = Vec::new();
+    for key in seen.iter().flat_map(|(_, seen)| &seen.keys) {
+        if !keys.contains(key) {
+            keys.push(*key);
+        }
+    }
+    match keys.as_slice() {
+        [key] => Ok(*key),
+        [] => Err(Error::not_found(format!(
+            "No server holds a CI or agent key {code}. Nothing was removed."
+        ))
+        .hint(Hint::Next("ployz key ls".to_owned()))),
+        _ => Err(Error::conflict(format!(
+            "Code {code} names more than one key on your servers. Nothing was removed."
+        ))),
+    }
+}
+
+/// Remove `key` for good on every Member `reach` covers.
+pub(super) async fn remove_everywhere(
+    client: &Client,
+    reach: &Reach,
+    key: SigningPublicKey,
+) -> (Vec<(MachineId, DeviceSet)>, Gaps) {
+    let (answers, gaps) = reach
+        .fan_out(|machine_id| remove_on(client.clone(), machine_id, key))
+        .await;
+    (answers, reach.named(gaps))
+}
+
+async fn remove_on(
+    client: Client,
+    machine_id: MachineId,
+    key: SigningPublicKey,
+) -> Result<Option<DeviceSet>, RpcError> {
+    let target = MachineTarget::from(&machine_id);
+    if !client
+        .supports(Some(&target), KEY_STEP_CAPABILITY)
+        .await
+        .map_err(crate::connect::rpc_error)?
+    {
+        return Ok(None);
+    }
+    client
+        .call_shared::<op::SetDevice>(
+            SetDeviceRequest::RemoveKey {
+                key: KeyRef::Signing { key: key.into() },
+            },
+            Call::once().to(&target),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)
+        .map(Some)
 }
 
 #[cfg(test)]

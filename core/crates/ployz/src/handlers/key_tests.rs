@@ -1,6 +1,7 @@
 use ployz_core::authority::{
-    Cap, CapSet, Grant, GrantKind, KeyPlace, KeyPlaces, KeyScope, PasskeyApprover, PayloadDigest,
-    PlaceService, ServiceVersion, Signed, Signer, SignerKey, Timestamp, TrustedGrant,
+    Cap, CapSet, Grant, GrantKind, KeyName, KeyPlace, KeyPlaces, KeyScope, PasskeyApprover,
+    PayloadDigest, PlaceService, ServiceVersion, Signed, Signer, SignerKey, Timestamp,
+    TrustedGrant,
 };
 use ployz_core::{
     DeviceKey, Namespace, RequestedServiceSpec, RpcErrorCode, SealingPublicKey, ServiceName,
@@ -11,7 +12,7 @@ use uuid::Uuid;
 
 use super::rotate::verified;
 use super::wanted::Wanted;
-use super::{Consent, consent};
+use super::{Ask, Consent, Contents, consent};
 
 const PRODUCTION: Uuid = Uuid::from_u128(1);
 const STAGING: Uuid = Uuid::from_u128(2);
@@ -59,13 +60,13 @@ fn production_grant() -> Grant {
     }
 }
 
-fn wanting(places: Vec<KeyPlace>) -> Wanted {
-    Wanted {
+fn wanting(places: Vec<KeyPlace>) -> Contents {
+    Contents::wanted(&Wanted {
         scope: scope(places),
         volumes: Vec::new(),
         name: None,
         shown: Vec::new(),
-    }
+    })
 }
 
 #[test]
@@ -80,7 +81,7 @@ fn a_scope_change_that_widens_the_key_is_refused_under_yes_and_one_that_narrows_
     assert_eq!(refused.report().code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(
         consent(code, &[Some(&held)], true, &widened, false).unwrap(),
-        Consent::Ask
+        Consent::Ask(Ask::Widens)
     );
 
     let narrowed = wanting(vec![place(PRODUCTION, "app-prod", true)]);
@@ -93,6 +94,26 @@ fn a_scope_change_that_widens_the_key_is_refused_under_yes_and_one_that_narrows_
         let refused = consent(code, &held, complete, &narrowed, true).unwrap_err();
         assert_eq!(refused.report().code, RpcErrorCode::ConfirmationRequired);
     }
+}
+
+/// `ployz key scope K --env production --service web --yes` on a key that also holds a
+/// name: the flags leave the name out, so the change would drop it. It narrows the
+/// places, yet it never goes out unread.
+#[test]
+fn a_scope_change_that_drops_the_name_the_key_holds_needs_a_person() {
+    let held = Grant {
+        name: Some(KeyName::parse("github-actions").unwrap()),
+        ..production_grant()
+    };
+    let code = held.key.code();
+    let narrowed = wanting(vec![place(PRODUCTION, "app-prod", true)]);
+
+    let refused = consent(code, &[Some(&held)], true, &narrowed, true).unwrap_err();
+    assert_eq!(refused.report().code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(
+        consent(code, &[Some(&held)], true, &narrowed, false).unwrap(),
+        Consent::Ask(Ask::Drops)
+    );
 }
 
 fn spec() -> RequestedServiceSpec {
@@ -139,7 +160,7 @@ fn a_rotation_carries_only_versions_that_check_under_the_old_key() {
         versions: vec![statement],
     };
     let carried = verified(
-        &old,
+        (&old, None),
         &namespace("app-prod"),
         &web(),
         &running(version_by(&ci(), &spec())),
@@ -155,8 +176,48 @@ fn a_rotation_carries_only_versions_that_check_under_the_old_key() {
     other.container.image =
         "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222".to_owned();
     for statement in [version_by(&forger, &spec()), version_by(&ci(), &other)] {
-        let refused =
-            verified(&old, &namespace("app-prod"), &web(), &running(statement)).unwrap_err();
+        let refused = verified(
+            (&old, None),
+            &namespace("app-prod"),
+            &web(),
+            &running(statement),
+        )
+        .unwrap_err();
         assert_eq!(refused.report().code, RpcErrorCode::Conflict);
     }
+}
+
+/// A rotation that stopped after its redeploy runs again: what runs carries both keys'
+/// versions now, so nothing is redeployed a second time.
+#[test]
+fn a_rotation_run_again_skips_what_the_new_key_already_signed() {
+    let old = TrustedGrant {
+        grant: production_grant(),
+        approved_by: PasskeyApprover::Unknown,
+    };
+    let fresh = Signer::from_seed(&[4; 32]);
+    let new = TrustedGrant {
+        grant: Grant {
+            key: fresh.public(),
+            ..production_grant()
+        },
+        approved_by: PasskeyApprover::Unknown,
+    };
+    let resigned = Signed::sign(
+        &ServiceVersion {
+            signer: SignerKey::Device(DeviceKey::from(fresh.public())),
+            ..version_by(&ci(), &spec()).open().unwrap()
+        },
+        &fresh,
+    )
+    .unwrap();
+    let running = Running {
+        spec: Box::new(spec()),
+        pin: None,
+        versions: vec![resigned, version_by(&ci(), &spec())],
+    };
+
+    let carried = verified((&old, Some(&new)), &namespace("app-prod"), &web(), &running);
+
+    assert_eq!(carried.unwrap(), None);
 }

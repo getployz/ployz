@@ -19,7 +19,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{ArgAction, ArgMatches, Command, ValueHint};
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, Change, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId,
@@ -114,18 +114,30 @@ pub(super) fn deploy_command(command: Command) -> Command {
 
 /// `--events` and `--detach`, for every command that queues a Deployment and follows it.
 pub(super) fn following(command: Command) -> Command {
-    command
-        .arg(
-            value("events", None)
-                .value_name("FILE")
-                .value_hint(ValueHint::FilePath)
-                .help("Also write progress to FILE as NDJSON"),
-        )
-        .arg(
-            switch("detach", None)
-                .conflicts_with("events")
-                .help("Return the queued Deployment at once instead of following it"),
-        )
+    command.arg(events_arg()).arg(
+        switch("detach", None)
+            .conflicts_with("events")
+            .help("Return the queued Deployment at once instead of following it"),
+    )
+}
+
+/// `--events FILE`, for a command that follows its Deployments to the end.
+pub(super) fn events_arg() -> Arg {
+    value("events", None)
+        .value_name("FILE")
+        .value_hint(ValueHint::FilePath)
+        .help("Also write progress to FILE as NDJSON")
+}
+
+/// Whether the command asked to return a queued Deployment at once. A command without
+/// `--detach`, such as `key rotate`, always follows.
+fn detaches(matches: &ArgMatches) -> bool {
+    matches
+        .try_get_one::<bool>("detach")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false)
 }
 
 /// The [`following`] flags as typed, so a rerun follows (or detaches) the same way.
@@ -581,7 +593,7 @@ pub(super) fn execute(
         }
         Some(_) | None => None,
     };
-    let detached = runner.is_none() && matches.get_flag("detach");
+    let detached = runner.is_none() && detaches(matches);
     let followed = if detached {
         store
             .read(&ployz_store::DeploymentQuery {

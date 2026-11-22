@@ -9985,3 +9985,43 @@ fn a_deployment_that_failed_in_a_service_never_becomes_its_parent() {
         "api never ran the version Deployment 2 failed to start"
     );
 }
+
+/// `ployz key rotate` redeploys what a rotated key signed with the same spec, so only a
+/// forced recreate makes each Server admit the Containers again under the new key.
+#[test]
+fn a_deploy_admitted_to_recreate_hands_its_runner_a_forced_recreate() {
+    let (store, who) = shop();
+    for (n, recreate) in [(1, false), (2, true)] {
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: Vec::new(),
+                    recreate,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        let claimed = store.claim(&id(n), &runner("cli-a")).unwrap();
+        assert_eq!(claimed.intent.options.force_recreate, recreate, "#{n}");
+        store
+            .record(
+                &id(n),
+                &runner("cli-a"),
+                RunEvidence::Prepared(preview(&["web"])),
+            )
+            .unwrap();
+        store
+            .record(&id(n), &runner("cli-a"), succeeded(&["web"]))
+            .unwrap();
+    }
+}
