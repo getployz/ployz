@@ -505,7 +505,7 @@ impl LocalMachineStore {
     /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
     /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
     /// Device the approval lists. A pinned join trusts only the pinned Devices the approval
-    /// names, and no passkey. Anything else is refused and the record stays as it was.
+    /// names, and no passkey or grant. Anything else is refused and the record stays as it was.
     fn member(
         &self,
         registration: Registered,
@@ -518,6 +518,7 @@ impl LocalMachineStore {
             target_versions,
             sealing_key,
             devices: _,
+            grants: _,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -545,8 +546,8 @@ impl LocalMachineStore {
                 },
             ));
         };
-        // A pinned join's body may come through Cloud, which can name a Device or passkey of
-        // its own beside the person's. The install line already runs Cloud's script.
+        // A pinned join's body may come through Cloud, which can name a Device, passkey or
+        // grant of its own beside the person's. The install line already runs Cloud's script.
         let carries_passkeys = pin.is_none();
         let ployz_core::authority::join::JoinerApproval { body, devices } =
             ployz_core::authority::join::verify_as_joiner(
@@ -579,6 +580,16 @@ impl LocalMachineStore {
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
+        let approved_by = match body.signer {
+            ployz_core::authority::SignerKey::Device(signer) => {
+                ployz_core::authority::PasskeyApprover::Device {
+                    code: signer.code(),
+                }
+            }
+            ployz_core::authority::SignerKey::Passkey(_) => {
+                ployz_core::authority::PasskeyApprover::Unknown
+            }
+        };
         let mut approved_passkeys: Vec<ployz_core::authority::TrustedPasskey> = Vec::new();
         for passkey in body.passkeys.iter().filter(|_| carries_passkeys) {
             let code = passkey.code();
@@ -589,19 +600,19 @@ impl LocalMachineStore {
             if !held {
                 approved_passkeys.push(ployz_core::authority::TrustedPasskey {
                     passkey: passkey.clone(),
-                    approved_by: match body.signer {
-                        ployz_core::authority::SignerKey::Device(signer) => {
-                            ployz_core::authority::PasskeyApprover::Device {
-                                code: signer.code(),
-                            }
-                        }
-                        ployz_core::authority::SignerKey::Passkey(_) => {
-                            ployz_core::authority::PasskeyApprover::Unknown
-                        }
-                    },
+                    approved_by,
                 });
             }
         }
+        let approved_grants: Vec<ployz_core::authority::TrustedGrant> = body
+            .grants
+            .iter()
+            .filter(|_| carries_passkeys)
+            .map(|grant| ployz_core::authority::TrustedGrant {
+                grant: grant.clone(),
+                approved_by,
+            })
+            .collect();
         machine.join_approval = Some(approval);
         machine.runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
         Ok((
@@ -612,10 +623,7 @@ impl LocalMachineStore {
             },
             sealing_key,
             floors,
-            ployz_core::authority::TrustedKeys {
-                devices,
-                passkeys: approved_passkeys,
-            },
+            ployz_core::authority::TrustedKeys::new(devices, approved_passkeys, approved_grants),
         ))
     }
 
@@ -657,11 +665,12 @@ impl LocalMachineStore {
                 installed
                     .management_clients
                     .retain(|label, _| !DeviceCode::reserves(label));
-                installed.passkeys = installation.keys.passkeys.clone();
+                installed.passkeys = installation.keys.passkeys().cloned().collect();
+                installed.grants = installation.keys.grants().cloned().collect();
             }
             installed
                 .management_clients
-                .extend(installation.keys.devices.iter().map(|&key| {
+                .extend(installation.keys.devices().map(|key| {
                     (
                         key.label(),
                         ManagementClientSlot::Live(LiveSlot::Active {
@@ -858,8 +867,8 @@ impl LocalMachineStore {
     /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed, and a storage
     /// error if the updated record cannot be saved atomically.
     pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
-        if self.record.removes_key(&KeyRef::Device { key }) {
-            return Err(StoreError::KeyRemoved(KeyRef::Device { key }));
+        if self.record.removes_key(&KeyRef::Signing { key }) {
+            return Err(StoreError::KeyRemoved(KeyRef::Signing { key }));
         }
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
@@ -874,7 +883,7 @@ impl LocalMachineStore {
     }
 
     /// Remove the key `code` names, as [`Self::remove_key`] does: the Device its slot holds,
-    /// or the trusted passkey with that code. Returns whether either held it.
+    /// or the trusted passkey or grant with that code. Returns whether any held it.
     ///
     /// # Errors
     /// Returns [`StoreError::AmbiguousCode`] when `code` names more than one key here, and
@@ -885,7 +894,7 @@ impl LocalMachineStore {
             .management_clients
             .get(&code.label())
             .and_then(|slot| slot.accepted())
-            .map(|accepted| KeyRef::Device {
+            .map(|accepted| KeyRef::Signing {
                 key: DeviceKey::from_bytes(*accepted.as_bytes()),
             });
         let passkeys = self
@@ -896,7 +905,16 @@ impl LocalMachineStore {
             .map(|held| KeyRef::Passkey {
                 key: held.passkey.public_key,
             });
-        let named: Vec<KeyRef> = device.into_iter().chain(passkeys).collect();
+        let grants = self
+            .record
+            .grants
+            .iter()
+            .filter(|held| held.grant.key.code() == code)
+            .map(|held| KeyRef::Signing {
+                key: held.grant.key.into(),
+            });
+        let mut named: Vec<KeyRef> = device.into_iter().chain(passkeys).chain(grants).collect();
+        named.dedup();
         match named.as_slice() {
             [] => Ok(false),
             [key] => self.remove_key(*key),
@@ -905,23 +923,28 @@ impl LocalMachineStore {
     }
 
     /// Stop trusting `key` for good, in one write: drop it from the trusted keys, clearing a
-    /// Device's slot, and add it to the removed keys, so no later approval trusts it here
-    /// again. A key this Machine never trusted is still marked removed. Returns whether it
-    /// was trusted.
+    /// Device's slot or dropping a grant, and add it to the removed keys, so no later
+    /// approval trusts it here again. A key this Machine never trusted is still marked
+    /// removed. Returns whether it was trusted.
     ///
     /// # Errors
-    /// Returns [`StoreError::LastKey`] when `key` is the only key this Machine trusts, and a
-    /// storage error if the updated record cannot be saved atomically.
+    /// Returns [`StoreError::LastKey`] when `key` is the last person's or full CLI key this
+    /// Machine trusts, which alone change keys, and a storage error if the updated record
+    /// cannot be saved atomically.
     pub fn remove_key(&mut self, key: KeyRef) -> Result<bool, StoreError> {
         let trusted = self.record.trusted_keys();
-        let held = match key {
-            KeyRef::Device { key } => trusted.devices.contains(&key),
-            KeyRef::Passkey { key } => trusted
-                .passkeys
-                .iter()
-                .any(|held| held.passkey.public_key == key),
+        let holds = |held: &ployz_core::authority::TrustedKey| match (key, held) {
+            (KeyRef::Signing { key }, _) => held.signing_key() == Some(key.into()),
+            (KeyRef::Passkey { key }, ployz_core::authority::TrustedKey::Passkey(passkey)) => {
+                passkey.passkey.public_key == key
+            }
+            (KeyRef::Passkey { .. }, _) => false,
         };
-        if held && trusted.devices.len() + trusted.passkeys.len() == 1 {
+        let held = trusted.keys().any(holds);
+        let whole_cluster = |held: &&ployz_core::authority::TrustedKey| held.kind().whole_cluster();
+        if trusted.keys().filter(whole_cluster).any(holds)
+            && trusted.keys().filter(whole_cluster).count() == 1
+        {
             return Err(StoreError::LastKey(key.code()));
         }
         self.commit_if_changed(|record| {
@@ -929,7 +952,8 @@ impl LocalMachineStore {
                 record.removed_keys.push(key);
             }
             match key {
-                KeyRef::Device { key } => {
+                KeyRef::Signing { key } => {
+                    record.grants.retain(|held| held.grant.key != key.into());
                     let label = key.label();
                     if let Some(was) = record
                         .management_clients
@@ -978,6 +1002,54 @@ impl LocalMachineStore {
                 record.passkeys.push(trusted);
             }
             Ok(!held)
+        })
+    }
+
+    /// Trust `trusted` as a CI or agent key, or edit the grant it holds as the same kind
+    /// when `trusted` was issued after it: its scope and Volumes become the new ones, so a
+    /// narrowing lands the same way. An older or equal issue time changes nothing, so an
+    /// older and wider step can't be replayed. Returns whether the record changed.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed,
+    /// [`StoreError::GrantKind`] for a key granted here as the other kind, and a storage
+    /// error if the updated record cannot be saved atomically.
+    pub fn approve_grant(
+        &mut self,
+        trusted: ployz_core::authority::TrustedGrant,
+    ) -> Result<bool, StoreError> {
+        let removed = KeyRef::Signing {
+            key: trusted.grant.key.into(),
+        };
+        if self.record.removes_key(&removed) {
+            return Err(StoreError::KeyRemoved(removed));
+        }
+        if let Some(held) = self.record.grants.iter().find(|held| {
+            held.grant.key == trusted.grant.key && held.grant.kind != trusted.grant.kind
+        }) {
+            return Err(StoreError::GrantKind {
+                code: held.grant.key.code(),
+                held: held.grant.kind.into(),
+            });
+        }
+        self.commit_if_changed(|record| {
+            match record
+                .grants
+                .iter_mut()
+                .find(|held| held.grant.key == trusted.grant.key)
+            {
+                Some(held) if held.grant.issued_at < trusted.grant.issued_at => {
+                    held.grant.scope = trusted.grant.scope;
+                    held.grant.volumes = trusted.grant.volumes;
+                    held.grant.issued_at = trusted.grant.issued_at;
+                    Ok(true)
+                }
+                Some(_) => Ok(false),
+                None => {
+                    record.grants.push(trusted);
+                    Ok(true)
+                }
+            }
         })
     }
 
@@ -1140,11 +1212,9 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
 
 /// Mixed-version handling, deletable once no Machine runs a record from before Devices
 /// were Full-only. Until then a daemon accepted any label from any Management Client, so
-/// Cloud could write a `device-<code>` slot that [`ManagementScope::of`] now reads as
-/// Full. The first open by this daemon tombstones every live `device-` slot and marks
+/// Cloud could write a `device-<code>` slot that [`LocalMachineRecord::management_scope`]
+/// now reads as Full. The first open by this daemon tombstones every live `device-` slot and marks
 /// the record vetted in the same write, so Devices approved afterwards stay approved.
-///
-/// [`ManagementScope::of`]: ployz_core::ManagementScope::of
 fn vet_device_slots(
     data_dir: &Path,
     mut record: LocalMachineRecord,
@@ -1225,7 +1295,7 @@ fn display_data_directory(path: &Path) -> String {
 
 fn removed_key_text(key: &KeyRef) -> String {
     match key {
-        KeyRef::Device { key } => format!(
+        KeyRef::Signing { key } => format!(
             "Device {} was removed from this Server for good. To trust that computer again, delete its device.key and run: ployz device approve --this-device --connect ssh://root@HOST",
             key.code()
         ),
@@ -1242,8 +1312,15 @@ pub enum StoreError {
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{}", removed_key_text(.0))]
     KeyRemoved(KeyRef),
-    #[error("Key {0} is the last key this Server trusts. Approve another key first.")]
+    #[error(
+        "Key {0} is the last person's or full CLI key this Server trusts. Approve another first."
+    )]
     LastKey(DeviceCode),
+    #[error("Key {code} is already a {held} key on this Server. Remove it first.")]
+    GrantKind {
+        code: DeviceCode,
+        held: ployz_core::authority::KeyKind,
+    },
     #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
     AmbiguousCode(DeviceCode),
     #[error("local Machine record I/O failed")]
@@ -1657,6 +1734,40 @@ mod device_slot_tests {
         );
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
         LocalMachineStore::open(dir.path().join("data")).unwrap()
+    }
+
+    /// A Device slot an older daemon approved, after a downgrade, for a key this record
+    /// also holds as a CI grant.
+    #[test]
+    fn a_device_slot_whose_key_a_ci_grant_holds_is_not_full() {
+        let (dir, store) = founded();
+        drop(store);
+        let path = dir.path().join("data").join(STATE_FILE_NAME);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().insert(
+            "grants".to_owned(),
+            serde_json::json!([{
+                "grant": {
+                    "key": ployz_core::authority::SigningPublicKey::from(key()),
+                    "kind": "ci",
+                    "scope": {"caps": ["spec"], "places": "cluster"},
+                    "issued_at": 1,
+                },
+                "approved_by": {"by": "server"},
+            }]),
+        );
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+
+        let record = store.record();
+        assert_eq!(record.grants().len(), 1);
+        assert_eq!(
+            record.management_scope(&key().into()),
+            Some(ManagementScope::Operator)
+        );
+        assert_eq!(record.devices().count(), 0);
     }
 
     #[test]

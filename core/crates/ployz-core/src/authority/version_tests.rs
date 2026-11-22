@@ -61,13 +61,13 @@ fn signed(by: &Signer, body: &ServiceVersion) -> Signed<ServiceVersion> {
 }
 
 fn trusting(signers: &[&Signer]) -> TrustedKeys {
-    TrustedKeys {
-        devices: signers
+    TrustedKeys::new(
+        signers
             .iter()
-            .map(|signer| signer.public().into())
-            .collect(),
-        passkeys: Vec::new(),
-    }
+            .map(|signer| crate::DeviceKey::from(signer.public())),
+        [],
+        [],
+    )
 }
 
 fn check(
@@ -105,7 +105,7 @@ fn a_version_admits_its_spec_on_any_machine_that_trusts_its_signer() {
 
     assert_eq!(
         approvers(&admitted),
-        vec![Approver::Device(device.public())]
+        vec![Approver::Signing(device.public())]
     );
 }
 
@@ -208,7 +208,7 @@ fn eight_versions_by_removed_signers_cost_nothing_beside_a_trusted_ninth() {
 
     let admitted = check(&versions, &trusting(&[&kept]), &resolved(&spec)).unwrap();
 
-    assert_eq!(approvers(&admitted), vec![Approver::Device(kept.public())]);
+    assert_eq!(approvers(&admitted), vec![Approver::Signing(kept.public())]);
 }
 
 #[test]
@@ -280,7 +280,7 @@ fn nine_trusted_passkeys_under_one_credential_cost_nine_verifications() {
             trusted.passkey.credential_id = credential.clone();
             trusted
         })
-        .collect();
+        .collect::<Vec<_>>();
     let mut version = Signed::unsigned(&body(&device, &spec)).unwrap();
     version.assertions.push(PasskeyAssertion {
         credential_id: credential,
@@ -288,10 +288,7 @@ fn nine_trusted_passkeys_under_one_credential_cost_nine_verifications() {
         client_data_json: Base64Url::new(b"{}".to_vec()),
         signature: Base64Url::new(vec![0; 64]),
     });
-    let trusted = TrustedKeys {
-        devices: Vec::new(),
-        passkeys,
-    };
+    let trusted = TrustedKeys::new(Vec::new(), passkeys, []);
 
     assert_eq!(
         check(&[version], &trusted, &resolved(&spec)),

@@ -625,7 +625,7 @@ fn stranger_removal(machine: &Enforcing) -> Value {
             .unwrap()
             .public_key(),
         change: KeyChange::Remove {
-            key: KeyRef::Device {
+            key: KeyRef::Signing {
                 key: DeviceKey::from(Signer::from_seed(&[7; 32]).public()),
             },
         },
@@ -673,6 +673,7 @@ fn stranger_join(machine: &Enforcing) -> Value {
         expires_at: Timestamp::now().plus(60_000),
         signer: DeviceKey::from(stranger.public()).into(),
         proposal: None,
+        grants: Vec::new(),
     };
     serde_json::to_value(Signed::sign(&approval, &stranger).unwrap()).unwrap()
 }

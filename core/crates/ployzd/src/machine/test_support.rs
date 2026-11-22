@@ -77,6 +77,7 @@ impl ApprovingCluster {
             expires_at: issued_at.plus(60_000),
             signer: self.device().into(),
             proposal: None,
+            grants: Vec::new(),
         }
     }
 
@@ -102,6 +103,7 @@ impl ApprovingCluster {
             target_versions: [("actor".into(), 4)].into(),
             sealing_key: Some(sealed.unwrap()),
             devices: Vec::new(),
+            grants: Vec::new(),
         }
     }
 

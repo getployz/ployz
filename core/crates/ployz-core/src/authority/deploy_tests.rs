@@ -142,13 +142,13 @@ struct Machine {
 impl Machine {
     fn new(devices: &[&Signer]) -> Self {
         Self {
-            trusted: TrustedKeys {
-                devices: devices
+            trusted: TrustedKeys::new(
+                devices
                     .iter()
-                    .map(|signer| signer.public().into())
-                    .collect(),
-                passkeys: Vec::new(),
-            },
+                    .map(|signer| crate::DeviceKey::from(signer.public())),
+                [],
+                [],
+            ),
             namespace: namespace(),
         }
     }
@@ -207,7 +207,10 @@ fn the_approved_spec_verifies_with_its_digest() {
         approved.digest,
         PayloadDigest::of(&requested(requested_json()), &namespace()).unwrap()
     );
-    assert_eq!(approvers(&approved), [Approver::Device(signer(1).public())]);
+    assert_eq!(
+        approvers(&approved),
+        [Approver::Signing(signer(1).public())]
+    );
 }
 
 #[test]
@@ -924,7 +927,7 @@ fn a_deploy_step_whose_body_matches_its_digest_creates() {
     let signer = signer(1);
     let (step, bundle) = deploy_proposal(&signer, |_| {});
     let approved = verify_step(&step, &bundle, &signer).unwrap();
-    assert_eq!(approvers(&approved), [Approver::Device(signer.public())]);
+    assert_eq!(approvers(&approved), [Approver::Signing(signer.public())]);
 }
 
 #[test]

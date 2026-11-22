@@ -244,6 +244,11 @@ pub struct Registered {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
     pub devices: Vec<crate::DeviceKey>,
+    /// The issuer's CI and agent keys, for a person to read. A joiner trusts only the
+    /// grants its signed join approval carries, never these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<crate::authority::Grant>>")]
+    pub grants: Vec<crate::authority::Grant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

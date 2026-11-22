@@ -196,6 +196,13 @@ pub enum Error {
     DeviceIsPasskey(DeviceCode),
     #[error("passkey {held} already holds this passkey's credential ID")]
     CredentialHeld { held: DeviceCode },
+    /// A key one kind holds is never trusted as another, so a CI or agent key never reads
+    /// as a Device or passkey.
+    #[error("key {code} is already trusted here as a {held} key")]
+    KeyHeld {
+        code: DeviceCode,
+        held: ployz_core::authority::KeyKind,
+    },
     #[error("This Server refused the key change: {0}")]
     KeyRefused(ployz_core::authority::AuthorityRefusal),
     /// No version of a forget opened here. The refusal names
@@ -778,6 +785,7 @@ impl LocalMachine {
             devices: record.devices().collect(),
             removed_keys: record.removed_keys().to_vec(),
             passkeys: record.passkeys().to_vec(),
+            grants: record.grants().to_vec(),
             founding: record.founding(),
             telemetry,
             storage,
@@ -1138,6 +1146,11 @@ impl LocalMachine {
             snapshot.target_versions,
             sealing_key,
             self.record().devices().collect(),
+            self.record()
+                .grants()
+                .iter()
+                .map(|held| held.grant.clone())
+                .collect(),
         );
         self.consume_join(
             fresh,
@@ -1564,6 +1577,7 @@ fn registered(
     target_versions: BTreeMap<String, i64>,
     sealing_key: Option<ployz_core::SealedSealingKey>,
     devices: Vec<ployz_core::DeviceKey>,
+    grants: Vec<ployz_core::authority::Grant>,
 ) -> Registered {
     let assigned_id = assigned_machine.id;
     Registered {
@@ -1575,6 +1589,7 @@ fn registered(
         target_versions,
         sealing_key,
         devices,
+        grants,
     }
 }
 

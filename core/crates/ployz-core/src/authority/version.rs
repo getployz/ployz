@@ -15,6 +15,7 @@ use super::{
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
+    scope::Ask,
     trusted_key::TrustedKeys,
 };
 use crate::{ContainerKind, Namespace, QualifiedService, SealingPublicKey, ServiceName};
@@ -60,6 +61,13 @@ impl StepBody for ServiceVersion {
     }
     fn namespace(&self) -> Option<&Namespace> {
         Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Version {
+            namespace: &self.namespace,
+            service: &self.service,
+            forgets: self.forget_older,
+        }
     }
 }
 
@@ -316,8 +324,7 @@ fn envelope_verifications<T>(signed: &Signed<T>, trusted: &TrustedKeys) -> usize
         .iter()
         .map(|assertion| {
             trusted
-                .passkeys
-                .iter()
+                .passkeys()
                 .filter(|passkey| passkey.passkey.credential_id == assertion.credential_id)
                 .count()
         })

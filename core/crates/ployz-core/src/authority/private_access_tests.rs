@@ -25,13 +25,14 @@ fn at(millis: u64) -> Timestamp {
 }
 
 fn trusted(passkey: &Authenticator) -> TrustedKeys {
-    TrustedKeys {
-        devices: vec![DeviceKey::from(device().public())],
-        passkeys: vec![TrustedPasskey {
+    TrustedKeys::new(
+        vec![DeviceKey::from(device().public())],
+        vec![TrustedPasskey {
             passkey: passkey.passkey(),
             approved_by: PasskeyApprover::Server,
         }],
-    }
+        [],
+    )
 }
 
 fn approval(signer: SignerKey) -> PrivateAccessApproval {
@@ -87,7 +88,7 @@ fn a_device_or_a_passkeys_own_prompt_approves_the_key_it_names() {
     let trusted = trusted(&passkey);
     assert_eq!(
         check(&by_device(), &trusted, &sealed()),
-        Ok(Approver::Device(device().public()))
+        Ok(Approver::Signing(device().public()))
     );
     assert_eq!(
         check(&by_passkey(&passkey), &trusted, &sealed()),
@@ -160,8 +161,11 @@ fn an_unknown_signer_or_passkey_is_refused() {
 fn the_device_the_body_names_approves_whatever_order_its_signature_comes_in() {
     let passkey = Authenticator::es256(4);
     let other = Signer::from_seed(&[8; 32]);
-    let mut trusted = trusted(&passkey);
-    trusted.devices.push(DeviceKey::from(other.public()));
+    let trusted = TrustedKeys::new(
+        [device().public().into(), DeviceKey::from(other.public())],
+        trusted(&passkey).passkeys().cloned(),
+        [],
+    );
     let mut signed = Signed::sign(
         &approval(SignerKey::Device(device().public().into())),
         &device(),
@@ -171,7 +175,7 @@ fn the_device_the_body_names_approves_whatever_order_its_signature_comes_in() {
     signed.signatures.splice(0..0, theirs.signatures);
     assert_eq!(
         check(&KeyApproval::Signed(signed), &trusted, &sealed()),
-        Ok(Approver::Device(device().public()))
+        Ok(Approver::Signing(device().public()))
     );
 }
 

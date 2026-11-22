@@ -1,6 +1,7 @@
-//! The keys a Machine trusts: its Devices, which manage it and sign statements, and its
-//! passkeys, which may only approve workflows, automatic deploy rules, Volume workflows,
-//! Release Channels, and bundles, whose steps include joins and key changes.
+//! The keys a Machine trusts: its Devices, which manage it and sign statements, its
+//! passkeys, which approve workflows, automatic deploy rules and bundles, whose steps
+//! include joins and key changes, and its CI and agent grants, which sign Service versions
+//! inside their scope.
 //!
 //! A passkey is not a Device. It never holds a Management Client slot, so it never opens a
 //! connection, and it never signs a statement's envelope. A Machine records one only from a
@@ -15,8 +16,11 @@ use sha2::{Digest, Sha256};
 use ts_rs::TS;
 use url::Url;
 
-use super::{AuthorityRefusal, Purpose, SigningPublicKey};
-use crate::{CheckCode, DeviceCode, DeviceKey, ValueError};
+use super::{
+    Approver, AuthorityRefusal, SigningPublicKey,
+    scope::{Ask, KeyKind, KeyScope, TrustedGrant},
+};
+use crate::{CheckCode, ClientKey, DeviceCode, DeviceKey, ValueError};
 
 /// A passkey's public key: a P-256 point for ES256, or an Ed25519 key for EdDSA.
 #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -474,48 +478,188 @@ pub fn readable_passkeys<'de, D: Deserializer<'de>>(
         .collect())
 }
 
-/// Every key one Machine trusts, read from its own record and nothing Cloud wrote.
+/// One key this Machine trusts, from the source in its record that holds it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrustedKey {
+    /// A Device, which reads as a full CLI key over the whole Cluster.
+    Device(DeviceKey),
+    /// A passkey, which reads as a person's key over the whole Cluster.
+    Passkey(TrustedPasskey),
+    /// A CI or agent key, which holds the scope its grant names.
+    Grant(TrustedGrant),
+}
+
+impl TrustedKey {
+    #[must_use]
+    pub fn kind(&self) -> KeyKind {
+        match self {
+            Self::Device(_) => KeyKind::FullCli,
+            Self::Passkey(_) => KeyKind::Person,
+            Self::Grant(held) => held.grant.kind.into(),
+        }
+    }
+
+    /// The scope a grant names. `None` for a Device or passkey, which hold their kind's
+    /// ceiling over the whole Cluster.
+    #[must_use]
+    pub fn scope(&self) -> Option<&KeyScope> {
+        match self {
+            Self::Grant(held) => Some(&held.grant.scope),
+            Self::Device(_) | Self::Passkey(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn code(&self) -> DeviceCode {
+        match self {
+            Self::Device(key) => key.code(),
+            Self::Passkey(held) => held.passkey.code(),
+            Self::Grant(held) => held.grant.key.code(),
+        }
+    }
+
+    /// The Ed25519 key that signs a statement's envelope. A passkey signs none.
+    #[must_use]
+    pub fn signing_key(&self) -> Option<SigningPublicKey> {
+        match self {
+            Self::Device(key) => Some((*key).into()),
+            Self::Grant(held) => Some(held.grant.key),
+            Self::Passkey(_) => None,
+        }
+    }
+
+    fn approves_as(&self, by: &Approver) -> bool {
+        match (self, by) {
+            (Self::Device(_) | Self::Grant(_), Approver::Signing(key)) => {
+                self.signing_key() == Some(*key)
+            }
+            (Self::Passkey(held), Approver::Passkey(code)) => held.passkey.code() == *code,
+            _ => false,
+        }
+    }
+}
+
+/// Every key one Machine trusts, read from its own record and nothing Cloud wrote: its
+/// Devices, its passkeys and its grants, as one list.
 #[derive(Clone, Debug, Default)]
 pub struct TrustedKeys {
-    pub devices: Vec<DeviceKey>,
-    pub passkeys: Vec<TrustedPasskey>,
+    keys: Vec<TrustedKey>,
 }
 
 impl TrustedKeys {
-    /// The keys whose signatures a statement's envelope may carry. Only Devices sign; a
-    /// passkey whose key happens to be Ed25519 is not among them.
-    pub fn signing_keys(&self) -> impl Iterator<Item = SigningPublicKey> + '_ {
-        self.devices.iter().copied().map(SigningPublicKey::from)
+    /// The keys of three sources as one list. A Device whose key a grant also holds is
+    /// left out, so that key never reads wider than its grant.
+    #[must_use]
+    pub fn new(
+        devices: impl IntoIterator<Item = DeviceKey>,
+        passkeys: impl IntoIterator<Item = TrustedPasskey>,
+        grants: impl IntoIterator<Item = TrustedGrant>,
+    ) -> Self {
+        let grants: Vec<TrustedGrant> = grants.into_iter().collect();
+        let devices: Vec<TrustedKey> = devices
+            .into_iter()
+            .filter(|device| {
+                !grants
+                    .iter()
+                    .any(|held| held.grant.key == SigningPublicKey::from(*device))
+            })
+            .map(TrustedKey::Device)
+            .collect();
+        Self {
+            keys: devices
+                .into_iter()
+                .chain(passkeys.into_iter().map(TrustedKey::Passkey))
+                .chain(grants.into_iter().map(TrustedKey::Grant))
+                .collect(),
+        }
     }
 
-    /// The trusted passkey that answered `assertion` to `challenge`, when a statement of
-    /// `purpose` may rest on a passkey at all: a rule, and the Private Access key approval,
-    /// which signs as a workflow.
-    ///
-    /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
-    /// under it is tried and only a verifying signature picks one.
+    pub fn keys(&self) -> impl Iterator<Item = &TrustedKey> {
+        self.keys.iter()
+    }
+
+    pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
+        self.keys.iter().filter_map(|key| match key {
+            TrustedKey::Device(device) => Some(*device),
+            TrustedKey::Passkey(_) | TrustedKey::Grant(_) => None,
+        })
+    }
+
+    pub fn passkeys(&self) -> impl Iterator<Item = &TrustedPasskey> {
+        self.keys.iter().filter_map(|key| match key {
+            TrustedKey::Passkey(held) => Some(held),
+            TrustedKey::Device(_) | TrustedKey::Grant(_) => None,
+        })
+    }
+
+    pub fn grants(&self) -> impl Iterator<Item = &TrustedGrant> {
+        self.keys.iter().filter_map(|key| match key {
+            TrustedKey::Grant(held) => Some(held),
+            TrustedKey::Device(_) | TrustedKey::Passkey(_) => None,
+        })
+    }
+
+    /// The keys whose signatures a statement's envelope may carry: Devices and grants. A
+    /// passkey whose key happens to be Ed25519 is not among them.
+    pub fn signing_keys(&self) -> impl Iterator<Item = SigningPublicKey> + '_ {
+        self.keys.iter().filter_map(TrustedKey::signing_key)
+    }
+
+    /// Whether the key behind a connection is a full CLI key on this list. Only such a
+    /// key's own connection is Full.
+    #[must_use]
+    pub fn full(&self, remote: &ClientKey) -> bool {
+        self.devices()
+            .any(|device| ClientKey::from(device) == *remote)
+    }
+
+    /// The trusted key that approved as `by`.
+    #[must_use]
+    pub fn of(&self, by: &Approver) -> Option<&TrustedKey> {
+        self.keys.iter().find(|key| key.approves_as(by))
+    }
+
+    /// Whether `by` may approve what `ask` asks: its kind signs such a statement, its
+    /// scope holds the cap, and its places hold the target. This is the one check of what a
+    /// key may approve.
     ///
     /// # Errors
-    /// Returns [`AuthorityRefusal::ApproveOnly`] for a join,
-    /// [`AuthorityRefusal::UnknownPasskey`] when no trusted passkey has the assertion's
-    /// credential, and the first candidate's refusal when none verifies.
+    /// Returns [`AuthorityRefusal::UnknownKey`] or [`AuthorityRefusal::UnknownPasskey`]
+    /// when `by` is no key on this list, and [`AuthorityRefusal::OutOfScope`] when its kind
+    /// or scope doesn't reach.
+    pub fn covers(&self, by: &Approver, ask: Ask<'_>) -> Result<(), AuthorityRefusal> {
+        let key = self.of(by).ok_or(match by {
+            Approver::Signing(key) => AuthorityRefusal::UnknownKey { key: *key },
+            Approver::Passkey(_) => AuthorityRefusal::UnknownPasskey,
+        })?;
+        if super::scope::allows(key.kind(), key.scope(), ask) {
+            return Ok(());
+        }
+        Err(AuthorityRefusal::OutOfScope {
+            code: key.code(),
+            kind: key.kind(),
+            what: ask.what(),
+        })
+    }
+
+    /// The trusted passkey that answered `assertion` to `challenge`.
+    ///
+    /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
+    /// under it is tried and only a verifying signature picks one. What the passkey may
+    /// approve is [`Self::covers`]'s to say.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::UnknownPasskey`] when no trusted passkey has the
+    /// assertion's credential, and the first candidate's refusal when none verifies.
     pub fn passkey_approval(
         &self,
-        purpose: Purpose,
         assertion: &PasskeyAssertion,
         challenge: &[u8],
     ) -> Result<&TrustedPasskey, AuthorityRefusal> {
         let mut candidates = self
-            .passkeys
-            .iter()
+            .passkeys()
             .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
         let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
-        if !matches!(purpose, Purpose::Workflow | Purpose::Rule) {
-            return Err(AuthorityRefusal::ApproveOnly {
-                code: first.passkey.code(),
-                purpose,
-            });
-        }
         let refusal = match first.passkey.verify_assertion(assertion, challenge) {
             Ok(()) => return Ok(first),
             Err(refusal) => refusal,

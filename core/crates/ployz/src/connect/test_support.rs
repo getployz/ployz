@@ -308,6 +308,7 @@ pub(crate) async fn sealed_channel(
                 upgrade: None,
                 sealing,
                 token: None,
+                grants: Vec::new(),
             })
         } else {
             panic!("a Cluster check asks only for confirmation and Inspect")

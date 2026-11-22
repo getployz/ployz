@@ -663,7 +663,7 @@ One named holder slot on a Machine, such as `cloud`, a signed-in computer's `cli
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Scope**:
-What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+What a Management Client may do on a Machine, read from its slot and the Machine's Trusted Keys at each call: an accepted Device slot holding the key its label names, and that no Grant holds, is Full; every other slot, a pending key, `cloud` and `cli-<id>` included, is Operator. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
 _Avoid_: role, permission level, access tier
 
 **Device**:
@@ -673,6 +673,18 @@ _Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Clien
 **Passkey**:
 A person's browser WebAuthn credential a Machine trusts to approve Workflows, and automatic deploy rules through a prompt of its own, and nothing else: it opens no connection, signs no envelope, and manages no Device. A session grant it signed never approves a rule, which stands for every future push. It is named like a Device, by the code of its public key, and only a Full caller adds or removes it on each Machine, which records who approved it. Cloud files a registered passkey under its code, but that row makes no Machine trust it.
 _Avoid_: passkey login, passkey Device, approved row
+
+**Trusted Key**:
+One key a Machine trusts, read from its own record as one list: a Device reads as a full CLI key, a Passkey as a person's key, both over the whole Cluster, and a Grant as a CI or agent key. Its kind and Key Scope say what it may approve, and one check, `TrustedKeys::covers`, decides that for every signed statement.
+_Avoid_: approver list, roster, key role
+
+**Key Scope**:
+What a Trusted Key may do and where: its caps (Spec, HostReach, Exec, Key, Join) within its kind's ceiling, and its places, the whole Cluster or a list of an Environment's UUID and Namespace with an optional Service by authored ID and name. A person's and a full CLI key always hold their ceiling over the whole Cluster. A CI or agent key holds at most Spec, and an agent key never the whole Cluster.
+_Avoid_: permission, role, ACL
+
+**Grant**:
+A CI or agent key a person trusted through a signed Key step, with its Key Scope, the Volumes it may mount by origin and name, and the issue time of the bundle that set them; only a newer bundle edits it. It signs Service versions inside its places and nothing else, holds no Management Client slot, and never shares its key with a Device or Passkey. A joining Machine takes Grants only from its signed join approval, each exactly as the admitting Machine holds it.
+_Avoid_: CI Device, token, deploy key
 
 **Management Proof**:
 A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.

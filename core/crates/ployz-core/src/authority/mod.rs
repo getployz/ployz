@@ -3,7 +3,8 @@
 //! Cloud carries these but cannot mint them: a Machine checks the signature against the
 //! keys it trusts, checks every bound field against the request in hand, and keeps
 //! its own record of what it already acted on. Joins, key changes, signed versions and
-//! automatic deploy rules each have a statement type here. A proposal signs an ordered plan
+//! automatic deploy rules each have a statement type here, and [`TrustedKeys::covers`] says
+//! which trusted key may sign each. A proposal signs an ordered plan
 //! of steps once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod admission;
@@ -20,6 +21,7 @@ pub mod proposal;
 pub mod refusal;
 pub mod rule;
 pub mod rule_draft;
+pub mod scope;
 pub mod shown;
 pub mod trusted_key;
 pub mod validity;
@@ -30,7 +32,7 @@ pub use birth::{BirthError, Births, Mounts, PlannedVolume, PlannedVolumes};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member};
-pub use key::{KeyChange, KeyFacts, KeyMember, KeyRef, KeyStep, NewKey};
+pub use key::{KeyChange, KeyFacts, KeyMember, KeyRef, KeyStep, KeyVerified, NewKey};
 pub use keys::{
     Approver, KeySignature, OwnPrompt, Purpose, Signed, Signer, SignerKey, SigningPublicKey,
     Statement,
@@ -47,8 +49,12 @@ pub use rule::{
     RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest, VerifiedBuild,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
+pub use scope::{
+    Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyPlace, KeyPlaces, KeyScope,
+    PlaceService, TrustedGrant,
+};
 pub use trusted_key::{
-    Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
-    TrustedPasskey,
+    Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKey,
+    TrustedKeys, TrustedPasskey,
 };
 pub use version::{Budget, ServiceVersion, VersionAdmitted, VersionFacts};

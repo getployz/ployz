@@ -126,6 +126,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     token: None,
                                     sealing: None,
                                     founding: Default::default(),
+                                    grants: Vec::new(),
                                 })
                             }
                             RpcRequestBody::ListContainers(_) => {
@@ -263,6 +264,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 token: None,
                                 sealing: None,
                                 founding: Default::default(),
+                                grants: Vec::new(),
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
@@ -474,6 +476,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             token: None,
                             sealing: None,
                             founding: Default::default(),
+                            grants: Vec::new(),
                         }),
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
@@ -635,6 +638,7 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 token: None,
                                 sealing: None,
                                 founding: Default::default(),
+                                grants: Vec::new(),
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
@@ -912,6 +916,7 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                         token: None,
                         sealing: None,
                         founding: Default::default(),
+                        grants: Vec::new(),
                     }),
                     RpcRequestBody::EnsureContainer(ensure) => {
                         let mut current = current.lock().unwrap();
@@ -1118,6 +1123,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             token: None,
                             sealing: None,
                             founding: Default::default(),
+                            grants: Vec::new(),
                         }),
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: Vec::new(),
@@ -1293,6 +1299,7 @@ async fn catch_up_beside_doors(role: bool) -> BesideDoors {
                         token: None,
                         sealing: None,
                         founding: Default::default(),
+                        grants: Vec::new(),
                     }),
                     RpcRequestBody::SetIngressDoors(request) => {
                         asked.lock().unwrap().push(request);
