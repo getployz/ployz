@@ -75,23 +75,35 @@ impl Stage {
     }
 }
 
-/// One Service's operations and the Services it starts after.
+/// Operations that run together, and what they wait for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceGroup {
-    /// `None` with no dependencies is a prelude every Service waits for, such
-    /// as Volume preparation; `None` with dependencies is the namespace tail.
-    pub service: Option<ServiceName>,
-    pub dependencies: Vec<ServiceName>,
+    pub role: GroupRole,
     pub steps: Vec<Stage>,
-    /// Flip this Service's pointer once its steps complete. A group without a
-    /// Service never publishes.
-    pub publish: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupRole {
+    /// Work every other group waits for, such as Volume preparation.
+    Prelude,
+    /// One Service's operations, started after the Services it depends on.
+    Service {
+        service: ServiceName,
+        dependencies: Vec<ServiceName>,
+        /// Flip the Service's pointer once its steps complete.
+        publish: bool,
+    },
+    /// The removals of the old copies a Service's rollout replaced, run once
+    /// that Service is published.
+    Removals(ServiceName),
+    /// The namespace's removals, run after each of these Services.
+    Tail(Vec<ServiceName>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Action {
     Start(usize),
-    Publish(usize),
+    Publish(usize, ServiceName),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,17 +154,52 @@ pub(crate) struct Schedule {
 }
 
 impl ServiceGroup {
-    fn is_prelude(&self) -> bool {
-        self.service.is_none() && self.dependencies.is_empty()
+    /// The Service whose operations these are; none for a group that only
+    /// prepares or removes.
+    #[must_use]
+    pub fn service(&self) -> Option<&ServiceName> {
+        match &self.role {
+            GroupRole::Service { service, .. } => Some(service),
+            GroupRole::Prelude | GroupRole::Removals(_) | GroupRole::Tail(_) => None,
+        }
     }
 
-    fn changes_its_service(&self) -> bool {
-        self.publish || !self.steps.is_empty()
+    /// The Services this group starts after.
+    #[must_use]
+    pub fn dependencies(&self) -> &[ServiceName] {
+        match &self.role {
+            GroupRole::Prelude => &[],
+            GroupRole::Service { dependencies, .. } | GroupRole::Tail(dependencies) => dependencies,
+            GroupRole::Removals(service) => std::slice::from_ref(service),
+        }
     }
 
     /// The Service whose pointer this group flips, if any.
     pub(crate) fn publishing_service(&self) -> Option<&ServiceName> {
-        self.publish.then_some(self.service.as_ref()).flatten()
+        match &self.role {
+            GroupRole::Service {
+                service,
+                publish: true,
+                ..
+            } => Some(service),
+            GroupRole::Service { publish: false, .. }
+            | GroupRole::Prelude
+            | GroupRole::Removals(_)
+            | GroupRole::Tail(_) => None,
+        }
+    }
+
+    /// The Service whose outcome this group decides: one it changes or flips.
+    fn changed_service(&self) -> Option<&ServiceName> {
+        match &self.role {
+            GroupRole::Service {
+                service, publish, ..
+            } if *publish || !self.steps.is_empty() => Some(service),
+            GroupRole::Service { .. }
+            | GroupRole::Prelude
+            | GroupRole::Removals(_)
+            | GroupRole::Tail(_) => None,
+        }
     }
 }
 
@@ -230,8 +277,8 @@ impl Schedule {
         self.slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.group.changes_its_service())
             .filter_map(|(index, Slot { group, phase })| {
+                let service = group.changed_service()?.clone();
                 let result = match phase {
                     _ if self.newer_serving.contains(&index) => ServiceResult::Newer,
                     _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
@@ -240,10 +287,7 @@ impl Schedule {
                     Phase::Waiting => ServiceResult::NotStarted,
                     Phase::Active { .. } | Phase::Publishing | Phase::Failed => ServiceResult::Old,
                 };
-                group
-                    .service
-                    .clone()
-                    .map(|service| ServiceOutcome { service, result })
+                Some(ServiceOutcome { service, result })
             })
             .collect()
     }
@@ -336,7 +380,7 @@ impl Schedule {
             Event::Published(group) => {
                 let slot = self.slot_mut(group);
                 slot.phase = Phase::Done;
-                if let Some(service) = slot.group.service.clone() {
+                if let Some(service) = slot.group.service().cloned() {
                     self.published.insert(service);
                 }
             }
@@ -421,11 +465,12 @@ impl Schedule {
                 running,
             };
         }
-        for group in 0..self.slots.len() {
-            if matches!(self.slot(group).phase, Phase::Publishing)
+        for (group, slot) in self.slots.iter().enumerate() {
+            if let (Phase::Publishing, Some(service)) =
+                (&slot.phase, slot.group.publishing_service())
                 && self.publish_requested.insert(group)
             {
-                actions.push(Action::Publish(group));
+                actions.push(Action::Publish(group, service.clone()));
             }
         }
         actions
@@ -476,17 +521,18 @@ impl Schedule {
     }
 
     fn dependencies_done(&self, group: &ServiceGroup) -> bool {
-        let preludes_done = group.is_prelude()
+        let is_prelude = |group: &ServiceGroup| matches!(group.role, GroupRole::Prelude);
+        let preludes_done = is_prelude(group)
             || self
                 .slots
                 .iter()
-                .filter(|slot| slot.group.is_prelude())
+                .filter(|slot| is_prelude(&slot.group))
                 .all(|slot| matches!(slot.phase, Phase::Done));
         preludes_done
-            && group.dependencies.iter().all(|dependency| {
+            && group.dependencies().iter().all(|dependency| {
                 self.slots
                     .iter()
-                    .find(|slot| slot.group.service.as_ref() == Some(dependency))
+                    .find(|slot| slot.group.service() == Some(dependency))
                     .is_none_or(|slot| matches!(slot.phase, Phase::Done))
             })
     }
@@ -497,7 +543,7 @@ impl Schedule {
         task: usize,
     ) -> impl Iterator<Item = &'a ServiceName> {
         let waits = !matches!(self.task(task).kind, TaskKind::Other | TaskKind::Update);
-        group.dependencies.iter().filter(move |dependency| {
+        group.dependencies().iter().filter(move |dependency| {
             waits && self.published.contains(*dependency) && !self.routed.contains(*dependency)
         })
     }
@@ -515,11 +561,11 @@ pub(crate) fn creates_container(operation: &DeployOperation) -> bool {
 pub(crate) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
     let mut depths = BTreeMap::new();
     for group in groups {
-        let Some(service) = &group.service else {
+        let Some(service) = group.service() else {
             continue;
         };
         let depth = group
-            .dependencies
+            .dependencies()
             .iter()
             .filter_map(|dependency| depths.get(dependency))
             .max()
@@ -532,13 +578,11 @@ pub(crate) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
 /// Each `(dependency, dependent)` pair of Services this Deploy runs, in the order
 /// `groups` place them.
 pub(super) fn dependencies(groups: &[ServiceGroup]) -> Vec<(ServiceName, ServiceName)> {
-    let deployed: BTreeSet<&ServiceName> = groups
-        .iter()
-        .filter_map(|group| group.service.as_ref())
-        .collect();
+    let deployed: BTreeSet<&ServiceName> =
+        groups.iter().filter_map(ServiceGroup::service).collect();
     groups
         .iter()
-        .filter_map(|group| Some((group.service.as_ref()?, &group.dependencies)))
+        .filter_map(|group| Some((group.service()?, group.dependencies())))
         .flat_map(|(service, dependencies)| {
             dependencies
                 .iter()
@@ -572,8 +616,8 @@ mod tests {
             group_of("queue", &["db"]),
             group_of("api", &["queue", "cache"]),
             ServiceGroup {
-                service: None,
-                ..group_of("unused", &["db"])
+                role: GroupRole::Removals(name("db")),
+                steps: Vec::new(),
             },
         ];
         let pair = |dependency: &str, dependent: &str| {
@@ -595,10 +639,12 @@ mod tests {
 
     fn group(service: &str, dependencies: &[&str], steps: Vec<Stage>) -> ServiceGroup {
         ServiceGroup {
-            service: Some(name(service)),
-            dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
+            role: GroupRole::Service {
+                service: name(service),
+                dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
+                publish: true,
+            },
             steps,
-            publish: true,
         }
     }
 
@@ -622,7 +668,7 @@ mod tests {
             .into_iter()
             .filter_map(|action| match action {
                 Action::Start(task) => Some(task),
-                Action::Publish(_) => None,
+                Action::Publish(..) => None,
             })
             .collect()
     }
@@ -632,7 +678,7 @@ mod tests {
             .next()
             .into_iter()
             .filter_map(|action| match action {
-                Action::Publish(group) => Some(group),
+                Action::Publish(group, _) => Some(group),
                 Action::Start(_) => None,
             })
             .collect()
@@ -1048,10 +1094,8 @@ mod tests {
         let mut schedule = Schedule::new(
             vec![
                 ServiceGroup {
-                    service: None,
-                    dependencies: Vec::new(),
+                    role: GroupRole::Prelude,
                     steps: vec![Stage::Serial(0)],
-                    publish: false,
                 },
                 group("a", &[], vec![Stage::Serial(1)]),
                 group("b", &[], vec![Stage::Serial(2)]),
@@ -1077,10 +1121,8 @@ mod tests {
             vec![
                 group("a", &[], vec![Stage::Parallel(vec![0])]),
                 ServiceGroup {
-                    service: None,
-                    dependencies: vec![name("a")],
+                    role: GroupRole::Tail(vec![name("a")]),
                     steps: vec![Stage::Serial(1)],
-                    publish: false,
                 },
             ],
             vec![
@@ -1096,23 +1138,6 @@ mod tests {
         schedule.apply(Event::Published(0));
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
-        assert!(schedule.finished());
-    }
-
-    #[test]
-    fn a_group_without_a_service_never_publishes() {
-        let mut schedule = Schedule::new(
-            vec![ServiceGroup {
-                service: None,
-                dependencies: Vec::new(),
-                steps: vec![Stage::Serial(0)],
-                publish: true,
-            }],
-            vec![start('1')],
-        );
-        assert_eq!(starts(&mut schedule), vec![0]);
-        schedule.apply(Event::Completed(0));
-        assert_eq!(publishes(&mut schedule), Vec::<usize>::new());
         assert!(schedule.finished());
     }
 

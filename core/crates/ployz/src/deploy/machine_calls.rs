@@ -7,14 +7,23 @@ use ployz_core::{
     ContainerObservation, ContainerPlacementUpdated, ContainerWant, CreationKey, DeployWarning,
     DockerVolumeId, EnsuredContainer, EnvironmentValues, HealthVerdict, ImagePulled,
     IngressDoorsSet, InspectContainerRequest, ListContainersRequest, MachineFailure, MachineId,
-    MachineName, MachineTarget, MembershipObservation, ObservationGap, ObservationGapReason,
-    ObservationKind, PrivateAccessSet, QualifiedService, ReadRoutesRequest, RemoveVolumeRequest,
-    ResolvedServiceSpec, RoutesRead, RpcError, RunTarget, SetIngressDoorsRequest,
-    SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest,
+    MachineName, MachineTarget, MembershipObservation, Namespace, ObservationGap,
+    ObservationGapReason, ObservationKind, PrivateAccessSet, QualifiedService, ReadRoutesRequest,
+    RemoveVolumeRequest, ResolvedServiceSpec, RoutesRead, RpcError, RunTarget,
+    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest,
     UpdateContainerPlacementRequest, op,
 };
 
-use super::{Progress, SlotPolicy, naming_machine};
+use super::progress::Progress;
+
+mod set_each;
+mod transport;
+
+pub(crate) use set_each::{Answer, set_each};
+pub(crate) use transport::RestartTolerant;
+pub(in crate::deploy) use transport::{Outstanding, RESTART_WAIT};
+#[cfg(test)]
+pub(in crate::deploy) use transport::{RESTART_POLL, wait_out_restart};
 
 /// One Service's copies on the Machines that answered, and each Machine whose silence
 /// is a [`crate::deploy::listing_gap`].
@@ -36,7 +45,7 @@ pub(crate) struct Unanswered {
 
 impl Unanswered {
     /// Report this Machine as an observation gap, which leaves the Deploy partial.
-    pub(super) fn warn(&self, progress: &Progress) {
+    pub(in crate::deploy) fn warn(&self, progress: &Progress) {
         progress.warn(DeployWarning::ObservationFailed {
             gap: Some(ObservationGap {
                 machine_name: self.name.clone(),
@@ -190,13 +199,10 @@ pub(crate) trait ProxyPlacement: Session {
     ) -> Result<PrivateAccessSet, RpcError>;
 }
 
-/// Everything the executor asks of a Machine, for clients that serve all three.
-pub(crate) trait MachineOperations:
-    CopyLifecycle + DeployOperations + ProxyPlacement
-{
-}
+/// Everything the executor asks of a Machine.
+pub(crate) trait MachineOperations: CopyLifecycle + DeployOperations {}
 
-impl<T: CopyLifecycle + DeployOperations + ProxyPlacement> MachineOperations for T {}
+impl<T: CopyLifecycle + DeployOperations> MachineOperations for T {}
 
 impl Session for Client {
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
@@ -554,7 +560,9 @@ impl ProxyPlacement for Client {
     }
 }
 
-pub(super) fn omission_requires_observation(membership: Option<&MembershipObservation>) -> bool {
+pub(in crate::deploy) fn omission_requires_observation(
+    membership: Option<&MembershipObservation>,
+) -> bool {
     membership.is_none_or(MembershipObservation::invites_rpc)
 }
 
@@ -614,4 +622,65 @@ impl Client {
             })
             .and_then(|key| CreationKey::try_from(key).ok()))
     }
+}
+
+/// How a new Container's slot is keyed. A Global Service Container is keyed by
+/// its spec, so a retry or another run lands on the Container already there;
+/// every other Container is keyed by the run that creates it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::deploy) enum SlotPolicy {
+    BySpec,
+    PerRun,
+}
+
+impl SlotPolicy {
+    pub(in crate::deploy) fn of(kind: ContainerKind, mode: &ployz_core::ServiceMode) -> Self {
+        if kind == ContainerKind::ServiceContainer && *mode == ployz_core::ServiceMode::Global {
+            Self::BySpec
+        } else {
+            Self::PerRun
+        }
+    }
+
+    pub(in crate::deploy) fn keyed_by_spec(self) -> bool {
+        self == Self::BySpec
+    }
+
+    /// The slot of a new Container of `spec`. `per_run` names it when the spec does not.
+    pub(in crate::deploy) fn slot(
+        self,
+        namespace: &Namespace,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        replacing: Option<ContainerId>,
+        per_run: impl FnOnce() -> String,
+    ) -> SlotKey {
+        let key = match self {
+            Self::BySpec => {
+                let key = crate::cluster::global_creation_key(spec);
+                // Explicit replacement can overlap even an identical spec.
+                match replacing {
+                    Some(old) => format!("{key}:replace:{old}"),
+                    None => key,
+                }
+            }
+            Self::PerRun => per_run(),
+        };
+        SlotKey {
+            namespace: namespace.clone(),
+            service: spec.name.clone(),
+            kind,
+            creation_key: CreationKey::try_from(key).expect("creation keys stay within 512 bytes"),
+        }
+    }
+}
+
+/// The Machine that answered `error`, for a failure sentence that names the Server.
+pub(in crate::deploy) fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
+    if let serde_json::Value::Object(details) = &mut error.details {
+        details.insert("machine_id".into(), serde_json::json!(machine_id));
+    } else {
+        error.details = serde_json::json!({ "machine_id": machine_id });
+    }
+    error
 }
