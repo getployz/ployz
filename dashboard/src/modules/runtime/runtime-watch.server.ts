@@ -11,6 +11,7 @@ import {
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { AppConfig } from "#/server/config.server";
 
 export type OpenedRuntimeWatch =
   | {
@@ -40,7 +41,7 @@ export const openRuntimeWatch = Effect.fn("Runtime.openWatch")(function* (input:
 export const openRuntimeWatchForOrganization = Effect.fn(
   "Runtime.openWatchForOrganization",
 )(function* (input: { request: Request; organizationId: string }) {
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_RUNTIME"] === "1") {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.runtime) {
     const { verifyRuntimeFrameHeldOpen } = yield* Effect.promise(() => import("./runtime-watch.verify-fixture"));
     return { status: "connected" as const, frames: verifyRuntimeFrameHeldOpen(input.request.signal), close: Effect.void } satisfies OpenedRuntimeWatch;
   }

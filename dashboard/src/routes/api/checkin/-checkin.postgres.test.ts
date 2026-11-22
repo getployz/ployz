@@ -6,6 +6,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
+import { testConfigLayer } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ada = { userId: "00000000-0000-4000-8000-000000000701" };
@@ -40,7 +41,7 @@ const post = (body: Buffer, headers: Record<string, string>) =>
   harness.runEffect(Effect.provideService(handleCheckin(
     new Request("http://cloud.test/api/checkin", { method: "POST", body: body.toString("latin1"), headers }),
     "203.0.113.7",
-  ), InngestClient, inngest));
+  ), InngestClient, inngest).pipe(Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" }))));
 
 const signed = (bearer: string, body: Uint8Array) => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");

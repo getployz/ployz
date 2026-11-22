@@ -11,6 +11,7 @@ import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { managementClientCleared, type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -198,7 +199,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const runLog = Effect.runForkWith(yield* Effect.context());
       const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
       const dialBudget = yield* timeLeft;
-      const sampled = sampleDialTiming();
+      const sampled = sampleDialTiming((yield* AppConfig).dialSampleRate);
       const correlation = dialCorrelation();
       let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
       const pendingNativeTimings: DialTiming[] = [];

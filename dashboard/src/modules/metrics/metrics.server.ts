@@ -4,6 +4,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { findService, serviceVolumes } from "#/modules/config-store/store-lookup.server";
 import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
+import { AppConfig } from "#/server/config.server";
 import { resolveRange } from "#/modules/uptime/uptime-range";
 import { hostHistory, markersOnlyHistory, serviceHistory, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
 import { silentSince, stepFor } from "./metrics-series";
@@ -28,7 +29,7 @@ const readService = Effect.fn("Metrics.readService")(function* (organizationId: 
     };
   };
   // The verify dashboard has no ClickHouse; production builds drop this branch and the fixture with it.
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.metrics) {
     const { verifyServiceData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, crashes } = verifyServiceData(service, range);
@@ -74,7 +75,7 @@ export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (acto
     if (rows.length === 0 && disk.length === 0 && (latest === null || silent !== undefined)) return { type: "not_reporting", window, at };
     return { type: "history", window, at, history: hostHistory(rows, disk, { ...range, at }), ...(silent !== undefined && { silentSince: silent }) };
   };
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.metrics) {
     const { verifyServerData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, disk, reporting } = verifyServerData(input.machineId, range);
