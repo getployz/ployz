@@ -5,11 +5,11 @@ import { requestApproval } from "#/modules/approvals/approvals.server";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { callStoreAsMember, writeStoreAsMember } from "./config-store.server";
 import { isProtectedAsk, storeReadInput, storeWriteInput } from "./store.contract";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 /** One bounded Store view. Read it through `store-view.queries.ts`, never directly. */
 export const readStoreViewServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(storeReadInput))
   .handler(async ({ context, data }) => {
     setResponseHeader("cache-control", "private, no-store");
@@ -18,7 +18,7 @@ export const readStoreViewServerFn = createServerFn({ method: "GET" })
 
 /** One Store command, committed or refused. Write through `store-write.ts`, never directly. */
 export const writeStoreServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(storeWriteInput))
   .handler(async ({ context, data }) => await runActor(context, Effect.gen(function* () {
     const result = yield* writeStoreAsMember(context.actor, data.organizationSlug, data.command, data.shows);

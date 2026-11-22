@@ -1,3 +1,4 @@
+/** @data-source remote: each Server's Private Access router, asked of the Servers live once Integrations shows and polled every 15s, so a Server that joins lists its router; Connect and Turn off refetch it */
 import { type QueryClient, queryOptions } from "@tanstack/react-query";
 import type { PrivateAccessChanged, PrivateAccessWant } from "./private-access";
 import { observePrivateAccessServerFn } from "./private-access.functions";

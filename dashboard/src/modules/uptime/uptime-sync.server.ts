@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
+import { appliedServices, environmentsWithServices, servicesAppliedBy } from "#/modules/config-store/store-places.server";
 import { Database } from "#/server/database.server";
 import { editUptimeCheckStatement } from "./incident-fence";
 import { type UptimeExpect, uptimeCheck } from "./tables";
@@ -67,11 +68,7 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
     // A Deployment's slot serializes its own syncs but not the backfill. With the lock, the later sync reads the
     // Applied State committed before it and so writes last.
     yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`uptime-sync:${environmentId}`}))`);
-    const applied = yield* drizzle.execute<{ serviceId: string; node: string; clusterDomain: string | null }>(sql`
-      select a.node_id as "serviceId", a.node, d.cluster_domain as "clusterDomain"
-      from config_applied a join config_deployment d on d.id = a.deployment_id
-      where a.environment_id = ${environmentId} and a.organization_id = ${organizationId} and a.node_type = 'service'
-    `, "objects");
+    const applied = yield* appliedServices(organizationId, environmentId);
     const wanted = new Map<string, WantedCheck>();
     for (const row of applied) {
       const check = yield* wantedCheck(row);
@@ -94,8 +91,7 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
       yield* drizzle.update(uptimeCheck).set({ probeRequestedAt: sql`clock_timestamp()` }).where(and(
         eq(uptimeCheck.organizationId, organizationId),
         eq(uptimeCheck.environmentId, environmentId),
-        inArray(uptimeCheck.serviceId, sql`(select node_id from config_applied
-          where environment_id = ${environmentId} and deployment_id = ${probed} and node_type = 'service')`),
+        inArray(uptimeCheck.serviceId, servicesAppliedBy(environmentId, probed)),
       ));
     }
   }));
@@ -106,11 +102,7 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
  * Services applied before uptime checks existed. Each sync is idempotent, so running it again changes nothing.
  */
 export const backfillUptimeChecks = Effect.fn("Uptime.backfill")(function* () {
-  const { drizzle } = yield* Database;
-  const environments = yield* drizzle.execute<{ organizationId: string; environmentId: string }>(sql`
-    select distinct organization_id as "organizationId", environment_id as "environmentId"
-    from config_applied where node_type = 'service'
-  `, "objects");
+  const environments = yield* environmentsWithServices();
   for (const { organizationId, environmentId } of environments) yield* syncUptimeChecks(organizationId, environmentId);
   return environments.length;
 });

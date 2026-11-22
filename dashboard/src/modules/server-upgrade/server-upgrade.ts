@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import type { ServerStatus } from "#/modules/machines/server-status";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
@@ -93,8 +93,8 @@ export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
 /** What one save changes: the Release Channel, automatic upgrades, or both; a key left out stays as it is. */
 export const ServerUpgradeSettingsChange = Schema.Struct({
-  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS).annotate({ description: "The Release Channel every upgrade follows" })),
-  automatic: Schema.optionalKey(Schema.Boolean.annotate({ description: "Whether Servers behind the channel upgrade on their own" })),
+  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS).annotate({ description: "The Release Channel every Upgrade follows from now on: stable or beta. Leave it out to keep the current one" })),
+  automatic: Schema.optionalKey(Schema.Boolean.annotate({ description: "true lets Servers behind the channel upgrade on their own, false stops that. Leave it out to keep it as it is" })),
 });
 export type ServerUpgradeSettingsChange = typeof ServerUpgradeSettingsChange.Type;
 
@@ -151,12 +151,15 @@ export function endEvidence(outcome: FinalOutcome, stage: string | null, error: 
   return { stage, error: outcome === "failed" ? error : null };
 }
 
-/** An attempt started at `startedAt` has outlived the observation limit: Cloud stops waiting and it reads as unknown. */
-export const outlivedObservation = (startedAt: Date, now: number) => now - startedAt.getTime() >= UPGRADE_OBSERVATION_LIMIT_MS;
+/**
+ * An attempt's outcome as Cloud reads it: a running attempt that has outlived the observation limit reads as
+ * unknown, because Cloud stops waiting. Every reader and the hourly sweep measure it from `startedAt`.
+ */
+export const attemptState = (row: { readonly outcome: UpgradeOutcome; readonly startedAt: Date | string }, now: number): UpgradeOutcome =>
+  row.outcome === "running" && now - new Date(row.startedAt).getTime() >= UPGRADE_OBSERVATION_LIMIT_MS ? "unknown" : row.outcome;
 
 /** An attempt still within the observation limit is running, and so is the Organization's one Rollout. */
-const isRunning = (row: LatestUpgrade, now: number) =>
-  row.outcome === "running" && !outlivedObservation(new Date(row.startedAt), now);
+const isRunning = (row: LatestUpgrade, now: number) => attemptState(row, now) === "running";
 
 /** The newest attempt ID when the user clicked Upgrade (null with none); undefined when nothing is pending. */
 export type PendingFrom = string | null | undefined;
@@ -180,8 +183,7 @@ export function serverUpgradeLine(input: {
 }): ServerUpgradeLine {
   const { version, status, release, latest } = input;
   const pending = input.pendingFrom !== undefined && (latest?.attemptId ?? null) === input.pendingFrom;
-  const expired = latest !== null && latest.outcome === "running" && !isRunning(latest, input.now);
-  const outcome = expired ? "unknown" : latest?.outcome;
+  const outcome = latest === null ? undefined : attemptState(latest, input.now);
   if (pending || outcome === "running") return { kind: "upgrading", target: latest?.targetVersion ?? release };
 
   const online = status === "online" || status === "building";

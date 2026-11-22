@@ -3,27 +3,35 @@ import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Semaphore } from "effect";
-import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
+import { type StoreCall } from "#/modules/config-store/store.contract";
+import { serversUnanswered, type StoreRefusal, StoreRefused } from "#/lib/refusal";
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
 import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
-import {
-  lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed,
-} from "#/modules/volume-placement/volume-placement";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { UNANSWERED, unlessOriginRefused, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.gates.server";
+import { lossByVolume, oldCopies, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
+import { lossVersion, storeVersion } from "#/modules/volume-placement/volume-placement.review";
+import { lossTime } from "#/utils/relative-time";
+import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { volumeRun } from "#/modules/volume-run/tables";
-import {
-  admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
-} from "#/modules/volume-run/volume-run.server";
+import { admitRun, ClusterNotConnected, heldStorage, nameRefusal, resolveVolume, storeRefusal, unreachable } from "#/modules/volume-run/volume-run.rows.server";
+import { planVolumeRun, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
+import { mountPath, volumeNodePath } from "#/modules/config-store/setting-paths";
 
 type Row = typeof volumePlacement.$inferSelect;
+
+/** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
+export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
+  ? callStore(organizationId, null, call)
+  : callStore(organizationId, by.userId, call, { approval: "not_required", permissions: by.permissions, environments: by.environments });
 
 export type PlacementWrite = { readonly ok: true; readonly placement: PlacementRow } | { readonly ok: false; readonly refusal: StoreRefusal };
 type PlacementDiscard = { readonly ok: true; readonly placement: PlacementRow | null } | { readonly ok: false; readonly refusal: StoreRefusal };
@@ -42,9 +50,7 @@ const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belon
 const READ: StoreRefusal = { code: "conflict", message: "A restore reads this copy.", details: null };
 const DELETING: StoreRefusal = { code: "conflict", message: "This copy is being deleted.", details: null };
 const STARTING: StoreRefusal = { code: "conflict", message: "A Deploy or restore is starting. Try again.", details: null };
-const NO_ANSWER: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
-/** Staging refuses while a Server is silent or its report hasn't arrived, the frame gate's way and with its code. */
-export const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
+const NO_ANSWER = serversUnanswered("unavailable");
 const NOT_CONNECTED: StoreRefusal = { code: "unavailable", message: "Cloud has no connection to your servers. Try again once one is connected.", details: null };
 
 /**
@@ -108,10 +114,23 @@ const unclaimedSince = (row: Row | undefined) =>
   row?.deploymentId == null ? isNull(volumePlacement.deploymentId) : eq(volumePlacement.deploymentId, row.deploymentId);
 
 /**
- * Stage `staged` (null: nothing) as the Volume's placement for the next Deploy. The first write records `mirrors`, the
- * copies the user sees as mirrors today, since no earlier record says otherwise. Refused while a Deploy runs the last one.
+ * Stage `staged` (null: nothing) as the Volume's placement for the next Deploy, once every Server can take part in it:
+ * the organization can stage, and a born Volume goes only to Servers that check where its data began. Clearing a staged
+ * placement starts no run, so it stays open while those gates are closed.
  */
-export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
+export const stagePlacement = (
+  organizationId: string,
+  input: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly staged: Placement | null; readonly mirrors: readonly MachineId[] },
+) => input.staged === null
+  ? writePlacement(organizationId, input)
+  : unlessPlacementRefused(organizationId, unlessOriginRefused(organizationId, { ...input, placement: input.staged }, writePlacement(organizationId, input)));
+
+/**
+ * Stage `staged` (null: nothing) as the Volume's placement for the next Deploy, with no gate. The first write records
+ * `mirrors`, the copies the user sees as mirrors today, since no earlier record says otherwise. Refused while a Deploy
+ * runs the last one.
+ */
+export const writePlacement = Effect.fn("VolumePlacement.stage")(function* (
   organizationId: string,
   input: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly staged: Placement | null; readonly mirrors: readonly MachineId[] },
 ) {
@@ -149,8 +168,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   organizationId: string,
   by: Access | null,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly guid: string; readonly name: string; readonly at: number },
-  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const source = yield* resolveVolume(organizationId, input.environment, input.volumeId);
   const { environment, volumes } = yield* readStore(organizationId, { query: "volumes", environment: input.environment });
   const listed = volumes.find((volume) => volume.id === input.volumeId);
@@ -233,10 +252,10 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
       if (restored !== undefined && restored.change !== "create") return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
       const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
       const commands: BatchCommand[] = restored === undefined ? [] : [
-        { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
+        { command: "discard", environment, path: volumeNodePath(restored.name), version: null },
         ...restored.mounts
           .filter((mount) => source !== undefined && !source.mounts.some((held) => held.service === mount.service))
-          .map((mount): BatchCommand => ({ command: "discard", environment, path: `${mount.service}.mounts.${seed.sourceName}`, version: null })),
+          .map((mount): BatchCommand => ({ command: "discard", environment, path: mountPath(mount.service, seed.sourceName), version: null })),
       ];
       if (commands.length > 0) {
         const written = yield* callStoreBy(organizationId, by, { operation: "write", command: { command: "batch", environment, commands } });
@@ -295,8 +314,8 @@ export const writeAdmitted = <R>(
   organizationId: string,
   command: ConfigCommand,
   write: (command: ConfigCommand) => Effect.Effect<ConfigCommitted, StoreRefused, R>,
-  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) => Effect.gen(function* () {
+  const { inspect } = yield* VolumeCluster;
   if (command.command === "admit" && command.admit === "retry") {
     if (yield* holdsFailedRestore(organizationId, command.deployment)) return yield* new StoreRefused(RESTORE_FAILED);
     return yield* write(command);
@@ -387,8 +406,8 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   organizationId: string,
   userId: string | null,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
-  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const row = yield* readRow(organizationId, input.volumeId);
   const busy = yield* deployClaim(organizationId, row);
   if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
@@ -403,7 +422,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);
   const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point }, inspect);
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
@@ -423,8 +442,8 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "delete_mirror" }>,
   deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
-  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   const admitted = yield* database.transaction(Effect.gen(function* () {

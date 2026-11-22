@@ -1,12 +1,21 @@
+/** @data-source remote: organization state: fresh on every mount; the change stream invalidates it when the organization changes */
 import { toast } from "sonner";
-import { environmentManager, queryOptions, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
-import { getOrganizationStateServerFn, syncOrganizationSlugServerFn } from "./organization-state.functions";
+import { environmentManager, queryOptions, useMutation, useQueryClient, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { getOrganizationStateServerFn, renameOrganizationServerFn, syncOrganizationSlugServerFn } from "./organization-state.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 export const organizationKeys = {
   all: ["organization"] as const,
   state: (organizationSlug?: string | null) =>
     [...organizationKeys.all, organizationSlug ?? null, "state"] as const,
 };
+
+export const organizationChange = defineChange({
+  name: "organization",
+  sources: ["organization"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+});
 
 export function organizationStateQueryOptions(organizationSlug?: string | null) {
   return queryOptions({
@@ -29,6 +38,15 @@ export function useOrganizationName(organizationSlug: string) {
     ...organizationStateQueryOptions(organizationSlug),
     select: (state) => state.organizations.find((organization) => organization.slug === organizationSlug)?.name ?? organizationSlug,
   }).data;
+}
+
+/** Renames the Organization, and refetches its state once the rename is saved. */
+export function useRenameOrganization() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: useServerFn(renameOrganizationServerFn),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+  });
 }
 
 /** Route lifecycle runs on the server too. Only committed browser navigation stores preferences. */

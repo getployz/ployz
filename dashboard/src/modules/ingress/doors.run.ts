@@ -4,13 +4,12 @@ import {
   type ClusterIngressObservation,
   type DoorsAnswer,
   doorsGap,
-  type DoorsStage,
-  type DoorsWant,
   type MovedHostname,
   observationGap,
   type RedeployScope,
   unservedMoves,
 } from "#/modules/ingress/doors";
+import type { DoorsStage, DoorsWant } from "#/modules/ingress/doors.states";
 
 /** What a switch does to the world, one step at a time; the run supplies the Engine, the row and the redeploys. */
 export type SwitchPorts<EngineError, RowError, R> = {

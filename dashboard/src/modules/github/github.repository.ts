@@ -9,6 +9,7 @@ import {
 } from "#/modules/github/tables";
 import type { GithubRepository } from "#/modules/github/github";
 import { user as schemaUser } from "#/modules/identity/tables";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { Database } from "#/server/database.server";
 
 /** What GitHub told us about an installation. Recording it grants nothing; only a link row does. */
@@ -100,18 +101,6 @@ export const unlinkGithubInstallation = Effect.fn("Github.unlinkInstallation")(
   },
 );
 
-export const getGithubInstallation = Effect.fn("Github.getInstallation")(
-  function* (installationId: number) {
-    const database = yield* Database;
-    const rows = yield* database.drizzle.select({
-      installationId: schemaGithubInstallation.installationId,
-      accountLogin: schemaGithubInstallation.accountLogin,
-      accountType: schemaGithubInstallation.accountType,
-    }).from(schemaGithubInstallation).where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
-    return rows[0] ?? null;
-  },
-);
-
 export const listGithubInstallationsById = Effect.fn("Github.listInstallationsById")(
   function* (installationIds: ReadonlyArray<number>) {
     if (installationIds.length === 0) return [];
@@ -147,9 +136,6 @@ export const deleteGithubInstallation = Effect.fn(
   }));
 });
 
-/** The advisory lock class of {@link lockGithubRepositoryCache}; the two-key form keeps it apart from every one-key lock. */
-const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
-
 /**
  * Serializes the writers of one installation's cached repositories until their transaction ends: a sync's write, the
  * installation webhooks and forgetting the installation. It takes the advisory lock, then the installation's row, so
@@ -158,7 +144,7 @@ const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
  */
 export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")(function* (installationId: number) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.githubRepositoryCache}, ${installationId})`);
   const rows = yield* drizzle.select({ version: schemaGithubInstallation.repositoriesVersion }).from(schemaGithubInstallation)
     .where(eq(schemaGithubInstallation.installationId, installationId)).for("no key update");
   return rows[0]?.version ?? null;
@@ -353,3 +339,39 @@ export const listGithubRepositoryNamesForOrganization = Effect.fn("Github.listRe
     return rows.map((row) => row.fullName);
   },
 );
+
+/** How many of `repositories` an installation grants. */
+export const repositoryCountOf = (repositories: ReadonlyArray<{ readonly installationId: number }>, installationId: number) =>
+  repositories.filter((repository) => repository.installationId === installationId).length;
+
+/** What Cloud knows of an installation for one Organization: whether it links it, and whether GitHub suspended it. */
+export const findInstallationLink = Effect.fn("Github.findInstallationLink")(function* (organizationId: string, installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle
+    .select({
+      accountLogin: schemaGithubInstallation.accountLogin,
+      suspendedAt: schemaGithubInstallation.suspendedAt,
+      linked: schemaLink.organizationId,
+    })
+    .from(schemaGithubInstallation)
+    .leftJoin(schemaLink, and(
+      eq(schemaLink.installationId, schemaGithubInstallation.installationId),
+      eq(schemaLink.organizationId, organizationId),
+    ))
+    .where(eq(schemaGithubInstallation.installationId, installationId))
+    .limit(1);
+  const row = rows[0];
+  return {
+    installed: row !== undefined,
+    linked: row?.linked !== undefined && row.linked !== null,
+    suspended: row?.suspendedAt !== undefined && row.suspendedAt !== null,
+    accountLogin: row?.accountLogin ?? `installation ${installationId}`,
+  };
+});
+
+export const installationUsable = Effect.fn("Github.installationUsable")(function* (installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ suspendedAt: schemaGithubInstallation.suspendedAt }).from(schemaGithubInstallation)
+    .where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
+  return rows[0] !== undefined && rows[0].suspendedAt === null;
+});

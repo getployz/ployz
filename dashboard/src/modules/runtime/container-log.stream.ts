@@ -1,3 +1,4 @@
+/** @data-source runtime: SSE log stream, older pages on scroll */
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";

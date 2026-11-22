@@ -18,7 +18,7 @@ import {
 import { Database, type DatabaseService } from "#/server/database.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { COPIES } from "./volume-run.test-fixture";
-import { observeVolumeMembers, planOnCluster } from "./volume-run.server";
+import { observeVolumeMembers, planOnCluster } from "#/modules/volume-run/volume-run.cluster.server";
 
 const connections: Connection[] = [{ management: "ployz1:preferred" }];
 

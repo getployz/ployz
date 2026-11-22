@@ -3,8 +3,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DeletionDialog, deletionItemKey, deletionRows, formatBytes, type DeletionCallbacks, type DeletionItem,
+  DeletionDialog, deletionItemKey, deletionRows, formatBytes, type DeletionCallbacks,
 } from "./deletion-dialog";
+import type { DeletionItem } from "#/modules/config-store/deletion";
 
 afterEach(() => {
   cleanup();

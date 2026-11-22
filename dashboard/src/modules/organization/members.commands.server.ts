@@ -1,21 +1,21 @@
 import "@tanstack/react-start/server-only";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { defineCommand, refused } from "#/modules/commands/command.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { refused } from "#/lib/refusal";
+import { defineCommand } from "#/modules/commands/define";
+import { StoreRefused } from "#/lib/refusal";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { callerOrganizations } from "#/modules/identity/caller.server";
 import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { refusalOf } from "#/modules/organization/access.server";
-import { listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { isLastOwner, listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { InviteRole, MemberRole } from "#/modules/organization/permissions";
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
 
 const MemberSelector = Schema.NonEmptyString.annotate({ description: "The member's email, e.g. bob@example.com, or their name if no other member shares it" });
-const MemberRole = Schema.Literals(["owner", "admin", "member"]);
-const InviteRole = Schema.Literals(["admin", "member"]);
 
 const Member = Schema.Struct({
   name: Schema.String,
@@ -52,8 +52,6 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-export const manages = (caller: Caller) => callerCan(caller, "members:manage");
-
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
 const refuse = (code: string, message: string, details: JsonValue = null) => new StoreRefused({ code, message, details });
@@ -63,7 +61,7 @@ const refuse = (code: string, message: string, details: JsonValue = null) => new
  * caller manages members, and unless they are an owner when `touchesOwner` says the change makes or removes one.
  */
 const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: Role) => boolean) {
-  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
+  if (!callerCan(caller, "members:manage")) return yield* refuse("forbidden", refusalOf("members:manage"));
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();
   const named = members.filter((row) => (wanted.includes("@") ? row.email : row.name.trim()).toLowerCase() === wanted);
@@ -73,11 +71,11 @@ const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector
     return yield* refuse("ambiguous", `${named.length} members are named ${selector}: ${named.map((row) => row.email).join(", ")}. Pick one by email.`, { candidates: named.map((row) => row.email) });
   }
   if (touchesOwner(only.role) && caller.role !== "owner") return yield* refuse("forbidden", OWN);
-  return { ...only, lastOwner: only.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== only.userId) };
+  return { ...only, lastOwner: isLastOwner(members, only.userId) };
 });
 
 const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {
-  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
+  if (!callerCan(caller, "members:manage")) return yield* refuse("forbidden", refusalOf("members:manage"));
   const wanted = selector.trim();
   const invites = yield* listPendingInvites(caller.organization.id);
   const found = invites.find((row) => row.id === wanted) ?? invites.find((row) => row.email === wanted.toLowerCase());
@@ -136,7 +134,7 @@ export const orgMemberInvite = defineCommand({
   output: Invited,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", refusalOf("members:manage"));
+    if (!callerCan(caller, "members:manage")) return refused("forbidden", refusalOf("members:manage"));
     const config = yield* AppConfig;
     const invite = yield* createInvite(caller.organization.id, caller.userId, { email: input.email ?? null, role: input.role ?? "member" });
     const link = new URL(`/invite/${invite.token}`, config.app.url).toString();
@@ -249,7 +247,7 @@ export const orgInviteLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Invite),
   render: "table",
-  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", refusalOf("members:manage"))) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
+  run: (caller) => !callerCan(caller, "members:manage") ? Effect.succeed(refused("forbidden", refusalOf("members:manage"))) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
     ok: true,
     output: invites.map((row) => ({
       id: row.id,

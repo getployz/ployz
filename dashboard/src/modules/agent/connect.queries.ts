@@ -1,3 +1,4 @@
+/** @data-source remote: who is connecting an agent, their Organizations, and the agent asking, prefetched by /connect and never stale: the page is one authorization request, and answering it leaves */
 import { queryOptions } from "@tanstack/react-query";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";

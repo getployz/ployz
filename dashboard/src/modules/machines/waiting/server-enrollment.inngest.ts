@@ -1,13 +1,8 @@
 import { Option, Schema } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
-import {
-  createServerEnrollmentFoundedEvent,
-  serverEnrollmentCancelEvent,
-  serverEnrollmentReportedEvent,
-  serverEnrollmentRequestedEventType,
-} from "#/modules/inngest/events";
+import type { StepTools } from "#/modules/inngest/client";
+import { createServerEnrollmentFoundedEvent, serverEnrollmentCancelled, serverEnrollmentReported, serverEnrollmentRequested } from "#/modules/machines/waiting/server-enrollment.events";
 import {
   asStage,
   awaitingJoiners,
@@ -20,10 +15,8 @@ import {
   recordStage,
   releaseJoiner,
 } from "#/modules/machines/waiting/enrollment-run.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "waitForEvent" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
+import { eventData } from "#/modules/inngest/define-event";
 
 export const FOUNDER_ROUNDS = 12;
 const FOUNDER_WAIT = "10m";
@@ -32,32 +25,12 @@ const QUIET_WAIT = "30m";
 /** A bound on reported stages, so a host that loops its stages can't run the step budget out. */
 const MAX_EVENTS = 100;
 
-const Requested = Schema.Struct({
-  attemptId: Schema.String.check(Schema.isUUID()),
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-});
-
-const Heard = Schema.Struct({
-  name: Schema.Literal(serverEnrollmentReportedEvent),
-  data: Schema.Union([
-    Schema.Struct({
-      stage: Schema.NullOr(Schema.String),
-      failure: Schema.optionalKey(Schema.Struct({ stage: Schema.NullOr(Schema.String), message: Schema.String })),
-    }),
-    Schema.Struct({ completed: Schema.Literal(true) }),
-    Schema.Struct({ founded: Schema.Literal(true) }),
-  ]),
-});
-const decodeHeard = Schema.decodeUnknownOption(Heard);
-
-type Ctx = { event: { data: unknown }; step: StepTools; runId: string };
+type Ctx = { event: { data: unknown }; step: StepTools<"run" | "waitForEvent" | "sendEvent">; runId: string };
 
 export async function executeServerEnrollment({ event, step, runId }: Ctx, runEffect: EffectRunner) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(Requested)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(serverEnrollmentRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const { attemptId, organizationId } = request;
   const bound = await step.run("bind-run", () => runEffect(bindServerEnrollment(request, runId)));
   if (bound.kind === "settled") return { attemptId, state: bound.state };
@@ -66,8 +39,8 @@ export async function executeServerEnrollment({ event, step, runId }: Ctx, runEf
     step.run(id, () => runEffect(endServerEnrollment(attemptId, runId, { state: "failed", failure: { stage: asStage(stage), message } })))
       .then(() => ({ attemptId, state: "failed" as const, message }));
   const heardFor = async (id: string, timeout: string) => {
-    const heard = await step.waitForEvent(id, { event: serverEnrollmentReportedEvent, if: `async.data.attemptId == '${attemptId}'`, timeout });
-    return heard === null ? undefined : Option.getOrUndefined(decodeHeard(heard))?.data;
+    const heard = await step.waitForEvent(id, { event: serverEnrollmentReported.name, if: `async.data.attemptId == '${attemptId}'`, timeout });
+    return heard === null ? undefined : Option.getOrUndefined(eventData(serverEnrollmentReported)(heard));
   };
 
   if (bound.state === "awaiting_founder") {
@@ -120,8 +93,8 @@ export async function executeServerEnrollment({ event, step, runId }: Ctx, runEf
 const lifecycle = attemptLifecycle({
   run: {
     id: "server-enrollment",
-    triggers: [{ event: serverEnrollmentRequestedEventType }],
-    cancelOn: [{ event: serverEnrollmentCancelEvent, match: "data.attemptId" }],
+    triggers: [{ event: serverEnrollmentRequested.eventType }],
+    cancelOn: [{ event: serverEnrollmentCancelled.name, match: "data.attemptId" }],
     handler: executeServerEnrollment,
   },
   cancelId: "cancel-server-enrollment",

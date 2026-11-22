@@ -12,7 +12,7 @@ import type { ServiceActLeg } from "#/modules/service-act/service-act";
 import { createActService } from "#/modules/service-act/service-act.inngest";
 import { actOnContainer, requestServiceAct, serviceOperations } from "#/modules/service-act/service-act.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000d01";
@@ -202,7 +202,6 @@ describe("act-service", () => {
     const output = await act(admitted.id);
     expect(output.result).toEqual({ actId: admitted.id, state: "failed" });
     expect(vi.mocked(output.ctx.step.run).mock.calls.map(([id]) => id)).toEqual([
-      "normalize-request",
       "claim",
       "stop:m-alpha:web-a",
       "start:m-alpha:web-a",

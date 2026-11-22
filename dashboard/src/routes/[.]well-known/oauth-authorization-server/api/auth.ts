@@ -1,11 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { serveMcpMetadata } from "#/modules/agent/remote-mcp.server";
-import { publicErrorResponse } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
-
-const handle = ({ request }: { request: Request }) =>
-  runAppEffect(serveMcpMetadata(request), { signal: request.signal }).catch(publicErrorResponse);
+import { apiRoute } from "#/server/api-route";
 
 export const Route = createFileRoute("/.well-known/oauth-authorization-server/api/auth")({
-  server: { handlers: { ANY: handle } },
+  server: {
+    handlers: apiRoute({ ANY: ({ request }) => serveMcpMetadata(request) }),
+  },
 });

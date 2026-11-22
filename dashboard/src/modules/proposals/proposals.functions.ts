@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { askerNames } from "#/modules/approvals/approvals.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { decideProposal, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 const Decision = Schema.Union([
   Schema.Struct({ approve: Schema.Struct({}) }),
@@ -17,7 +17,7 @@ const named = (proposals: readonly ProposalView[]) =>
   })));
 
 export const listPendingProposalsServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
@@ -25,7 +25,7 @@ export const listPendingProposalsServerFn = createServerFn({ method: "GET" })
   })));
 
 export const getProposalServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
@@ -35,7 +35,7 @@ export const getProposalServerFn = createServerFn({ method: "GET" })
 
 /** The sidebar's answer to one proposal. A refusal, such as a Server that can't take it, comes back as its message. */
 export const decideProposalServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: Decision })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");

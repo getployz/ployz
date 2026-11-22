@@ -1,7 +1,7 @@
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
-import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/events";
+import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import { createSyncGithubRepositories } from "./sync";
 
 describe("GitHub repository sync Inngest adapter", () => {
@@ -12,7 +12,7 @@ describe("GitHub repository sync Inngest adapter", () => {
       expect.objectContaining({
         id: "sync-github-repositories",
         retries: 3,
-        triggers: [{ event: githubRepositoriesSyncRequestedEventType }],
+        triggers: [{ event: githubRepositoriesSyncRequested.eventType }],
         singleton: {
           key: "event.data.installationId",
           mode: "cancel",
@@ -22,7 +22,7 @@ describe("GitHub repository sync Inngest adapter", () => {
     );
   });
 
-  it("classifies malformed ingress inside the durable adapter", async () => {
+  it("fails malformed ingress for good before any step", async () => {
     const output = await new InngestTestEngine({
       function: createSyncGithubRepositories(new Inngest({ id: "test" })),
       events: [
@@ -36,6 +36,6 @@ describe("GitHub repository sync Inngest adapter", () => {
         stack: expect.stringContaining("NonRetriableError"),
       }),
     );
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
+    expect(output.ctx.step.run).not.toHaveBeenCalled();
   });
 });

@@ -2,14 +2,13 @@ import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
 import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigView, DnsLookup, PublishedHostname, RuntimeWatchView, TunnelAnswer, TunnelEvidence, TunnelReach } from "@ployz/sdk";
 import { Array as Arr, Clock, Deferred, Effect, Option, Schema } from "effect";
-import { activeCloudflare } from "#/modules/cloudflare/source.server";
-import { reachesCluster } from "#/modules/cloudflare/tunnel-reach.server";
+import { activeCloudflare } from "#/modules/ingress/cloudflare.source.server";
+import { reachesCluster } from "#/modules/ingress/cloudflare.tunnel-reach.server";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
-import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requestClusterDomainSync } from "#/modules/cluster-domain/sync-request.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -292,9 +291,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   }
   if (query.query === "domains") return evidence;
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.
-  yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
-    Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
-  );
+  yield* requestClusterDomainSync(organizationId);
   if (cloudflare !== null || rows?.view !== "domain" || rows.domain.kind !== "custom") return evidence;
   const lookup = yield* lookUp(rows.domain.hostname);
   return lookup === null ? evidence : { ...evidence, lookups: [lookup] };

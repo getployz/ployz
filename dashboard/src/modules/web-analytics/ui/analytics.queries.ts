@@ -1,3 +1,4 @@
+/** @data-source remote: one Environment's analytics for the shown range and page filter, prefetched by the Analytics page loader; stale after a minute because pageviews land without a Cloud write to invalidate on; a goal or turn-on write shows at once and refetches. An Organization without Production reads a needs-Production gate; the billing page invalidates these reads after a checkout */
 import { type QueryKey, queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
@@ -20,12 +21,15 @@ export type ErrorsView = Awaited<ReturnType<typeof readErrorsViewServerFn>>;
 /** One window of the API or Errors view, for every service or one. */
 export type RequestRead = { readonly window: RequestWindow; readonly service: string | undefined };
 
+/** The prefixes of the analytics reads and the API and Errors reads, for a screen that must refetch them all. */
+export const analyticsKeys = { all: ["analytics"] as const, requests: ["analytics-requests"] as const };
+
 const requestInput = (scope: AnalyticsScope, read: RequestRead) =>
   ({ ...scope, window: read.window, ...(read.service !== undefined && { service: read.service }) });
 
 export function apiViewQueryOptions(scope: AnalyticsScope, read: RequestRead) {
   return queryOptions({
-    queryKey: ["analytics-requests", scope.environmentId, "api", read.window, read.service ?? null] as const,
+    queryKey: [...analyticsKeys.requests, scope.environmentId, "api", read.window, read.service ?? null] as const,
     queryFn: () => readApiViewServerFn({ data: requestInput(scope, read) }),
     staleTime: 30_000,
   });
@@ -33,7 +37,7 @@ export function apiViewQueryOptions(scope: AnalyticsScope, read: RequestRead) {
 
 export function errorsViewQueryOptions(scope: AnalyticsScope, read: RequestRead) {
   return queryOptions({
-    queryKey: ["analytics-requests", scope.environmentId, "errors", read.window, read.service ?? null] as const,
+    queryKey: [...analyticsKeys.requests, scope.environmentId, "errors", read.window, read.service ?? null] as const,
     queryFn: () => readErrorsViewServerFn({ data: requestInput(scope, read) }),
     staleTime: 30_000,
   });
@@ -42,7 +46,7 @@ export function errorsViewQueryOptions(scope: AnalyticsScope, read: RequestRead)
 /** The Environment's analytics for one range and page filter, or which gate is closed. */
 export function analyticsViewQueryOptions(scope: AnalyticsScope, range: RangeSpec, page: string | undefined) {
   return queryOptions({
-    queryKey: ["analytics", scope.environmentId, range, page ?? null] as const,
+    queryKey: [...analyticsKeys.all, scope.environmentId, range, page ?? null] as const,
     queryFn: () => readAnalyticsViewServerFn({ data: { ...scope, range, ...(page !== undefined && { page }) } }),
     staleTime: 60_000,
   });
@@ -52,7 +56,7 @@ export function useAnalyticsView(scope: AnalyticsScope, range: RangeSpec, page: 
   return useSuspenseQuery(analyticsViewQueryOptions(scope, range, page)).data;
 }
 
-const viewKey = (scope: AnalyticsScope) => ["analytics", scope.environmentId] as const;
+const viewKey = (scope: AnalyticsScope) => [...analyticsKeys.all, scope.environmentId] as const;
 
 /** Turn on: counts from now, in the browser's time zone unless the Environment already counted in one. */
 export function useTurnOnAnalytics(scope: AnalyticsScope) {
@@ -62,7 +66,7 @@ export function useTurnOnAnalytics(scope: AnalyticsScope) {
     onError: (error) => { toast.error(toErrorMessage(error, "Could not turn on analytics")); },
     onSettled: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: viewKey(scope) }),
-      queryClient.invalidateQueries({ queryKey: ["analytics-requests", scope.environmentId] }),
+      queryClient.invalidateQueries({ queryKey: [...analyticsKeys.requests, scope.environmentId] }),
     ]),
   });
 }

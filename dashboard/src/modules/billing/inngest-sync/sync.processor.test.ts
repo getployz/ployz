@@ -3,7 +3,7 @@ import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
-import { organizationBillingSyncRequestedEventType } from "#/modules/inngest/events";
+import { organizationBillingSyncRequested } from "#/modules/billing/billing.events";
 import * as workspaceRepository from "#/modules/organization/organization-state.server";
 import {
   createScheduleNightlyBillingReconcile,
@@ -26,7 +26,7 @@ describe("billing sync Inngest adapter", () => {
       expect.objectContaining({
         id: "sync-organization-billing-state",
         retries: 3,
-        triggers: [{ event: organizationBillingSyncRequestedEventType }],
+        triggers: [{ event: organizationBillingSyncRequested.eventType }],
         singleton: {
           key: "event.data.organizationId",
           mode: "cancel",
@@ -51,7 +51,7 @@ describe("billing sync Inngest adapter", () => {
       hasActiveSubscription: false,
       skipped: true,
     });
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
+    expect(output.ctx.step.run).not.toHaveBeenCalled();
   });
 
   it("executes the nightly cron through its durable list and send steps", async () => {

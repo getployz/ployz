@@ -61,13 +61,13 @@ git grep -n -E 'delete\(organizationToken\)|insert\(organizationToken\)|update\(
 At the sync commit it prints four lines:
 
 ```
-dashboard/src/modules/identity/claim.server.ts:131:    yield* drizzle.update(organizationToken)
+dashboard/src/modules/sandbox/claim.server.ts:131:    yield* drizzle.update(organizationToken)
 dashboard/src/modules/identity/organization-token.server.ts:46:    .insert(organizationToken)
 dashboard/src/modules/identity/organization-token.server.ts:175:    .delete(organizationToken)
 dashboard/src/modules/organization/membership.server.ts:44:    yield* drizzle.delete(organizationToken)
 ```
 
-The model copies the insert (through the CLI's `POST`) and the `DELETE … RETURNING` (through the CLI's `DELETE`). It leaves out the other callers of that `DELETE` and the other two writers: the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), a member's removal (`dashboard/src/modules/organization/membership.server.ts:44-45`), and a sandbox claim's `update` (`dashboard/src/modules/identity/claim.server.ts:131-133`).
+The model copies the insert (through the CLI's `POST`) and the `DELETE … RETURNING` (through the CLI's `DELETE`). It leaves out the other callers of that `DELETE` and the other two writers: the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), a member's removal (`dashboard/src/modules/organization/membership.server.ts:44-45`), and a sandbox claim's `update` (`dashboard/src/modules/sandbox/claim.server.ts:131-133`).
 
 **What Cloud answers.** This checkout's Cloud sets a new token's kind to `caller.via === "agent" ? "agent" : (input.kind ?? "cli")` (`dashboard/src/modules/identity/organization-token.server.ts:70`), so it answers kind `agent` whenever the CLI asks for it, as `ployz mcp login` does (`:105`). The model still lets Cloud answer kind `cli` once (`CLI_ANSWERS`), because the kind check (`:110`, `:120-125`) guards against a Cloud that ignores `kind`. It claims nothing about which Cloud releases do that.
 
@@ -131,7 +131,7 @@ How far this departs from the docs (`docs/user/cli/overview.md:135`): a login th
 
 Both are `is_shipped` rows, and no property covers them: `P` is revoked either way.
 
-**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:215`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:14`, `:107`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/identity/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud/login.rs:82`). This list may not be complete.
+**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:215`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:14`, `:107`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/sandbox/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud/login.rs:82`). This list may not be complete.
 
 **Only a race orphans a token.** `only_a_race_orphans_a_token` searches the whole model with every raced state rejected and finds no break of `EVERY_TOKEN_ACCOUNTED`. `the_unraced_stale_note_is_the_second_route` runs the same search for `NOTE_HOLDS_WHEN_PRINTED`, and the break it finds is the second route.
 

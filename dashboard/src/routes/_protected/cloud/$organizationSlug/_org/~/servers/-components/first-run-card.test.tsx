@@ -8,7 +8,7 @@ import * as doorsFunctions from "#/modules/ingress/doors.functions";
 import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as memberFunctions from "#/modules/organization/members.functions";
 import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
-import { forgetCloudflare, readHeldCloudflare } from "./first-cloudflare";
+import { forgetCloudflare, readHeldCloudflare } from "#/modules/ingress/cloudflare-setup";
 import { FirstRunCard } from "./first-run-card";
 
 const rename = vi.fn();

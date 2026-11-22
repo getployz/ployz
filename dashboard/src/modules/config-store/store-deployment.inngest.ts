@@ -7,23 +7,24 @@ import { deploymentTrouble } from "#/modules/config-store/store-deployments";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentRetireRequestedEvent,
-  createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
-  inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
-} from "#/modules/inngest/events";
+import { githubBuildRunCompleted } from "#/modules/github/github.events";
+import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
+import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
   startStoreGithubBuild, storeGithubBuildOpen, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
-import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { refreshMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.round.server";
+import { advancePlacement, type PlacementAdvance, type PlacementWait } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
-import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
+import { cleanOrphans } from "#/modules/volume-run/volume-run.orphans.server";
+import { closeVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
 
@@ -40,7 +41,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       id: RUN_STORE_DEPLOYMENT_FUNCTION_ID,
       // A retried step claims again: before it prepared, it runs; after, the Store records the outcome unknown.
       retries: 2,
-      triggers: [{ event: configDeploymentAdmittedEventType }],
+      triggers: [{ event: configDeploymentAdmitted.eventType }],
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       onFailure: async ({ event }) => {
         const { organizationId, deploymentId } = event.data.event.data;
@@ -83,7 +84,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       }
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       if ("ran" in ran) {
-        await step.sendEvent("retire-old", createConfigDeploymentRetireRequestedEvent({ organizationId, environmentId, deploymentId, number: ran.ran.number }));
+        await step.sendEvent("retire-old", configDeploymentRetireRequested.create({ organizationId, environmentId, deploymentId, number: ran.ran.number }));
       }
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
@@ -92,7 +93,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
         runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
       if ("ran" in ran && ran.ran.ingress?.length) {
-        await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: event.data.organizationId }));
+        await step.sendEvent("sync-cluster-domain", clusterDomainSyncRequested.create({ organizationId: event.data.organizationId }));
       }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
       if (applied && ran.ran.remove) {
@@ -157,7 +158,7 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     if (!(await step.run(`github-open-${key}-${check}`, () => runEffect(storeGithubBuildOpen(target))))) return null;
     const startLimit = check === 0 && target.hasNext;
     const ended = await step.waitForEvent(`github-wait-${key}-${check}`, {
-      event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}`,
+      event: githubBuildRunCompleted.name, if: `async.data.runId == ${started.runId}`,
       timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL,
     });
     const seen = { ended: ended !== null, startLimit };
@@ -199,7 +200,7 @@ async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step
 export const createDeployToFirstServer = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
     {
-      id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoinedEventType }],
+      id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoined.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step }) => {

@@ -3,10 +3,10 @@ import { PencilIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
-import { DnsNameHint } from "#/components/dns-name-hint";
+import { DnsNameHint } from "./dns-name-hint";
 import { dnsName } from "#/utils/dns-name";
 import { InputGroupInput } from "#/components/ui/input-group";
-import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
+import { SourcePickerInput, SourcePickerLayout } from "../../../-components/service-create/source-picker-layout";
 import { Result, Schema } from "effect";
 import {
   strictParseOptions,

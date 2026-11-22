@@ -4,9 +4,11 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
-import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
+import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.review";
+import { environmentKey } from "#/modules/config-store/environment-ref";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -42,7 +44,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
-  const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
+  const place = environmentKey(environment);
   const [loss, setLoss] = useState<Loss | null>(null);
   // Settles the Save waiting on the dialog: true once it saves, false when the dialog closes first.
   const savePending = useRef<((saved: boolean) => void) | null>(null);
@@ -76,7 +78,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     const command: ConfigCommand = action === "deploy"
-      ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
+      ? admitDeploy(environment, id, { version, acceptVolumeLoss: accept, message: words })
       : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words };
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;

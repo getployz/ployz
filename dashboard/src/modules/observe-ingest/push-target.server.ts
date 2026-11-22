@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import type { MachineId } from "#/db/tables";
-import { decryptPairingSecret, releasingExpectation } from "#/modules/machines/connections.server";
+import type { MachineId } from "@ployz/sdk";
+import { decryptPairingSecret, releasingExpectation } from "#/modules/runtime/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";

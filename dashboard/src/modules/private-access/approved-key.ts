@@ -6,11 +6,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { KeyApproval, PrivateAccessOn } from "@ployz/sdk";
 import { privateAccessApprovalBody } from "@ployz/sdk/authority";
-import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
-import { PasskeyRefused, passkeyAnswer, statementChallenge } from "#/modules/approval-session/passkey-statement";
+import { freshSealing } from "#/modules/sealing/sealing.queries";
+import { PasskeyDeclined, passkeyAnswer, statementChallenge } from "#/modules/passkeys/passkey-statement";
 import { SealError } from "#/modules/sealing/seal-error";
-import { isUnauthorized } from "#/lib/error-message";
-import { sealPlatform } from "#/modules/variables/seal-value";
+import { sealPlatform } from "#/modules/sealing/seal-value";
 
 const UNSEALED = "Couldn't seal the key, so nothing was sent. Try again.";
 
@@ -22,26 +21,24 @@ export class KeyNotApproved extends Error {}
 
 /** `authKey` sealed to the Organization's Cluster, read afresh, with the person's passkey approval of that sealed key. */
 export async function sealAndApprove(queryClient: QueryClient, organizationSlug: string, authKey: string): Promise<BrowserOn> {
-  const fresh = await queryClient.fetchQuery({ ...sealingQueryOptions(organizationSlug), staleTime: 0 }).catch((error) => {
-    throw isUnauthorized(error) ? error : new KeyNotApproved(UNSEALED);
-  });
+  const fresh = await freshSealing(queryClient, organizationSlug, () => new KeyNotApproved(UNSEALED));
   if (fresh.sealing.state !== "ready") throw new KeyNotApproved("Add a server to turn private access on.");
   return approvedKey(fresh.sealing, authKey);
 }
 
 /**
- * `authKey` sealed for the Cluster whose identity is `cluster.publicKey`, to `cluster.sealTo`, its recipient key once it
- * activated, with the person's passkey approval of exactly that sealed key.
+ * `authKey` sealed for the Cluster whose identity is `cluster.publicKey`, with the person's passkey approval of exactly
+ * that sealed key.
  */
 export async function approvedKey(
-  cluster: { readonly publicKey: string; readonly sealTo: string },
+  cluster: { readonly publicKey: string },
   authKey: string,
   now = Date.now(),
 ): Promise<BrowserOn> {
   const { publicKey } = cluster;
   let sealed: string;
   try {
-    sealed = await sealPlatform(cluster, "private-access", authKey.trim());
+    sealed = await sealPlatform(publicKey, "private-access", authKey.trim());
   } catch (error) {
     throw new KeyNotApproved(error instanceof SealError ? error.message : UNSEALED);
   }
@@ -49,7 +46,7 @@ export async function approvedKey(
   try {
     return { sealed_auth_key: sealed, approval: { passkey: { body, assertion: await passkeyAnswer(await statementChallenge(body, "workflow")) } } };
   } catch (error) {
-    if (error instanceof PasskeyRefused) throw new KeyNotApproved(error.message);
+    if (error instanceof PasskeyDeclined) throw new KeyNotApproved(error.message);
     if (error instanceof Error && error.name === "NotAllowedError") throw new KeyNotApproved("Your passkey didn't answer. Try again.");
     throw new KeyNotApproved("Your browser couldn't use a passkey here.");
   }

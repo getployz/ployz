@@ -1,19 +1,18 @@
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import type { MachineId } from "@ployz/sdk";
 import { Inngest } from "inngest";
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   createCancelMachineRemove,
   createProcessMachineRemove,
-  decodeMachineRemoveFailureEvent,
   MACHINE_REMOVE_RETRIES,
 } from "#/modules/machines/machine-removal.inngest";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 describe("machine remove Inngest boundary", () => {
@@ -33,7 +32,7 @@ describe("machine remove Inngest boundary", () => {
       status: "invalid",
       skipped: true,
     });
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
+    expect(output.ctx.step.run).not.toHaveBeenCalled();
   });
 
   it("ignores cancellation events owned by another function", async () => {
@@ -69,7 +68,7 @@ describe("machine remove Inngest boundary", () => {
       steps: [{ id: "cancel-machine-remove", handler: () => ({ cancelled: true }) }],
     }).execute();
 
-    expect(output.result).toEqual({ cancelled: true });
+    expect(output.result).toEqual({ closed: { cancelled: true } });
   });
 
   it("rejects malformed cancellation envelopes in the owned step", async () => {
@@ -90,36 +89,6 @@ describe("machine remove Inngest boundary", () => {
       }),
     );
     expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
-  });
-
-  it("decodes the complete failure envelope before exposing durable identity", () => {
-    const decoded = decodeMachineRemoveFailureEvent({
-      name: "inngest/function.failed",
-      data: {
-        function_id: "process-machine-remove",
-        run_id: "run-1",
-        error: { name: "Error", message: "failed" },
-        event: {
-          name: "machine/remove.requested",
-          data: { attemptId: "attempt-1" },
-        },
-      },
-    });
-
-    expect(Option.isSome(decoded)).toBe(true);
-    expect(
-      Option.isNone(
-        decodeMachineRemoveFailureEvent({
-          name: "inngest/function.failed",
-          data: {
-            function_id: "process-machine-remove",
-            run_id: "run-1",
-            error: { name: "Error", message: "failed" },
-            event: { name: "wrong/event", data: { attemptId: "attempt-1" } },
-          },
-        }),
-      ),
-    ).toBe(true);
   });
 
   it("fails the attempt, and releases nothing, when the Server refuses its removal", async () => {
@@ -155,7 +124,7 @@ describe("machine remove Inngest boundary", () => {
 
     expect(output.result).toEqual({ attemptId, status: "superseded", skipped: true });
     const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
-    expect(steps).toEqual(["normalize-machine-remove-attempt-id", "claim-machine-remove", "observe-leaving-server", "remove-machine"]);
+    expect(steps).toEqual(["claim-machine-remove", "observe-leaving-server", "remove-machine"]);
     expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
   });
 
@@ -179,7 +148,6 @@ describe("machine remove Inngest boundary", () => {
     expect(output.result).toEqual({ attemptId, status: "succeeded" });
     const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
     expect(steps).toEqual([
-      "normalize-machine-remove-attempt-id",
       "claim-machine-remove",
       "observe-leaving-server",
       "remove-machine",

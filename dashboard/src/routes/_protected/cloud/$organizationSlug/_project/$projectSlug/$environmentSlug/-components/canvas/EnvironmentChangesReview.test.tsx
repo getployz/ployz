@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Included, RowId } from "@ployz/sdk";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
-import { placementChanges, placementGroup } from "#/modules/volume-placement/volume-placement";
+import { placementChanges } from "#/modules/volume-placement/volume-placement";
+import { placementGroup } from "#/modules/volume-placement/volume-placement.review";
 import { EnvironmentChangesReview, type EnvironmentChangesReviewProps } from "./EnvironmentChangesReview";
 
 const nginx: ChangeGroup = {

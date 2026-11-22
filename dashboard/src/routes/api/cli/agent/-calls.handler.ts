@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
-import { ERROR_TYPES, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
+import { ERROR_TYPES, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { Validation } from "#/server/public-error";
 

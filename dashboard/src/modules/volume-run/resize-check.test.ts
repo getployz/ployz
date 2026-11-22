@@ -1,12 +1,12 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { checkResize, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, type CopyHolder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
 const SIZE = ["ployz.volume.size.set.v1"];
-const holder = (name: string, role: Holder["role"], options: Partial<Holder> = {}): Holder =>
+const holder = (name: string, role: CopyHolder["role"], options: Partial<CopyHolder> = {}): CopyHolder =>
   ({ id: name.padEnd(32, "0") as MachineId, name, role, capabilities: SIZE, committableBytes: null, boundBytes: null, ...options });
 const ask = (requested: number, options: Partial<ResizeAsk> = {}): ResizeAsk =>
   ({ volume: "data", recorded: 10 * GB, working: 10 * GB, requested, holders: [holder("fsn-1", "primary"), holder("fsn-2", "mirror")], ...options });

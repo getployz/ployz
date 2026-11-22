@@ -1,6 +1,6 @@
 import { createContext, type ReactNode } from "react";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import type { RuntimeLens } from "./node-status";
+import type { RuntimeLens } from "#/modules/runtime/node-status";
 
 /**
  * What the Runtime Watch says of the Servers, read once for the canvas. Its cards and bottom bar read it here, so a

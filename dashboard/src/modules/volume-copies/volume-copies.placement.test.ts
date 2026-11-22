@@ -191,8 +191,4 @@ describe("copiesFromPlacement", () => {
     expect(mirror).toMatchObject({ kind: "mirror", refreshedAt: null });
     expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
-
-  it("has no snapshots until the Servers serve them", () => {
-    expect(copies(row(["web-2"])).live.snapshots).toBeNull();
-  });
 });

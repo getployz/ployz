@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Data, Effect } from "effect";
-import { getAuthSessionEffect, signInGithubEffect } from "#/auth/auth.server";
-import { claimSignInCookie } from "#/modules/identity/claim-sign-in.server";
+import { claimSignInCookie } from "#/modules/sandbox/claim-sign-in.server";
+import { seeOther } from "#/server/api-route";
+import { Auth } from "#/modules/identity/auth.server";
 import { runAppEffect } from "#/server/run.server";
 
 // Sign in and Deploy on the marketing site link here: one click from the page to GitHub's consent screen.
@@ -21,11 +22,11 @@ class GithubSignInRefused extends Data.TaggedError("GithubSignInRefused")<{
 
 const githubSignIn = Effect.fn("Auth.githubSignIn")(function* (request: Request) {
   const callbackURL = safeCallbackURL(new URL(request.url));
-  const session = yield* getAuthSessionEffect(request.headers);
+  const session = yield* Effect.flatMap(Auth, (auth) => auth.getSession(request.headers));
   if (session !== null && session.user.isAnonymous !== true) return seeOther(callbackURL);
 
   // better-auth's OAuth state cookie reaches the browser through tanstackStartCookies, not this response.
-  const response = yield* signInGithubEffect(request.headers, callbackURL);
+  const response = yield* Effect.flatMap(Auth, (auth) => auth.signInGithub(request.headers, callbackURL));
   const location = response.headers.get("location");
   if (!response.ok || location === null) return yield* new GithubSignInRefused({ status: response.status });
   const redirect = seeOther(location);
@@ -46,10 +47,6 @@ export function handleGithubSignIn(request: Request) {
     ),
     { signal: request.signal },
   );
-}
-
-function seeOther(location: string) {
-  return new Response(null, { status: 303, headers: { location, "cache-control": "no-store" } });
 }
 
 // Browsers parse Location the way URL does: `/\evil.com` and `/<tab>/evil.com` start with one slash and still leave.

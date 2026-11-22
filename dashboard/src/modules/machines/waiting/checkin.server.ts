@@ -10,14 +10,14 @@ import {
   type CheckinStopReason,
   type StoredReport,
 } from "#/modules/machines/waiting/checkin-wire";
-import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
+import { type ServerEnrollmentCheckinReport, createServerEnrollmentReportedEvent } from "#/modules/machines/waiting/server-enrollment.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { asStage, forwardTo, joinsSent, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
-import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
+import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/server/rate-limit.server";
 import { PAST_STORAGE, isReadyFor, joinCommitted, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";

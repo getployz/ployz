@@ -8,9 +8,10 @@ import {
   type SetNotificationChannel,
 } from "#/modules/notifications/notification-types";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { docsUrl } from "#/lib/docs";
 
-export const EMAIL_SETUP_DOCS = "https://ployz.dev/docs/self-hosting#2-configure";
-export const LOG_SHIPPING_DOCS = "https://ployz.dev/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional";
+export const EMAIL_SETUP_DOCS = docsUrl("/docs/self-hosting#2-configure");
+export const LOG_SHIPPING_DOCS = docsUrl("/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional");
 
 const LINK = "underline underline-offset-4 hover:text-foreground";
 

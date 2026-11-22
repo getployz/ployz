@@ -1,8 +1,22 @@
 import type { NamedRegion } from "@ployz/sdk";
-import { firstServerRegion as firstRegion, parseRegionName } from "@ployz/sdk/config";
-import { isRegionKey } from "#/modules/machines/server-policy";
+import { firstServerRegion as firstRegion, parseRegion, parseRegionName } from "@ployz/sdk/config";
+import { Schema } from "effect";
 
 export const DEFAULT_REGION = "default";
+
+/** The Engine's one region key rule, here as the SDK's `parseRegion` runs it. */
+export const REGION_RULE = "A region is up to 63 letters, digits, hyphens, underscores and dots.";
+
+export function isRegionKey(value: string): boolean {
+  try {
+    parseRegion(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const RegionSchema = Schema.String.check(Schema.makeFilter<string>((value) => isRegionKey(value) ? undefined : REGION_RULE));
 
 const NAME_RULE = "A region’s name is 1 to 40 characters on one line.";
 

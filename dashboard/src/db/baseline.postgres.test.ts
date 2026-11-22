@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { collectionReadInput } from "#/collections/read.contract";
+import { orgCollections } from "#/collections/registry";
 import {
   type PostgresTestHarness,
   startPostgresTestHarness,
@@ -16,9 +16,7 @@ afterAll(async () => {
 });
 
 it("creates collection tables with default replication identity without the retired notification triggers", async () => {
-  const tables = [...new Set(collectionReadInput.fields.table.literals.map((table) =>
-    table === "organization_enrollment" ? "organization_pairing" : table,
-  ))].sort();
+  const tables = [...new Set(orgCollections.map((collection) => collection.sources[0]))].sort();
   const replication = await harness.pool.query<{
     relname: string;
     relreplident: string;

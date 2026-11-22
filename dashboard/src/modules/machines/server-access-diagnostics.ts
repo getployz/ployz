@@ -45,13 +45,12 @@ export function nativeDialTimingFields(timing: DialTiming, cloudOutcome?: DialTi
   };
 }
 
-const sampleRate = (() => {
-  const rate = Number(process.env["PLOYZ_DIAL_SAMPLE_N"] ?? 100);
-  return Number.isSafeInteger(rate) && rate >= 1 && rate <= 10_000 ? rate : 100;
-})();
-let sequence = 0;
+/** Whether the `sequence`th dial is one of the one in `rate` that gets sampled timing. */
+export const isSampledDial = (sequence: number, rate: number) => sequence % rate === 0;
 
-export function sampleDialTiming(): boolean {
-  sequence += 1;
-  return sequence % sampleRate === 0;
+let dials = 0;
+
+export function sampleDialTiming(rate: number): boolean {
+  dials += 1;
+  return isSampledDial(dials, rate);
 }

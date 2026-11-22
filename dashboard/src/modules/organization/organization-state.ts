@@ -3,20 +3,6 @@ import { slugifySegment } from "#/utils/slug";
 
 export const OrganizationSlug = Schema.Trim.check(Schema.isNonEmpty());
 
-export const Organization = Schema.Struct({
-  id: Schema.String.check(Schema.isUUID()),
-  name: Schema.String,
-  slug: OrganizationSlug,
-  logo: Schema.NullOr(Schema.String),
-});
-export type Organization = typeof Organization.Type;
-
-export const OrganizationState = Schema.Struct({
-  activeOrganization: Schema.NullOr(Organization),
-  organizations: Schema.Array(Organization),
-});
-export type OrganizationState = typeof OrganizationState.Type;
-
 export const SyncOrganizationSlug = Schema.Struct({
   organizationSlug: OrganizationSlug,
 });

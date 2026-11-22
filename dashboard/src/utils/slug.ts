@@ -18,16 +18,14 @@ export function getSlugWithSuffix(base: string, attempt: number) {
   return `${base}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-export const UNIQUE_ALLOCATION_ATTEMPTS = 5;
+const UNIQUE_ALLOCATION_ATTEMPTS = 5;
 
 export function allocateUnique<A, E, R, Exhausted>(input: {
   readonly tryAttempt: (attempt: number) => Effect.Effect<A | null, E, R>;
   readonly exhausted: Exhausted;
-  readonly maxAttempts?: number;
 }): Effect.Effect<A, E | Exhausted, R> {
-  const maxAttempts = input.maxAttempts ?? UNIQUE_ALLOCATION_ATTEMPTS;
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    for (let attempt = 0; attempt < UNIQUE_ALLOCATION_ATTEMPTS; attempt += 1) {
       const created = yield* input.tryAttempt(attempt);
       if (created !== null) return created;
     }

@@ -1,8 +1,6 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { pruneSalts } from "#/modules/web-analytics/salts.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 /** Requests expire in ClickHouse by their own retention days; what Cloud keeps is each site's day salts, dropped once their day is out of retention. */
 const createRetention = (inngest: PloyzInngest, runEffect: EffectRunner) =>

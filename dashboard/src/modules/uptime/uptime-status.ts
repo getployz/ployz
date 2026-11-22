@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RangeEdge } from "./uptime-range";
+import { RangeEdge } from "#/lib/time-range";
 
 const Int = Schema.Finite.check(Schema.isInt());
 

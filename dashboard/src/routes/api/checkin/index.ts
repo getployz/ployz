@@ -1,25 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect } from "effect";
-import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
-import { AppConfig } from "#/server/config.server";
-import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
+import { handleCheckin } from "#/routes/api/checkin/-handler";
+import { apiRoute, clientIp } from "#/server/api-route";
 
 export const Route = createFileRoute("/api/checkin/")({
   server: {
-    handlers: {
-      POST: async ({ request }) => {
-        const peer = getRequestIP();
-        return runAppEffect(
-          Effect.gen(function* () {
-            const { auth } = yield* AppConfig;
-            return yield* handleCheckin(request, observedIp(request.headers, auth.clientIpHeaders, peer));
-          }),
-          { signal: request.signal },
-        ).catch(publicErrorResponse);
-      },
-      ANY: (): Response => methodNotAllowed(Route),
-    },
+    handlers: apiRoute(
+      { POST: ({ request }) => Effect.flatMap(clientIp, (ip) => handleCheckin(request, ip)) },
+      { clientAddress: true },
+    ),
   },
 });

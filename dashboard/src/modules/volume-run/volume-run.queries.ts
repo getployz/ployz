@@ -1,11 +1,19 @@
+/** @data-source remote: a Volume's last 50 runs, newest first; the change stream refetches them when a run's row changes */
 import { useEffect, useEffectEvent, useState } from "react";
 import { queryOptions, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "./volume-run";
 import { getVolumeRunServerFn, inspectVolumeCopiesServerFn, isVolumeOwedServerFn, listActiveVolumeRunsServerFn } from "./volume-run.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** A Volume's runs, and the copies they change; the change stream's `volume_run` invalidates this root. */
 export const volumeRunKeys = { all: ["volume-run"] as const };
+
+export const volumeRunChange = defineChange({
+  name: "volume_run",
+  sources: ["volume_run"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: volumeRunKeys.all }),
+});
 
 /**
  * Each managed Server's answer for a Volume's copy, the evidence a run plans from. Asked again when a run changes, and

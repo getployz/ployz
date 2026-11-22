@@ -1,0 +1,134 @@
+import { type ReactNode, useState } from "react";
+import { type ConfirmStatus, ConfirmableInput } from "#/components/store-write/confirmable-input";
+import { SuggestibleConfirmableInput } from "#/components/store-write/suggestible-confirmable-input";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
+import { showRefusalInline, type Write } from "#/modules/config-store/store-write";
+
+type DraftState = {
+  source: string;
+  value: string;
+  error: string | null;
+};
+
+function freshDraft(value: string): DraftState {
+  return { source: value, value, error: null };
+}
+
+/**
+ * Text field bound to a single service setting. Commits on Enter or blur via an
+ * optimistic `collection.update` transaction and surfaces the per-field
+ * "changed vs deployed" affordance. The parent owns value ↔ typed conversion in
+ * `validate`/`onCommit`.
+ */
+export function ServiceSettingInput({
+  value: stored,
+  isChanged,
+  baselineLabel = "Deployed",
+  baselineValue,
+  placeholder,
+  suggestions,
+  suggestionsLoading,
+  suggestionsMessage,
+  suggestionsNotice,
+  onFocus,
+  inputMode,
+  suffix,
+  ariaLabel,
+  disabled,
+  validate,
+  onCommit,
+}: {
+  value: string;
+  isChanged: boolean;
+  baselineLabel?: string;
+  baselineValue?: string;
+  placeholder?: string;
+  suggestions?: string[];
+  suggestionsLoading?: boolean;
+  suggestionsMessage?: string;
+  suggestionsNotice?: string;
+  onFocus?: () => void;
+  /** The keyboard phones show. The input stays text: a number input hides what was typed from validation. */
+  inputMode?: "decimal" | "numeric" | "text";
+  suffix?: ReactNode;
+  ariaLabel: string;
+  disabled?: boolean;
+  /** Return an error message to block the commit, or null to allow it. */
+  validate?: (raw: string) => string | null;
+  onCommit: (raw: string) => Write;
+}) {
+  const [value, hold, commit, dismiss] = useCommitHold(stored);
+  const [draft, setDraft] = useState<DraftState>(() => freshDraft(value));
+  // A new value from elsewhere (another tab, the CLI) replaces the field, unless the user is typing in it: then the
+  // typing stays and says what it would replace.
+  const typing = draft.value !== draft.source;
+  const moved = draft.source !== value;
+  const active = moved && !typing ? freshDraft(value) : draft;
+  const isDirty = active.value !== value;
+  const notice = moved && typing ? `Changed elsewhere to ${value || "the default"}: confirm to replace it, or cancel.` : null;
+
+  function confirm(next = active.value) {
+    const raw = next.trim();
+    const nextDraft = { ...active, value: raw };
+    const error = validate?.(raw) ?? null;
+    if (error) {
+      setDraft({ ...nextDraft, error });
+      return;
+    }
+
+    const write = onCommit(raw);
+    showRefusalInline(write);
+    hold(raw, write);
+    setDraft(freshDraft(raw));
+  }
+
+  const status: ConfirmStatus | undefined =
+    commit.phase === "saving"
+      ? { phase: "saving" }
+      : commit.phase === "failed"
+        ? { phase: "failed", reason: commit.reason, onRetry: () => confirm(commit.to) }
+        : undefined;
+
+  const inputProps = {
+    "aria-label": ariaLabel,
+    disabled,
+    // Leaving the field must not overwrite a value changed elsewhere: replacing it waits for Enter or ✓.
+    commit: notice ? ("check" as const) : ("blur" as const),
+    "aria-invalid": active.error ? true : undefined,
+    inputMode,
+    type: "text",
+    suffix,
+    isChanged,
+    isDirty,
+    error: active.error ?? notice,
+    status,
+    placeholder,
+    onFocus,
+    title:
+      isChanged && baselineValue != null
+        ? `${baselineLabel}: ${baselineValue}`
+        : undefined,
+    value: active.value,
+    onValueChange: (next: string) => {
+      dismiss();
+      setDraft({ source: value, value: next, error: null });
+    },
+    onCancel: () => setDraft(freshDraft(value)),
+    onConfirm: () => confirm(),
+  };
+
+  if (suggestions) {
+    return (
+      <SuggestibleConfirmableInput
+        {...inputProps}
+        suggestions={suggestions}
+        suggestionsLoading={suggestionsLoading}
+        suggestionsMessage={suggestionsMessage}
+        suggestionsNotice={suggestionsNotice}
+        onSuggestionSelect={(next) => confirm(next)}
+      />
+    );
+  }
+
+  return <ConfirmableInput {...inputProps} />;
+}

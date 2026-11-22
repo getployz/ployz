@@ -6,11 +6,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { createFileRoute } from "@tanstack/react-router";
-import { ServiceCreateCommand } from "#/components/service-create-command";
+import { ServiceCreateCommand } from "./-components/service-create/service-create-command";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/new",
 )({
+  staticData: { section: "projects" },
   component: RouteComponent,
 });
 

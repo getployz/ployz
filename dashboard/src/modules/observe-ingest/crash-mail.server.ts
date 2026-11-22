@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { crashMail, type CrashPlace } from "#/modules/mail/templates/servers/crash";
+import { placeService } from "#/modules/config-store/store-places.server";
+import { namespaceOf, runtimeName } from "#/modules/config-store/store-deployments";
+import { crashMail, type CrashPlace } from "#/modules/observe-ingest/crash-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
+import { PRUNE_BATCH_ROWS } from "#/modules/inngest/prune";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
 const MAIL_GAP_MS = 3_600_000;
 const RETAIN = "30 days";
-export const PRUNE_BATCH_ROWS = 5_000;
 
 export type CrashClaim =
   | { readonly kind: "none" }
@@ -19,27 +21,10 @@ type Unmailed = {
   id: string; machineId: string; serviceName: string; exitCode: number | null; oom: boolean; occurredMs: number;
 };
 
-type Context = {
-  organizationName: string; organizationSlug: string; project: string | null; environment: string | null; slug: string | null;
-};
-
-const runtimeName = (serviceName: string) => serviceName.slice(serviceName.indexOf("/") + 1);
-const namespaceOf = (serviceName: string) => serviceName.slice(0, Math.max(serviceName.indexOf("/"), 0));
-
-const loadContext = Effect.fn("CrashMail.context")(function* (organizationId: string, serviceId: string, serviceName: string) {
+const loadContext = Effect.fn("CrashMail.context")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<Context>(sql`
-    select o.name as "organizationName", o.slug as "organizationSlug", placed.project, placed.environment, placed.slug
-    from organization o
-      left join lateral (
-        select p.name as project, e.name as environment, (a.node::jsonb)->>'slug' as slug
-        from config_namespace n
-          join config_environment e on e.id = n.environment_id
-          join config_project p on p.id = e.project_id
-          left join config_applied a on a.environment_id = e.id and a.node_id = ${serviceId} and a.node_type = 'service'
-        where n.organization_id = ${organizationId} and n.namespace = ${namespaceOf(serviceName)}
-      ) placed on true
-    where o.id = ${organizationId}`, "objects");
+  const [row] = yield* drizzle.execute<{ organizationName: string; organizationSlug: string }>(sql`
+    select name as "organizationName", slug as "organizationSlug" from organization where id = ${organizationId}`, "objects");
   return row ?? null;
 });
 
@@ -71,11 +56,10 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
       return { kind: "wait", until: new Date(lastMailed + MAIL_GAP_MS).toISOString() } satisfies CrashClaim;
     }
 
-    const context = yield* loadContext(organizationId, serviceId, last.serviceName);
+    const context = yield* loadContext(organizationId);
     if (context !== null) {
-      const place: CrashPlace | null = context.project === null || context.environment === null
-        ? null
-        : { project: context.project, environment: context.environment, serviceId };
+      const placed = yield* placeService(organizationId, namespaceOf(last.serviceName), serviceId);
+      const place: CrashPlace | null = placed === null ? null : { project: placed.project, environment: placed.environment, serviceId };
       const config = yield* AppConfig;
       yield* queueOrganizationMail({
         organizationId,
@@ -83,7 +67,7 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
         key: `crash:${first.id}`,
         content: crashMail({
           organization: { name: context.organizationName, slug: context.organizationSlug },
-          service: context.slug ?? runtimeName(last.serviceName),
+          service: placed?.slug ?? runtimeName(last.serviceName),
           place,
           count: unmailed.length,
           last: {

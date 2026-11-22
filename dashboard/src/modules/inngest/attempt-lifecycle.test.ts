@@ -4,7 +4,7 @@ import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { createCancelRetireOld, createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 import { createCancelNamespaceCleanup, createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
@@ -42,6 +42,17 @@ describe("attemptLifecycle", () => {
 
     expect((await cancel(functionId)).result).toEqual({ closed: 1 });
     expect((await cancel(otherFunctionId)).result).toEqual({ skipped: true });
+  });
+
+  it("gives the run its own retry count while the cancel and sweep functions keep 3", () => {
+    const [run, cancel, sweep] = attemptLifecycle({
+      run: { id: "probe", retries: 5, triggers: [{ event: "probe/requested" }], handler: async () => null },
+      cancelId: "cancel-probe",
+      closeRun: () => Effect.succeed(1),
+      sweep: { id: "probe-sweep", closeStale: () => Effect.succeed({}) },
+    }).createFunctions(new Inngest({ id: "test" }));
+
+    expect([run.opts.retries, cancel.opts.retries, sweep.opts.retries]).toEqual([5, 3, 3]);
   });
 
   it("hands a failed run's error, and its triggering event only when the workflow asks for it, to closeRun", async () => {

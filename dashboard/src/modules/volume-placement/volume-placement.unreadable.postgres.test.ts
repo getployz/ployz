@@ -5,10 +5,11 @@ import { Effect } from "effect";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { findService, ownerOf } from "#/modules/config-store/store-lookup.server";
-import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
-import { refreshMirrors, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
-import type { CopyAnswer } from "#/modules/volume-run/volume-run.server";
-import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
+import { refreshMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.round.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { type CopyAnswer, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
+import { answeringWith, clusterShowing, COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
@@ -48,7 +49,10 @@ const setup = Effect.fn(function* () {
   return { services, shop, blog };
 });
 
-const ask: CopyAsk = (_asker, _machine, _expect, want: WantedCopy) => Effect.succeed<CopyAnswer>(
+/** A Cluster whose Servers all run daemons that serve placement. */
+const answeringRuntime = Effect.provideService(OrganizationRuntime, clusterShowing(["web-1", "web-2"]));
+
+const ask: (typeof VolumeCluster.Service)["ask"] = (_asker, _machine, _expect, want: WantedCopy) => Effect.succeed<CopyAnswer>(
   want.kind === "snapshot" ? { ok: true, copy: COPIES.writer } : { ok: true, copy: COPIES.pulling },
 );
 
@@ -57,8 +61,8 @@ it.live("a Deploy refreshes its own mirrors while another Environment is unreada
   const copies = [shop, blog].flatMap((name) => [
     { machine_id: web("web-1"), name, role: "writer" as const }, { machine_id: web("web-2"), name, role: "slot" as const },
   ]);
-  const refresh = (only: string | null) => refreshMirrors(ORGANIZATION, only, () => Effect.succeed(copies), () => Effect.succeed([]), () => Effect.succeed(members), ask)
-    .pipe(Effect.provide(services));
+  const refresh = (only: string | null) => refreshMirrors(ORGANIZATION, only, () => Effect.succeed(copies))
+    .pipe(answeringWith({ observe: () => Effect.succeed(members), ask }), answeringRuntime, Effect.provide(services));
 
   expect(yield* refresh(SHOP)).toHaveLength(1);
   // The organization-wide pass skips the Environment it can't read and refreshes the rest.
@@ -75,8 +79,8 @@ it.live("finds a Service while another Environment is unreadable", () => Effect.
 it.live("a Drain refuses naming the Environment it can't read and the way out", () => Effect.gen(function* () {
   const { services, blog } = yield* setup();
   const copies = [{ machine_id: web("web-1"), name: blog, role: "writer" as const }];
-  const refused = yield* stageOffServer(ORGANIZATION, web("web-1"), [web("web-2")], [], () => Effect.succeed(copies), () => Effect.succeed(members))
-    .pipe(Effect.provide(services), Effect.flip);
+  const refused = yield* stageOffServer(ORGANIZATION, web("web-1"), [web("web-2")], [], () => Effect.succeed(copies))
+    .pipe(answeringRuntime, Effect.provide(services), Effect.flip);
   expect(refused).toMatchObject({
     _tag: "Conflict",
     userFacing: true,

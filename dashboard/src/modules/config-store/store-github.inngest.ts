@@ -1,5 +1,4 @@
 import { observeStoreBranch, observeStoreCheckSuite } from "#/modules/config-store/store-github.server";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import {
   closeStoreEnvironments,
   observeStorePullRequest,
@@ -10,22 +9,17 @@ import {
   type StoreOutcome,
 } from "#/modules/config-store/store-pull-request.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import {
-  configPrCheckRequestedEventType,
-  configSweepRequestedEventType,
-  createConfigDeploymentAdmittedEvent,
-  githubCheckSuiteReceivedEventType,
-  githubPullRequestReceivedEventType,
-  githubPushReceivedEventType,
-} from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
+import { githubCheckSuiteReceived, githubPullRequestReceived, githubPushReceived } from "#/modules/github/github.events";
+import { configDeploymentAdmitted, configPrCheckRequested, configSweepRequested } from "#/modules/config-store/config-store.events";
+import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
  * Each its own step after the Store's, so a failed one retries alone: the observation is already applied. Runs to
  * dispatch go to the worker; Branches the Store is closing come off the Servers.
  */
 export async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
-  if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(createConfigDeploymentAdmittedEvent));
+  if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(configDeploymentAdmitted.create));
   const removals = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : [];
   return { admitted: done.deployments.map((deployment) => deployment.deploymentId), removals };
 }
@@ -36,7 +30,7 @@ export const createStoreGithubPush = (inngest: PloyzInngest, runEffect: StoreEff
     {
       id: "store-github-push",
       retries: 5,
-      triggers: [{ event: githubPushReceivedEventType }],
+      triggers: [{ event: githubPushReceived.eventType }],
       concurrency: [{ key: "event.data.branchKey", limit: 1 }],
     },
     async ({ event, step }) => followUp(step, {
@@ -50,7 +44,7 @@ export const createStoreGithubCheckSuite = (inngest: PloyzInngest, runEffect: St
     {
       id: "store-github-check-suite",
       retries: 5,
-      triggers: [{ event: githubCheckSuiteReceivedEventType }],
+      triggers: [{ event: githubCheckSuiteReceived.eventType }],
       concurrency: [{ key: "event.data.checkSuiteKey", limit: 1 }],
     },
     async ({ event, step }) => followUp(step, {
@@ -67,7 +61,7 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: StoreEf
     {
       id: "store-github-pull-request",
       retries: 5,
-      triggers: [{ event: githubPullRequestReceivedEventType }],
+      triggers: [{ event: githubPullRequestReceived.eventType }],
       concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }],
     },
     async ({ event, step }) => {
@@ -87,7 +81,7 @@ export const createStorePrCheck = (inngest: PloyzInngest, runEffect: StoreEffect
     {
       id: "store-pr-check",
       retries: 3,
-      triggers: [{ event: configPrCheckRequestedEventType }],
+      triggers: [{ event: configPrCheckRequested.eventType }],
       concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }],
       debounce: { key: "event.data.pullRequestKey", period: "10s" },
     },
@@ -107,7 +101,7 @@ export const createStoreSweep = (inngest: PloyzInngest, runEffect: StoreEffectRu
 export const createStoreSweepRequested = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
     {
-      id: "store-sweep-requested", retries: 3, triggers: [{ event: configSweepRequestedEventType }],
+      id: "store-sweep-requested", retries: 3, triggers: [{ event: configSweepRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step }) =>

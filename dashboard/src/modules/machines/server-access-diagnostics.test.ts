@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { dialCorrelation, dialTimingFields, nativeDialTimingFields, shouldLogDialTiming } from "./server-access-diagnostics";
+import { describe, expect, it } from "vitest";
+import { dialCorrelation, dialTimingFields, isSampledDial, nativeDialTimingFields, shouldLogDialTiming } from "./server-access-diagnostics";
 
 describe("Server Access dial diagnostics", () => {
   it("emits slow and unanswered dials but skips a fast unsampled answer", () => {
@@ -44,22 +44,9 @@ describe("Server Access dial diagnostics", () => {
     expect(nativeDialTimingFields(sdkDeadline, "timed_out").stoppedBy).toBe("sdk_deadline");
   });
 
-  it.each(["0", "10001", "nope", "1.5", "9007199254740992"])("rejects invalid sample rate %s", async (rate) => {
-    vi.resetModules();
-    vi.stubEnv("PLOYZ_DIAL_SAMPLE_N", rate);
-    const { sampleDialTiming } = await import("./server-access-diagnostics");
-    expect(Array.from({ length: 99 }, sampleDialTiming)).toEqual(Array(99).fill(false));
-    expect(sampleDialTiming()).toBe(true);
-    vi.unstubAllEnvs();
-  });
-
-  it("samples every dial when the rate is one", async () => {
-    vi.resetModules();
-    vi.stubEnv("PLOYZ_DIAL_SAMPLE_N", "1");
-    const { sampleDialTiming } = await import("./server-access-diagnostics");
-    expect(sampleDialTiming()).toBe(true);
-    expect(sampleDialTiming()).toBe(true);
-    vi.unstubAllEnvs();
+  it("samples the dial whose sequence number the rate divides", () => {
+    expect(Array.from({ length: 6 }, (_, i) => isSampledDial(i + 1, 3))).toEqual([false, false, true, false, false, true]);
+    expect(isSampledDial(1, 1)).toBe(true);
   });
 
   it("emits no capability or relay address even if they enter the input", () => {

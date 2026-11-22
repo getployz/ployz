@@ -5,7 +5,7 @@ import { useLoaderData } from "@tanstack/react-router";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { createVolumeCommand } from "#/modules/config-store/store-volumes";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
 import type { CanvasResourceNode, FlowPosition } from "./types";

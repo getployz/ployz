@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
+import { holdEnvironment } from "#/modules/config-store/store-places.server";
 import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -46,10 +47,7 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // The lock holds off the environment's delete, so its forget trigger cannot run before these rows exist.
-    const [environment] = yield* drizzle.execute<{ id: string }>(sql`
-      select id from config_environment where id = ${environmentId} and organization_id = ${organizationId}
-      for key share`, "objects");
-    if (environment === undefined) return yield* new NotFound({ message: "Environment not found." });
+    if (!(yield* holdEnvironment(organizationId, environmentId))) return yield* new NotFound({ message: "Environment not found." });
     const [site] = yield* drizzle.insert(analyticsSite)
       .values({ organizationId, environmentId, enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }) })
       .onConflictDoUpdate({

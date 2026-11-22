@@ -8,8 +8,8 @@ import {
   closeStaleCleanups, endCleanup, readDeploymentCleanup, recordCleanupWaiting,
 } from "#/modules/config-store/retire-old.server";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { configDeploymentRetireRequestedEvent } from "#/modules/inngest/events";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { configDeploymentRetireRequested } from "#/modules/config-store/config-store.events";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000af01";
@@ -35,7 +35,7 @@ const cancel = (runId: string, deploymentId: string) => new InngestTestEngine({
     name: "inngest/function.cancelled",
     data: {
       function_id: "ployz-cloud-retire-old", run_id: runId,
-      event: { name: configDeploymentRetireRequestedEvent, data: requested(deploymentId) },
+      event: { name: configDeploymentRetireRequested.name, data: requested(deploymentId) },
     },
   }],
 }).execute();
@@ -117,7 +117,7 @@ it("ends done with nothing left once a retry retires the copy an earlier try lef
   try {
     await new InngestTestEngine({
       function: createRetireOld(new Inngest({ id: "ployz-cloud" }), makeInngestEffectRunner(harness.runEffect) as typeof runInngestEffect),
-      events: [{ name: configDeploymentRetireRequestedEvent, data: requested("retried") }],
+      events: [{ name: configDeploymentRetireRequested.name, data: requested("retried") }],
       transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: "retried" }),
       steps: [{ id: "pause-1", handler: () => undefined }],
     }).execute();

@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import { KeyRoundIcon } from "lucide-react";
-import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { CopyButton } from "#/components/copy-button";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
@@ -17,29 +16,24 @@ import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
 import { listNames } from "#/lib/plural";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
-import { createTokenServerFn, revokeTokenServerFn } from "#/modules/identity/organization-token.functions";
-import { organizationTokensQueryOptions, tokensKey } from "#/modules/identity/organization-token.queries";
+import { createTokenServerFn } from "#/modules/identity/organization-token.functions";
+import { organizationTokensQueryOptions, useRefreshOrganizationTokens, useRevokeOrganizationToken } from "#/modules/identity/organization-token.queries";
 import type { TokenPreset } from "#/modules/identity/token-grant";
 import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
 export function TokensSettings({ organizationSlug }: { organizationSlug: string }) {
-  const queryClient = useQueryClient();
   const { data: tokens } = useSuspenseQuery(organizationTokensQueryOptions(organizationSlug));
   const timeZone = useTimeZone();
   const [making, setMaking] = useState(false);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: tokensKey(organizationSlug) });
-  const revoke = useMutation({
-    mutationFn: (id: string) => revokeTokenServerFn({ data: { organizationSlug, id } }),
-    onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't revoke the token.")),
-    onSettled: refresh,
-  });
+  const refresh = useRefreshOrganizationTokens(organizationSlug);
+  const revoke = useRevokeOrganizationToken(organizationSlug);
 
   return (
     <SettingsSection id="tokens" title="Tokens">
       {tokens.length > 0 ? (
         <SettingsList label="Tokens">
           {tokens.map((token) => (
-            <TokenItem key={token.id} token={token} timeZone={timeZone} revoking={revoke.isPending && revoke.variables === token.id} onRevoke={() => revoke.mutate(token.id)} />
+            <TokenItem key={token.id} token={token} timeZone={timeZone} onRevoke={() => revoke.mutate(token.id)} />
           ))}
         </SettingsList>
       ) : (
@@ -56,10 +50,9 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
 type TokenOwner = { readonly name: string; readonly email: string; readonly you: boolean };
 
 /** `timeZone` is the viewer's (`useTimeZone`), so the server render and the browser agree on the expiry's day. */
-export function TokenItem({ token, timeZone, revoking, onRevoke }: {
+export function TokenItem({ token, timeZone, onRevoke }: {
   token: { name: string; scope: string; expires_at: string; expired: boolean; owner: TokenOwner };
   timeZone: string;
-  revoking: boolean;
   onRevoke: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -73,7 +66,7 @@ export function TokenItem({ token, timeZone, revoking, onRevoke }: {
       commit="confirm"
       actions={(
         <>
-          <Button variant="ghost" size="sm" disabled={revoking} onClick={() => setConfirming(true)}>
+          <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
             Revoke
           </Button>
           <ConfirmDialog

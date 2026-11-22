@@ -1,18 +1,8 @@
 import { ConfigProvider, Layer } from "effect";
 import { AppConfig } from "#/server/config.server";
+import { TEST_SERVICE_VARIABLES } from "#/test/test-env";
 
-const SERVICE_VARIABLES = [
-  "GITHUB_APP_CLIENT_ID",
-  "GITHUB_APP_CLIENT_SECRET",
-  "GITHUB_APP_ID",
-  "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_APP_SLUG",
-  "GITHUB_APP_WEBHOOK_SECRET",
-  "INNGEST_EVENT_KEY",
-  "INNGEST_SIGNING_KEY",
-] as const;
-
-function serviceVariable(name: (typeof SERVICE_VARIABLES)[number]) {
+function serviceVariable(name: string) {
   const value = process.env[name];
   if (value === undefined) throw new Error(`Missing test variable ${name}`);
   return [name, value] as const;
@@ -29,7 +19,7 @@ export function testConfigEnvironment() {
     APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
     // A closed port, never the real Hosted DNS: a test that reserves a Cluster Domain starts a fake one.
     PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
-    ...Object.fromEntries(SERVICE_VARIABLES.map(serviceVariable)),
+    ...Object.fromEntries(TEST_SERVICE_VARIABLES.map(serviceVariable)),
   };
 }
 

@@ -11,11 +11,11 @@ import {
   type ManagedSubscriptionSnapshot,
 } from "#/modules/billing/billing";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import { countOrganizationMachines } from "#/modules/machines/connections.server";
+import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor } from "#/modules/identity/actor";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { user } from "#/modules/identity/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -23,12 +23,6 @@ import { Conflict } from "#/server/public-error";
 import {
   organizationBillingState as schemaOrganizationBillingState,
 } from "#/modules/billing/tables";
-
-export class BillingValidation extends Data.TaggedError("SchemaError")<{
-  readonly message: string;
-}> {
-  readonly publicErrorCategory = "validation" as const;
-}
 
 export class BillingNotFound extends Data.TaggedError("NotFound")<{
   readonly resource: string;
@@ -63,11 +57,6 @@ const hasCachedActiveSubscription = Effect.fn("Billing.hasCachedActiveSubscripti
 export const getActiveManagedSubscriptionSnapshot = Effect.fn(
   "Billing.getActiveSnapshot",
 )(function* (organizationId: string) {
-  if (organizationId.trim().length === 0) {
-    return yield* new BillingValidation({
-      message: "organizationId is required",
-    });
-  }
   const polar = yield* requireHostedPolar();
   const subscriptions = yield* polar.listActiveSubscriptions(organizationId);
   return selectManagedSubscriptionSnapshot(subscriptions, polar.productId);

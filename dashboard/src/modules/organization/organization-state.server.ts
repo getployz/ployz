@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
 import type { Actor, SessionActor } from "#/modules/identity/actor";
-import { takeDeviceOrganization } from "#/modules/identity/device-organization.server";
-import { invitation, member, session, user } from "#/modules/identity/tables";
-import { Polar } from "#/modules/billing/polar-provider.server";
+import { session, user } from "#/modules/identity/tables";
+import { invitation, member, organization } from "#/modules/organization/tables";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
+import { refusalFor } from "#/modules/organization/permissions";
+import { billingEnabled } from "#/server/capabilities.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized } from "#/server/public-error";
@@ -18,7 +19,6 @@ import {
   type RenameOrganization,
   type SyncOrganizationSlug,
 } from "./organization-state";
-import { organization } from "./tables";
 
 export const getOrganizationSlugById = Effect.fn(
   "Organization.getOrganizationSlugById",
@@ -114,11 +114,20 @@ export const createOrganization = Effect.fn("Organization.create")(function* (ac
 /** A new name, by an owner or admin, never by a support visit. The slug, and so every address and URL, stays. */
 export const renameOrganization = Effect.fn("Organization.rename")(function* (actor: Actor, input: RenameOrganization) {
   const access = yield* requireAccess(actor, input.organizationSlug, "org:settings");
-  if (access.kind === "support") return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
+  if (access.kind === "support") return yield* new Forbidden({ message: refusalFor("org:settings") });
   const { id } = access.organization;
   const { drizzle } = yield* Database;
   yield* drizzle.update(organization).set({ name: input.name }).where(eq(organization.id, id));
   return { name: input.name };
+});
+
+/** Points session `sessionId` of `userId` at the Organization. Returns the rows moved: none when the session has ended. */
+const actInOrganization = Effect.fn("Organization.actIn")(function* (userId: string, sessionId: string, target: { readonly id: string; readonly slug: string }) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.update(session)
+    .set({ activeOrganizationId: target.id, activeOrganizationSlug: target.slug, updatedAt: new Date() })
+    .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+    .returning({ id: session.id });
 });
 
 /**
@@ -128,15 +137,7 @@ export const renameOrganization = Effect.fn("Organization.rename")(function* (ac
 export const openOrganizationInSession = Effect.fn(
   "Organization.openOrganizationInSession",
 )(function* (actor: SessionActor, organizationId: string, organizationSlug: string) {
-  const database = yield* Database;
-  yield* database.drizzle
-    .update(session)
-    .set({
-      activeOrganizationId: organizationId,
-      activeOrganizationSlug: organizationSlug,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(session.id, actor.credential.id), eq(session.userId, actor.userId)));
+  yield* actInOrganization(actor.userId, actor.credential.id, { id: organizationId, slug: organizationSlug });
 });
 
 /** Someone who once joined by invite already knows the Organization exists, so its name tells them nothing new. */
@@ -153,14 +154,13 @@ export const getOrganizationState = Effect.fn(
   "Organization.getOrganizationState",
 )(function* (actor: Actor, organizationSlug?: string) {
   const organizations = yield* listAccessibleOrganizations(actor);
-  const polar = yield* Polar;
   const staff = yield* SupportStaff;
   const config = yield* AppConfig;
   const accessible = organizationSlug !== undefined && organizations.some((organization) => organization.slug === organizationSlug);
   const activeOrganization = organizations.find((organization) => organization.slug === organizationSlug) ?? organizations[0] ?? null;
   return {
     formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
-    billingEnabled: polar.mode === "hosted",
+    billingEnabled: yield* billingEnabled,
     uptimeEnabled: config.uptimeEnabled,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */
     supportAvailable: staff.available,
@@ -181,95 +181,6 @@ export const syncOrganizationSlug = Effect.fn(
     organizationId: organization.id,
     organizationSlug: input.organizationSlug,
   };
-});
-
-type SessionRecord = {
-  id: string;
-  userId: string;
-  token?: string | null;
-  activeOrganizationId?: string | null;
-  activeOrganizationSlug?: string | null;
-};
-
-type SessionContext = {
-  context: {
-    internalAdapter: {
-      findUserById(userId: string): Promise<PersonalOrganizationUser | null>;
-      updateSession(
-        token: string,
-        session: {
-          activeOrganizationId: string;
-          activeOrganizationSlug: string | null;
-        },
-      ): Promise<SessionRecord | null>;
-    };
-  };
-};
-
-export class WorkspaceAuthHookFailure extends Data.TaggedError(
-  "WorkspaceAuthHookFailure",
-)<{ readonly cause: unknown }> {}
-
-const setActiveOrganizationForSession = Effect.fn(
-  "Organization.setActiveOrganizationForSession",
-)(function* (
-  sessionRecord: SessionRecord,
-  organizationId: string,
-  ctx: SessionContext,
-) {
-  const organizationSlug = yield* getOrganizationSlugById(organizationId);
-
-  const token = sessionRecord.token;
-  if (token) {
-    yield* Effect.tryPromise({
-      try: () => ctx.context.internalAdapter.updateSession(token, {
-        activeOrganizationId: organizationId,
-        activeOrganizationSlug: organizationSlug,
-      }),
-      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
-    });
-    return;
-  }
-
-  const database = yield* Database;
-  yield* database.drizzle
-    .update(session)
-    .set({
-      activeOrganizationId: organizationId,
-      activeOrganizationSlug: organizationSlug,
-    })
-    .where(eq(session.id, sessionRecord.id));
-});
-
-export const handleUserCreated = Effect.fn("Organization.handleUserCreated")(
-  function* (user: PersonalOrganizationUser) {
-    return yield* ensurePersonalOrganizationForUser(user);
-  },
-);
-
-/**
- * A new session acts in an Organization from the start. A `ployz login` session redeeming `deviceCode` takes the one
- * the `/device` page named when it was approved; any other takes the user's first, made if they have none.
- */
-export const handleSessionCreated = Effect.fn("Organization.handleSessionCreated")(
-function* (
-  sessionRecord: SessionRecord,
-  ctx: SessionContext | null,
-  deviceCode: string | null,
-) {
-  if (!ctx || sessionRecord.activeOrganizationId) return;
-  const approved = deviceCode === null ? null : yield* takeDeviceOrganization(deviceCode, sessionRecord.userId);
-  let organizationId = approved ?? (yield* getFirstOrganizationIdForUser(sessionRecord.userId));
-  if (!organizationId) {
-    const user = yield* Effect.tryPromise({
-      try: () => ctx.context.internalAdapter.findUserById(sessionRecord.userId),
-      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
-    });
-    if (!user) return;
-    organizationId = yield* ensurePersonalOrganizationForUser(user);
-  }
-  if (!organizationId) return;
-  yield* setActiveOrganizationForSession(sessionRecord, organizationId, ctx);
 });
 
 /**
@@ -297,12 +208,7 @@ export const createOrganizationForSession = Effect.fn("Organization.createForSes
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const created = yield* insertOrganization(userId, input.name, input.slug);
-    const { drizzle: tx } = yield* Database;
-    const moved = yield* tx
-      .update(session)
-      .set({ activeOrganizationId: created.id, activeOrganizationSlug: created.slug, updatedAt: new Date() })
-      .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
-      .returning({ id: session.id });
+    const moved = yield* actInOrganization(userId, sessionId, created);
     // The session ended mid-request: roll the Organization back with it.
     if (moved.length === 0) return yield* new Unauthorized();
     return { id: created.id, slug: created.slug, name: input.name };

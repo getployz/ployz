@@ -9,6 +9,7 @@ import { type CheckinRequest, PROBE_WINDOW_MS, type ProbeRequest } from "#/modul
 import { ProbeResults, type TcpObservation } from "#/modules/machines/waiting/probe";
 import { waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
+import { AppConfig } from "#/server/config.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 
 const MAX_PEERS = 3;
@@ -22,21 +23,21 @@ export const WINDOW_SCHEDULE = { firstAfterMs: 1_000, everyMs: 1_500, timeoutMs:
 const ipv4Compatible = new BlockList();
 ipv4Compatible.addSubnet("::", 96, "ipv6");
 
-function devOnlyProbeAllowList() {
-  const cidrs = import.meta.env.DEV ? process.env["PLOYZ_VERIFY_PROBE_ALLOW"] ?? "" : "";
+/** The ranges a verify lab lets Cloud probe, from a comma-separated list of CIDRs. */
+const probeAllowList = (cidrs: string) => {
   const allow = new BlockList();
   for (const cidr of cidrs.split(",").map((entry) => entry.trim()).filter(ipaddr.isValidCIDR)) {
     const [network, prefix] = ipaddr.parseCIDR(cidr);
     allow.addSubnet(network.toString(), prefix, network.kind() === "ipv4" ? "ipv4" : "ipv6");
   }
   return allow;
-}
+};
 
 const probeAddress = (ip: string) => ipaddr.process(ip).toString();
 
 const isLiteralAddress = (ip: string) => isIP(ip) !== 0 && !ip.includes("%");
 
-export function refusedTarget(ip: string, allow: BlockList = devOnlyProbeAllowList()): "no_address" | "private_range" | null {
+export function refusedTarget(ip: string, allow: BlockList): "no_address" | "private_range" | null {
   if (!isLiteralAddress(ip)) return "no_address";
   const address = ipaddr.process(ip);
   if (allow.check(address.toString(), address.kind() === "ipv4" ? "ipv4" : "ipv6")) return null;
@@ -161,7 +162,7 @@ export const handOutProbe = Effect.fn("Probe.handOut")(function* (
   checkinKey: string,
 ) {
   if (Option.isNone(pending) || pending.value.handedAt !== undefined) return null;
-  const refused = refusedTarget(observedIp);
+  const refused = refusedTarget(observedIp, probeAllowList((yield* AppConfig).verify.probeAllow));
   const notProbed = refused === null ? null : JSON.stringify({ "80": { seen: "not_probed", reason: refused }, "443": { seen: "not_probed", reason: refused } });
   const { drizzle } = yield* Database;
   const handout = randomBytes(16).toString("base64url");
@@ -204,8 +205,7 @@ export const probeAfterCheckIn = (observedIp: string, report: CheckinRequest["pr
     else jsonb_set((${reported}) - 'handout' - 'host', '{tcp}', ${UNSTABLE_TCP}::jsonb) end`;
 };
 
-export function probePeers(hosts: ReadonlyArray<{ readonly id: string; readonly observedIp: string }>) {
-  const allow = devOnlyProbeAllowList();
+export function probePeers(hosts: ReadonlyArray<{ readonly id: string; readonly observedIp: string }>, allow: BlockList) {
   const eligible = new Set([...new Set(hosts.map((host) => host.observedIp))].filter((ip) => refusedTarget(ip, allow) === null));
   return new Map(hosts.map((host, index) => {
     const targets = new Set<string>();
@@ -223,6 +223,7 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
+  const { verify } = yield* AppConfig;
   const selected = and(
     eq(waitingServer.organizationId, organization.id),
     inArray(waitingServer.id, [...input.ids]),
@@ -240,7 +241,7 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
     if (hosts.length === 0 || hosts.some((host) => !host.reopenable)) return { probing: 0 };
     const nonce = randomBytes(16).toString("base64url");
     const pending: TcpObservation = { seen: "pending" };
-    const probes = Object.fromEntries([...probePeers(hosts)].map(([id, send]) => {
+    const probes = Object.fromEntries([...probePeers(hosts, probeAllowList(verify.probeAllow))].map(([id, send]) => {
       const request: ProbeRequest = { nonce, windowMs: PROBE_WINDOW_MS, listen: ["udp:51820", "tcp:80", "tcp:443"], send };
       return [id, { request, tcp: { "80": pending, "443": pending } } satisfies ProbeResults];
     }));

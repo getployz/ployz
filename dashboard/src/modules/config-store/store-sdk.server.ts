@@ -1,11 +1,15 @@
 import "@tanstack/react-start/server-only";
 import { type ConfigStore, openConfigStore, RpcError } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Redacted, Semaphore } from "effect";
-import { storeChangeSources } from "#/modules/organization/change-log.sources";
+import { clusterExpectation, loadOrganizationConnections, logForeignServers } from "#/modules/runtime/connections.server";
+import { uptimeForgetServicesTrigger } from "#/modules/uptime/tables";
+import { analyticsForgetEnvironmentsTrigger } from "#/modules/web-analytics/tables";
+import { storeChangeSources } from "./store.change-sources";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 
 /** Whether the Store refused with `code`. */
@@ -23,15 +27,40 @@ export const storeTry = <A>(call: () => Promise<A>): Effect.Effect<A, StoreRefus
   );
 
 /**
+ * The Organization's Servers, to dial, with the Cluster the dial expects them in: its pairing's recorded Sealing Key,
+ * else none. No Servers while it has no pairing.
+ */
+export const deployDialOf = Effect.fn("ConfigStore.deployDialOf")(function* (organizationId: string) {
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  return loaded.kind === "ready"
+    ? { connections: loaded.connections, expect: clusterExpectation(loaded) }
+    : { connections: [], expect: null };
+});
+
+/** A Store call that dials the Organization's Servers (`deployDialOf`). */
+export const dialedStore = <A>(organizationId: string, call: (dial: Effect.Success<ReturnType<typeof deployDialOf>>) => Promise<A>) =>
+  Effect.flatMap(deployDialOf(organizationId), (dial) => storeTry(() => call(dial)));
+
+/** `dialedStore` for a call that answers the Servers it left because they run in another Cluster, which it logs. */
+export const withDeployDial = <A extends { readonly foreign: readonly string[] }>(
+  organizationId: string, call: (dial: Effect.Success<ReturnType<typeof deployDialOf>>) => Promise<A>,
+) => Effect.tap(dialedStore(organizationId, call), ({ foreign }) => logForeignServers(organizationId, foreign));
+
+/** Each module's trigger that forgets what it keeps for a Store row once that row is deleted. */
+const FORGET_TRIGGERS: readonly {
+  readonly table: string; readonly name: string; readonly ifMissing: boolean; readonly create: SQL;
+}[] = [uptimeForgetServicesTrigger, analyticsForgetEnvironmentsTrigger];
+
+/**
  * The Store creates its tables when it first opens, after Cloud's migrations have run, so Cloud attaches its
- * change log to them then, the trigger that deletes a Service's uptime check with its Applied State row, and the
- * trigger that deletes an Environment's analytics with it. The lock serializes processes opening the Store at once.
+ * change log to them then, and the modules' triggers that forget what they keep for a deleted Store row. The lock
+ * serializes processes opening the Store at once.
  */
 const attachChangeLog = Effect.gen(function* () {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`select pg_advisory_xact_lock(1256)`);
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.storeChangeLog})`);
     for (const [table, { key }] of Object.entries(storeChangeSources)) {
       const keys = sql.join(key.map((column) => sql`${column}::text`), sql`, `);
       yield* drizzle.execute(sql`
@@ -39,19 +68,15 @@ const attachChangeLog = Effect.gen(function* () {
         where not exists (select from pg_trigger where tgrelid = ${table}::regclass and tgname = 'organization_change_insert')
       `);
     }
-    yield* drizzle.execute(sql`
-      create or replace trigger uptime_check_forget_services after delete on config_applied
-      referencing old table as old_rows for each statement execute function uptime_check_forget_services()
-    `);
-    // Created only when missing: a create on config_environment locks it until the open's transaction ends.
-    const [analyticsTrigger] = yield* drizzle.execute<{ exists: boolean }>(sql`
-      select exists (select from pg_trigger
-        where tgrelid = 'config_environment'::regclass and tgname = 'analytics_forget_environments') as exists
-    `, "objects");
-    if (analyticsTrigger?.exists !== true) yield* drizzle.execute(sql`
-      create trigger analytics_forget_environments after delete on config_environment
-      referencing old table as old_rows for each statement execute function analytics_forget_environments()
-    `);
+    for (const trigger of FORGET_TRIGGERS) {
+      if (trigger.ifMissing) {
+        const [existing] = yield* drizzle.execute<{ exists: boolean }>(sql`
+          select exists (select from pg_trigger where tgrelid = ${trigger.table}::regclass and tgname = ${trigger.name}) as exists
+        `, "objects");
+        if (existing?.exists === true) continue;
+      }
+      yield* drizzle.execute(trigger.create);
+    }
   }));
 });
 

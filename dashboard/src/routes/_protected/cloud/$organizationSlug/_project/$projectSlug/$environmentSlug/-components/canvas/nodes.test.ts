@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ConfigListing, DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { ConfigListing, DiffView, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { rowId } from "#/test/ids";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
-import type { MachineId } from "@ployz/sdk";
-import type { MirrorCopy, OffsiteCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
+import type { MirrorCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { arrivingNodes, buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
@@ -148,10 +147,9 @@ describe("Config Store nodes", () => {
     const server = (name: string) => ({ id: name as MachineId, name });
     const mirror = (name: string): MirrorCopy =>
       ({ kind: "mirror", id: name, server: server(name), name, refreshedAt: null, skipped: null, lastReported: false, staged: null, busy: null });
-    const offsite: OffsiteCopy = { kind: "offsite", id: "b", bucket: "b", region: "r", keep: 7, uploadedAt: null, staged: null, busy: null };
     const old: OldCopy = { kind: "old", id: "web-9", server: server("web-9"), name: "old", since: null, bytes: null, staged: null, busy: null };
     const copiesOf = (id: string, elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
-      volume: { id, name: id }, live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null }, elsewhere, unheard: [],
+      volume: { id, name: id }, live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null }, elsewhere, unheard: [],
     });
     const copies = new Map([
       ["shared", copiesOf("shared", [mirror("web-2")])], ["loose", copiesOf("loose", [mirror("web-3")])], ["own", copiesOf("own", [old])],
@@ -199,8 +197,8 @@ describe("Config Store nodes", () => {
 
     it("measures how far a row of cards reaches past its node on each side", () => {
       expect(hangOverhang([copiesOf("a", [mirror("web-2")])])).toBe(0);
-      expect(hangOverhang([copiesOf("a", [mirror("web-2"), offsite, old])])).toBe((2 * 176 + 12 - 288) / 2);
-      expect(hangOverhang([copiesOf("a", [mirror("web-2"), offsite]), copiesOf("b", [mirror("web-3")])])).toBe((3 * 176 + 2 * 12 - 288) / 2);
+      expect(hangOverhang([copiesOf("a", [mirror("web-2"), mirror("web-4"), old])])).toBe((2 * 176 + 12 - 288) / 2);
+      expect(hangOverhang([copiesOf("a", [mirror("web-2"), mirror("web-4")]), copiesOf("b", [mirror("web-3")])])).toBe((3 * 176 + 2 * 12 - 288) / 2);
     });
   });
 });

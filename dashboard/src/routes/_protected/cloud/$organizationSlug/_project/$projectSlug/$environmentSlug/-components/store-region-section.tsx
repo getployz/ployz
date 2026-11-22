@@ -1,8 +1,8 @@
 import { FieldError } from "#/components/ui/field";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { RegionSelect } from "#/modules/machines/RegionSelect";
-import { useRegionOptions } from "#/modules/machines/use-region-options";
+import { useRegionOptions } from "#/modules/machines/server-regions.hooks";
 import { environmentSettingsQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 

@@ -1,5 +1,6 @@
+/** @data-source remote: one Service's or one Server's metrics for the shown range, read live from the Servers on each fetch. Stale after 30s and polled every minute because Servers sample without a Cloud write to invalidate on. A canvas card's OOM kills and restarts in the last hour read one bucket per Server, stale after a minute and polled every 5, because every card asks every Server */
 import { queryOptions } from "@tanstack/react-query";
-import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
+import { DEFAULT_RANGE } from "#/lib/time-range";
 import type { ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
 import { readRuntimeServiceMetricsServerFn, readServerMetricsServerFn, readServiceMetricsServerFn } from "./metrics.functions";
 

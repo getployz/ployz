@@ -1,5 +1,188 @@
-import { Cause, Context, Effect, Exit, Fiber, Layer, Logger, References, Tracer } from "effect";
-import { holdsQuery, loggableCause, mayCarryQuery, safeSummary } from "#/server/public-error";
+import { Cause, Context, Effect, Exit, Fiber, Layer, Logger, Option, References, Schema, Tracer } from "effect";
+
+const decodeTaggedFailure = Schema.decodeUnknownOption(
+  Schema.Struct({ _tag: Schema.String }),
+);
+
+/** Whether `cause` is a tagged failure, which a log names by its tag alone. */
+export const isTaggedFailure = (cause: unknown) => Option.isSome(decodeTaggedFailure(cause));
+
+const decodeErrorCode = Schema.decodeUnknownOption(
+  Schema.Struct({ code: Schema.String }),
+);
+const decodeNestedCause = Schema.decodeUnknownOption(
+  Schema.Struct({ cause: Schema.Unknown }),
+);
+
+const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
+const SQLSTATE = /^[0-9A-Z]{5}$/u;
+
+/**
+ * A typed failure that answers 500, named by its tags and SQLSTATE alone: its fields, such as a failed query's params,
+ * can hold secrets, and so can a tag or code that isn't shaped like one.
+ */
+export function typedFailureSummary(cause: unknown, untagged = ""): string {
+  const tags: string[] = [];
+  let code: string | undefined;
+  for (const at of causeChain(cause)) {
+    const tagged = decodeTaggedFailure(at);
+    if (Option.isSome(tagged)) tags.push(IDENTIFIER.test(tagged.value._tag) ? tagged.value._tag : "?");
+    const found = Option.getOrUndefined(decodeErrorCode(at))?.code;
+    if (found !== undefined && SQLSTATE.test(found)) code ??= found;
+  }
+  const kind = tags.length > 0 ? tags.join(" > ") : untagged;
+  return code === undefined ? kind : `${kind} (${code})`;
+}
+
+/** `cause`, then each `cause` it wraps, a few deep. */
+function* causeChain(cause: unknown) {
+  for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
+    yield at;
+    const next = Option.getOrUndefined(decodeNestedCause(at))?.cause;
+    at = Cause.isCause(next) ? Cause.squash(next) : next;
+  }
+}
+
+const QUERY_FAILURES = new Set(["EffectDrizzleQueryError", "SqlError"]);
+/** A failed query from Effect's drizzle, or from node-postgres drizzle, which Better Auth reads through. */
+const decodeFailedQuery = Schema.decodeUnknownOption(Schema.Union([
+  Schema.Struct({ _tag: Schema.Literal("EffectDrizzleQueryError"), query: Schema.String }),
+  Schema.Struct({ name: Schema.Literal("DrizzleQueryError"), query: Schema.String }),
+]));
+const decodeErrorName = Schema.decodeUnknownOption(Schema.Struct({ name: Schema.String }));
+/** A quote, dollar quote, escape or comment: text past one may be a value, so no statement is named. */
+const UNREADABLE = /['\\`]|\$(?!\d)|\/\*|--|""/u;
+const NAME = String.raw`(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)`;
+const STATEMENT = new RegExp(String.raw`\b(?:insert\s+into|delete\s+from|update|from)\s+(${NAME}(?:\.${NAME})?)`, "iu");
+const VERB = /^\s*(?:with\b[\s\S]*?\)\s*)?(select|insert|update|delete)\b/iu;
+/** How many values and Causes [`causeValues`] reads before it treats a cause as unreadable. */
+const READABLE_VALUES = 64;
+
+/**
+ * A failed query's statement as its verb and first table, such as `insert machine_enrollment_token`. None when the
+ * query holds a literal, comment or anything but `$n` params and plain identifiers, since a value could pass for a table.
+ */
+function statementName(query: string): string | undefined {
+  if (UNREADABLE.test(query)) return undefined;
+  const verb = VERB.exec(query)?.[1];
+  const table = STATEMENT.exec(query)?.[1]?.replaceAll('"', "");
+  if (verb === undefined || table === undefined) return undefined;
+  return `${verb.toLowerCase()} ${table}`;
+}
+
+/**
+ * Every value in `cause`: each reason of a Cause, and each `cause` a value wraps, all branches. None when it holds
+ * more than [`READABLE_VALUES`] values and Causes, so a cause too deep or cyclic to read is never taken as safe.
+ */
+function causeValues(cause: unknown): unknown[] | undefined {
+  const values: unknown[] = [];
+  const pending: unknown[] = [cause];
+  let read = 0;
+  for (let at = pending.shift(); at !== undefined || pending.length > 0; at = pending.shift()) {
+    if (at === undefined) continue;
+    read += 1;
+    if (read > READABLE_VALUES) return undefined;
+    if (Cause.isCause(at)) {
+      for (const reason of at.reasons) {
+        if (Cause.isDieReason(reason)) pending.push(reason.defect);
+        else if (Cause.isFailReason(reason)) pending.push(reason.error);
+      }
+      continue;
+    }
+    values.push(at);
+    pending.push(Option.getOrUndefined(decodeNestedCause(at))?.cause);
+  }
+  return values;
+}
+
+/** Whether `cause` may hold a failed query: one is in it, or it is too deep to tell. */
+export function mayCarryQuery(cause: unknown): boolean {
+  const values = causeValues(cause);
+  return values === undefined || values.some((at) => {
+    const tagged = decodeTaggedFailure(at);
+    return Option.isSome(tagged) && QUERY_FAILURES.has(tagged.value._tag) || Option.isSome(decodeFailedQuery(at));
+  });
+}
+
+/**
+ * `value` by its tags, SQLSTATE and any failed query's statement, or else its error class: never a message or field,
+ * since a query's message holds its params and the database's can quote the values it refused. `unreadable` when
+ * reading it throws.
+ */
+export function safeSummary(cause: unknown): string {
+  try {
+    const name = Option.getOrUndefined(decodeErrorName(cause))?.name;
+    const kind = typedFailureSummary(cause, name !== undefined && IDENTIFIER.test(name) ? name : "defect");
+    const query = causeValues(cause)
+      ?.map((at) => Option.getOrUndefined(decodeFailedQuery(at))?.query)
+      .find((at) => at !== undefined);
+    const statement = query === undefined ? undefined : statementName(query);
+    return statement === undefined ? kind : `${kind} in ${statement}`;
+  } catch {
+    // A getter that throws hides what the value is; it is named as nothing more.
+    return "unreadable";
+  }
+}
+
+/** How many values [`holdsQuery`] reads before it treats a value as holding a query. */
+const READABLE_FIELDS = 1024;
+
+function isObject(cause: unknown): cause is object {
+  return cause !== null && cause !== undefined && Object(cause) === cause;
+}
+
+/**
+ * Whether a failed query may be anywhere in `cause`: in a Cause, a `cause` chain, any own field, symbol-keyed or not,
+ * or a Map or Set entry. A value it cannot read whole counts as holding one: more than [`READABLE_FIELDS`] values, a
+ * getter other than an error's `stack`, or anything that throws. Getters are never called.
+ */
+export function holdsQuery(cause: unknown): boolean {
+  const seen = new Set<object>();
+  const pending: unknown[] = [cause];
+  const read = (cause: unknown) => {
+    pending.push(cause);
+    return pending.length <= READABLE_FIELDS;
+  };
+  try {
+    for (let at = 0; at < pending.length; at += 1) {
+      const value = pending[at];
+      if (!isObject(value) || seen.has(value)) continue;
+      seen.add(value);
+      if (mayCarryQuery(value)) return true;
+      for (const key of Reflect.ownKeys(value)) {
+        const field = Reflect.getOwnPropertyDescriptor(value, key);
+        if (field?.get !== undefined && !(key === "stack" && value instanceof Error)) return true;
+        if (!read(field?.value)) return true;
+      }
+      if (value instanceof Map) {
+        for (const [key, entry] of value) if (!read(key) || !read(entry)) return true;
+      } else if (value instanceof Set) {
+        for (const entry of value) if (!read(entry)) return true;
+      }
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * What a log may hold of `cause`: all of it, unless a failed query may be in it. Then every reason is named by
+ * [`safeSummary`], and an interruption as such.
+ */
+export function loggableCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> | string {
+  if (!holdsQuery(cause)) return cause;
+  return cause.reasons
+    .map((reason) =>
+      Cause.isDieReason(reason)
+        ? safeSummary(reason.defect)
+        : Cause.isFailReason(reason)
+          ? safeSummary(reason.error)
+          : "interrupted"
+    )
+    .join("\n");
+}
+
 
 /** How deep into a logged record or array [`redact`] reads before it redacts what is left. */
 const FIELD_DEPTH = 3;

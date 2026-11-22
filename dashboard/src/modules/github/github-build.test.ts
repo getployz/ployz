@@ -1,7 +1,8 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
-import { cancelGithubRun, checkGithubBuildRepository, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
+import { checkGithubBuildRepository } from "#/modules/config-store/store-github-repositories.server";
+import { cancelGithubRun, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
 import { GITHUB_RULE_WORKFLOW, type GithubWorkflowTemplate } from "./github-build-workflow";
 import { GithubAuthority, type GithubAuthorityService, type GithubBuildRun } from "./github-authority.server";
 import { GithubApi, GithubObservationError, githubLacksPermission, type GithubObservationErrorCode } from "./github-observation.api";

@@ -1,6 +1,7 @@
 import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
-import { requireOrganization, requireStoreProjects } from "#/collections/route-data";
-import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
+import { requireStoreProjects } from "#/modules/config-store/store.route-data";
+import { requireOrganization } from "#/modules/organization/organization.route-data";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/",
@@ -15,7 +16,7 @@ export const Route = createFileRoute(
     if (!environmentSlug) throw notFound();
 
     throw redirect({
-      to: EnvironmentOverviewRoute.to,
+      to: ENVIRONMENT_INDEX_ROUTE_TO,
       params: {
         organizationSlug: params.organizationSlug,
         projectSlug: params.projectSlug,

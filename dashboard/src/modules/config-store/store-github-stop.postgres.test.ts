@@ -6,11 +6,11 @@ import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
 import { recordStoreDeploymentRun, type StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
-import { disconnectGithub } from "#/modules/github/github-cli.server";
+import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
 import { executeProcessGithubInstallationReceived } from "#/modules/github/inngest-sync/webhook";
 import type { Caller } from "#/modules/identity/actor";
 import type { PloyzStepTools } from "#/modules/inngest/client";
-import { githubBuildRunCompletedEvent, githubInstallationReceivedEvent } from "#/modules/inngest/events";
+import { githubBuildRunCompleted, githubInstallationReceived } from "#/modules/github/github.events";
 import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
@@ -30,7 +30,7 @@ const step: Pick<PloyzStepTools, "run" | "sendEvent"> = {
 };
 
 const webhook = (action: "suspend" | "deleted") => ({
-  name: githubInstallationReceivedEvent,
+  name: githubInstallationReceived.name,
   data: {
     deliveryId: `delivery-${action}`, action, sender: { id: 9001, login: "ada" },
     installation: { id: 7, account: { login: "acme", type: "Organization", avatar_url: "https://avatars.githubusercontent.com/u/7" } },
@@ -75,7 +75,7 @@ for (const { stop, failed } of cases) {
 
       const cancels = () => authority.calls.filter((call) => call.operation === "cancelBuild");
       expect(cancels()).toEqual([CANCEL]);
-      expect(sent.mock.calls).toEqual([[{ id: `stopped-${BUILD}`, name: githubBuildRunCompletedEvent, data: { runId: RUN } }]]);
+      expect(sent.mock.calls).toEqual([[{ id: `stopped-${BUILD}`, name: githubBuildRunCompleted.name, data: { runId: RUN } }]]);
 
       const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
       expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }))).toEqual({ failed });

@@ -11,7 +11,7 @@ import {
   startPostgresTestHarness,
 } from "#/test/postgres";
 import { AppConfig } from "#/server/config.server";
-import type { Database, ReportingDatabase } from "#/server/database.server";
+import type { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000a01";
@@ -25,7 +25,7 @@ describe("Organization Cluster Domain", () => {
   let hostedDns: FakeHostedDns;
 
   function run<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | InngestClient>,
+    operation: Effect.Effect<A, E, Database | AppConfig | SecretEncryption | InngestClient>,
     env: Record<string, string> = {},
   ) {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({

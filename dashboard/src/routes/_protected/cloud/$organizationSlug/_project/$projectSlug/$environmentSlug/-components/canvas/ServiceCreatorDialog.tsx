@@ -6,10 +6,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
-import { ServiceCreateCommand } from "#/components/service-create-command";
-import type { CreatePanel } from "#/components/create-menu-items";
+import { ServiceCreateCommand } from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command";
+import type { CreatePanel } from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/create-menu-items";
 import type { FlowPosition } from "./types";
-import type { CreatedService } from "./useServiceCreator";
+import type { CreatedService } from "../../../../-components/service-create/useServiceCreator";
 
 export function ServiceCreatorDialog({
   open,

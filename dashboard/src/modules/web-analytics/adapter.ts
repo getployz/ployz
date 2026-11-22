@@ -6,13 +6,6 @@ import type { FilterKey, Interval, Query, Range, Site } from "./model";
 import * as store from "./requests/figures";
 import * as routes from "./requests/routes";
 
-export * from "./model";
-export type { Bucket, EntryResult, Overview } from "./compute";
-export type { RequestSample, RouteRow, RouteStatus, StatusBucket } from "./requests/routes";
-
-/** Every answer names the range it covers; `clamped` says retention cut the asked-for start. */
-export type Answered = { readonly range: Range; readonly clamped: boolean };
-
 const scope = ({ site }: Query) => ({ organizationId: site.organizationId, namespaces: site.namespaces, timezone: site.timezone });
 
 const storeQuery = (q: Query, range: Range): store.FigureQuery =>

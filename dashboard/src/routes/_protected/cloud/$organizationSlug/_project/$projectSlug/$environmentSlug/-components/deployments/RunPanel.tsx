@@ -1,16 +1,16 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import type { DeploymentView, ServerRow } from "@ployz/sdk";
-import { ContainerLogs } from "#/components/container-logs";
+import { ContainerLogs } from "../logs/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { LatestButton, LogEmpty } from "#/components/log-scroll";
+import { LatestButton, LogEmpty } from "../logs/log-scroll";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
 import { buildInterrupted, missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus, unstartedServices } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, useStoreView } from "#/modules/config-store/store-view.queries";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import type { DeploymentCleanupView } from "#/modules/config-store/tables";
-import { buildLabel, cleanupLabel, rowLabel, rowLight, rowStopped, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
+import { buildLabel, cleanupLabel, rowLabel, rowLight, rowStopped, rowTiming, type OutcomeRunNode, type RunNode } from "#/modules/config-store/deployments/run-graph";
 import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 
 /** The picked node: its status, each Server's row as reported, then its logs. */

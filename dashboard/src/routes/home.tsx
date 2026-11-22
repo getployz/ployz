@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { proxyMarketing } from '#/server/marketing-proxy.server'
+import { proxyMarketing } from '#/modules/marketing/marketing-proxy.server'
 
 // The account menu's Home: the marketing site's /home for everyone (see marketing-proxy.server.ts), or the
 // dashboard when there is none (Self-hosted Cloud).
