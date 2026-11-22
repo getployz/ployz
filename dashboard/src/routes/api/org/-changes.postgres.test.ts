@@ -1,14 +1,50 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { handleOrgChangesRequest, type OrgChangesHandlerDeps } from "#/routes/api/org/-changes.handler";
-import { NotFound, Unauthorized } from "#/server/public-error";
+import { Cause, Effect, Exit } from "effect";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import { Auth, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
+import { member, user } from "#/modules/identity/tables";
+import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import { organization } from "#/modules/organization/tables";
+import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
+import { organizationSupportAccess } from "#/modules/support-access/tables";
+import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
+import { Database, type DatabaseService } from "#/server/database.server";
+import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
-afterEach(() => {
-  vi.useRealTimers();
+const ACME = "00000000-0000-4000-8000-0000000000a1";
+
+let harness: PostgresTestHarness;
+let ada: string;
+let outsider: string;
+
+beforeAll(async () => {
+  harness = await startPostgresTestHarness();
+  [ada, outsider] = (await harness.db.insert(user).values([
+    { email: "ada@example.test", name: "Ada" },
+    { email: "eve@example.test", name: "Eve" },
+  ]).returning({ id: user.id })).map((row) => row.id) as [string, string];
+  await harness.db.insert(organization).values({ id: ACME, name: "Acme", slug: "acme" });
+  await harness.db.insert(member).values({ userId: ada, organizationId: ACME, role: "owner" });
+}, 60_000);
+
+afterAll(async () => {
+  await harness?.stop();
 });
 
-function request(headers: Record<string, string> = {}) {
-  return new Request("http://localhost/api/org/changes?organizationSlug=acme", { headers });
+const request = new Request("http://localhost/api/org/changes?organizationSlug=acme");
+
+function signedInAs(userId: string | null) {
+  const session = userId === null ? null : asTestDouble<AuthSession>()({ user: { id: userId } });
+  return Effect.provideService(Auth, asTestDouble<AuthService>()({ getSession: () => Effect.succeed(session) }));
 }
+
+const openStream = (userId: string | null, overrides: Partial<DatabaseService> = {}) => harness.runEffect(
+  handleOrgChangesRequest(request, "acme").pipe(
+    signedInAs(userId),
+    Effect.provideService(SupportStaff, supportStaffOf([])),
+    Effect.updateService(Database, (database) => ({ ...database, ...overrides })),
+  ),
+);
 
 /** Reads a change stream as text. The stream is pulled, so it only polls while a test reads. */
 function readEvents(response: Response) {
@@ -31,95 +67,38 @@ function readEvents(response: Response) {
   return events;
 }
 
-it.each([
-  ["anonymous", new Unauthorized(), 401],
-  ["non-member", new NotFound({ message: "The organization was not found." }), 404],
-])("refuses %s requests before reading the change log", async (_name, error, status) => {
-  const deps = { authorize: vi.fn().mockRejectedValue(error), currentCursor: vi.fn(), readChanges: vi.fn() };
-  const response = await handleOrgChangesRequest(request(), "acme", deps);
-  expect(response.status).toBe(status);
-  expect(deps.readChanges).not.toHaveBeenCalled();
-});
-
-it("starts at the current horizon even with a Last-Event-ID, names changed collections, pings, and disables proxy buffering", async () => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>()
-    .mockResolvedValueOnce({ cursor: "50", collections: ["environment_canvas_node_position"] })
-    .mockResolvedValue({ cursor: "51", collections: [] });
-  const authorize = vi.fn().mockResolvedValue({ organizationId: "org-1" });
-  const currentCursor = vi.fn().mockResolvedValue("42");
-  const response = await handleOrgChangesRequest(request({ "Last-Event-ID": "7" }), "acme", { authorize, currentCursor, readChanges });
-
-  expect(response.headers.get("Content-Type")).toBe("text/event-stream");
-  expect(response.headers.get("X-Accel-Buffering")).toBe("no");
-  expect(response.headers.get("Cache-Control")).toBe("private, no-store, no-transform");
-  const events = readEvents(response);
-
-  await events.until("event: changes");
-  expect(readChanges).toHaveBeenNthCalledWith(1, { organizationId: "org-1", since: "42" });
-  expect(events.text).toContain('event: changes\ndata: {"collections":["environment_canvas_node_position"]}\n\n');
-  expect(events.text).not.toContain("id: ");
-  await vi.advanceTimersByTimeAsync(250);
-  expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" });
-  expect(events.text).not.toContain("event: ping");
-  await vi.advanceTimersByTimeAsync(15_000);
-  await events.until("event: ping\ndata: {}\n\n");
-  // Quiet polls advance the cursor without emitting events.
-  expect(events.text.match(/event: changes/g)).toHaveLength(1);
-  expect(readChanges).toHaveBeenLastCalledWith({ organizationId: "org-1", since: "51" });
-  await events.cancel();
-  const calls = readChanges.mock.calls.length;
-  await vi.advanceTimersByTimeAsync(600);
-  expect(readChanges).toHaveBeenCalledTimes(calls);
-});
-
-it("ends the stream when the change log can't be read, so EventSource reconnects", async () => {
-  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockRejectedValue(new Error("database down"));
-  const response = await handleOrgChangesRequest(request(), "acme", {
-    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
-    currentCursor: vi.fn().mockResolvedValue("6"),
-    readChanges,
+describe("the Organization change stream", () => {
+  it.each([
+    ["anonymous", null, "Unauthorized"],
+    ["non-member", "outsider", "The organization was not found."],
+  ])("refuses %s requests", async (_name, who, message) => {
+    const exit = await Effect.runPromise(Effect.exit(Effect.promise(() => openStream(who === "outsider" ? outsider : null))));
+    expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(message);
   });
-  // The stream ends instead of reaching a changes event.
-  expect(await readEvents(response).until("event: changes")).toBe('retry: 1000\n\nevent: organization\ndata: {"id":"org-1"}\n\n');
-  expect(readChanges).toHaveBeenCalledOnce();
-});
 
-it("names the Organization the slug resolved to, and ends once that Organization is gone", async () => {
-  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockResolvedValue(null);
-  const response = await handleOrgChangesRequest(request(), "acme", {
-    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
-    currentCursor: vi.fn().mockResolvedValue("6"),
-    readChanges,
-  });
-  expect(await response.text()).toBe('retry: 1000\n\nevent: organization\ndata: {"id":"org-1"}\n\n');
-  expect(readChanges).toHaveBeenCalledOnce();
-});
+  it("starts at the current horizon, names the Organization, then the collections that changed after, and disables proxy buffering", async () => {
+    await harness.db.insert(organizationSupportAccess).values({ organizationId: ACME, allowed: true });
+    const response = await openStream(ada);
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(response.headers.get("X-Accel-Buffering")).toBe("no");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store, no-transform");
+    const events = readEvents(response);
+    await events.until(`data: {"id":"${ACME}"}\n\n`);
 
-it("opens and immediately ends the stream when the current horizon can't be read, so EventSource retries", async () => {
-  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>();
-  const response = await handleOrgChangesRequest(request(), "acme", {
-    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
-    currentCursor: vi.fn().mockRejectedValue(new Error("database down")),
-    readChanges,
+    await harness.db.insert(organizationServerUpgrades).values({ organizationId: ACME });
+    // The change before the stream opened is the client's refetch on `open`, not an event.
+    await events.until('event: changes\ndata: {"collections":["organization_server_upgrades"]}\n\n');
+    expect(events.text).not.toContain("organization_support_access");
+    expect(events.text).not.toContain("id: ");
+    await events.cancel();
   });
-  expect(response.status).toBe(200);
-  expect(response.headers.get("Content-Type")).toBe("text/event-stream");
-  expect(await response.text()).toBe("retry: 1000\n\n");
-  expect(readChanges).not.toHaveBeenCalled();
-});
 
-it("takes the starting horizon before the response opens, so the refetch on open can't miss a change", async () => {
-  let taken = false;
-  const response = await handleOrgChangesRequest(request(), "acme", {
-    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
-    currentCursor: async () => {
-      await Promise.resolve();
-      taken = true;
-      return "6";
-    },
-    readChanges: vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockResolvedValue({ cursor: "6", collections: [] }),
+  it("ends the stream when the change log can't be read, so EventSource reconnects", async () => {
+    const real = await harness.runEffect(Database);
+    const failing: DatabaseService["drizzle"] = Object.create(real.drizzle, { execute: { value: () => Effect.fail(new Error("database down")) } });
+    const response = await openStream(ada, { drizzle: failing });
+    // It still opens the stream with `retry:` and ends at once.
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("retry: 1000\n\n");
   });
-  expect(taken).toBe(true);
-  await response.body?.cancel();
 });

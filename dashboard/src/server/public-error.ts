@@ -234,14 +234,6 @@ export function methodNotAllowedFor(methods: ReadonlyArray<string>): Response {
   });
 }
 
-/**
- * The `ANY` answer of a route, for a method none of its handlers takes. Without it, that method falls through to the
- * page and answers an API client with the app's HTML shell. `Allow` names the route's own handlers.
- */
-export function methodNotAllowed(route: { options: { server?: { handlers?: object } } }): Response {
-  return methodNotAllowedFor(Object.keys(route.options.server?.handlers ?? {}).filter((method) => method !== "ANY"));
-}
-
 const noStore = { "cache-control": "no-store" };
 
 /** A machine-facing refusal: `{ error }`, never cached, with whatever headers the route adds. */
