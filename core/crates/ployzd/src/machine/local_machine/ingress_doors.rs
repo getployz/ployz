@@ -454,7 +454,7 @@ impl LocalMachine {
     pub(crate) async fn restore_doors(&self) -> Result<Option<IngressDoorsSet>, Error> {
         let containers = self.docker()?.clone();
         self.door_effect()?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let inventory = containers.doors().door_inventory(&local.record().id()).await?;
@@ -505,7 +505,7 @@ impl LocalMachine {
                     .write_tunnel_token(&token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             local
                 .converge_doors_admitted(&containers, &inventory, &pinned, Legacy::No)
                 .await
@@ -527,7 +527,7 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.door_effect()?;
         let specs = specs.clone();
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let machine_id = local.record().id();
@@ -554,7 +554,7 @@ impl LocalMachine {
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let set = local
                 .converge_doors_admitted(&containers, &inventory, &specs, legacy)
                 .await?;

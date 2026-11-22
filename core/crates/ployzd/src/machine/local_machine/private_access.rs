@@ -242,7 +242,7 @@ impl LocalMachine {
             None
         };
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
@@ -264,7 +264,7 @@ impl LocalMachine {
                 }
                 None => None,
             };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
@@ -296,7 +296,7 @@ impl LocalMachine {
     pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
         let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
@@ -307,7 +307,7 @@ impl LocalMachine {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
-                let _turn = local.owner.admission_lock().write_owned().await;
+                let _turn = local.exclusive_turn().await;
                 let plan = plan_router(&routers, None);
                 return local
                     .converge_router(&containers, &plan, None, Watch::Skip)
@@ -345,7 +345,7 @@ impl LocalMachine {
                 .write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, Some(&wanted.spec));
             local
                 .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)

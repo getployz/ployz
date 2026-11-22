@@ -386,7 +386,7 @@ mod tests {
         );
         local.activate_management_client(key).await.unwrap();
         let remote = local.clone().with_management_client(key);
-        let lock = local.owner.admission_lock().write_owned().await;
+        let lock = local.exclusive_turn().await;
         let clear = local.set_management_client(clear());
         let queued = remote.set_management_client(set());
         tokio::pin!(clear, queued);
@@ -699,7 +699,7 @@ mod tests {
                 .unwrap();
         }
         let caller = local.clone().with_management_client(first.into());
-        let lock = local.owner.admission_lock().write_owned().await;
+        let lock = local.exclusive_turn().await;
         let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
         let queued = caller.set_device(SetDeviceRequest::Approve { key: second });
         tokio::pin!(remove, queued);

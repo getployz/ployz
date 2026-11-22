@@ -44,19 +44,6 @@ use crate::{
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
 const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 
-/// This Machine inside work admitted to run, which no one else can build: `finish_*` hands
-/// one to the work after the call passed admission, owning the handle so the work outlives
-/// its RPC.
-pub(crate) struct Admission(LocalMachine);
-
-impl std::ops::Deref for Admission {
-    type Target = LocalMachine;
-
-    fn deref(&self) -> &LocalMachine {
-        &self.0
-    }
-}
-
 /// Live Observation and membership operations for this Machine.
 #[derive(Clone)]
 pub struct LocalMachine {
@@ -123,6 +110,7 @@ mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+mod turns;
 mod upgrade;
 
 /// Entry-local admin membership, RTT samples, and selected endpoints.
@@ -522,75 +510,6 @@ impl LocalMachine {
             "refused SetManagementClient: only Cloud manages slots"
         );
         Err(Error::OnlyCloudManagesSlots)
-    }
-
-    /// Admit work under installation exclusion only, taking no turn in Machine
-    /// admission. Builds and image ingest use it alone; admitted work adds its turn.
-    pub(crate) fn admit_installation(&self) -> Result<crate::mutation::MutationGuard, Error> {
-        self.require_management_access()?;
-        Ok(self.owner.mutation_gate().try_mutation()?)
-    }
-
-    /// Run `work` alone: no other admitted work runs on this Machine meanwhile.
-    async fn finish_mutation<T, F, Fut>(&self, work: F) -> Result<T, Error>
-    where
-        T: Send + 'static,
-        F: FnOnce(Admission) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
-    {
-        let exclusive = self.owner.admission_lock().write_owned().await;
-        self.finish_admitted(exclusive, work).await
-    }
-
-    /// Run `work` holding `turn`, an exclusive or shared admission guard. Admitted
-    /// work is detached from its RPC: a caller that stops waiting does not abandon it
-    /// halfway.
-    async fn finish_admitted<T, F, Fut, G>(&self, turn: G, work: F) -> Result<T, Error>
-    where
-        T: Send + 'static,
-        F: FnOnce(Admission) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
-        G: Send + 'static,
-    {
-        let installation = self.admit_installation()?;
-        let admission = Admission(self.clone());
-        tokio::spawn(async move {
-            let _held = (turn, installation);
-            work(admission).await
-        })
-        .await?
-    }
-
-    /// The exclusive admission turn, for work that takes it itself.
-    async fn exclusive_turn(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
-        self.owner.admission_lock().write_owned().await
-    }
-
-    /// Run `work` holding the installation guard and no turn. `work` takes the turns it
-    /// needs itself, so a drain inside it never holds one. Detached like admitted work.
-    async fn finish_installed<T, F, Fut>(&self, work: F) -> Result<T, Error>
-    where
-        T: Send + 'static,
-        F: FnOnce(Admission, crate::mutation::MutationGuard) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
-    {
-        let installation = self.admit_installation()?;
-        let admission = Admission(self.clone());
-        tokio::spawn(work(admission, installation)).await?
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn hold_mutation_for_test(
-        &self,
-        started: Arc<tokio::sync::Notify>,
-        release: Arc<tokio::sync::Notify>,
-    ) -> Result<(), Error> {
-        self.finish_mutation(move |_| async move {
-            started.notify_one();
-            release.notified().await;
-            Ok(())
-        })
-        .await
     }
 
     /// The Machines whose proxies must ack a route change, and those reported Down.
@@ -1200,17 +1119,12 @@ impl LocalMachine {
     /// [`Error::Store`] when the update is not legal, and [`Error::Cluster`]
     /// when listing visible Machines fails.
     pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
-        let local = self.clone();
         // Policy edits affect new admission without waiting for active Builds.
         // Ordinary mutations remain serialized; all updates exclude installation.
         if request.update.is_policy_edit() {
-            self.require_management_access()?;
-            let installation = self.owner.mutation_gate().try_mutation()?;
-            return tokio::spawn(async move {
-                let _installation = installation;
-                local.update_admitted(request).await
-            })
-            .await?;
+            return self
+                .finish_installed(move |local| async move { local.update_admitted(request).await })
+                .await;
         }
         self.finish_mutation(move |local| async move { local.update_admitted(request).await })
             .await
