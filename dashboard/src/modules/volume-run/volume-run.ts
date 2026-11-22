@@ -159,3 +159,5 @@ export const copyName = (volumeName: string, server: string) => `${volumeName}-$
 
 /** A Service that mounts the Volume, as a Service container reports it with its secrets redacted. */
 export type ServiceSpec = { readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
+
+export const STALE_AFTER_MS = 60 * 60_000;

@@ -2,7 +2,7 @@ import type { ChangeKind, MachineId, MachineName, VolumeCopy } from "@ployz/sdk"
 import {
   appliedMirrors, detachedName, observePlacement, type PlacementItem, type PlacementRow, type PlacementVolume, placementForm, presumedPrimary,
 } from "#/modules/volume-placement/volume-placement";
-import { runWords } from "#/modules/volume-run/volume-copies";
+import { runWords } from "#/modules/volume-run/run-words";
 import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import type { MirrorCopy, OldCopy, PrimaryServer, ServerRef, StagedCopy, VolumeCopies } from "./volume-copies";
 
