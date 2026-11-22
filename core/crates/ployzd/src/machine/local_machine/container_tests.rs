@@ -1383,13 +1383,9 @@ mod settled {
             Some(format!("sha256:{}", "b".repeat(64))),
         );
         let admitted = local
-            .admit_spec(
-                &want,
-                crate::machine::Presented::Operator {
-                    rule: None,
-                    versions: &[],
-                },
-            )
+            .clone()
+            .at_operator_scope()
+            .admit_spec(&want, None, &[])
             .await
             .unwrap();
         assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
@@ -1450,13 +1446,9 @@ mod settled {
             new.resolved_spec.container.pull_policy = policy;
             let want = run(new);
             let admitted = local
-                .admit_spec(
-                    &want,
-                    crate::machine::Presented::Operator {
-                        rule: None,
-                        versions: &[],
-                    },
-                )
+                .clone()
+                .at_operator_scope()
+                .admit_spec(&want, None, &[])
                 .await
                 .unwrap();
             assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));

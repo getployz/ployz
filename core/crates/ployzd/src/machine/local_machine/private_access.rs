@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use super::ingress_doors::reserved::{self, Retiree, Step, newest, retirees, usable};
 use super::ingress_doors::{Effects, Gate};
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, Scope};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
@@ -162,7 +162,7 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
-    pub(crate) fn admit_operator_private_access(
+    fn admit_operator_private_access(
         &self,
         request: &SetPrivateAccessRequest,
     ) -> Result<(), Error> {
@@ -211,11 +211,13 @@ impl LocalMachine {
         super::published_network(&record, self.replicated()?).await
     }
 
-    /// Place this Machine's Private Access router, or remove it.
+    /// Place this Machine's Private Access router, or remove it. An Operator's turn on
+    /// needs an approval, as [`Self::admit_operator_private_access`] decides.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
+    /// Returns [`Error::PrivateAccessRefused`] for an Operator's turn on without an
+    /// approval, [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
     /// a request to turn on without an auth key this Cluster opens,
     /// [`Error::PrivateAccessRouterStays`] when a router turned off could not be
     /// removed, and the errors of a Docker stage that fails. A router that was placed
@@ -224,6 +226,9 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
+        if let Scope::Operator = self.scope() {
+            self.admit_operator_private_access(&request)?;
+        }
         let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request
@@ -237,7 +242,7 @@ impl LocalMachine {
             None
         };
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
@@ -259,7 +264,7 @@ impl LocalMachine {
                 }
                 None => None,
             };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
@@ -291,7 +296,7 @@ impl LocalMachine {
     pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
         let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
@@ -302,7 +307,7 @@ impl LocalMachine {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
-                let _turn = local.owner.admission_lock().write_owned().await;
+                let _turn = local.exclusive_turn().await;
                 let plan = plan_router(&routers, None);
                 return local
                     .converge_router(&containers, &plan, None, Watch::Skip)
@@ -340,7 +345,7 @@ impl LocalMachine {
                 .write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, Some(&wanted.spec));
             local
                 .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)

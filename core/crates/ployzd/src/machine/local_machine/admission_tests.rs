@@ -142,13 +142,9 @@ async fn admitted_by_ci(fixture: &Fixture, spec: &Value) -> AdmittedBy {
     let versions = [Signed::sign(&body, &ci()).unwrap()];
     fixture
         .machine
-        .admit_spec(
-            &want(spec),
-            Presented::Operator {
-                rule: None,
-                versions: &versions,
-            },
-        )
+        .clone()
+        .at_operator_scope()
+        .admit_spec(&want(spec), None, &versions)
         .await
         .unwrap()
         .expect("a creation")

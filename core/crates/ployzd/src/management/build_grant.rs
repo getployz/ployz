@@ -49,7 +49,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::machine::local_machine::rule_grant::AdmittedRule;
+use crate::machine::{FullCaller, local_machine::rule_grant::AdmittedRule};
 use crate::sealed_env::Unseal as _;
 
 /// How long a grant lives. Ployz Cloud mints it at
@@ -109,6 +109,19 @@ enum Push {
     Pushed(ImageDigest),
 }
 
+/// Who a mint is for: a caller at Full access, or a rule build that passed every
+/// `rule_grant` check. An Operator is neither, so no Operator reaches a mint.
+pub(crate) enum Minter {
+    Full(
+        #[expect(
+            dead_code,
+            reason = "held as proof: only a Full call makes a FullCaller"
+        )]
+        FullCaller,
+    ),
+    Rule(AdmittedRule),
+}
+
 /// A mint request this Machine accepts, not yet minted.
 pub struct Mint {
     repository: BuildGrantRepository,
@@ -130,20 +143,23 @@ impl Mint {
     /// # Errors
     /// `InvalidArgument` when the holder is not a public key or Sealed values have no
     /// holder; `Conflict` when this Machine has no Sealing Key or they don't open here.
-    pub fn check(request: MintBuildGrantRequest, key_dir: Option<&Path>) -> Result<Mint, RpcError> {
-        Self::check_admitted(request, key_dir, None)
+    pub fn check(
+        request: MintBuildGrantRequest,
+        key_dir: Option<&Path>,
+        full: FullCaller,
+    ) -> Result<Mint, RpcError> {
+        Self::check_admitted(request, key_dir, Minter::Full(full))
     }
 
-    /// [`Self::check`] for a request whose rule build `admitted` passed every
-    /// `rule_grant` check, which the caller ran first. Without one, the caller has
-    /// refused an Operator.
+    /// [`Self::check`] for the request of `minter`, a rule build's after the caller ran
+    /// every `rule_grant` check.
     ///
     /// # Errors
     /// As [`Self::check`].
     pub(crate) fn check_admitted(
         request: MintBuildGrantRequest,
         key_dir: Option<&Path>,
-        admitted: Option<AdmittedRule>,
+        minter: Minter,
     ) -> Result<Mint, RpcError> {
         let key = match request.holder {
             None => Key::Made(SecretKey::generate()),
@@ -160,7 +176,9 @@ impl Mint {
                     })?,
             ),
         };
-        if matches!(key, Key::Made(_)) && (request.sealed.is_some() || admitted.is_some()) {
+        if matches!(key, Key::Made(_))
+            && (request.sealed.is_some() || matches!(minter, Minter::Rule(_)))
+        {
             return Err(RpcError::new(
                 RpcErrorCode::InvalidArgument,
                 "a Build Grant carrying Sealed values needs a holder",
@@ -179,13 +197,13 @@ impl Mint {
                 .open_for_build(Some(key_dir()?))
                 .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
-        let release = match (admitted, request.sealed) {
-            (None, None) => None,
-            (None, Some(record)) => Some(Release::Plain {
+        let release = match (minter, request.sealed) {
+            (Minter::Full(_), None) => None,
+            (Minter::Full(_), Some(record)) => Some(Release::Plain {
                 record,
                 key_dir: key_dir()?.to_owned(),
             }),
-            (Some(admitted), record) => Some(Release::Attested {
+            (Minter::Rule(admitted), record) => Some(Release::Attested {
                 record,
                 key_dir: key_dir()?.to_owned(),
                 recipient: admitted.recipient,
@@ -669,7 +687,11 @@ mod tests {
         let machine = ManagementIdentity::from_bytes([7; 32]);
         let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
         grants
-            .mint(machine, Mint::check(request, None).unwrap(), ingest)
+            .mint(
+                machine,
+                Mint::check(request, None, FullCaller::for_test()).unwrap(),
+                ingest,
+            )
             .unwrap()
     }
 
@@ -692,7 +714,12 @@ mod tests {
 
     fn sealed_grant(cluster: &Cluster) -> Arc<Grant> {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
+        let mint = Mint::check(
+            sealed_request(cluster),
+            Some(&cluster.dir.0),
+            FullCaller::for_test(),
+        )
+        .unwrap();
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -747,7 +774,12 @@ mod tests {
     /// A registry holding a Sealed grant for [`holder`].
     fn sealed_grants(cluster: &Cluster) -> BuildGrants {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
+        let mint = Mint::check(
+            sealed_request(cluster),
+            Some(&cluster.dir.0),
+            FullCaller::for_test(),
+        )
+        .unwrap();
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -814,7 +846,7 @@ mod tests {
         let first = mint(&grants, request(Some(&holder)));
         let Err(refused) = grants.mint(
             ManagementIdentity::from_bytes([7; 32]),
-            Mint::check(request(Some(&holder)), None).unwrap(),
+            Mint::check(request(Some(&holder)), None, FullCaller::for_test()).unwrap(),
             SocketAddr::from(([127, 0, 0, 1], 5000)),
         ) else {
             panic!("a second mint would replace the live grant");
@@ -838,14 +870,17 @@ mod tests {
             holder: None,
             ..sealed_request(&cluster)
         };
-        let Err(refused) = Mint::check(holderless, Some(&cluster.dir.0)) else {
+        let Err(refused) = Mint::check(holderless, Some(&cluster.dir.0), FullCaller::for_test())
+        else {
             panic!("a holderless grant would return its key to Cloud");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
 
         let elsewhere = Cluster::new();
         for key_dir in [Some(elsewhere.dir.0.as_path()), None] {
-            let Err(refused) = Mint::check(sealed_request(&cluster), key_dir) else {
+            let Err(refused) =
+                Mint::check(sealed_request(&cluster), key_dir, FullCaller::for_test())
+            else {
                 panic!("another Cluster's key opens nothing");
             };
             assert_eq!(refused.code, RpcErrorCode::Conflict);
@@ -885,7 +920,11 @@ mod tests {
     fn a_holder_that_is_not_a_public_key_is_refused() {
         let mut point = [0; 32];
         point[0] = 2;
-        let Err(refused) = Mint::check(request(Some(&hex::encode(point))), None) else {
+        let Err(refused) = Mint::check(
+            request(Some(&hex::encode(point))),
+            None,
+            FullCaller::for_test(),
+        ) else {
             panic!("y = 2 is not on the curve");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
@@ -1041,7 +1080,8 @@ mod tests {
                 sealed: record,
                 ..request(Some(&hex::encode(holder().as_bytes())))
             };
-            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Some(admitted)).unwrap();
+            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Minter::Rule(admitted))
+                .unwrap();
             let grants = BuildGrants::default();
             grants
                 .mint(
