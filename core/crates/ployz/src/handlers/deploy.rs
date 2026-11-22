@@ -10,6 +10,8 @@ mod follow_tests;
 mod forget;
 pub(crate) mod progress;
 mod silent;
+#[cfg(test)]
+mod stage_tests;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress, State};
@@ -23,9 +25,9 @@ use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, Change, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentRef,
-    EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath, Start, UploadBase,
-    UploadedSource, VolumeName,
+    DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentQuery,
+    EnvironmentRef, EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath,
+    Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Store, environment, mint, next, scoped, store};
@@ -347,11 +349,13 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
-    let edits = images(matches, store, (&environment, &services))?;
+    let staged = images(matches, store, (&environment, &services))?;
+    let edits = &staged.edits;
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
-        None => approve::sign(matches, store, (&environment, &services), &edits)?,
+        None => approve::sign(matches, store, (&environment, &services), edits)
+            .map_err(|error| staged.unstage(store, error))?,
     };
     // Under `--forget-older` every version this Device signed is marked to forget.
     let forgets: Vec<_> = if approve::flag(matches, "forget-older") {
@@ -361,7 +365,7 @@ pub(super) fn upload_and_ship(
             .map(|posted| posted.statement.clone())
             .collect();
         if forgets.is_empty() {
-            return Err(unforgettable());
+            return Err(staged.unstage(store, unforgettable()));
         }
         forgets
     } else {
@@ -369,7 +373,9 @@ pub(super) fn upload_and_ship(
     };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
-        store.upload(&id, dir, listing)?;
+        store
+            .upload(&id, dir, listing)
+            .map_err(|error| staged.unstage(store, error))?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
@@ -398,6 +404,35 @@ pub(super) fn upload_and_ship(
     Ok(shipped)
 }
 
+/// The `--image` edits a deploy staged, and the edit that sets each image back.
+struct Staged {
+    edits: Vec<silent::ImageEdit>,
+    undo: Option<Edit>,
+}
+
+impl Staged {
+    /// Set back what this deploy staged, because `error` refuses it before admission: a
+    /// staged image left behind would refuse every later silent deploy. An edit made
+    /// since keeps what it staged, and a warning says so.
+    fn unstage(&self, store: &Store, error: Error) -> Error {
+        if let Some(undo) = &self.undo
+            && store.try_edit(undo).is_err()
+        {
+            let services: Vec<&str> = self
+                .edits
+                .iter()
+                .map(|edit| edit.service.as_str())
+                .collect();
+            ui::warn(format!(
+                "Couldn't set back the image of {} after the refusal. ployz diff shows what is \
+                 staged.",
+                services.join(", ")
+            ));
+        }
+        error
+    }
+}
+
 /// Pin each `--image SERVICE=IMAGE`, then stage it as `ployz set SERVICE.image=IMAGE`
 /// does, so the plan the deploy signs runs it. An image that can't be pinned, or names a
 /// Service a deploy of only `services` doesn't name, stages nothing.
@@ -410,10 +445,13 @@ fn images(
     matches: &ArgMatches,
     store: &Store,
     (environment, services): (&EnvironmentRef, &[ServiceName]),
-) -> Result<Vec<silent::ImageEdit>, Error> {
+) -> Result<Staged, Error> {
     let typed = silent::typed(matches)?;
     if typed.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Staged {
+            edits: Vec::new(),
+            undo: None,
+        });
     }
     if let Some((service, _)) = typed
         .iter()
@@ -430,21 +468,46 @@ fn images(
         .map(|listing| (listing.service.name, listing.service.private_dns))
         .collect();
     let edits = silent::pinned(typed, &runtime)?;
-    let changes = edits
+    let paths = edits
         .iter()
-        .map(|edit| {
-            Ok(Change::Set {
-                path: SettingPath::parse(&format!("{}.image", edit.service))?,
-                value: serde_json::Value::String(edit.image.clone()),
-            })
-        })
-        .collect::<Result<_, Error>>()?;
-    store.try_edit(&Edit {
+        .map(|edit| SettingPath::parse(&format!("{}.image", edit.service)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let working = store.read(&EnvironmentQuery {
+        environment: environment.clone(),
+        path: None,
+        all: false,
+    })?;
+    let mut changes = Vec::new();
+    let mut undo = Vec::new();
+    for (edit, path) in edits.iter().zip(paths) {
+        let image = serde_json::Value::String(edit.image.clone());
+        let before = working
+            .settings
+            .iter()
+            .find(|row| row.path == path)
+            .map(|row| row.value.clone())
+            .unwrap_or_default();
+        if before.is_null() {
+            undo.push(Change::Unset { path: path.clone() });
+        } else if before != image {
+            undo.push(Change::Set {
+                path: path.clone(),
+                value: before,
+            });
+        }
+        changes.push(Change::Set { path, value: image });
+    }
+    let edited = store.try_edit(&Edit {
         environment: environment.clone(),
         expect: None,
         changes,
     })?;
-    Ok(edits)
+    let undo = (!undo.is_empty()).then(|| Edit {
+        environment: environment.clone(),
+        expect: Some(edited.environment.revision),
+        changes: undo,
+    });
+    Ok(Staged { edits, undo })
 }
 
 /// The refusal of `--forget-older` on a deploy this Device doesn't sign: only a signed

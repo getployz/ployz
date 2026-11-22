@@ -318,8 +318,10 @@ next: ployz deploy api
 
 Deploy those changes at a terminal first, or discard them.
 
-The image you name stays in the service's settings even when the deploy stops, so the next deploy
-ships it. If you set an image with `ployz set web.image=...`, deploy it with
+A deploy that stops before it starts, such as one that says `Nothing signed or deployed.`, sets
+back each image it saved, so nothing it named stays staged. Once the deploy starts, the image you
+named stays in the service's settings even if the deploy fails, and the next deploy ships it. If
+you set an image with `ployz set web.image=...`, deploy it with
 `--image web=...` in the same command rather than `--yes` alone: a deploy that ships a saved image
 `--image` doesn't name stops before it signs.
 
