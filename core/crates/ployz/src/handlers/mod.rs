@@ -287,7 +287,6 @@ fn close(long: &str, suggested: &str) -> bool {
     if suggested.starts_with(long) || long.starts_with(suggested) {
         return true;
     }
-    // Levenshtein distance, one row at a time.
     let mut previous = (0..=suggested.chars().count()).collect::<Vec<_>>();
     for (i, a) in long.chars().enumerate() {
         let mut row = vec![i + 1];
