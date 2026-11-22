@@ -121,6 +121,15 @@ export const renameOrganization = Effect.fn("Organization.rename")(function* (ac
   return { name: input.name };
 });
 
+/** Points session `sessionId` of `userId` at the Organization. Returns the rows moved: none when the session has ended. */
+const actInOrganization = Effect.fn("Organization.actIn")(function* (userId: string, sessionId: string, target: { readonly id: string; readonly slug: string }) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.update(session)
+    .set({ activeOrganizationId: target.id, activeOrganizationSlug: target.slug, updatedAt: new Date() })
+    .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+    .returning({ id: session.id });
+});
+
 /**
  * Makes the Organization the one the actor's own session acts in. Their other sessions, another browser or a `ployz`
  * device, keep theirs: each chose its own.
@@ -128,15 +137,7 @@ export const renameOrganization = Effect.fn("Organization.rename")(function* (ac
 export const openOrganizationInSession = Effect.fn(
   "Organization.openOrganizationInSession",
 )(function* (actor: SessionActor, organizationId: string, organizationSlug: string) {
-  const database = yield* Database;
-  yield* database.drizzle
-    .update(session)
-    .set({
-      activeOrganizationId: organizationId,
-      activeOrganizationSlug: organizationSlug,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(session.id, actor.credential.id), eq(session.userId, actor.userId)));
+  yield* actInOrganization(actor.userId, actor.credential.id, { id: organizationId, slug: organizationSlug });
 });
 
 /** Someone who once joined by invite already knows the Organization exists, so its name tells them nothing new. */
@@ -207,12 +208,7 @@ export const createOrganizationForSession = Effect.fn("Organization.createForSes
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const created = yield* insertOrganization(userId, input.name, input.slug);
-    const { drizzle: tx } = yield* Database;
-    const moved = yield* tx
-      .update(session)
-      .set({ activeOrganizationId: created.id, activeOrganizationSlug: created.slug, updatedAt: new Date() })
-      .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
-      .returning({ id: session.id });
+    const moved = yield* actInOrganization(userId, sessionId, created);
     // The session ended mid-request: roll the Organization back with it.
     if (moved.length === 0) return yield* new Unauthorized();
     return { id: created.id, slug: created.slug, name: input.name };

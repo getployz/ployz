@@ -2,7 +2,8 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
-import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken } from "#/modules/identity/auth.server";
+import { CLIENT_ID } from "@ployz/sdk/cloud-contract";
+import { Auth, AuthLive, signedSessionToken } from "#/modules/identity/auth.server";
 import { Unauthorized } from "#/server/public-error";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -169,7 +170,7 @@ const signUp = Effect.fn(function* (name: string) {
 });
 
 const startDevice = Effect.fn(function* () {
-  const started = yield* call("/device/code", { body: { client_id: CLI_CLIENT_ID } });
+  const started = yield* call("/device/code", { body: { client_id: CLIENT_ID } });
   assert.strictEqual(started.status, 200);
   const deviceCode = started.json?.device_code ?? assert.fail("no device code");
   const userCode = started.json?.user_code ?? assert.fail("no user code");
@@ -179,7 +180,7 @@ const startDevice = Effect.fn(function* () {
     poll: () => call("/device/token", { body: {
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       device_code: deviceCode,
-      client_id: CLI_CLIENT_ID,
+      client_id: CLIENT_ID,
     } }),
   };
 });
@@ -214,7 +215,7 @@ it.live(
 
         const claimed = yield* call(`/device?user_code=${userCode}`, { cookie: owner });
         assert.strictEqual(claimed.json?.status, "pending");
-        assert.strictEqual(claimed.json?.client_id, CLI_CLIENT_ID);
+        assert.strictEqual(claimed.json?.client_id, CLIENT_ID);
 
         // A second signed-in user neither takes the claim over nor decides it.
         const looked = yield* call(`/device?user_code=${userCode}`, { cookie: intruder });

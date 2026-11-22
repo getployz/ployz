@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { and, arrayContains, desc, eq, gt, isNull, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
-import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
-import { grantStands, signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
+import { isCliUserAgent, isNotCliSession } from "#/modules/identity/organization-token.server";
+import { endSession, grantStands, grantUsable, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
 import { account, session } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
@@ -24,7 +24,7 @@ export const listAccountSessions = Effect.fn("Account.listSessions")(function* (
     id: row.id,
     userAgent: row.userAgent ?? null,
     ipAddress: row.ipAddress === null ? null : shortIp(row.ipAddress),
-    cli: row.userAgent?.startsWith(CLI_USER_AGENT_PREFIX) ?? false,
+    cli: isCliUserAgent(row.userAgent),
     createdAt: row.createdAt.toISOString(),
     lastActiveAt: row.updatedAt.toISOString(),
   }));
@@ -53,14 +53,11 @@ export const revokeAccountSession = Effect.fn("Account.revokeSession")(function*
       .where(and(
         eq(session.id, sessionId),
         eq(session.userId, actor.userId),
-        // SQL's NOT LIKE is never true for NULL, so a session with no user agent is allowed outright.
-        or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`)),
+        isNotCliSession,
       ))
       .for("update");
     if (ending === undefined) return;
-    yield* signOutSessionAgents(actor.userId, ending.id);
-    yield* drizzle.delete(session).where(eq(session.id, ending.id));
-    yield* signOutSessionAgents(actor.userId, ending.id);
+    yield* endSession(actor.userId, ending.id);
   }));
 });
 
@@ -78,9 +75,7 @@ export const listConnectedAgents = Effect.fn("Account.listConnectedAgents")(func
     .innerJoin(member, and(eq(member.organizationId, organization.id), eq(member.userId, actor.userId)))
     .where(and(
       eq(oauthConsent.userId, actor.userId),
-      arrayContains(oauthConsent.scopes, ["ployz"]),
-      or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
-      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
+      grantUsable,
       grantStands,
     ))
     .orderBy(desc(oauthConsent.createdAt));

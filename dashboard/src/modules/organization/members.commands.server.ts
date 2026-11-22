@@ -10,7 +10,7 @@ import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { refusalOf } from "#/modules/organization/access.server";
-import { listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { isLastOwner, listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { InviteRole, MemberRole } from "#/modules/organization/permissions";
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
@@ -71,7 +71,7 @@ const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector
     return yield* refuse("ambiguous", `${named.length} members are named ${selector}: ${named.map((row) => row.email).join(", ")}. Pick one by email.`, { candidates: named.map((row) => row.email) });
   }
   if (touchesOwner(only.role) && caller.role !== "owner") return yield* refuse("forbidden", OWN);
-  return { ...only, lastOwner: only.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== only.userId) };
+  return { ...only, lastOwner: isLastOwner(members, only.userId) };
 });
 
 const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {

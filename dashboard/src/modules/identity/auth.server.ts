@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { runWithRequestState } from "@better-auth/core/context";
+import { CLIENT_ID } from "@ployz/sdk/cloud-contract";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
@@ -161,9 +162,6 @@ const AuthSchema = {
   verification,
 };
 
-/** The `ployz` CLI's device-authorization client id. */
-export const CLI_CLIENT_ID = "ployz-cli";
-
 const BEARER = /^bearer /i;
 
 /**
@@ -294,7 +292,7 @@ const deviceGrantSigned = {
 const cliSignInPlugins = (bind: BindDeviceOrganization) => [
   deviceAuthorization({
     verificationUri: "/device",
-    validateClient: (clientId) => clientId === CLI_CLIENT_ID,
+    validateClient: (clientId) => clientId === CLIENT_ID,
   }),
   deviceOrganizationBinding(bind),
   deviceGrantSigned,

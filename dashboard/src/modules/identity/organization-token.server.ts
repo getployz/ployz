@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
 import { sha256Hex } from "#/lib/hash.server";
-import { and, asc, eq, gt, like } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, like, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
-import { signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
+import { endSession, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
 import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
@@ -17,6 +17,12 @@ import { DAY_MS } from "#/lib/time-range";
 export const ORGANIZATION_TOKEN_PREFIX = "ployz_";
 /** The `ployz` CLI's User-Agent prefix; a session it started is a signed-in device. */
 export const CLI_USER_AGENT_PREFIX = "ployz-cli/";
+
+/** Session rows a `ployz login` started. */
+export const isCliSession = like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`);
+/** Every other session. SQL's NOT LIKE is never true for NULL, so a session with no user agent counts here outright. */
+export const isNotCliSession = or(isNull(session.userAgent), notLike(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`));
+export const isCliUserAgent = (userAgent: string | null) => userAgent?.startsWith(CLI_USER_AGENT_PREFIX) ?? false;
 
 
 export function hashOrganizationTokenSecret(secret: string) {
@@ -140,7 +146,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     .from(session)
     .where(and(
       eq(session.userId, caller.userId),
-      like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`),
+      isCliSession,
       gt(session.expiresAt, now),
     ))
     .orderBy(asc(session.createdAt), asc(session.id));
@@ -177,16 +183,14 @@ export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* 
     .where(and(eq(organizationToken.id, id), tokensReachableBy(caller)))
     .returning({ id: organizationToken.id });
   if (token.length > 0) return { id, kind: "token" as const };
-  const cliDevice = and(eq(session.id, id), eq(session.userId, caller.userId), like(session.userAgent, `${CLI_USER_AGENT_PREFIX}%`));
+  const cliDevice = and(eq(session.id, id), eq(session.userId, caller.userId), isCliSession);
   // Checked before the lock too, so an unknown id waits on no member's grants.
   const [known] = yield* database.drizzle.select({ id: session.id }).from(session).where(cliDevice).limit(1);
   const device = known !== undefined && (yield* transactionWithAgentGrants(caller.userId, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [ending] = yield* drizzle.select({ id: session.id }).from(session).where(cliDevice).for("update");
     if (ending === undefined) return false;
-    yield* signOutSessionAgents(caller.userId, ending.id);
-    yield* drizzle.delete(session).where(eq(session.id, ending.id));
-    yield* signOutSessionAgents(caller.userId, ending.id);
+    yield* endSession(caller.userId, ending.id);
     return true;
   })));
   if (device) return { id, kind: "device" as const };

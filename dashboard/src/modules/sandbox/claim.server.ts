@@ -12,6 +12,7 @@ import { member, organization } from "#/modules/organization/tables";
 import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { reassignUserMachines } from "#/modules/machines/organization-machines.server";
 import { openOrganizationInSession } from "#/modules/organization/organization-state.server";
+import { isMember } from "#/modules/organization/membership.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { HOUR_MS } from "#/lib/time-range";
@@ -70,19 +71,12 @@ const findBySecret = Effect.fn("Identity.findClaimOrganization")(function* (secr
   return { ...found, anonymousIds, expiresAt, live: tokens.some((token) => token.live) };
 });
 
-const isMember = Effect.fn("Identity.isClaimMember")(function* (actor: Actor, organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ userId: member.userId }).from(member)
-    .where(and(eq(member.organizationId, organizationId), eq(member.userId, actor.userId)));
-  return rows.length > 0;
-});
-
 export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: string, viewer: Actor | null) {
   const found = yield* findBySecret(secret);
   if (found === "unknown") return { state: "not_found" } satisfies Claim;
   if (found === "retired") return { state: "expired" } satisfies Claim;
   if (found.anonymousIds.length === 0) {
-    const mine = viewer !== null && (yield* isMember(viewer, found.id));
+    const mine = viewer !== null && (yield* isMember(viewer.userId, found.id));
     return (mine ? { state: "claimed", organization: { slug: found.slug } } : { state: "taken" }) satisfies Claim;
   }
   if (!found.live || found.expiresAt === null) return { state: "expired" } satisfies Claim;
@@ -120,7 +114,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
     const found = yield* findBySecret(secret);
     if (found === "unknown" || found === "retired") return yield* unknown();
     if (found.anonymousIds.length === 0) {
-      if (yield* isMember(actor, found.id)) return { slug: found.slug };
+      if (yield* isMember(actor.userId, found.id)) return { slug: found.slug };
       return yield* taken();
     }
     if (!found.live) return yield* new Conflict({ message: "This sandbox expired.", userFacing: true });

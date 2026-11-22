@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
-import { and, arrayContains, eq, exists, gt, isNull, notExists, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, notExists, or, type SQL } from "drizzle-orm";
 import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
+import { VIA_HEADER } from "@ployz/sdk/cloud-contract";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
 import { organizationToken, session } from "#/modules/identity/tables";
@@ -10,6 +11,7 @@ import { tokenRuns } from "#/modules/sandbox/claim-required.server";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Auth } from "#/modules/identity/auth.server";
+import { grantUsable } from "#/modules/identity/session-agents.server";
 import { bearerToken } from "#/server/bearer";
 import { Database } from "#/server/database.server";
 import { Forbidden, RateLimited, Unauthorized } from "#/server/public-error";
@@ -89,7 +91,7 @@ const callerOf = Effect.fn("Identity.callerOf")(function* (headers: Headers) {
 });
 
 export const ployzVia = (credential: TokenKind, headers: Headers): TokenKind =>
-  headers.get("x-ployz-via") === "agent" ? "agent" : credential;
+  headers.get(VIA_HEADER) === "agent" ? "agent" : credential;
 
 /** A dashboard request's signed-in user, acting in the Organization its URL names as a member or as support. */
 export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (headers: Headers, organizationSlug: string) {
@@ -196,9 +198,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       eq(oauthConsent.userId, sub),
       eq(oauthConsent.clientId, clientId),
       eq(oauthConsent.referenceId, org),
-      arrayContains(oauthConsent.scopes, ["ployz"]),
-      or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
-      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
+      grantUsable,
       browserStands,
     ))
     .limit(1);
