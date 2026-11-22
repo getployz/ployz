@@ -3,6 +3,8 @@
  * (llms.txt points agents at them); the app's own pages are HTML, so a Markdown-only client gets a Markdown answer
  * that says so instead of TanStack Start's JSON 406.
  */
+import { PLOYZ_ORIGIN } from "#/lib/docs";
+
 export type Preference = "html" | "markdown" | "other";
 
 type MediaRange = { readonly type: string; readonly subtype: string; readonly q: number };
@@ -50,8 +52,6 @@ export function prefersHtmlOverJson(accept: string | null): boolean {
   return preferredRepresentation(accept) === "html" && quality(ranges, "text", "html") >= quality(ranges, "application", "json");
 }
 
-const ORIGIN = "https://ployz.dev";
-
 function markdownResponse(status: number, body: string): Response {
   return new Response(body, {
     status,
@@ -62,7 +62,7 @@ function markdownResponse(status: number, body: string): Response {
 export const markdownNotAcceptable = () =>
   markdownResponse(
     406,
-    `# No Markdown version\n\nThis page has no Markdown version. Ask for \`text/html\`, or start from ${ORIGIN}/llms.txt for the pages that have one.\n`,
+    `# No Markdown version\n\nThis page has no Markdown version. Ask for \`text/html\`, or start from ${PLOYZ_ORIGIN}/llms.txt for the pages that have one.\n`,
   );
 
 export const markdownNotFound = () =>
@@ -73,10 +73,10 @@ export const markdownNotFound = () =>
       "",
       "Nothing lives at this path. Try:",
       "",
-      `- ${ORIGIN}/llms.txt: an index of the docs for agents`,
-      `- ${ORIGIN}/docs.md: the docs`,
-      `- ${ORIGIN}/sitemap.xml: every public page`,
-      `- ${ORIGIN}/agents.md: how agents use Ployz`,
+      `- ${PLOYZ_ORIGIN}/llms.txt: an index of the docs for agents`,
+      `- ${PLOYZ_ORIGIN}/docs.md: the docs`,
+      `- ${PLOYZ_ORIGIN}/sitemap.xml: every public page`,
+      `- ${PLOYZ_ORIGIN}/agents.md: how agents use Ployz`,
       "",
     ].join("\n"),
   );
@@ -87,10 +87,10 @@ export const authSummary = () =>
     [
       "# Sign in to Ployz Cloud",
       "",
-      `Sign-in page for Ployz Cloud. Docs are public at ${ORIGIN}/docs.md. Agents should use the CLI (\`ployz login\`) or the MCP server.`,
+      `Sign-in page for Ployz Cloud. Docs are public at ${PLOYZ_ORIGIN}/docs.md. Agents should use the CLI (\`ployz login\`) or the MCP server.`,
       "",
-      `- MCP server: ${ORIGIN}/mcp (OAuth)`,
-      `- Connect an agent: ${ORIGIN}/docs/account/connect-an-agent.md`,
+      `- MCP server: ${PLOYZ_ORIGIN}/mcp (OAuth)`,
+      `- Connect an agent: ${PLOYZ_ORIGIN}/docs/account/connect-an-agent.md`,
       "",
     ].join("\n"),
   );

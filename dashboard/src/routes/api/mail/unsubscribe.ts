@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { handleUnsubscribeRequest } from "#/routes/api/mail/-unsubscribe.handler";
-import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
-
-const handle = ({ request }: { request: Request }) =>
-  runAppEffect(handleUnsubscribeRequest(request), { signal: request.signal }).catch(publicErrorResponse);
+import { apiRoute } from "#/server/api-route";
 
 export const Route = createFileRoute("/api/mail/unsubscribe")({
-  server: { handlers: { GET: handle, POST: handle, ANY: (): Response => methodNotAllowed(Route) } },
+  server: {
+    handlers: apiRoute({
+      GET: ({ request }) => handleUnsubscribeRequest(request),
+      POST: ({ request }) => handleUnsubscribeRequest(request),
+    }),
+  },
 });

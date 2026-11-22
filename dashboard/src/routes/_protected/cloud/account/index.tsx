@@ -1,5 +1,5 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
-import { requireAccountOrganizationSlug } from "#/collections/route-data";
+import { requireAccountOrganizationSlug } from "#/modules/organization/organization.route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { PloyzMark } from "#/components/icons/ployz-logo";
 import { buttonVariants } from "#/components/ui/button-variants";

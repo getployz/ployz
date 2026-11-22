@@ -3,8 +3,9 @@ import type {
   NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, Removal, RowTransition, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
-import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
-import type { SupportShows } from "./support-access";
+import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
+import type { SupportShows } from "#/modules/organization/permissions";
 
 /** What a Store cell holds, as far as support's view of it goes. */
 type Holds = "variable" | "file" | "other";

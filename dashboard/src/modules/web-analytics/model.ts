@@ -19,7 +19,6 @@ export type FilterKey = (typeof FILTER_KEYS)[number];
 
 /** The dims a session is attributed by: its first pageview's value. `page` is not one; a session has many pages. */
 export const SESSION_DIMS = ["source", "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "host", "language"] as const;
-export type SessionDim = (typeof SESSION_DIMS)[number];
 
 export type Filter = { readonly key: FilterKey; readonly op: "eq" | "neq"; readonly value: string };
 

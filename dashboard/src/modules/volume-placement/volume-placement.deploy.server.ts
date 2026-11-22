@@ -1,27 +1,27 @@
 import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
-import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
+import type { EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { owners as allOwners, ownerOf, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
+import { owners as allOwners, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
-import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { originBlockers, originUpgradeMessage, placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
-import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, UNANSWERED, view } from "#/modules/volume-placement/volume-placement.server";
+import { placementRefusal, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.gates.server";
+import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, view, writePlacement } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, changeKey, type DeleteCopyInput, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
-import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
-import {
-  askCopy, commitment, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
-} from "#/modules/volume-run/volume-run.server";
+import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
+import { type VolumeRunState } from "#/modules/volume-run/volume-run-states";
+import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitment, getVolumeRun, readOrigins, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { type CopyObserver, observeOrganizationCopies } from "#/modules/volume-run/volume-run.orphans.server";
+import { Conflict } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
@@ -38,8 +38,6 @@ export type PlacementAdvance =
  * the Deploy failed, and Discard then takes back both halves.
  */
 export type FailedRestore = { readonly volumeId: string; readonly environment: EnvironmentRef };
-
-export type MemberInspector = typeof inspectVolumeCopies;
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 const isActive = (state: VolumeRunState) => ACTIVE_VOLUME_RUN_STATES.some((active) => active === state);
@@ -81,8 +79,9 @@ const restoreFailed = (volumeId: string, environment: EnvironmentRef, message: s
 
 const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")(function* (
   organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], volumeId: string,
-  step: PlacementStep, inspect: MemberInspector,
+  step: PlacementStep,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)));
@@ -97,9 +96,9 @@ const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")
 
 const failStep = Effect.fn("VolumePlacement.failStep")(function* (
   organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], waited: PlacementWait,
-  message: string, inspect: MemberInspector,
+  message: string,
 ) {
-  const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+  const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step);
   return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message, mirrors);
 });
 
@@ -184,9 +183,9 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * The Deploy fails if that plans the same run or never reaches the Volume; a replanned run never replans.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
-  organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
-  read: BlockerReader = readPlacementBlockers,
+  organizationId: string, deploymentId: string, waited: PlacementWait | null,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const deployment = yield* readStore(organizationId, { query: "deployment", id: deploymentId });
   if (deployment.status !== "queued") {
     yield* release(organizationId, deploymentId);
@@ -212,7 +211,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
         return { kind: "failed", message } satisfies PlacementAdvance;
       }
       if (run.state === "failed" && waited.fenced === true) replanning = { waited, message };
-      else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
+      else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message);
     } else {
       // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
       yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
@@ -233,7 +232,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     else yield* drizzle.delete(volumePlacement).where(and(eq(volumePlacement.volumeId, row.volumeId), eq(volumePlacement.deploymentId, deploymentId)));
   }
   // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
-  const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
+  const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId);
   if (refusal !== null) {
     yield* release(organizationId, deploymentId, true);
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
@@ -269,7 +268,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       continue;
     }
     if (replanning !== null && (replanning.waited.volumeId !== row.volumeId || isDeepStrictEqual(step.run, replanning.waited.step.run))) {
-      return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
+      return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message);
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
@@ -290,142 +289,28 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const remaining = dropChange(volume, members, placement, step.change);
     return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
   }
-  if (replanning !== null) return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message, inspect);
+  if (replanning !== null) return yield* failStep(organizationId, deploymentId, environment, volumes, replanning.waited, replanning.message);
   return { kind: "done" } satisfies PlacementAdvance;
-});
-
-/** The names of the Servers with storage that lack the volume verbs. Fails unless every Server answers, since a silent one may run anything. */
-export type BlockerReader = (organizationId: string) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
-
-export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : Effect.succeed(placementBlockers(frame.machines.map((entry) => ({
-    name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
-  }))))),
-);
-
-/** Why the organization can't stage a placement or restore yet, or null when it can. */
-export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
-  const blockers = yield* read(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (blockers === null) return UNANSWERED;
-  if (blockers.length === 0) return null;
-  const refusal: StoreRefusal = { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
-  return refusal;
-});
-
-/** `write` runs only once the organization can stage; otherwise the refusal answers in its place. */
-export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: Effect.Effect<A, E, R>, read: BlockerReader = readPlacementBlockers) =>
-  Effect.gen(function* () {
-    const refusal = yield* placementRefusal(organizationId, read);
-    if (refusal !== null) return { ok: false, refusal } as const;
-    return yield* write;
-  });
-
-/**
- * Which of `servers`, and of the Servers that hold a copy of `dockerVolume` now, can't check where a born Volume's data
- * began, by name. The copy's data comes from one of those holders, so its Ployz has to check too.
- */
-export type OriginReader = (
-  organizationId: string, servers: readonly MachineId[], dockerVolume: string | null,
-) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
-
-export const readOriginBlockers: OriginReader = (organizationId, servers, dockerVolume) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => {
-    if (frame === null) return Effect.fail("no Server answered");
-    const holders = frame.volumes.filter((entry) => entry.id.name === dockerVolume).map((entry) => entry.id.machine_id);
-    return Effect.succeed(originBlockers(frame.machines.map((entry) => ({
-      id: entry.machine.id, name: entry.machine.name, capabilities: entry.machine.runtime.capabilities ?? [],
-    })), [...servers, ...holders]));
-  }),
-);
-
-/**
- * `write` runs only once every Server in `placement`, and every one that holds a copy now, can hold Volume `volumeId`:
- * any Server for a Legacy Volume, and only one that checks where a copy's data began for a born one.
- */
-export const unlessOriginRefused = <A, E, R>(
-  organizationId: string,
-  { environment, volumeId, placement }: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly placement: Placement },
-  write: Effect.Effect<A, E, R>,
-  read: OriginReader = readOriginBlockers,
-) => Effect.gen(function* () {
-  const { environment: summary, volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-  const volume = volumes.find((entry) => entry.id === volumeId);
-  if (volume?.born !== true) return yield* write;
-  const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
-  const owned = namespaces.find((entry) => entry.project === summary.project && entry.environment === summary.name);
-  const dockerVolume = owned === undefined ? null : dockerVolumeName(owned.namespace, volumeId);
-  const blockers = yield* read(organizationId, [placement.primary, ...placement.mirrors], dockerVolume).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (blockers === null) return { ok: false, refusal: UNANSWERED } as const;
-  if (blockers.length === 0) return yield* write;
-  const refusal: StoreRefusal = { code: "upgrade_required", message: originUpgradeMessage(volume.name, blockers), details: { servers: [...blockers] } };
-  return { ok: false, refusal } as const;
 });
 
 /** Delete on an old copy in the volume drawer. */
 export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
   actor: Actor,
   input: typeof DeleteCopyInput.Type,
-  read: BlockerReader = readPlacementBlockers,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "volumes:delete-copy");
-  return yield* unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, actor.userId, input), read);
+  return yield* unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, actor.userId, input));
 });
 
-const NO_COPIES: CopyObservation["copies"] = [];
-
-type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string; readonly born: boolean };
+export type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string; readonly born: boolean };
 
 /** The Volumes of the Environment that owns Namespace `owned`. */
-const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* (organizationId: string, owned: OwnedNamespace) {
+export const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* (organizationId: string, owned: OwnedNamespace) {
   const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   return volumes.map((volume): EnvironmentVolume => ({
     volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id), born: volume.born === true,
   }));
-});
-
-/** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
-const syncs = (held: CopyObservation["copies"]) =>
-  held.some((copy) => copy.role === "slot") || held.filter((copy) => copy.role === "writer").length > 1;
-
-/**
- * Refresh every mirror in the organization (or one Environment): one mirror sync for each Volume with a slot or with
- * two primaries. Every sync logs what it did; a Volume whose sync could not run logs why.
- */
-export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(function* (
-  organizationId: string, onlyEnvironmentId: string | null, observe: CopyObserver = observeOrganizationCopies,
-  read: BlockerReader = readPlacementBlockers, members: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy,
-) {
-  const copies = yield* observe(organizationId).pipe(
-    Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
-  );
-  if (copies.length === 0) return [];
-  const refusal = yield* placementRefusal(organizationId, read);
-  if (refusal !== null) {
-    yield* Effect.logInfo("Mirror refresh skipped.", { organizationId, reason: refusal.message });
-    return [];
-  }
-  const owners = onlyEnvironmentId === null ? yield* allOwners(organizationId) : [yield* ownerOf(organizationId, onlyEnvironmentId)];
-  const synced: MirrorSyncAnswer[] = [];
-  for (const owned of owners) {
-    if (owned === null) continue;
-    // In the organization-wide pass, an Environment the Store can't read keeps its mirrors as they are; it stops no
-    // other Environment's refresh. A Deploy's own Environment still fails its Deploy.
-    const volumes = yield* ownedVolumes(organizationId, owned).pipe(
-      Effect.catchTag("StoreRefused", (refused) => onlyEnvironmentId !== null ? Effect.fail(refused) : Effect.logWarning(
-        "Mirror refresh skipped an Environment the Store can't read.",
-        { organizationId, project: owned.project, environment: owned.environment, reason: refused.message },
-      ).pipe(Effect.as([]))),
-    );
-    for (const volume of volumes) {
-      if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
-      const answer = yield* syncMirrors(organizationId, volume, members, ask).pipe(
-        Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
-      );
-      if (answer !== null) synced.push(answer);
-    }
-  }
-  return synced;
 });
 
 /**
@@ -436,8 +321,11 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
  */
 export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
   organizationId: string, server: MachineId, accepting: readonly MachineId[], unrouted: readonly MachineId[] = [],
-  observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies, origins: OriginReader = readOriginBlockers,
+  observe: CopyObserver = observeOrganizationCopies,
 ) {
+  const refusal = yield* placementRefusal(organizationId);
+  if (refusal !== null) return yield* new Conflict({ userFacing: true, message: refusal.message });
+  const { inspect } = yield* VolumeCluster;
   const copies = yield* observe(organizationId);
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
@@ -464,15 +352,13 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
       continue;
     }
     // A born Volume moves only between Servers that check where its data began, the one it leaves included.
-    const unchecked = volume.born
-      ? yield* origins(organizationId, [server, staged.primary, ...staged.mirrors], volume.dockerVolume).pipe(Effect.catch(() => Effect.succeed(null)))
-      : [];
-    if (unchecked === null || unchecked.length > 0) {
+    const origins = volume.born ? yield* readOrigins(organizationId, volume.dockerVolume, [server, staged.primary, ...staged.mirrors]) : null;
+    if (origins !== null && (origins.kind !== "read" || origins.blockers.length > 0)) {
       stuck.push(volume.name);
-      blocked.push({ volume: volume.name, upgrade: unchecked?.[0] ?? null });
+      blocked.push({ volume: volume.name, upgrade: origins.kind === "read" ? origins.blockers[0] ?? null : null });
       continue;
     }
-    const written = yield* stagePlacement(organizationId, {
+    const written = yield* writePlacement(organizationId, {
       environment: volume.environment, volumeId: volume.volumeId, staged, mirrors: appliedMirrors(observePlacement(members), row),
     });
     if (!written.ok) {

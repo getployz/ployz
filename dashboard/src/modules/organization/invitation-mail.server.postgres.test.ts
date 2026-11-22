@@ -4,11 +4,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { JsonValue } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { orgMemberInvite } from "#/modules/organization/members.commands.server";
-import { organization } from "#/modules/organization/tables";
-import { Auth, type AuthService } from "#/server/auth.server";
+import { Auth, type AuthService } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";

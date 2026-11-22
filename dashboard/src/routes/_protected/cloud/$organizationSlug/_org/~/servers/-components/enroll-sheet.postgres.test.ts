@@ -23,6 +23,8 @@ import { ROLE_CHECKING } from "#/modules/organization/members.queries";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
+import type { AppConfig } from "#/server/config.server";
+import { testConfigLayer } from "#/test/config-environment";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -42,11 +44,12 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
 
-const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz>) =>
+const run = <A, E>(operation: Effect.Effect<A, E, AppConfig | Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz>) =>
   harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provide(unreachable),
+    Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
   ));
 
 const report: HostReport = {

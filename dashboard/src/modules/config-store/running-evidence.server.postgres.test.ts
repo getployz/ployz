@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { expect, vi } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
+import { connectionsLoader } from "#/modules/config-store/volume-evidence.server";
 import { gatherRunning, RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, recordStoreSealingKey, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -20,7 +21,8 @@ it.live("only a full Deploy that prunes, or a retry, asks the Servers what runs,
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const observe = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => seen);
     const gathered = (command: JsonObject) => provided(
-      gatherRunning(ORGANIZATION, { operation: "write", command: raw(command) }).pipe(Effect.provideService(RunningObserver, { observe })),
+      Effect.flatMap(connectionsLoader(ORGANIZATION), (connections) => gatherRunning(connections, { operation: "write", command: raw(command) }))
+        .pipe(Effect.provideService(RunningObserver, { observe })),
     );
     const deploy = { command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000e802", environment: staging, version: null, accept_volume_loss: [] };
 
@@ -49,7 +51,7 @@ it.live("without Servers to ask, a pruning Deploy carries no evidence, so the St
     const services = yield* storeTestCloud();
     const observe = vi.fn(async (_connections: Connection[], _expect?: { readonly sealingPublicKey: string } | null) => seen);
     const command = raw({ command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000e803", environment: staging, services: [], version: null, accept_volume_loss: [] });
-    const gathered = yield* gatherRunning(ORGANIZATION, { operation: "write", command }).pipe(
+    const gathered = yield* gatherRunning(yield* connectionsLoader(ORGANIZATION), { operation: "write", command }).pipe(
       Effect.provideService(RunningObserver, { observe }),
       Effect.provide(services),
     );

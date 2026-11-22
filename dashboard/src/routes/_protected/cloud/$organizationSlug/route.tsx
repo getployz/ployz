@@ -2,12 +2,13 @@ import { useEffect } from "react";
 import { createFileRoute, Outlet, retainSearchParams, useNavigate, useParams } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
-import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
-import { DashboardShell } from "#/components/dashboard-shell";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
+import { prefetchOrgStore } from "#/collections/route-data";
+import { requireOrganization } from "#/modules/organization/organization.route-data";
+import { DashboardShell } from "#/components/shell/dashboard-shell";
+import type { DashboardScope } from "#/components/shell/dashboard-navigation-model";
 import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { FirstCloudflareRunner } from "./_org/~/servers/-components/first-tunnel";
+import { useRunHeldCloudflareOnFounding } from "#/modules/ingress/cloudflare-setup";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
 /** `chat` names the open agent thread; it rides along every Organization page so the sidebar stays put. */
@@ -30,6 +31,7 @@ function RouteComponent() {
   const { organizationId, access } = Route.useLoaderData();
   const organizationName = useOrganizationName(params.organizationSlug);
   useOrganizationChanges(params.organizationSlug, organizationId);
+  useRunHeldCloudflareOnFounding(params.organizationSlug);
   useEffect(() => {
     // A support visit isn't the customer's usage.
     if (access === "member") setPostHogOrganization(organizationId, { name: organizationName, slug: params.organizationSlug });
@@ -41,7 +43,6 @@ function RouteComponent() {
   return (
     <RuntimeProvider organizationSlug={params.organizationSlug}>
       <OrganizationLayout />
-      <FirstCloudflareRunner organizationSlug={params.organizationSlug} />
     </RuntimeProvider>
   );
 }

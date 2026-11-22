@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
 import { type Answer, type Write, agentStart } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { COMMANDS } from "#/modules/commands/registry.server";
-import { AGENT_TOOLS } from "./agent-runner.server";
+import { AGENT_TOOLS, ASKS, INTENT_DESCRIPTION, INTENT_REFUSAL } from "./agent-runner.server";
 import { CATALOG, GATED, finish, untilWrite } from "./agent-tools";
 
 const place = { project: "shop", environment: "production", store: { at: "cloud", organization: "org" } } as const;
@@ -20,8 +21,16 @@ describe("agent tools", () => {
   });
 
   it("ends the description of every tool that may ask with the same sentence, and of no other", () => {
-    const asks = AGENT_TOOLS.filter((tool) => tool.description.includes("May stop to ask a human to approve.")).map((tool) => tool.name);
+    const asks = AGENT_TOOLS.filter((tool) => tool.description.includes(ASKS)).map((tool) => tool.name);
     expect(asks.sort()).toEqual([...GATED].sort());
+  });
+
+  it("words the sentences it shares with `ployz mcp` as the Rust source does", () => {
+    const rust = (path: string) => readFileSync(new URL(`../../../../core/crates/${path}`, import.meta.url), "utf8");
+    const mcp = rust("ployz/src/agent_call/mcp.rs");
+    expect(mcp).toContain(`const INTENT_DESCRIPTION: &str = ${JSON.stringify(INTENT_DESCRIPTION)};`);
+    expect(mcp).toContain(`const INTENT_REQUIRED: &str = ${JSON.stringify(INTENT_REFUSAL)};`);
+    expect(rust("ployz-store/src/tools/step.rs")).toContain(JSON.stringify(ASKS));
   });
 
   it("marks destructive exactly the tools that delete something when they run, and never a read", () => {

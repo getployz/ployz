@@ -1,11 +1,24 @@
 import "@tanstack/react-start/server-only";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { Inngest, type ClientOptions, type GetStepTools } from "inngest";
-import type { InngestSendableEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
+
+/** An event as a feature's `defineEvent` builds it to send. */
+export type InngestSendableEvent = {
+  readonly id?: string;
+  readonly name: string;
+  readonly data: object;
+};
 
 export type PloyzInngest = Inngest<ClientOptions>;
 export type PloyzStepTools = GetStepTools<PloyzInngest>;
+/** The tools a handler uses, so a test hands it no more than that. */
+export type StepTools<Used extends keyof PloyzStepTools = "run"> = Pick<PloyzStepTools, Used>;
+
+const APP_ID = "ployz-cloud";
+
+/** A function's id as Inngest reports it in `function_id`: the app id, a dash, then the id the function declares. */
+export const qualifiedFunctionId = (functionId: string) => `${APP_ID}-${functionId}`;
 
 export class InngestClient extends Context.Service<
   InngestClient,
@@ -43,7 +56,7 @@ export const InngestLive = Layer.effect(
     AppConfig,
     (config) =>
       new Inngest({
-        id: "ployz-cloud",
+        id: APP_ID,
         eventKey: Redacted.value(config.inngest.eventKey),
         signingKey: Redacted.value(config.inngest.signingKey),
       }),

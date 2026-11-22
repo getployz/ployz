@@ -1,6 +1,6 @@
 import { sweepExpiredVerifications } from "#/modules/identity/verification-sweep.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const createSweepExpiredVerifications = (inngest: PloyzInngest) =>
   inngest.createFunction(

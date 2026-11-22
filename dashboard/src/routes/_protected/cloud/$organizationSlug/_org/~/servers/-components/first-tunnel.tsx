@@ -1,64 +1,16 @@
-import { useEffect, useState } from "react";
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { openPublicPortsServerFn, setUpCloudflareServerFn } from "#/modules/ingress/doors.functions";
+import { openPublicPortsServerFn } from "#/modules/ingress/doors.functions";
 import { clusterIngressKeys, clusterIngressObservationQueryOptions, clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
-import { serverEnrollmentsQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { CloudflareChoice } from "./cluster-setup";
-import { forgetCloudflare, holdCloudflare, readHeldCloudflare, useHeldCloudflare } from "./first-cloudflare";
+import { forgetCloudflare, holdCloudflare, runFirstSetup, useHeldCloudflare } from "#/modules/ingress/cloudflare-setup";
 import { type CardCloudflare, firstTunnelState } from "./servers-page-state";
-
-const NOT_ANSWERING = "Your servers aren't answering";
-const ANSWER_TRIES = 12;
-const ANSWER_WAIT_MS = 5_000;
-
-/**
- * Set Cloudflare up with the token this tab holds, once. A Cluster just founded may not answer for a few seconds, so
- * that refusal is asked again a while; any other ends the setup with its words, and the token stays for Try again.
- */
-async function runFirstSetup(organizationSlug: string, queryClient: QueryClient) {
-  const held = readHeldCloudflare(organizationSlug);
-  if (held === undefined || (held.kind !== "waiting" && held.kind !== "failed")) return;
-  const { token, zone } = held;
-  holdCloudflare(organizationSlug, { kind: "setting-up", token, zone });
-  for (let tried = 1; ; tried++) {
-    try {
-      const row = await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone } });
-      holdCloudflare(organizationSlug, { kind: "done", zone, switched: row.switching });
-      toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
-      break;
-    } catch (error) {
-      const message = toErrorMessage(error, "Ployz Cloud didn't answer.");
-      if (message.startsWith(NOT_ANSWERING) && tried < ANSWER_TRIES) {
-        await new Promise((resolve) => setTimeout(resolve, ANSWER_WAIT_MS));
-        continue;
-      }
-      holdCloudflare(organizationSlug, { kind: "failed", token, zone, message });
-      break;
-    }
-  }
-  await queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
-}
-
-/** Wherever the user goes in the Organization, the held setup runs as soon as the first Server founds the Cluster. */
-export function FirstCloudflareRunner({ organizationSlug }: { organizationSlug: string }) {
-  const held = useHeldCloudflare(organizationSlug);
-  return held?.kind === "waiting" ? <AwaitFounder organizationSlug={organizationSlug} /> : null;
-}
-
-function AwaitFounder({ organizationSlug }: { organizationSlug: string }) {
-  const queryClient = useQueryClient();
-  const founded = useQuery(serverEnrollmentsQueryOptions(organizationSlug)).data?.founded === true;
-  useEffect(() => {
-    if (founded) void runFirstSetup(organizationSlug, queryClient);
-  }, [founded, organizationSlug, queryClient]);
-  return null;
-}
 
 /** On the Servers page once the first Server joined: how the Cloudflare Tunnel chosen for it stands, and the ways on. */
 export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: string }) {

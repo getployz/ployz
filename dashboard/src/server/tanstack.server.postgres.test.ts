@@ -10,7 +10,7 @@ import { Client } from "pg";
 import { createServer } from "vite";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { CloudStoreLive, cloudStore } from "#/modules/config-store/store-sdk.server";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { Polar } from "#/modules/billing/polar-provider.server";

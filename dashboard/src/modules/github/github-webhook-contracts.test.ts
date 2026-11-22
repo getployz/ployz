@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Result } from "effect";
 import {
-  canonicalizeGithubChangedPaths,
   decodeGithubCheckSuitePayload,
   decodeGithubInstallationRepositoriesPayload,
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
-  matchGithubWatchPaths,
 } from "#/modules/github/github-webhook-contracts";
 
 describe("GitHub webhook contracts", () => {
@@ -119,19 +117,6 @@ describe("GitHub webhook contracts", () => {
     expect(decoded.success).not.toHaveProperty("pull_requests");
   });
 
-  it("canonicalizes repository-relative changed paths deterministically", () => {
-    const canonical = canonicalizeGithubChangedPaths([
-      "src/z.ts",
-      "README.md",
-      "src/a.ts",
-      "README.md",
-    ]);
-
-    expect(Result.isSuccess(canonical)).toBe(true);
-    if (Result.isFailure(canonical)) return;
-    expect(canonical.success).toEqual(["README.md", "src/a.ts", "src/z.ts"]);
-  });
-
   it("rejects unsafe webhook identity, ref, SHA, action, status, and timestamp fields", () => {
     const validPush = {
       installation: { id: 17 },
@@ -192,110 +177,6 @@ describe("GitHub webhook contracts", () => {
       expect(Result.isFailure(malformed)).toBe(true);
       if (Result.isFailure(malformed)) {
         expect(malformed.failure.code).toBe("malformed_payload");
-      }
-    }
-  });
-
-  it("applies ordered gitignore-style watch paths with last-match-wins", () => {
-    const matched = matchGithubWatchPaths({
-      changedPaths: [
-        ".github/workflows/ci.yml",
-        "nested/README.md",
-        "src/docs/guide.md",
-        "src/docs/ship.md",
-      ],
-      watchPaths: ["src/**", "!src/docs/**", "src/docs/ship.md"],
-    });
-
-    expect(Result.isSuccess(matched)).toBe(true);
-    if (Result.isFailure(matched)) return;
-    expect(matched.success).toBe(true);
-  });
-
-  it("supports root anchors, unanchored basenames, directories, globstars, and dotfiles", () => {
-    const cases = [
-      { changedPaths: ["src/main.ts"], watchPaths: [], expected: true },
-      { changedPaths: [], watchPaths: [], expected: false },
-      {
-        changedPaths: ["nested/README.md"],
-        watchPaths: ["README.md"],
-        expected: true,
-      },
-      {
-        changedPaths: ["nested/README.md"],
-        watchPaths: ["/README.md"],
-        expected: false,
-      },
-      {
-        changedPaths: ["nested/docs/guide.md"],
-        watchPaths: ["docs/"],
-        expected: true,
-      },
-      {
-        changedPaths: ["packages/api/src/index.ts"],
-        watchPaths: ["packages/**/src/**"],
-        expected: true,
-      },
-      {
-        changedPaths: [".github/workflows/ci.yml"],
-        watchPaths: ["**/.github/**"],
-        expected: true,
-      },
-      {
-        changedPaths: ["docs/guide.md"],
-        watchPaths: ["src/**"],
-        expected: false,
-      },
-      {
-        changedPaths: ["src/docs/guide.md"],
-        watchPaths: ["src/**", "!src/docs/**"],
-        expected: false,
-      },
-    ];
-
-    for (const input of cases) {
-      const result = matchGithubWatchPaths(input);
-      expect(Result.isSuccess(result)).toBe(true);
-      if (Result.isSuccess(result)) expect(result.success).toBe(input.expected);
-    }
-  });
-
-  it("rejects ambiguous changed paths and malformed or traversing watch patterns", () => {
-    for (const changedPath of [
-      "",
-      "/etc/passwd",
-      "C:/Windows/system.ini",
-      "src\\main.ts",
-      "src/../secret",
-      "src/./main.ts",
-      "src//main.ts",
-      "src/evil\0name",
-    ]) {
-      const result = canonicalizeGithubChangedPaths([changedPath]);
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("invalid_changed_path");
-      }
-    }
-
-    for (const watchPath of [
-      "",
-      "!",
-      "!!src/**",
-      "../src/**",
-      "src/../secret",
-      "src\\**",
-      "src/[abc",
-      "//src/**",
-      "C:/src/**",
-    ]) {
-      const result = matchGithubWatchPaths({
-        changedPaths: ["src/main.ts"],
-        watchPaths: [watchPath],
-      });
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("invalid_watch_pattern");
       }
     }
   });

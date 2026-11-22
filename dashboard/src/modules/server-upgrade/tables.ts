@@ -1,8 +1,9 @@
-import type { MachineName } from "@ployz/sdk";
+import type { MachineId, MachineName } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
+import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
+import { MACHINE_ID_SQL } from "#/lib/schema";
 import { organization } from "#/modules/organization/tables";
 import {
   DEFAULT_SERVER_UPGRADE_SETTINGS,
@@ -50,7 +51,7 @@ export const serverUpgradeAttempt = pgTable(
     index("server_upgrade_attempt_latest_idx").on(table.organizationId, table.machineId, table.startedAt),
     index("server_upgrade_attempt_run_idx").on(table.inngestRunId),
     check("server_upgrade_attempt_attempt_id_check", sql`${table.attemptId} ~ '^[0-9a-f]{32}$'`),
-    check("server_upgrade_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("server_upgrade_attempt_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
     check("server_upgrade_attempt_trigger_check", sql`${table.trigger} in (${sqlStringLiterals(UPGRADE_TRIGGERS)})`),
     check("server_upgrade_attempt_channel_check", sql`${table.channel} in (${sqlStringLiterals(RELEASE_CHANNELS)})`),
     check("server_upgrade_attempt_outcome_check", sql`${table.outcome} in (${sqlStringLiterals(UPGRADE_OUTCOMES)})`),

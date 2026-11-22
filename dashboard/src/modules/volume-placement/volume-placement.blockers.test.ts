@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { requirements } from "#/modules/runtime/daemon-compat";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
-import { readPlacementBlockers } from "./volume-placement.deploy.server";
+import { readPlacementBlockers } from "./volume-placement.gates.server";
 
 const machine = (name: string, capabilities: readonly string[]) => ({ machine: { name, runtime: { capabilities } }, storage: { state: "pool" } });
 

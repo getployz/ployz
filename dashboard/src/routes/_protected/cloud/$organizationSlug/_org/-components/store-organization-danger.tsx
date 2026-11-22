@@ -1,16 +1,18 @@
 "use client";
 
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ServerOffIcon, Trash2Icon } from "lucide-react";
-import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { DeletionDialog } from "#/components/deletion-dialog";
+import { type DeletionItem } from "#/modules/config-store/deletion";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
+import { removeOrganizationServerFn } from "#/modules/organization-teardown/organization-removal.functions";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ForgetServersDialog, useForgetServersGate } from "./forget-servers-dialog";
 
@@ -54,7 +56,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
   }
 
   const forget = useForgetServersGate(organizationSlug);
-  const mayDelete = useRoleGate(organizationSlug, "org:delete", "Only an owner can delete it.");
+  const mayDelete = useRoleGate(organizationSlug, "org:delete", refusalFor("org:delete", "delete it"));
   const disabledReason = mayDelete.reason ?? (projects.length > 0
     ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
     : undefined);

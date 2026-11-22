@@ -10,13 +10,13 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
-import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
-import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;

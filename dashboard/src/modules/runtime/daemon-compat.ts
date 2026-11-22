@@ -1,4 +1,5 @@
 // The one map from features to Server capabilities. Cloud code names a capability, never a release number.
+import type { RuntimeWatchView } from "@ployz/sdk";
 import type { CapabilityName } from "@ployz/sdk/capabilities";
 import { Data } from "effect";
 
@@ -45,6 +46,13 @@ export function serverSupports(machine: { readonly capabilities: readonly string
   if (machine.capabilities.length === 0) return "unknown";
   return machine.capabilities.includes(requirement.capability);
 }
+
+type WatchedMachine = RuntimeWatchView["machines"][number]["machine"];
+
+/** The Servers a Cluster frame lists, each with the capabilities its record lists (none when it lists none, or with no frame). */
+export const frameServers = (frame: RuntimeWatchView | null | undefined, include: (machine: WatchedMachine) => boolean = () => true) =>
+  (frame?.machines ?? []).filter(({ machine }) => include(machine))
+    .map(({ machine }) => ({ id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [] }));
 
 /** The Servers whose records say they lack the capability. A Server whose record lists none is not named: the call is attempted. */
 export function serversLacking<T extends { readonly name: string; readonly capabilities: readonly string[] }>(machines: readonly T[], requirement: Requirement) {

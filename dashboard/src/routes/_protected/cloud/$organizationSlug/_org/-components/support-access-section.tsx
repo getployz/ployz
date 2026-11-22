@@ -1,9 +1,8 @@
 import { useId } from "react";
-import { getRouteApi } from "@tanstack/react-router";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Switch } from "#/components/ui/switch";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { useMemberGate } from "#/modules/organization/members.queries";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
 
@@ -13,15 +12,13 @@ const SHOWS = [
   { setting: "logs", label: "Container logs" },
 ] as const;
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /** "Allow support access": whether Ployz support may open this Organization and act in it, and what it may read there. */
 export function SupportAccessSection({ organizationSlug }: { organizationSlug: string }) {
   const { row, change } = useSupportAccess(organizationSlug);
   // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
-  const { access } = organizationRoute.useLoaderData();
-  const gate = useRoleGate(organizationSlug, "org:settings");
-  const locked = access === "support" || !gate.allowed;
+  const gate = useMemberGate(organizationSlug, "org:settings");
+  const locked = !gate.allowed;
   return (
     <SettingsSection id="support-access" title="Support">
       <SettingsGroup

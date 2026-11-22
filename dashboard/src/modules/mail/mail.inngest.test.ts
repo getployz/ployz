@@ -2,16 +2,16 @@ import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
+import type { MailMessage } from "#/modules/mail/mail.events";
 import { SEND_MAIL_RETRIES, createSendMail, throttledRetryHours } from "#/modules/mail/mail.inngest";
 import {
   MailRejected,
   MailUnavailable,
   Mailer,
-  type MailMessage,
   type MailSendError,
   type MailSendResult,
 } from "#/modules/mail/mailer.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 
 type Send = { readonly message: MailMessage; readonly idempotencyKey: string };
 

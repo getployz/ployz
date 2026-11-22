@@ -8,15 +8,15 @@ import type { ToolOutcome } from "#/modules/agent/agent";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { findCommand } from "#/modules/commands/commands.server";
-import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
+import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
-import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
+import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
-import { claimUrlFor } from "#/modules/identity/claim-required.server";
+import { claimUrlFor } from "#/modules/sandbox/claim-required.server";
 import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { MCP_SCOPES, mcpEndpoints } from "#/server/auth-mcp.server";
-import { Auth } from "#/server/auth.server";
+import { MCP_SCOPES, mcpEndpoints } from "#/modules/agent/mcp-auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 
 const CORS = {
@@ -154,7 +154,7 @@ const resultOf = (tool: string, result: AgentResult, key: string, link: () => st
     };
   }
   const answer = tool === "proposal_present" ? withCard(outcome, link()) : outcome;
-  return text(projectJsonObject({ ...answer, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
+  return text(asRecord({ ...answer, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
 };
 
 /** A presented proposal waits on a person like an approval does, so its answer names the card to open. */

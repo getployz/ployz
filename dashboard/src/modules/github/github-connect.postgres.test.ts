@@ -11,13 +11,13 @@ import {
   deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization,
   pruneCachedGithubRepositories, upsertCachedGithubRepositories, upsertGithubInstallation,
 } from "./github.repository";
-import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github.server";
+import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github-installation.server";
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
 import { executeSyncGithubRepositories, GITHUB_REPOSITORY_PAGE_DEADLINE, syncGithubRepositories } from "./inngest-sync/sync";
-import { isNonRetriableInngestCause } from "#/server/run.server";
-import { member, user } from "#/modules/identity/tables";
-import { organization } from "#/modules/organization/tables";
+import { isNonRetriableInngestCause } from "#/modules/inngest/run.server";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { fakeGithubApi, fakeGithubAuthority, fakeGithubUsers } from "#/test/fake-github";
@@ -232,7 +232,7 @@ const hopperCloud = Effect.fn(function* () {
     return yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
   });
   const syncQueued = (installationId: number) => Effect.promise(() => executeSyncGithubRepositories(
-    { event: { data: { installationId } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
+    { event: { data: { installationId, reason: "manual-refresh" } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
     (program) => Effect.runPromise(program.pipe(Effect.provide(services))),
   ));
   const sync = syncQueued(9);

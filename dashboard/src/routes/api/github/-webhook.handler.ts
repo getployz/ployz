@@ -1,4 +1,5 @@
-import { Data, Effect, Option, Result as EffectResult, Schema } from "effect";
+import crypto from "node:crypto";
+import { Data, Effect, Option, Redacted, Result as EffectResult, Schema } from "effect";
 import {
   decodeGithubCheckSuitePayload,
   decodeGithubInstallationPayload,
@@ -6,16 +7,15 @@ import {
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
-import { verifyWebhookSignature } from "#/modules/github/github.server";
-import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_PATH } from "#/modules/github/github-build-workflow";
 import {
   createGithubBuildRunCompletedEvent,
   createGithubCheckSuiteReceivedEvent,
-  createGithubInstallationReceivedEvent,
-  createGithubInstallationRepositoriesReceivedEvent,
   createGithubPullRequestReceivedEvent,
   createGithubPushReceivedEvent,
-} from "#/modules/inngest/events";
+  githubInstallationReceived,
+  githubInstallationRepositoriesReceived,
+} from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { readCappedBody } from "#/server/capped-body";
 import { AppConfig } from "#/server/config.server";
@@ -37,9 +37,21 @@ class GithubWebhookReadError extends Data.TaggedError(
 
 /** A push, check suite or pull request GitHub sent that Ployz can't read: GitHub keeps it as failed, so it shows there. */
 function rejectDelivery(input: { deliveryId: string; eventKind: string; rejection: "malformed" | "unsupported_action" }) {
-  console.warn("[github:webhook] rejected delivery", input);
-  return Effect.succeed(new Response("Rejected webhook", { status: 422 }));
+  return Effect.logWarning("Rejected webhook delivery.", input).pipe(Effect.as(new Response("Rejected webhook", { status: 422 })));
 }
+
+const verifyWebhookSignature = Effect.fn("Github.verifyWebhookSignature")(function* (body: string, signature: string | null) {
+  const config = yield* AppConfig;
+  if (!signature) return false;
+  const expected = crypto
+    .createHmac("sha256", Redacted.value(config.github.appWebhookSecret))
+    .update(body)
+    .digest("hex");
+  const expectedBuffer = Buffer.from(`sha256=${expected}`);
+  const actualBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== actualBuffer.length) return false;
+  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+});
 
 export const handleGithubWebhookRequest = Effect.fn(
   "Github.handleWebhookRequest",
@@ -56,11 +68,11 @@ export const handleGithubWebhookRequest = Effect.fn(
 
   const valid = yield* verifyWebhookSignature(body, signature);
   if (!valid) {
-    console.warn("[github:webhook] invalid signature", { deliveryId, event });
+    yield* Effect.logWarning("Webhook signature invalid.", { deliveryId, event });
     return new Response("Invalid signature", { status: 401 });
   }
   if (!deliveryId) {
-    console.warn("[github:webhook] missing delivery id", { event });
+    yield* Effect.logWarning("Webhook has no delivery id.", { event });
     return new Response("Missing delivery id", { status: 400 });
   }
 
@@ -77,7 +89,7 @@ export const handleGithubWebhookRequest = Effect.fn(
   // every other run is ignored.
   if (event === "workflow_run") {
     const run = Schema.decodeUnknownOption(workflowRunPayloadSchema)(payload.value);
-    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === GITHUB_BUILD_WORKFLOW_PATH) {
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: deliveryId, runId: run.value.workflow_run.id }));
     }
     return new Response("OK", { status: 200 });
@@ -158,7 +170,7 @@ export const handleGithubWebhookRequest = Effect.fn(
       });
     }
     yield* sendInngestEvent(
-      createGithubInstallationReceivedEvent({
+      githubInstallationReceived.create({
         deliveryId,
         ...decoded.success,
       }),
@@ -176,7 +188,7 @@ export const handleGithubWebhookRequest = Effect.fn(
       });
     }
     yield* sendInngestEvent(
-      createGithubInstallationRepositoriesReceivedEvent({
+      githubInstallationRepositoriesReceived.create({
         deliveryId,
         ...decoded.success,
       }),
@@ -184,6 +196,6 @@ export const handleGithubWebhookRequest = Effect.fn(
     return new Response("OK", { status: 200 });
   }
 
-  console.warn("[github:webhook] unsupported event", { deliveryId, event });
+  yield* Effect.logWarning("Webhook event unsupported.", { deliveryId, event });
   return new Response("Unsupported webhook event", { status: 422 });
 });

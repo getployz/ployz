@@ -4,7 +4,7 @@ import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { createConfigCommand } from "#/modules/config-store/store-configs";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
 import type { CanvasResourceNode, FlowPosition } from "./types";

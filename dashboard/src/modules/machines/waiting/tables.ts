@@ -1,14 +1,9 @@
 import { sql } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { createdAt, type EncryptedSecretValue, type MachineId } from "#/db/tables";
+import { createdAt, type EncryptedSecretValue } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
-import type {
-  EnrollInstruction,
-  EnrollmentFailure,
-  EnrollmentRole,
-  EnrollmentStage,
-  EnrollmentState,
-} from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollInstruction, EnrollmentFailure, EnrollmentRole, EnrollmentStage, EnrollmentState } from "#/modules/machines/waiting/enrollment-states";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 

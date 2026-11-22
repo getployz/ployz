@@ -1,13 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { requireStoreEnvironment, streamRemoteUptime } from "#/collections/route-data";
+import { requireStoreEnvironment } from "#/modules/config-store/store.route-data";
+import { streamRemoteUptime } from "#/modules/uptime/uptime.route-data";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
-import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
-import { StoreServiceDrawer } from "../../services/$serviceId/-components/StoreServiceDrawer";
-import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
+import { serviceSearchSchema } from "./$serviceId/-components/service-pages";
+import { StoreServiceDrawer } from "./$serviceId/-components/StoreServiceDrawer";
+import { DEFAULT_RANGE } from "#/lib/time-range";
 import { serviceUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 
 export const Route = createFileRoute(

@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { useMatch, useParams } from "@tanstack/react-router";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
-import { useDashboardSection } from "#/components/use-dashboard-section";
+import type { DashboardScope } from "#/components/shell/dashboard-navigation-model";
+import { useDashboardSection } from "#/components/shell/use-dashboard-section";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import type { PageContext } from "#/modules/agent/page-context";
 import { servicesQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
 
@@ -15,7 +16,7 @@ export function useAgentPage(scope: DashboardScope): PageContext {
   const [project, environment] = scope.kind === "environment" ? [scope.projectSlug, scope.environmentSlug] : [];
   const listed = useCachedStoreView(scope.organizationSlug,
     serviceId !== undefined && project !== undefined && environment !== undefined ? servicesQuery({ project, environment }) : null);
-  const environmentId = useMatch({ from: "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug", shouldThrow: false })
+  const environmentId = useMatch({ from: ENVIRONMENT_ROUTE_FROM, shouldThrow: false })
     ?.loaderData?.environmentId;
   const environment_id = environment === undefined ? undefined : environmentId;
   const service = listed?.ok ? listed.value.services.find((candidate) => candidate.id === serviceId)?.name : undefined;

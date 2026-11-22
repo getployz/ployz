@@ -2,6 +2,7 @@ import type { AnyRouter } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import posthog, { type CaptureResult, type Properties } from "posthog-js";
 import type { AuthSession } from "#/auth/auth";
+import { onSignOut } from "#/auth/auth-client";
 import { secretPagesOf } from "#/lib/secret-pages";
 
 /** The public project key and where to send events; null when Cloud runs without PostHog. */
@@ -58,6 +59,7 @@ function dropSecretUrls(event: CaptureResult | null): CaptureResult | null {
  */
 export function startPostHog(config: PostHogBrowserConfig, session: AuthSession | null, router: AnyRouter) {
   opensSecretPage = secretPagesOf(router);
+  onSignOut(resetPostHog);
   if (config === null || opensSecretPage(window.location.pathname)) return;
   posthog.init(config.key, {
     api_host: config.host,
@@ -84,10 +86,6 @@ export function followPostHogNavigation(pathname: string) {
 
 export function setPostHogOrganization(organizationId: string, properties: { readonly name: string; readonly slug: string }) {
   if (posthog.__loaded) posthog.group("organization", organizationId, properties);
-}
-
-export function capturePostHog(event: string, properties?: Record<string, string>) {
-  if (posthog.__loaded) posthog.capture(event, properties);
 }
 
 /** The next person on this browser starts anonymous. */

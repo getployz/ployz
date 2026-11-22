@@ -5,7 +5,7 @@ import { EventType, type StreamChunk } from "@tanstack/ai";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
-import { asRecord, projectJsonObject } from "#/lib/json";
+import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { runAsAgent, scriptedAgent } from "#/test/agent-call";
@@ -16,12 +16,13 @@ import { COMMANDS } from "#/modules/commands/registry.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { invitation, member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { invitation, member } from "#/modules/organization/tables";
 import { createInvite } from "#/modules/organization/invitation.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { uptimeCheck } from "#/modules/uptime/tables";
 import { handleRunRequest } from "#/routes/api/cli/-handlers";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { holdProduction, hostedPolar } from "#/test/billing";
@@ -189,7 +190,7 @@ it.live("lists each agent command in the sidebar with the manifest's input schem
     for (const command of COMMANDS) {
       expect(tools.has(command.name), command.name).toBe(command.agents);
       // The agent's tools add `intent`; everything else is the command's own input.
-      if (command.agents) expect(withoutIntent(projectJsonObject(tools.get(command.name))), command.name).toEqual(served.get(command.name));
+      if (command.agents) expect(withoutIntent(asRecord(tools.get(command.name))), command.name).toEqual(served.get(command.name));
     }
   }));
 

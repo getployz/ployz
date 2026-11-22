@@ -91,7 +91,6 @@ describe("allocateUnique", () => {
         allocateUnique({
           tryAttempt: () => Effect.succeed(null),
           exhausted: new Error("Failed to create a unique project slug"),
-          maxAttempts: 3,
         }),
       ),
     ).rejects.toThrow("Failed to create a unique project slug");

@@ -2,14 +2,15 @@ import { Effect, Option, Redacted } from "effect";
 import { NOTIFICATION_TYPES } from "#/modules/notifications/notification-types";
 import { unsubscribe } from "#/modules/notifications/preferences.server";
 import { verifyUnsubscribeToken } from "#/modules/notifications/unsubscribe-token.server";
+import { htmlPage } from "#/server/api-route";
 import { AppConfig } from "#/server/config.server";
 
 const page = (status: number, title: string, line: string) =>
-  new Response(
+  htmlPage(
+    status,
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${title}</title></head>`
       + `<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 24px;line-height:1.5">`
       + `<h1 style="font-size:20px;font-weight:600">${title}</h1><p>${line} <a href="/cloud/account">Notifications</a>.</p></body></html>`,
-    { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
   );
 
 /**

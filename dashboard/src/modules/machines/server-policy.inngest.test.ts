@@ -6,7 +6,7 @@ import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { asTestDouble } from "#/lib/test-double";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 
 function runWithSession(updates: unknown[][]): typeof runInngestEffect {
   const session = asTestDouble<PloyzSession>()({

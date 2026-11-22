@@ -11,7 +11,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn, ruleScope } from "#/modules/github/auto-deploy-rule";
+import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn, ruleScope } from "./auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";

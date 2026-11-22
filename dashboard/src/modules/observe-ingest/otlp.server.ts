@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Effect, Option } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { machineTokenCurrent, parseMachineToken } from "#/modules/observe-ingest/machine-token";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { organizationMachine } from "#/modules/machines/tables";

@@ -1,17 +1,19 @@
 import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
+import { Schema } from "effect";
+import type { VolumeRunState, VolumeRunRequestKind, VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 
-export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started", "yielded"] as const;
-export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
-export const VOLUME_RUN_PHASES = ["warm", "committed"] as const;
-export type VolumeRunPhase = (typeof VOLUME_RUN_PHASES)[number];
+export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
+
+/** A Volume of an Organization, as every volume server function names it. */
+export const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });
+
+/** A Volume of an Environment: what the server functions that read or change its copies take. */
+export const VolumeInput = Schema.Struct({
+  ...VolumeRef.fields,
+  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+});
 
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
-
-/** The kinds a caller requests. A `deploy` row is never requested; a Deploy inserts it as its own lane. */
-export const VOLUME_RUN_REQUEST_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed", "resize"] as const;
-export type VolumeRunRequestKind = (typeof VOLUME_RUN_REQUEST_KINDS)[number];
-export const VOLUME_RUN_KINDS = [...VOLUME_RUN_REQUEST_KINDS, "deploy"] as const;
-export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 /** What a run of each kind is called when a Server can't run it. */
 export const RUN_FEATURES = {
@@ -165,26 +167,9 @@ export function unheardOf(members: readonly Member[]) {
   return { lacks, silent, waiting };
 }
 
-export function managementAddress(publicKey: readonly number[]): string {
-  const bytes = [0xfd, 0xcc, ...publicKey.slice(0, 14)];
-  if (bytes.length !== 16) throw new Error("A WireGuard public key has 32 bytes.");
-  const groups: string[] = [];
-  for (let index = 0; index < 16; index += 2) {
-    groups.push((((bytes[index] ?? 0) << 8) | (bytes[index + 1] ?? 0)).toString(16));
-  }
-  return groups.join(":");
-}
-
 export const copyName = (volumeName: string, server: string) => `${volumeName}-${server}`;
-
-export const dockerVolumeName = (namespace: string, volumeId: string) => `${namespace}_vol-${volumeId}`;
-
-export function parseDockerVolumeName(name: string): { namespace: string; volumeId: string } | null {
-  const at = name.lastIndexOf("_vol-");
-  if (at <= 0) return null;
-  const volumeId = name.slice(at + "_vol-".length);
-  return volumeId.length === 0 ? null : { namespace: name.slice(0, at), volumeId };
-}
 
 /** A Service that mounts the Volume, as a Service container reports it with its secrets redacted. */
 export type ServiceSpec = { readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
+
+export const STALE_AFTER_MS = 60 * 60_000;

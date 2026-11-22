@@ -4,7 +4,7 @@ import type { DeploymentView } from "@ployz/sdk";
 import { afterEach, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { makeRunGraph } from "./run-graph";
+import { makeRunGraph } from "#/modules/config-store/deployments/run-graph";
 import { RunPanel } from "./RunPanel";
 
 afterEach(cleanup);

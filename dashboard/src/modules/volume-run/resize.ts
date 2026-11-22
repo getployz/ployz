@@ -1,6 +1,6 @@
 import type { MachineName } from "@ployz/sdk";
 import { listNames } from "#/lib/plural";
-import { gigabytes } from "#/modules/config-store/store-volumes";
+import { GB, gigabytes } from "#/modules/config-store/store-volumes";
 import { type Requirement, requirements } from "#/modules/runtime/daemon-compat";
 import type { Refusal } from "#/modules/volume-run/plan";
 import type { AnsweredMember, VolumeRunArgs } from "#/modules/volume-run/volume-run";
@@ -11,7 +11,7 @@ export type Bytes = number;
 export const gb = (bytes: Bytes) => `${gigabytes(bytes)} GB`;
 
 /** A copy's floor in whole GB, rounded up, so the size it names is one the copy accepts. */
-export const gbAtLeast = (bytes: Bytes) => `${Math.ceil(bytes / 1_000_000_000)} GB`;
+export const gbAtLeast = (bytes: Bytes) => `${Math.ceil(bytes / GB)} GB`;
 
 /** Which way a resize moves the Volume's bound; a settle asks every copy for the size the Store already records. */
 export type SizeDirection = "grow" | "shrink" | "settle";

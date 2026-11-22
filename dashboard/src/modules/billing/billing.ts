@@ -115,3 +115,14 @@ export function planUnitsChange(
   if (pending?.units === target) return { kind: "keep" };
   return { kind: "set", units: target, prorationBehavior: "next_period" };
 }
+
+export const serversCopy = (servers: number) => (servers === 1 ? "1 server" : `${servers} servers`);
+
+// UTC so the server render and the browser agree on the day.
+const periodEndFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
+
+export function periodEndCopy(state: { currentPeriodEnd: Date | null; cancelAtPeriodEnd: boolean }) {
+  if (state.currentPeriodEnd === null) return "Production is active";
+  const day = periodEndFormat.format(state.currentPeriodEnd);
+  return state.cancelAtPeriodEnd ? `Production ends on ${day}` : `Renews on ${day}`;
+}

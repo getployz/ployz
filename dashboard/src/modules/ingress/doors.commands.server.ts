@@ -1,11 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand, refused } from "#/modules/commands/command.server";
+import { refused } from "#/lib/refusal";
+import { defineCommand } from "#/modules/commands/define";
 import type { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { wantWords } from "#/modules/ingress/doors";
 import { requestDoorsSwitch, switchAsked } from "#/modules/ingress/doors.server";
 import { OPERATIONS } from "#/modules/operations/operations";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { refusalFor } from "#/modules/organization/permissions";
 
 const use = OPERATIONS["ingress.use"];
 
@@ -42,7 +44,7 @@ export const webTrafficUse = defineCommand({
   output: Schema.Struct({ to: Where, state: Schema.String }),
   render: "message",
   run: (caller, input) => caller.support !== null
-    ? Effect.succeed(refused("forbidden", "Only an owner or admin of this Organization can do this."))
+    ? Effect.succeed(refused("forbidden", refusalFor(use.requires)))
     : withRuntime(requestDoorsSwitch({ organizationId: caller.organization.id, userId: caller.userId, to: input.to === "cloudflare" ? "tunnel" : "public" })).pipe(
       Effect.map(({ change, joined }) => ({
         ok: true,

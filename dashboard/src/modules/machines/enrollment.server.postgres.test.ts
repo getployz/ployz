@@ -1,9 +1,10 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { inspect } from "node:util";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/runtime/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
-import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
+import { registerRequestFromEnrollmentIdentity } from "./enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
 import { Inngest } from "inngest";
 import {
@@ -30,7 +31,6 @@ import {
   CLUSTER_NOT_FRESH,
   CANNOT_KEEP_DOORS,
   CLUSTER_UNREACHABLE,
-  mintMachineEnrollment,
   readMachineEnrollment,
   recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
@@ -41,11 +41,13 @@ import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { checkServerEnrollment, recordStage, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
-import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { asTestDouble } from "#/lib/test-double";
-import { recoveryDigest } from "#/modules/machines/sealing-key.server";
+import { recoveryDigest } from "#/modules/sealing/sealing-key.server";
 import { readCollection } from "#/collections/read.server";
-import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -342,13 +344,8 @@ describe("organization enrollment coordinator", () => {
           // No pairing row: the Org Store holds no enrollment row, which reads as unclaimed.
           expect((yield* readCollection({ userId }, enrollment)).rows).toEqual([]);
 
-          const minted = yield* mintMachineEnrollment(
-            { userId },
-            { organizationSlug: "enroll" },
-          );
-          expect(minted.command).toMatch(/^curl .* && sudo ployz server add/u);
+          const minted = yield* mintCliMachineEnrollment({ userId }, { organizationId });
           expect(minted.token).toMatch(/^pmet_/u);
-          expect(minted.command).not.toContain(minted.token);
 
           const outsider = "00000000-0000-4000-8000-000000000499";
           const denied = yield* readCollection({ userId: outsider }, { ...enrollment, userId: outsider }).pipe(Effect.exit);
@@ -843,7 +840,6 @@ describe("organization enrollment coordinator", () => {
         capture: (input) => Effect.sync(() => void captured.push(input)),
         identify: () => Effect.void,
         identifyOrganization: () => Effect.void,
-        mcp: () => Effect.void,
       };
       const result = await Effect.runPromise(recordMachineSetupReport({ token, report }).pipe(
         Effect.result,
@@ -2278,7 +2274,6 @@ describe("organization enrollment coordinator", () => {
           capture: () => Effect.void,
           identify: () => Effect.void,
           identifyOrganization: () => Effect.void,
-          mcp: () => Effect.void,
         }),
       ));
 

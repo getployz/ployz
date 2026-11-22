@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
-import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
-import type { ServerRelease } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -14,7 +15,7 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 // What lets go of a removed Server's row, apart from the pairing removal that dials the Cluster, so the Organization
 // Runtime's frame records can call it without importing that Runtime back.
 
-export const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
+export const decrypt = Effect.fn("PairingRelease.decrypt")(function* (
   value: Parameters<SecretEncryption["Service"]["decrypt"]>[0],
 ) {
   const encryption = yield* SecretEncryption;
@@ -23,9 +24,6 @@ export const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
     catch: () => new Conflict({ message: "The protected removal credential could not be read." }),
   });
 });
-
-/** The advisory lock class of {@link lockOrganizationEnrollment}; the two-key form keeps it apart from every one-key lock. */
-const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
 
 /**
  * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
@@ -41,33 +39,33 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt. A reset that ends a
  * founding claim expires the claim's tokens after its founder attempt's cancel event; that row is new, so nothing waits on it.
  */
-export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
+export const lockOrganizationEnrollment = Effect.fn("PairingRelease.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
 });
 
 /**
  * The shared side of {@link lockOrganizationEnrollment}, for arrival enrolls. They add joiners to a founded
  * Organization, so they only need every writer above kept out, not each other; their token's row lock counts them.
  */
-export const shareOrganizationEnrollment = Effect.fn("PairingRemoval.shareOrganizationEnrollment")(function* (organizationId: string) {
+export const shareOrganizationEnrollment = Effect.fn("PairingRelease.shareOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
 });
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */
-export const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function* (organizationId: string, generation: string) {
+export const lockWitnessedPairing = Effect.fn("PairingRelease.lockWitnessed")(function* (organizationId: string, generation: string) {
   yield* lockOrganizationEnrollment(organizationId);
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
   if (!pairing) return { kind: "gone" } as const;
-  const current = createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex");
+  const current = sha256Hex(yield* decrypt(pairing.encryptedPairingSecret));
   return current === generation && pairing.removalStartedAt === null ? { kind: "witnessed" } as const : { kind: "replaced" } as const;
 });
 
 /** Whether a Server of pairing `generation` other than its removed ones, and other than `except`, is still enrolled. */
-export const othersRemain = Effect.fn("PairingRemoval.othersRemain")(function* (organizationId: string, generation: string, except?: MachineId) {
+export const othersRemain = Effect.fn("PairingRelease.othersRemain")(function* (organizationId: string, generation: string, except?: MachineId) {
   const { drizzle } = yield* Database;
   const [other] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
     .where(and(
@@ -88,7 +86,7 @@ export const replaced = { kind: "kept", reason: "Cloud was paired with a new Clu
  * Cluster had already forgotten (`unconfirmed`) may still hold Cloud's key, so its row goes only while another Server
  * keeps the pairing; as the last, nothing is dropped and the answer is `unconfirmed_last`.
  */
-export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
+export const dropRemovedServer = Effect.fn("PairingRelease.dropRemoved")(
   function* (input: { organizationId: string; machineId: MachineId; generation: string; removal: "reset" | "membership" | "unconfirmed" }) {
     const { organizationId, generation } = input;
     const database = yield* Database;

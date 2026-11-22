@@ -11,14 +11,14 @@ import { Switch } from "#/components/ui/switch";
 import { toErrorMessage } from "#/lib/error-message";
 import { clusterNameProblem } from "#/modules/cluster-name/cluster-name";
 import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
-import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
+import { normalizeZone, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import { checkCloudflareServerFn, listCloudflareZonesServerFn } from "#/modules/ingress/doors.functions";
-import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
-import { holdCloudflare } from "./first-cloudflare";
+import { holdCloudflare } from "#/modules/ingress/cloudflare-setup";
 import { abandonCloudflare, type CardCloudflare, installGate } from "./servers-page-state";
-import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const STEPS = ["Run the command", "Review", "Enroll"] as const;
 

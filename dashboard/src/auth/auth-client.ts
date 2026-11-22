@@ -17,3 +17,15 @@ export function initializeAuthSession(initialSession: AuthSession | null) {
     session.set({ ...session.get(), data: initialSession, error: null, isPending: false });
   }
 }
+
+const signOutListeners = new Set<() => void>();
+
+/** Runs `listener` each time this browser signs out, so whatever kept the last person's identity can drop it. */
+export function onSignOut(listener: () => void) {
+  signOutListeners.add(listener);
+  return () => void signOutListeners.delete(listener);
+}
+
+export function announceSignOut() {
+  for (const listener of signOutListeners) listener();
+}

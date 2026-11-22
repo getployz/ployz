@@ -43,7 +43,6 @@ const claimsSchema = Schema.Struct({
   run_id: Schema.String,
   event_name: Schema.String,
 });
-export type GithubOidcClaims = typeof claimsSchema.Type;
 
 const headerSchema = Schema.Struct({ alg: Schema.Literal("RS256"), kid: Schema.String });
 

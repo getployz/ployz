@@ -1,0 +1,119 @@
+import { Suspense, useState, type ReactNode } from "react";
+import { useQueryErrorResetBoundary } from "@tanstack/react-query";
+import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
+import { useOrgStoreGate } from "#/collections/org-store";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { AgentButton, AgentColumn, AgentDock } from "../agent-sidebar/agent-sidebar";
+import { useAgentPage } from "../agent-sidebar/use-agent-page";
+import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
+import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
+import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
+import { NavigationProgress } from "../navigation-progress";
+import { OrganizationCollectionRefreshNotice } from "../organization-collection-refresh-notice";
+import { RouteContentSkeleton } from "../route-content-skeleton";
+import { RouteErrorAlert } from "../route-error-alert";
+import { useCanvasShowing, useDashboardNavigation, useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
+import DashboardAccountMenu from "#/components/shell/DashboardAccountMenu";
+
+export function DashboardShell({
+  scope,
+  chat,
+  onChat,
+  banner,
+  children,
+}: {
+  scope: DashboardScope;
+  /** The agent thread open in the sidebar, if any. */
+  chat: string | undefined;
+  onChat: (thread: string | undefined) => void;
+  /** A thin line above the top bar, such as the support visit notice. */
+  banner?: ReactNode;
+  children: ReactNode;
+}) {
+  const collectionScope = useCollectionScope();
+  const section = useDashboardSection();
+  const Crumb = useRouteCrumb();
+  const { places, organization } = useDashboardNavigation(scope);
+  const canvas = useCanvasShowing();
+  const page = useAgentPage(scope);
+  const [dock, setDock] = useState<HTMLElement | null>(null);
+  const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
+  // Pages behind the Org Store gate own their h1, so its loading and error states stand in with the place's name.
+  const gateHeading = <h1 className={canvas ? "sr-only" : "text-2xl font-semibold"}>{placeLabel}</h1>;
+  return (
+    <AgentDock.Provider value={dock}>
+    <div className="flex h-dvh min-h-0 overflow-hidden">
+      <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
+        account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+        {banner}
+        {/* The one top bar, over the agent too, so its Agent button never moves. On phones it also carries the logo and the avatar, which live in the rail on desktop. */}
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
+          <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
+          {/* The bar navigates; each page names itself in its own h1 below it. */}
+          {scope.kind === "environment"
+            ? <EnvironmentCrumbs scope={scope} />
+            : Crumb
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`.
+              ? <Crumbs items={[
+                  <Link key="section" {...getDashboardDestination(scope, section)}
+                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring">
+                    {placeLabel}
+                  </Link>,
+                  <Crumb key="crumb" />,
+                ]} />
+              : null}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <AgentButton organizationSlug={scope.organizationSlug} chat={chat} onChat={onChat} />
+            <div className="min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
+          </div>
+        </header>
+        <div className="relative flex min-h-0 flex-1">
+          {/* On phones the open agent covers the page, so the page leaves the tab order and the screen reader with it. */}
+          <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${chat === undefined ? "" : "max-wf-nav:invisible"}`}>
+            {/* Over the canvas a page's sections have no room, and the rail shows none either. */}
+            {canvas ? null : <PhoneSections places={places} />}
+            <NavigationProgress />
+            <OrganizationCollectionRefreshNotice
+              scope={collectionScope}
+              organizationSlug={scope.organizationSlug}
+            />
+            <div
+              data-scroll-restoration-id="wireframe-content"
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+            >
+              {/* The one Org Store gate: pages below it read org rows synchronously; chrome above it never waits. */}
+              <CatchBoundary getResetKey={() => scope.organizationSlug} errorComponent={(props) => <OrgStoreError {...props} heading={gateHeading} />}>
+                <Suspense fallback={<div className="flex flex-col gap-4 p-4 md:p-6">{gateHeading}<RouteContentSkeleton /></div>}>
+                  <OrgStoreGate organizationSlug={scope.organizationSlug}>{children}</OrgStoreGate>
+                </Suspense>
+              </CatchBoundary>
+            </div>
+          </main>
+          <AgentColumn organizationSlug={scope.organizationSlug} collectionScope={collectionScope} page={page} chat={chat} onChat={onChat} dock={setDock} />
+        </div>
+        <PhoneTabBar places={places} />
+      </div>
+    </div>
+    </AgentDock.Provider>
+  );
+}
+
+function OrgStoreGate({ organizationSlug, children }: { organizationSlug: string; children: ReactNode }) {
+  useOrgStoreGate(organizationSlug);
+  return children;
+}
+
+function OrgStoreError({ reset, heading }: ErrorComponentProps & { heading: ReactNode }) {
+  const queries = useQueryErrorResetBoundary();
+  return (
+    <div className="flex flex-col gap-4 p-4 md:p-6">
+      {heading}
+      <RouteErrorAlert
+        title="Organization data couldn’t load"
+        description="Projects, services, and deployments are unavailable right now. Try loading them again."
+        onRetry={() => { queries.reset(); reset(); }}
+      />
+    </div>
+  );
+}

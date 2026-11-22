@@ -1,15 +1,13 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { findService } from "#/modules/config-store/store-lookup.server";
-import { dashboardCaller } from "#/modules/identity/caller.server";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { actService } from "#/modules/operations/operations.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { SERVICE_ACT_VERBS } from "#/modules/service-act/service-act";
 import { latestServiceAct } from "#/modules/service-act/service-act.server";
 import { Conflict, NotFound } from "#/server/public-error";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, callerMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const ServiceSubject = Schema.Struct({
   organizationSlug: Schema.NonEmptyString,
@@ -18,7 +16,7 @@ const ServiceSubject = Schema.Struct({
 });
 
 export const latestServiceActServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ServiceSubject))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const { organization } = yield* requireAccess(context.actor, data.organizationSlug, "project:read");
@@ -32,10 +30,9 @@ const ActServiceInput = Schema.Struct({
 });
 
 export const actServiceServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(ActServiceInput))
+  .middleware([callerMiddleware(ActServiceInput)])
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
+    const { caller } = context;
     const found = yield* findService(caller.organization.id, data.environmentId, data.service);
     if (found === null) return yield* new NotFound({ message: "The service was not found." });
     const tool = `service_${data.verb}` as const;

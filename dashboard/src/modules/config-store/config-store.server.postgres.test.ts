@@ -15,7 +15,8 @@ import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { runAsAgent } from "#/test/agent-call";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
-import { callStore, callStoreAsMember, callStoreBy, writeStoreAsMember } from "#/modules/config-store/config-store.server";
+import { callStore, callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
+import { callStoreBy } from "#/modules/volume-placement/volume-placement.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { type Access, requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -30,17 +31,17 @@ import { extractUpload, receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
-import { member, session as sessionTable, user } from "#/modules/identity/tables";
+import { session as sessionTable, user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import {
-  completeMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
   releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
-import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import { completeMachineRemoveAttempt, requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { LeftNotForgotten, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -1146,7 +1147,7 @@ it.live(
           assert.strictEqual(removed.kind, "removed");
           if (removed.kind !== "removed") return assert.fail("not removed");
           const release = yield* releaseServerActivity({ ...removal, ...removed });
-          yield* completeMachineRemoveAttemptActivity({
+          yield* completeMachineRemoveAttempt({
             attemptId: attempt.id,
             inngestRunId,
             completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
@@ -1461,7 +1462,7 @@ const removeServerReplying = Effect.fn(function* (
     .pipe(Effect.provideService(OrganizationRuntime, runtime));
   if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
   const release = yield* releaseServerActivity({ ...removal, ...removed });
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     attemptId: attempt.id, inngestRunId, now: new Date(),
     completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
   });

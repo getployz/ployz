@@ -1,8 +1,8 @@
-import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
+import type { MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
-import { Uuid } from "#/lib/schema";
-import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
+import { rustMachineIdSchema, StrictOrganizationSlug, Uuid } from "#/lib/schema";
+import { RecoveryBackup, SealingPublicKey } from "#/modules/sealing/sealing-key";
 
 export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
   readonly publicErrorCategory = "conflict";
@@ -10,26 +10,13 @@ export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired
   readonly details = { capability: "ployz.machine.join.device-approval.v1" };
 }
 
-export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 export const ENROLL_NOT_YET_RETRY_AFTER_SECONDS = 2;
 export const ENROLL_QUEUED_RETRY_AFTER_SECONDS = 5;
 export const ENROLLMENT_PROTOCOL_VERSION = 1 as const;
 
-const OrganizationSlug = Schema.String.check(
-  Schema.isTrimmed(),
-  Schema.isNonEmpty(),
-);
-
 /** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
 const OrganizationId = Uuid;
-
-export const MintMachineEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-});
-
-export type MintMachineEnrollmentInput =
-  typeof MintMachineEnrollmentInput.Type;
 
 export const CliMintMachineEnrollmentInput = Schema.Struct({
   organizationId: OrganizationId,
@@ -47,7 +34,7 @@ export type ReadMachineEnrollmentInput =
   typeof ReadMachineEnrollmentInput.Type;
 
 export const ResetPendingEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
+  organizationSlug: StrictOrganizationSlug,
   confirmedFounderStoppedOrErased: Schema.Literal(true),
 });
 
@@ -61,17 +48,6 @@ export const CliResetPendingEnrollmentInput = Schema.Struct({
 
 export type CliResetPendingEnrollmentInput =
   typeof CliResetPendingEnrollmentInput.Type;
-
-const MachineIdType = Schema.declare<MachineId>(
-  (value): value is MachineId => typeof value === "string",
-);
-
-/** A Machine ID: the daemon's 32-hex form, branded as the SDK's `MachineId`. */
-export const rustMachineIdSchema = Schema.String.check(
-  Schema.isPattern(MACHINE_ID_PATTERN, {
-    message: "MachineId must be a 32-hex UUID",
-  }),
-).pipe(Schema.decodeTo(MachineIdType));
 
 const WIREGUARD_PUBLIC_KEY_BYTES = 32;
 
@@ -102,7 +78,6 @@ function wireGuardPublicKeyFromDisplay(display: string): number[] | null {
 }
 
 /** Version 2 is a coordinated break: older CLIs must upgrade before founding. */
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const NonnegativeSafeInteger = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
@@ -129,16 +104,16 @@ const initialMachinePolicySchema = Schema.Struct({
 
 export const enrollmentIdentitySchema = Schema.Struct({
   protocolVersion: Schema.Literal(ENROLLMENT_PROTOCOL_VERSION),
-  name: NonEmptyString,
+  name: Schema.NonEmptyString,
   initialPolicy: initialMachinePolicySchema,
   machineId: rustMachineIdSchema,
-  publicKey: NonEmptyString.check(
+  publicKey: Schema.NonEmptyString.check(
     Schema.makeFilter((value) => wireGuardPublicKeyFromDisplay(value) !== null, {
       message: "publicKey must be a WireGuard Display base64 key.",
     }),
   ),
-  advertisedEndpoints: Schema.Array(NonEmptyString),
-  publicIp: Schema.optionalKey(Schema.NullOr(NonEmptyString)),
+  advertisedEndpoints: Schema.Array(Schema.NonEmptyString),
+  publicIp: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
   requestedStorage: Schema.Literals(["none", "zfs"]).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("none")),
   ),
@@ -184,7 +159,7 @@ export const MANAGEMENT_CAPABILITY_LENGTH = "ployz1:".length + 86;
 
 const enrollmentCallbackIdentity = {
   machineId: rustMachineIdSchema,
-  pairingCredential: NonEmptyString,
+  pairingCredential: Schema.NonEmptyString,
 };
 
 /** Whether the enrolled Machine holds its Cluster's Sealing Key, and its public half if so. */
@@ -204,7 +179,7 @@ export const enrollmentCallbackBodySchema = Schema.Union([
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
-    capability: NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
+    capability: Schema.NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
   }),
   /** A founder that refused to found lets go of its Founding Claim, so the Organization can start with another Server. */
   Schema.Struct({
@@ -226,7 +201,7 @@ const cleaned = (schema: Schema.String, clean: (value: string) => string) =>
     decode: SchemaGetter.transform(clean),
     encode: SchemaGetter.transform((value) => value),
   }));
-const ProfileText = cleaned(NonEmptyString, (value) => value.slice(0, 256));
+const ProfileText = cleaned(Schema.NonEmptyString, (value) => value.slice(0, 256));
 
 // Not part of a longer dotted number, but a sentence's closing period still ends it.
 const IPV4 = /(?<!\d\.?)(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)/gu;
@@ -355,12 +330,6 @@ export type EnrollResponse =
   | JoinEnrollMaterial
   | NotYetEnrollMaterial;
 
-export type MintedMachineEnrollment = {
-  command: string;
-  token: string;
-  expiresAt: string;
-};
-
 export type OrganizationEnrollmentStatus = "unclaimed" | "pending" | "ready";
 
 /** The organization's pairing row (at most one) as seen by Cloud. */
@@ -377,39 +346,6 @@ export function organizationEnrollmentStatus(row: OrganizationEnrollmentRow | un
 
 export function enrollmentExpiry(now: Date) {
   return new Date(now.getTime() + ENROLLMENT_TOKEN_TTL_MS);
-}
-
-const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
-/** The installer is shared Ployz infrastructure, also for Self-hosted Cloud. */
-const INSTALLER_URL = "https://ployz.sh/";
-
-/**
- * One line that installs a daemon and enrolls it. It pins `version`, the release this
- * Cloud's SDK speaks, since the stable channel may be older or newer than that.
- */
-export function buildMachineJoinCommand(input: {
-  origin: string;
-  version: string;
-}) {
-  const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
-  const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | sh -s -- ${input.version} && sudo ployz server add${cloudUrlFlag}`;
-}
-
-export function mintedEnrollment(input: {
-  origin: string;
-  token: string;
-  version: string;
-  expiresAt: Date;
-}): MintedMachineEnrollment {
-  return {
-    command: buildMachineJoinCommand({
-      origin: input.origin,
-      version: input.version,
-    }),
-    token: input.token,
-    expiresAt: input.expiresAt.toISOString(),
-  };
 }
 
 export function waitForFounder(): NotYetEnrollMaterial {

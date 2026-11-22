@@ -1,6 +1,6 @@
 import { CopyButton } from "#/components/copy-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { installLines, type InstallTarget } from "#/modules/machines/waiting/install-lines";
+import { installLines, type InstallTarget } from "#/modules/machines/installer";
 
 export function CopyBlock({ value }: { value: string }) {
   return (

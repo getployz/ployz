@@ -1,8 +1,8 @@
 import type { ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { SupportShows } from "./support-access";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { SupportShows } from "#/modules/organization/permissions";
+import type { StoreRefusal } from "#/lib/refusal";
 import { holds, refusalForSupport, viewForSupport, withoutCheckOutput, writtenForSupport } from "./support-view";
 
 const NONE: SupportShows = { variables: false, configs: false, logs: false };

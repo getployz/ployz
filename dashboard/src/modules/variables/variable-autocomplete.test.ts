@@ -72,7 +72,7 @@ describe("filterReferenceTargets", () => {
       slug: "redis", name: "redis", isSelf: false,
       variables: [{ key: "AUTH", exported: true, isSecret: true, description: null }],
       managedExports: getManagedServiceExports({
-        id: "s1", lineageId: "s1", name: "redis", slug: "redis", privateDns: "redis",
+        id: "s1", privateDns: "redis",
         environmentId: "e1", environmentSlug: "production",
       }),
     };

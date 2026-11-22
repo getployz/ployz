@@ -1,46 +1,25 @@
-import { Suspense, useState, type ReactNode } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Suspense } from "react";
+import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
-import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
+import { TriangleAlertIcon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
 import { DashboardPage } from "#/components/dashboard-page";
-import { ServerStatusLabel } from "#/components/server-status-label";
-import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
-import { SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
-import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
-import { Input } from "#/components/ui/input";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
-import { regionLabels } from "#/modules/machines/server-regions";
-import { useRegions } from "#/modules/machines/server-regions.hooks";
-import { needsAttention } from "#/modules/machines/server-status";
-import { useServers, type Server } from "#/modules/machines/use-servers";
+import { useServers } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
-import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
-import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
-import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
-import { useServerDrain } from "#/modules/machines/server-drain.hooks";
-import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
-import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
-import { useServerWebTraffic } from "#/modules/machines/server-web-traffic.hooks";
-import { latestServerWebTrafficQueryOptions } from "#/modules/machines/server-web-traffic.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { serverDrains } from "#/modules/machines/server-drain.queries";
+import { serverWebTraffic } from "#/modules/machines/server-web-traffic.queries";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import { prefetchRemote } from "#/collections/route-data";
-import { DrainDialog } from "./-components/drain-dialog";
-import { RemoveServerHint, RemoveServerSection } from "./-components/remove-server-section";
-import { runsHere } from "./-components/runs-here";
-import { ServerBuildsSection } from "./-components/server-builds-section";
-import { ServerRegionSection } from "./-components/server-region-section";
+import { RunningHere } from "./-components/running-here";
 import { ServerResources } from "./-components/server-resources";
-import { DrainButton, ServerServicesSection } from "./-components/server-services-section";
+import { ServerSettings } from "./-components/server-settings";
+import { ServerStatusLabel } from "./-components/server-status-label";
 import { ServerSwitcher } from "./-components/server-switcher";
 import { ServerUpgradeSection } from "./-components/server-upgrade-section";
-import { ServerWebTrafficSection } from "./-components/server-web-traffic-section";
-import { ServiceUsage } from "./-components/service-usage";
-import { StrayNamespaces } from "./-components/stray-namespaces";
-import { WebTrafficDialog } from "./-components/web-traffic-dialog";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
 export const Route = createFileRoute(
@@ -52,12 +31,12 @@ export const Route = createFileRoute(
       Schema.catchDecoding(() => Effect.succeed(Option.some(false))),
     )),
   })),
-  staticData: { crumb: ServerSwitcher },
+  staticData: { crumb: ServerSwitcher, section: "servers" },
   loader: ({ params, context }) => prefetchRemote(
     context,
     latestServerUpgradesQueryOptions(params.organizationSlug),
-    latestServerDrainsQueryOptions(params.organizationSlug),
-    latestServerWebTrafficQueryOptions(params.organizationSlug),
+    serverDrains.options(params.organizationSlug),
+    serverWebTraffic.options(params.organizationSlug),
     volumePlacementsQueryOptions(params.organizationSlug),
     organizationMembersQueryOptions(params.organizationSlug),
   ),
@@ -122,67 +101,6 @@ function RouteComponent() {
   );
 }
 
-const REMOVE_REFUSED = "Only an owner or admin can remove servers.";
-
-/**
- * Services, Web traffic, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and
- * from Danger, and the Web traffic switch with its own confirm.
- */
-function ServerSettings({ organizationSlug, server, servers, stale }: {
-  organizationSlug: string;
-  server: Server;
-  servers: readonly Server[];
-  stale: boolean;
-}) {
-  const { machine } = server;
-  const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
-  const webTraffic = useServerWebTraffic(organizationSlug, { id: machine.id, name: server.name }, machine, servers);
-  const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
-  const remove = useRoleGate(organizationSlug, "servers:remove", REMOVE_REFUSED);
-  const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
-  const machines = servers.map((each) => each.machine);
-  const regions = useRegions(organizationSlug, regionLabels(machines));
-  // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
-  const unavailable = stale
-    ? "Drain needs Cloud to reach your servers."
-    : server.status === "offline" ? `Drain needs ${server.name} online.` : null;
-  const webUnavailable = stale
-    ? "Web traffic needs Cloud to reach your servers."
-    : server.status === "offline" ? `Web traffic needs ${server.name} online.` : null;
-  return (
-    <>
-      <ServerServicesSection
-        machine={machine}
-        organizationSlug={organizationSlug}
-        lastToRunServices={!servers.some((other) => other.machine.id !== machine.id && other.machine.acceptsServices && !needsAttention(other.status))}
-        view={drain.view}
-        left={drainLeftRows(server.services, strays)}
-        onDrain={drain.ask}
-        unavailable={unavailable}
-        gate={operate}
-      />
-      <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} gate={operate} />
-      <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
-      <ServerRegionSection machine={machine} machines={machines} services={server.services} regions={regions} organizationSlug={organizationSlug} gate={operate} />
-      <RemoveServerSection
-        machine={machine}
-        organizationSlug={organizationSlug}
-        last={servers.length === 1}
-        offline={server.status === "offline"}
-        gate={remove}
-        hint={(
-          <RemoveServerHint
-            hint={removeHint(drain.view, server.services, strays)}
-            drainButton={<DrainButton view={drain.view} onClick={drain.ask} size="sm" disabled={unavailable !== null || !operate.allowed} title={operate.reason} />}
-          />
-        )}
-      />
-      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.machine.id, server.services, strays)} {...drain.dialog} />
-      <WebTrafficDialog serverName={server.name} domains={webTraffic.domains} partial={webTraffic.partial} reach={webTraffic.reach} {...webTraffic.dialog} />
-    </>
-  );
-}
-
 /** The page's shape while the Runtime Watch connects: status, Resources, Running here, Services, Builds, Remove. */
 function ServerPageSkeleton() {
   return (
@@ -195,120 +113,5 @@ function ServerPageSkeleton() {
         </div>
       ))}
     </div>
-  );
-}
-
-/** Rows shown in place; each reads its Service's usage, so the rest wait in a sheet that reads only while open. */
-const SHOWN_HERE = 5;
-
-/**
- * The Services on this Server with what each uses here now. While the Server is offline, each row says whether its
- * Service still runs elsewhere, and the sheet link counts those that run nowhere else.
- */
-function RunningHere({ organizationSlug, server, servers, stale }: {
-  organizationSlug: string;
-  server: Server;
-  servers: readonly Server[];
-  stale: boolean;
-}) {
-  const open = Route.useSearch().services === true;
-  const navigate = useNavigate({ from: Route.fullPath });
-  const up = servers.filter((other) => other.machine.id !== server.machine.id && !needsAttention(other.status));
-  const count = server.services.length;
-  const onlyHere = server.status === "offline"
-    ? server.services.filter((service) => !up.some((other) => service.machineIds.has(other.machine.id))).length
-    : 0;
-  const row = (service: Server["services"][number]) => (
-    <ServiceRow key={service.identity} organizationSlug={organizationSlug} server={server} service={service} up={up} stale={stale} />
-  );
-
-  return (
-    <>
-      <SettingsSection id="running-here" title="Running here">
-        {count === 0 ? <SettingsEmpty title={runsHere(server)} /> : (
-          <SettingsList label={`Services on ${server.name}`}>{server.services.slice(0, SHOWN_HERE).map(row)}</SettingsList>
-        )}
-        <StrayNamespaces organizationSlug={organizationSlug} server={server} servers={servers} />
-        {count > SHOWN_HERE ? (
-          <SettingsFoot>
-            <Button variant="outline" size="sm" render={<Link from={Route.fullPath} to="." search={{ services: true }} />}>
-              All {count} services
-              <ChevronRightIcon data-icon="inline-end" />
-            </Button>
-            {onlyHere > 0 ? <ServerStatusLabel status="offline" stale={stale}>{onlyHere} run only here</ServerStatusLabel> : null}
-          </SettingsFoot>
-        ) : null}
-      </SettingsSection>
-      <Sheet open={open && count > SHOWN_HERE} onOpenChange={(next) => { if (!next) void navigate({ to: ".", search: {} }); }}>
-        <SheetContent className="gap-0">
-          <SheetHeader>
-            <SheetTitle>Running on {server.name}</SheetTitle>
-          </SheetHeader>
-          <ServiceList services={server.services} row={row} />
-        </SheetContent>
-      </Sheet>
-    </>
-  );
-}
-
-function ServiceList({ services, row }: {
-  services: Server["services"];
-  row: (service: Server["services"][number]) => ReactNode;
-}) {
-  const [filter, setFilter] = useState("");
-  const needle = filter.trim().toLowerCase();
-  const shown = needle
-    ? services.filter((service) => `${service.name} ${service.namespace ?? ""}`.toLowerCase().includes(needle))
-    : services;
-
-  return (
-    <>
-      <div className="px-4 pb-3">
-        <Input
-          type="search"
-          aria-label="Filter services"
-          placeholder="Filter services"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
-      </div>
-      <div className="@container/settings mx-4 mb-4 min-h-0 overflow-y-auto rounded-lg border bg-card">
-        {shown.length === 0 ? <SettingsEmpty title={`No services match “${filter.trim()}”`} /> : (
-          <SettingsList label="Services">{shown.map(row)}</SettingsList>
-        )}
-      </div>
-    </>
-  );
-}
-
-function ServiceRow({ organizationSlug, server, service, up, stale }: {
-  organizationSlug: string;
-  server: Server;
-  service: Server["services"][number];
-  up: readonly Server[];
-  stale: boolean;
-}) {
-  const elsewhere = up.find((other) => service.machineIds.has(other.machine.id));
-  return (
-    <SettingsListItem
-      media={<BoxIcon />}
-      label={service.name}
-      hint={service.namespace ? <span className="line-clamp-1">{service.namespace}</span> : undefined}
-      commit="none"
-      actions={server.status !== "offline" ? (
-        service.namespace ? (
-          <ServiceUsage
-            organizationSlug={organizationSlug}
-            server={{ id: server.machine.id, name: server.name }}
-            namespace={service.namespace}
-            name={service.name}
-          />
-        ) : null
-      ) : elsewhere ? (
-        <span className="text-sm text-muted-foreground">Still on {elsewhere.name}</span>
-      ) : (
-        <ServerStatusLabel status="offline" stale={stale}>Down</ServerStatusLabel>
-      )}
-    />
   );
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import type { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import { asTestDouble } from "#/lib/test-double";
 import { applyServerWebTraffic } from "#/modules/machines/server-web-traffic.inngest";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 const data = { attemptId: "00000000-0000-4000-8000-0000000000e1", organizationId: "org-1", machineId: "a".repeat(32) };
 
@@ -13,10 +13,10 @@ type Answers = {
 
 /** Runs the handler with each Database step answering from `answers`, and records the events it sends. */
 async function apply(answers: Answers) {
-  const sent: ReturnType<typeof createClusterDomainSyncRequestedEvent>[] = [];
+  const sent: ReturnType<typeof clusterDomainSyncRequested.create>[] = [];
   const step = {
     run: <A>(name: string, fn: () => A) => (name in answers ? answers[name as keyof Answers] : fn()),
-    sendEvent: (_id: string, event: ReturnType<typeof createClusterDomainSyncRequestedEvent>) => { sent.push(event); },
+    sendEvent: (_id: string, event: ReturnType<typeof clusterDomainSyncRequested.create>) => { sent.push(event); },
   };
   const ended = await applyServerWebTraffic(
     { event: { data }, step: asTestDouble<Parameters<typeof applyServerWebTraffic>[0]["step"]>()(step), runId: "run-1" },

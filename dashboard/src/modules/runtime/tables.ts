@@ -1,5 +1,7 @@
-import type { RemovalEndpoint } from "#/modules/machines/pairing-removal";
-import { createdAt, type EncryptedSecretValue, type MachineId, updatedAt } from "#/db/tables";
+import type { RemovalEndpoint } from "#/modules/runtime/removal-endpoints";
+import { createdAt, type EncryptedSecretValue, updatedAt } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
+import { MACHINE_ID_SQL } from "#/lib/schema";
 import { organization } from "#/modules/organization/tables";
 import { sql } from "drizzle-orm";
 import { check, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
@@ -39,11 +41,11 @@ export const organizationPairing = pgTable(
     ),
     check(
       "organization_pairing_founder_claim_machine_id_check",
-      sql`${table.founderClaimMachineId} ~ '^[0-9a-f]{32}$'`,
+      sql`${table.founderClaimMachineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`,
     ),
     check(
       "organization_pairing_founder_machine_id_check",
-      sql`${table.founderMachineId} is null or ${table.founderMachineId} ~ '^[0-9a-f]{32}$'`,
+      sql`${table.founderMachineId} is null or ${table.founderMachineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`,
     ),
   ],
 );

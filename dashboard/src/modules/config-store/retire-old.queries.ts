@@ -1,3 +1,4 @@
+/** @data-source remote: polled every 5 seconds while the cleanup waits or may still arrive */
 import { useQuery } from "@tanstack/react-query";
 import type { DeploymentSummary } from "@ployz/sdk";
 import type { DeploymentCleanupView } from "./tables";

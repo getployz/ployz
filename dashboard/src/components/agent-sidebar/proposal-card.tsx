@@ -5,8 +5,8 @@ import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
-import { Textarea } from "#/components/ui/textarea";
 import { type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
+import { denial, DenyReason, DenyWithReasonButton, DestroyedItem, DestroysList, ServerLine } from "./decision-parts";
 import { decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
 
 const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
@@ -106,7 +106,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
     return true;
   };
   const approve = () => begin() && decide({ approve: {} });
-  const deny = () => begin() && decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
+  const deny = () => begin() && decide(denial(reason));
 
   return (
     <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${stepsWord(proposal.steps.length)} in ${place} need approval`}>
@@ -126,24 +126,18 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
               <span className="w-4 shrink-0 text-right tabular-nums text-muted-foreground">{index + 1}.</span>
               <span className="flex min-w-0 flex-col">
                 <span>{stepTitle(step)}</span>
-                <span className="text-muted-foreground">On servers <code className="font-mono">{step.namespace}/{step.runtime}</code></span>
+                <ServerLine namespace={step.namespace} runtime={step.runtime} />
               </span>
             </li>
           ))}
         </ol>
         {destroys && (
-          <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
-            {losses.map((loss) => (
-              <li key={loss.key} className="flex gap-2">
-                <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span>{loss.verb} <b>{loss.name}</b>{loss.after}</span>
-              </li>
-            ))}
-          </ul>
+          <DestroysList label="Destroys">
+            {losses.map((loss) => <DestroyedItem key={loss.key}>{loss.verb} <b>{loss.name}</b>{loss.after}</DestroyedItem>)}
+          </DestroysList>
         )}
         {reason !== null && (
-          <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
-            onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
+          <DenyReason value={reason} onChange={setReason} />
         )}
         {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
       </CardContent>
@@ -154,11 +148,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
         <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
           Deny
         </Button>
-        {reason === null && (
-          <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>
-            Deny with a reason…
-          </Button>
-        )}
+        {reason === null && <DenyWithReasonButton onClick={() => setReason("")} />}
       </CardFooter>
     </Card>
   );

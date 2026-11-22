@@ -9,6 +9,8 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
+import type { Query, Site } from "../model";
+import type { RequestSample } from "../requests/routes";
 import { hourBuckets, localDay, localDays } from "../local-time";
 import { namespacesByEnvironment, setSiteAnalytics } from "../salts.server";
 import { analyticsGoal, analyticsSite } from "../tables";
@@ -51,7 +53,7 @@ const gateFor = Effect.fn("WebAnalyticsView.gate")(function* (organizationId: st
 
 const siteOf = Effect.fn("WebAnalyticsView.siteOf")(function* (organizationId: string, environmentId: string, timezone: string) {
   const namespace = (yield* namespacesByEnvironment(organizationId)).get(environmentId);
-  return { organizationId, environmentId, timezone, namespaces: namespace === undefined ? [] : [namespace] } satisfies analytics.Site;
+  return { organizationId, environmentId, timezone, namespaces: namespace === undefined ? [] : [namespace] } satisfies Site;
 });
 
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
@@ -69,7 +71,7 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
   const now = yield* Clock.currentTimeMillis;
   const { range, interval } = resolveRange(isRangeSpec(input.range) ? input.range : DEFAULT_RANGE, site.timezone, now);
   const page = parsePageFilter(input.page);
-  const q: analytics.Query = { site: siteQuery, range, filters: page === null ? [] : [page], limit: TABLE_ROWS, goals };
+  const q: Query = { site: siteQuery, range, filters: page === null ? [] : [page], limit: TABLE_ROWS, goals };
   const figures = yield* analytics.figures(q, interval, ["page", "source", "utm_campaign", "language", "host"]);
   // A range with no visitor may be a site that has counted none at all: then the days it came without a salt are all it has.
   if (figures.overview.visitors === 0 && figures.overview.pageviews === 0) {
@@ -115,7 +117,7 @@ const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor
   if (open.gate !== "on") return { gate: open.gate } as const;
   const { timezone } = open.site;
   const now = yield* Clock.currentTimeMillis;
-  const q: analytics.Query = {
+  const q: Query = {
     site: yield* siteOf(organization.id, input.environmentId, timezone),
     range: resolveWindow(isRequestWindow(input.window) ? input.window : DEFAULT_WINDOW, timezone, now),
     filters: [],
@@ -124,7 +126,7 @@ const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor
   return { gate: "on", q } as const;
 });
 
-const sample = (row: analytics.RequestSample) => ({ ...row, ts: row.ts.getTime() });
+const sample = (row: RequestSample) => ({ ...row, ts: row.ts.getTime() });
 
 /** Routes by traffic with latency and 5xx, and the slowest requests, over a window. */
 export const readApiView = Effect.fn("WebAnalyticsView.readApi")(function* (actor: Actor, input: ReadRequestViewInput) {

@@ -4,15 +4,17 @@ import { toast } from "sonner";
 import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { useMinute } from "#/hooks/use-minute";
 import { toErrorMessage } from "#/lib/error-message";
-import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
+import { environmentKey } from "#/modules/config-store/environment-ref";
+import { invalidateViews } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, placementLoss, type PlacementLoss,
+  appliedMirrors, observePlacement, type Placement, placementChanges,
   type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
+import { placementGroup, placementLoss, type PlacementLoss } from "./volume-placement.review";
 import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 

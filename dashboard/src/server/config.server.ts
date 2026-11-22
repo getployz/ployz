@@ -88,6 +88,10 @@ const rawFields = {
   ),
   verifyGithubOrigin: optional(Config.url("PLOYZ_VERIFY_GITHUB_ORIGIN")),
   verifyPostshibaOrigin: optional(Config.url("PLOYZ_VERIFY_POSTSHIBA_ORIGIN")),
+  verifyMetrics: optional(Config.string("PLOYZ_VERIFY_METRICS")),
+  verifyRuntime: optional(Config.string("PLOYZ_VERIFY_RUNTIME")),
+  verifyProbeAllow: optional(Config.string("PLOYZ_VERIFY_PROBE_ALLOW")),
+  dialSampleN: optional(Config.string("PLOYZ_DIAL_SAMPLE_N")),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
   ),
@@ -238,7 +242,7 @@ const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* 
  * Who holds the GitHub App's private key and client secret. Local: this Cloud, as a Self-hosted Cloud does. Minter:
  * a service outside Cloud, which Cloud asks for read tokens and narrow operations, so Cloud's env holds neither.
  */
-export type GithubAuthorityConfiguration =
+type GithubAuthorityConfiguration =
   | { readonly mode: "local"; readonly appPrivateKey: Redacted.Redacted<string>; readonly appClientSecret: Redacted.Redacted<string> }
   | { readonly mode: "minter"; readonly url: URL; readonly auth: GithubMinterAuth };
 
@@ -298,6 +302,21 @@ const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(functi
   return { mode: "minter", url, auth: { kind: "sigv4", accessKeyId, secretAccessKey, region } } satisfies GithubAuthorityConfiguration;
 });
 
+/**
+ * Switches for a verify lab, honored only by a dev server: the lab has no ClickHouse or Cluster of its own, and
+ * probes its own address range. A production build holds them all off, whatever the environment says.
+ */
+const resolveVerify = (input: Effect.Success<typeof loadRawConfig>) =>
+  import.meta.env.DEV
+    ? { metrics: input.verifyMetrics === "1", runtime: input.verifyRuntime === "1", probeAllow: input.verifyProbeAllow ?? "" }
+    : { metrics: false, runtime: false, probeAllow: "" };
+
+/** One dial in this many gets sampled timing; anything but a whole number from 1 to 10,000 is 100. */
+const resolveDialSampleRate = (value: string | undefined) => {
+  const rate = Number(value ?? 100);
+  return Number.isSafeInteger(rate) && rate >= 1 && rate <= 10_000 ? rate : 100;
+};
+
 /** Comma-separated user ids, taken exactly: no email or domain matching. */
 const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
   value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
@@ -326,7 +345,6 @@ const makeAppConfig = Effect.gen(function* () {
     auth: {
       secret: raw.betterAuthSecret,
       trustedOrigins: raw.betterAuthTrustedOrigins,
-      url: raw.appUrl,
       // Elsewhere better-auth's default: a single-address X-Forwarded-For.
       clientIpHeaders: raw.railwayEnvironmentId === undefined ? undefined : ["x-real-ip"],
     },
@@ -365,6 +383,8 @@ const makeAppConfig = Effect.gen(function* () {
     uptimeEnabled: raw.uptimeEnabled,
     analyticsEnabled: polar.mode !== "self_hosted" || raw.analyticsEnabled,
     encryptionSecret: raw.encryptionSecret,
+    verify: resolveVerify(raw),
+    dialSampleRate: resolveDialSampleRate(raw.dialSampleN),
     // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.
     supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),
     // Automatic Rollouts skip a release younger than this; 0 takes one as soon as it's out. Manual Upgrades never wait.
@@ -381,6 +401,14 @@ export const startupConfigFailure = (env?: Record<string, string>): string | und
   // Anything else is this check's own failure, not the environment's; the runtime reports it on first use.
   if (!(error instanceof Config.ConfigError || error instanceof InvalidConfiguration)) return undefined;
   return `Invalid configuration. Fix these environment variables:\n${error.message}`;
+};
+
+/** Stops the process with the startup report when the environment is bad, before a route or job runs on it. */
+export const exitOnBadConfig = () => {
+  const failure = startupConfigFailure();
+  if (failure === undefined) return;
+  console.error(failure);
+  process.exit(1);
 };
 
 export class AppConfig extends Context.Service<AppConfig>()("ployz/AppConfig", {

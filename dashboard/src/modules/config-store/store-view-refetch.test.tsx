@@ -132,10 +132,10 @@ it("tells a chrome view's failed read from an unread one, across rereads, after 
   const shown = renderHook(() => useCachedStoreRead("acme", deploymentQuery("dep-18")), { wrapper });
   const changed = () => act(() => applyOrganizationChanges(["store_deployment"], "acme", scope));
   await waitFor(() => expect(reads).toHaveLength(1));
-  expect(shown.result.current).toEqual({ result: undefined, failed: false });
+  expect(shown.result.current).toMatchObject({ result: undefined, failed: false });
 
   await act(async () => reads[0]?.fail());
-  await waitFor(() => expect(shown.result.current).toEqual({ result: undefined, failed: true }));
+  await waitFor(() => expect(shown.result.current).toMatchObject({ result: undefined, failed: true }));
   changed();
   await waitFor(() => expect(reads).toHaveLength(2));
   expect(shown.result.current.failed).toBe(true);

@@ -3,10 +3,10 @@ import { Effect, Schema } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { askerNames, type ApprovalView } from "#/modules/approvals/approvals.server";
-import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/approvals/approvals.fresh.server";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import { approvalForSupport } from "#/modules/support-access/support-view";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 /**
  * Approvals as `access` may read them: support sees each review under the Organization's rules, `asker` names who asked,
@@ -23,7 +23,7 @@ const shownOne = (access: Access, approval: ApprovalView) =>
   Effect.map(askerNames([approval]), (names) => shown(access, names)(approval));
 
 export const listPendingApprovalsServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
@@ -31,7 +31,7 @@ export const listPendingApprovalsServerFn = createServerFn({ method: "GET" })
   })));
 
 export const getApprovalServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
@@ -43,7 +43,7 @@ export const getApprovalServerFn = createServerFn({ method: "GET" })
  * refusal, such as a plan that changed since the card drew, comes back as its message.
  */
 export const decideApprovalServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({
     organizationSlug: Schema.String,
     id: Schema.String,

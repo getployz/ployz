@@ -1,5 +1,10 @@
+import { encodeGithubPath } from "#/modules/github/github-ingestion.contracts";
+
 /** Where the GitHub build workflow lives in a repository. Cloud dispatches it by this file name. */
 export const GITHUB_BUILD_WORKFLOW_FILE = "ployz-build.yml";
+
+/** The build workflow's path in a repository, as GitHub names a run's workflow. */
+export const GITHUB_BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 
 /**
  * The `getployz/build` commit every build runs, its action or its reusable workflow. A tag can move; a commit can't.
@@ -69,6 +74,11 @@ export function githubBuildId(deploymentId: string, service: string) {
   return `${deploymentId}.${service}`;
 }
 
+/** The Deployment a build id (`githubBuildId`) belongs to. */
+export function deploymentOfBuild(buildId: string) {
+  return buildId.slice(0, buildId.indexOf("."));
+}
+
 /**
  * Readiness of one repository for GitHub builds, as Cloud last checked it. `outdated`: the default branch holds a
  * `ployz-build.yml` that is not one Ployz offers, such as one calling `getployz/build@v1`.
@@ -101,13 +111,13 @@ type GithubBuildWorkflowPage = { web: string; fullName: string; defaultBranch: s
 
 function repositoryPage(input: GithubBuildWorkflowPage, page: "new" | "edit") {
   const [owner = "", name = ""] = input.fullName.split("/");
-  return `${input.web}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${page}/${input.defaultBranch.split("/").map(encodeURIComponent).join("/")}`;
+  return `${input.web}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${page}/${encodeGithubPath(input.defaultBranch)}`;
 }
 
 /** GitHub's new-file page with the workflow filled in. The user commits it or opens a PR; Cloud never writes. */
 export function githubBuildWorkflowUrl(input: GithubBuildWorkflowPage & { template: GithubWorkflowTemplate }) {
   const params = new URLSearchParams({
-    filename: `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
+    filename: GITHUB_BUILD_WORKFLOW_PATH,
     value: GITHUB_WORKFLOW_TEMPLATES[input.template],
   });
   return `${repositoryPage(input, "new")}?${params.toString()}`;
@@ -115,5 +125,5 @@ export function githubBuildWorkflowUrl(input: GithubBuildWorkflowPage & { templa
 
 /** GitHub's editor on the repository's existing workflow file. The person pastes the new file there. */
 export function githubBuildWorkflowEditUrl(input: GithubBuildWorkflowPage) {
-  return `${repositoryPage(input, "edit")}/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
+  return `${repositoryPage(input, "edit")}/${GITHUB_BUILD_WORKFLOW_PATH}`;
 }

@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { hasMarketingSite } from "#/server/marketing-proxy.server";
+import { hasMarketingSite } from "#/modules/marketing/marketing-proxy.server";
 import { runAppEffect } from "#/server/run.server";
 import { publicErrorMiddleware } from "#/server/tanstack";
 

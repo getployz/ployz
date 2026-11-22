@@ -1,9 +1,7 @@
-import { Route as RootRoute } from "#/routes/__root";
 import type { AuthSession } from "#/auth/auth";
-import { authClient } from "#/auth/auth-client";
-import { resetPostHog } from "#/modules/analytics/posthog";
+import { announceSignOut, authClient } from "#/auth/auth-client";
 import { Data, Result } from "effect";
-import { useHydrated, useRouter } from "@tanstack/react-router";
+import { useHydrated, useMatch, useRouter } from "@tanstack/react-router";
 
 type AuthSessionValue = {
   data: AuthSession | null;
@@ -15,8 +13,8 @@ class SignOutError extends Data.TaggedError("SignOutError")<{
   readonly cause: unknown;
 }> {}
 
-export function useAuthSession(): AuthSessionValue {
-  const serverSession = RootRoute.useLoaderData().session ?? null;
+function useAuthSession(): AuthSessionValue {
+  const serverSession = useMatch({ from: "__root__", select: (match) => match.loaderData?.session ?? null });
   const hydrated = useHydrated();
   const state = authClient.useSession();
   return {
@@ -40,7 +38,7 @@ export function useSignOut() {
         if (response.error) {
           throw response.error;
         }
-        resetPostHog();
+        announceSignOut();
 
         await router.navigate({ to: "/", reloadDocument: true });
         return Result.succeed(undefined);
@@ -48,8 +46,4 @@ export function useSignOut() {
       return Result.fail(new SignOutError({ cause }));
     }
   };
-}
-
-export function getSignOutErrorMessage(_error: SignOutError) {
-  return "Couldn't sign out. Try again";
 }

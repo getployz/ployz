@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { OPERATION_TOOLS, OPERATIONS } from "#/modules/operations/operations";
+import { OPERATION_PARITY } from "#/modules/operations/operations.parity";
 
 const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
-const CLI_HANDLER = new URL("../../routes/api/cli/-cli.handler.ts", import.meta.url);
+const SRC = new URL("../../", import.meta.url);
 
 const CONFIG_STORE_TOOLS = new Set(["environment_protect", "volume_add", "volume_update", "volume_remove"]);
 /** Fields that address or key a call rather than carry an option. */
@@ -28,7 +29,11 @@ const AgentTools = Schema.fromJsonString(Schema.Struct({
   })),
 }));
 const { tools: agentTools } = Schema.decodeUnknownSync(AgentTools)(readFileSync(AGENT_TOOLS, "utf8"));
-const cliHandler = readFileSync(CLI_HANDLER, "utf8");
+/** The CLI route tables: each module's `*.cli.server.ts`, and the GitHub routes the CLI route folder owns. */
+const cliRoutes = readdirSync(SRC, { recursive: true, encoding: "utf8" })
+  .filter((path) => path.endsWith(".cli.server.ts") || path.endsWith("-github.cli.ts"))
+  .map((path) => readFileSync(new URL(path, SRC), "utf8"))
+  .join("\n");
 
 type Surface = "cli" | "agent" | "ui";
 type Carried = { readonly via: string | readonly string[] } | { readonly omitted: string };
@@ -56,7 +61,7 @@ function fieldsOf(surface: Surface, present: Present) {
 function drift(): string[] {
   const problems: string[] = [];
   const agentClaims = new Map<string, Set<string>>();
-  for (const [operation, definition] of Object.entries(OPERATIONS)) {
+  for (const [operation, definition] of Object.entries(OPERATION_PARITY)) {
     const options = Object.keys(definition.options.fields);
     for (const surface of ["cli", "agent", "ui"] as const) {
       const declared = definition.surfaces[surface];
@@ -87,7 +92,7 @@ function drift(): string[] {
       }
       if (surface === "cli") {
         const { route } = present as Present & { readonly route: string };
-        if (!cliHandler.includes(`case "${route}"`)) problems.push(`${operation} cli: -cli.handler.ts has no case "${route}"`);
+        if (!cliRoutes.includes(`"${route}":`)) problems.push(`${operation} cli: no CLI route table has "${route}"`);
       }
       for (const field of fields) {
         if (!claimed.has(field) && !ADDRESSING[surface].has(field)) {
@@ -127,6 +132,6 @@ describe("operation parity", () => {
   it("reads real surfaces, so a stale registry cannot pass by reading nothing", () => {
     const swept = agentTools.filter(({ name, read_only }) => !read_only && (OPERATION_TOOLS as readonly string[]).includes(name)).map(({ name }) => name);
     expect(swept).toEqual(expect.arrayContaining(["server_forget", "service_restart", "service_start", "service_stop"]));
-    expect(cliHandler).toContain(`case "POST servers/:id/forget"`);
+    expect(cliRoutes).toContain(`"POST servers/:id/forget":`);
   });
 });

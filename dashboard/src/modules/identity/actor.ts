@@ -1,6 +1,5 @@
 import { Schema } from "effect";
-import { type Permission, permissionsOf } from "#/modules/organization/permissions";
-import type { SupportShows } from "#/modules/support-access/support-access";
+import { type Permission, permissionsOf, type SupportShows } from "#/modules/organization/permissions";
 import { granted, type TokenGrant } from "#/modules/identity/token-grant";
 
 export const Actor = Schema.Struct({

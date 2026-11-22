@@ -10,7 +10,8 @@ import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import {
   advanceProposal,
   createProposal,
@@ -25,7 +26,7 @@ import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { serviceAct } from "#/modules/service-act/tables";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

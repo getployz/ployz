@@ -1,117 +1,20 @@
 import "@tanstack/react-start/server-only";
 
-import { Effect, Schema } from "effect";
-import { Minimatch } from "minimatch";
-import {
-  createGithubRepositoriesSyncRequestedEvent,
-  type GithubInstallationRepositoriesWebhookEventData,
-  type GithubInstallationWebhookEventData,
-} from "#/modules/inngest/events";
+import { Effect } from "effect";
+import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
-  bumpGithubRepositoryCacheVersion,
-  deleteCachedGithubRepositoriesById,
-  deleteCachedGithubRepositoriesForInstallation,
-  deleteGithubInstallation,
-  getCachedGithubRepositoryForOrganization,
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
-  listLinkedOrganizationIds,
-  lockGithubRepositoryCache,
-  suspendGithubInstallation,
-  upsertGithubInstallation,
 } from "#/modules/github/github.repository";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
-import { accessFor, type GithubAccess } from "./github-access";
-import { GithubApi, resolveGithubRepository } from "./github-observation.api";
-import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
-import { normalizePublicGithubRepository } from "./public-repository";
-import { repositoryOwnerId, resolveReadableRepository } from "./readable-repository.server";
-import { AppConfig, type GithubOrigins } from "#/server/config.server";
-import { Database } from "#/server/database.server";
-import { Validation, NotFound } from "#/server/public-error";
-
-export function getGithubAppInstallUrl(github: { readonly appSlug: string; readonly origins: GithubOrigins }) {
-  return `${github.origins.web}/apps/${github.appSlug}/installations/new`;
-}
-
-function isUsableInstallationAction(
-  action: GithubInstallationWebhookEventData["action"],
-) {
-  return (
-    action === "created" ||
-    action === "unsuspend" ||
-    action === "new_permissions_accepted"
-  );
-}
-
-/**
- * An installation webhook records what GitHub told us and grants nothing: only an Organization's link row does.
- * `suspend` marks the installation suspended and empties its repository cache, keeping every Organization's link, so
- * `unsuspend` brings it back; `deleted` forgets the installation, which cascades to its cache and every link. Both
- * name the Organizations that were linked, whose builds through it must stop now.
- */
-export const processGithubInstallationEvent = Effect.fn(
-  "Github.processInstallationEvent",
-)(function* (payload: GithubInstallationWebhookEventData) {
-  if (isUsableInstallationAction(payload.action)) {
-    yield* upsertGithubInstallation({
-      installationId: payload.installation.id,
-      accountLogin: payload.installation.account.login,
-      accountType: payload.installation.account.type,
-      accountAvatarUrl: payload.installation.account.avatar_url,
-    });
-    return {
-      installationId: payload.installation.id,
-      shouldSyncRepositories: true,
-      stopBuildsFor: [],
-    };
-  }
-
-  const stopBuildsFor = yield* listLinkedOrganizationIds(payload.installation.id);
-  if (payload.action === "suspend") {
-    yield* (yield* Database).transaction(Effect.gen(function* () {
-      yield* lockGithubRepositoryCache(payload.installation.id);
-      yield* suspendGithubInstallation(payload.installation.id);
-      yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
-      yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
-    }));
-  } else yield* deleteGithubInstallation(payload.installation.id);
-  return {
-    installationId: payload.installation.id,
-    shouldSyncRepositories: false,
-    stopBuildsFor,
-  };
-});
-
-/**
- * A removed repository leaves the cache now. An added one waits for the sync this asks for, because GitHub's payload
- * names it without the default branch, URL and timestamp a cache entry holds. The version bump makes a sync already
- * listing list again, since the request for a new one is skipped while it runs.
- */
-export const processGithubInstallationRepositoriesEvent = Effect.fn(
-  "Github.processInstallationRepositoriesEvent",
-)(function* (payload: GithubInstallationRepositoriesWebhookEventData) {
-  const removedRepositoryIds = payload.repositories_removed.map(
-    (repository) => repository.id,
-  );
-  yield* (yield* Database).transaction(Effect.gen(function* () {
-    yield* lockGithubRepositoryCache(payload.installation.id);
-    if (removedRepositoryIds.length > 0) {
-      yield* deleteCachedGithubRepositoriesById(
-        payload.installation.id,
-        removedRepositoryIds,
-      );
-    }
-    yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
-  }));
-  return {
-    installationId: payload.installation.id,
-    shouldSyncRepositories: payload.repositories_added.length > 0,
-  };
-});
+import { listGithubRepositoryBranches } from "./github-observation.api";
+import {
+  repositoryOwnerId, repositoryPaths, resolveReadableRepository, resolveReadableRepositoryById,
+} from "./readable-repository.server";
+import { AppConfig } from "#/server/config.server";
+import { NotFound } from "#/server/public-error";
 
 export const listGithubRepositories = Effect.fn("Github.listRepositories")(
   function* (actor: Actor, organizationSlug: string) {
@@ -143,7 +46,7 @@ export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
     }
     yield* sendInngestEvent(
       installations.map((installation) =>
-        createGithubRepositoriesSyncRequestedEvent({
+        githubRepositoriesSyncRequested.create({
           installationId: installation.installationId,
           reason: "manual-refresh",
         }),
@@ -164,18 +67,11 @@ type RepositoryInput = {
 
 const readableRepository = Effect.fn("Github.readableRepository")(function* (actor: Actor, input: RepositoryInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:read");
-  const access: GithubAccess = accessFor(organization.id, input.installationId);
-  const repository = input.installationId === null
-    // A private repository reads as absent to the public API.
-    ? yield* resolveGithubRepository(access, input.repositoryId).pipe(Effect.catchTag("GithubObservationError",
-      (error) => error.code === "not_found" ? Effect.succeed(null) : Effect.fail(error)))
-    : yield* getCachedGithubRepositoryForOrganization({
-      organizationId: organization.id, installationId: input.installationId, repositoryId: input.repositoryId,
-    });
+  const repository = yield* resolveReadableRepositoryById({ organizationId: organization.id, ...input });
   if (repository === null) {
     return yield* new NotFound({ message: "The GitHub repository installation was not found." });
   }
-  return { access, fullName: repository.fullName };
+  return repository;
 });
 
 export const listGithubBranches = Effect.fn("Github.listBranches")(
@@ -199,33 +95,9 @@ export const githubRepositoryOwner = Effect.fn("Github.repositoryOwner")(
   },
 );
 
-export { verifyWebhookSignature } from "#/modules/github/github.api";
-
 export const searchGithubFiles = Effect.fn("Github.searchFiles")(
   function* (actor: Actor, input: RepositoryInput & { readonly ref: string; readonly pattern: string }) {
     const repository = yield* readableRepository(actor, input);
-    const files = yield* listGithubRepositoryFiles(repository.access, repository.fullName, input.ref);
-    const matcher = basicGlob(input.pattern);
-    const paths = files.paths.filter((path) => matcher.match(path)).sort();
-    return {
-      paths: paths.slice(0, 200),
-      truncated: files.truncated || paths.length > 200,
-    };
+    return yield* repositoryPaths(repository.access, repository.fullName, input.ref, { cap: 200, match: input.pattern, sorted: true });
   },
 );
-
-/**
- * A user-supplied glob over repository paths: `*` and `?` within a segment, `**` across them, dotfiles included. Basic
- * globs only, so a pattern can't brace-expand without bound.
- */
-export const basicGlob = (pattern: string) =>
-  new Minimatch(pattern, { dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true });
-
-export const resolvePublicGithubRepository = Effect.fn("Github.resolvePublicRepository")(function* (input: string) {
-  const name = normalizePublicGithubRepository(input);
-  if (!name) return yield* new Validation({ message: "Enter owner/repo or a GitHub repository URL. Select the branch separately." });
-  const api = yield* GithubApi;
-  const repo = yield* api.json({ access: { type: "public" }, path: `/repos/${name}`, operation: "resolve_repository",
-    schema: Schema.Struct({ id: githubIdSchema, full_name: githubRepositoryFullNameSchema, private: Schema.Literal(false), default_branch: Schema.NonEmptyString }) });
-  return { fullName: repo.full_name, repositoryId: repo.id, access: { type: "public" as const }, defaultBranch: repo.default_branch };
-});

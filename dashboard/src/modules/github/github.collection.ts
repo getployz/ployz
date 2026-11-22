@@ -1,12 +1,13 @@
+/** @data-source remote: user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens */
 import { githubRepoAccessQueryOptions } from "./github.queries";
 import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
-import type { GithubRepositorySelection } from "#/modules/github/github";
+import type { GithubRepository } from "#/modules/github/github";
 import { listGithubRepositoriesServerFn } from "#/modules/github/github.functions";
-import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
 
-type GithubRepositoryRow = typeof schemaGithubRepositoryCache.$inferSelect;
-export type GithubRepositoryView = GithubRepositorySelection & {
+type GithubRepositoryRow = Awaited<ReturnType<typeof listGithubRepositoriesServerFn>>[number];
+export type GithubRepositoryView = GithubRepository & {
+  installation_id: number;
   synced_at: string;
 };
 

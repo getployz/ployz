@@ -5,7 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as runtime from "#/providers/runtime-provider";
 import type { OlderServers } from "#/modules/machines/use-servers";
-import { SSH_UPGRADE, ServersUnreachable } from "./servers-unreachable";
+import { SSH_UPGRADE } from "#/modules/machines/installer";
+import { ServersUnreachable } from "./servers-unreachable";
 
 afterEach(() => {
   cleanup();

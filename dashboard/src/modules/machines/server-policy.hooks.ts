@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
@@ -5,7 +6,7 @@ import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection"
 import { type BuildConcurrencyChange, policyChangeObserved, type ServerPolicyChange } from "./server-policy";
 import { requestServerPolicyChangeServerFn } from "./server-policy.functions";
 
-export const OPERATE_REFUSED = "Only an owner or admin can change how a server runs.";
+export const OPERATE_REFUSED = refusalFor("servers:operate", "change how a server runs");
 
 /** How long a requested Server Policy change may take to appear in observation. */
 const POLICY_APPLY_TIMEOUT_MS = 60_000;

@@ -1,10 +1,10 @@
 import { Handle, Position } from "@xyflow/react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Card, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
-import { ENVIRONMENT_LIVE_NODE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_LIVE_NODE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { LiveLabel } from "./PickableNode";
 import { liveName, liveNodeId } from "./nodes";
-import { nodeLabel } from "./node-status";
+import { nodeLabel } from "#/modules/runtime/node-status";
 import type { StoreLiveNode as StoreLive } from "./types";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 

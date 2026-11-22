@@ -1,7 +1,7 @@
 import { TZDate } from "@date-fns/tz";
+import { HOUR_MS } from "#/lib/time-range";
 import { RETENTION_DAYS } from "./model";
 
-export const HOUR_MS = 3_600_000;
 export const SESSION_GAP_SECONDS = 1800;
 
 export function localDay(timezone: string, instant: Date | number) {
@@ -59,6 +59,15 @@ export function localDays(timezone: string, start: Date, end: Date) {
 }
 
 const QUARTER_HOUR_MS = 900_000;
+
+/** The next site-local hour boundary after `now`'s hour. Across a half-hour offset change that boundary is 30 minutes away, not an hour. */
+export function nextHourStart(timezone: string, now: number) {
+  const start = hourStart(timezone, new Date(now)).getTime();
+  for (let at = start + QUARTER_HOUR_MS; ; at += QUARTER_HOUR_MS) {
+    const next = hourStart(timezone, new Date(at));
+    if (next.getTime() > start) return next;
+  }
+}
 
 export function hourBuckets(timezone: string, start: Date, end: Date) {
   const buckets: Date[] = [];

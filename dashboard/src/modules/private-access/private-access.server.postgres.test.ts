@@ -10,7 +10,7 @@ import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { freshApproval, freshOperationDigest } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { TAILSCALE } from "#/modules/private-access/private-access";
 import { privateAccessUse } from "#/modules/private-access/private-access.commands.server";
 import { approvePrivateAccess, setPrivateAccess } from "#/modules/private-access/private-access.server";

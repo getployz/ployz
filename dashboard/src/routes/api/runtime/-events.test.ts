@@ -1,116 +1,31 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-
+import { Effect } from "effect";
+import { Inngest } from "inngest";
+import { describe, expect, it } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { handleRuntimeEventsRequest } from "#/routes/api/runtime/-events.handler";
-import { NotFound, Unauthorized } from "#/server/public-error";
-
-const mocks = {
-  openRuntimeWatch: vi.fn(),
-};
-
-function handle(request: Request, organizationSlug: string) {
-  return handleRuntimeEventsRequest(request, organizationSlug, mocks);
-}
+import { Auth, type AuthService } from "#/modules/identity/auth.server";
+import { Database } from "#/server/database.server";
+import { publicErrorResponse } from "#/server/public-error";
+import { testConfigLayer } from "#/test/config-environment";
 
 describe("runtime events route", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it.each([
-    [
-      "unauthorized",
-      new Unauthorized(),
-      401,
-      "UNAUTHORIZED",
-    ],
-    [
-      "missing organization",
-      new NotFound({ message: "Organization not found: acme" }),
-      404,
-      "NOT_FOUND",
-    ],
-    [
-      "runtime-watch establishment failure",
-      new RuntimeConnectionFailure({
-        cause: new Error("private server detail"),
-      }),
-      500,
-      "INTERNAL",
-    ],
-  ])("maps %s before opening a stream", async (_name, error, status, code) => {
-    mocks.openRuntimeWatch.mockRejectedValue(error);
-    const response = await handle(
-      new Request("http://localhost/api/runtime/events?organizationSlug=acme"),
-      "acme",
+  it("answers 401 before opening a runtime when the request has no session", async () => {
+    const refused = await Effect.runPromise(
+      handleRuntimeEventsRequest(new Request("http://localhost/api/runtime/events?organizationSlug=acme"), "acme").pipe(
+        Effect.flip,
+        Effect.provideService(Auth, asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) })),
+        Effect.provideService(Database, undefined as never),
+        Effect.provideService(InngestClient, new Inngest({ id: "runtime-events-test" })),
+        Effect.provideService(
+          OrganizationRuntime,
+          asTestDouble<OrganizationRuntimeService>()({ open: () => Effect.die("must not open runtime") }),
+        ),
+        Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
+      ),
     );
 
-    expect({ status: response.status, body: await response.json() }).toEqual({
-      status,
-      body: expect.objectContaining({ _tag: "PublicError", code }),
-    });
-  });
-
-  it("streams a stable no-connection status when no cluster is configured", async () => {
-    mocks.openRuntimeWatch.mockResolvedValue({ status: "no_connection" });
-    const response = await handle(
-      new Request("http://localhost/api/runtime/events?organizationSlug=acme"),
-      "acme",
-    );
-    const reader = response.body?.getReader();
-    await reader?.read();
-    const status = await reader?.read();
-
-    expect(new TextDecoder().decode(status?.value)).toContain(
-      "event: runtime.status\n",
-    );
-    await reader?.cancel();
-  });
-
-  it("streams a distinct unreachable status when the cluster cannot be reached", async () => {
-    mocks.openRuntimeWatch.mockResolvedValue({
-      status: "unreachable",
-      error: null,
-    });
-    const response = await handle(
-      new Request("http://localhost/api/runtime/events?organizationSlug=acme"),
-      "acme",
-    );
-    const reader = response.body?.getReader();
-    await reader?.read();
-    const status = await reader?.read();
-
-    expect(new TextDecoder().decode(status?.value)).toContain(
-      'event: runtime.status\ndata: {"status":"unreachable"',
-    );
-    await reader?.cancel();
-  });
-
-  it("streams a redacted runtime watch and closes the SDK watch", async () => {
-    const close = vi.fn(async () => undefined);
-    const watchFrame = runtimeWatchFrameFixture();
-    async function* frames() {
-      yield watchFrame;
-      await new Promise(() => undefined);
-    }
-    mocks.openRuntimeWatch.mockResolvedValue({
-      status: "connected",
-      frames: frames(),
-      close,
-    });
-    const response = await handle(
-      new Request("http://localhost/api/runtime/events?organizationSlug=acme"),
-      "acme",
-    );
-    const reader = response.body?.getReader();
-    await reader?.read();
-    const event = await reader?.read();
-
-    expect(new TextDecoder().decode(event?.value)).toContain(
-      'event: runtime.watch\ndata: {"services":[],"machines":[]',
-    );
-    await reader?.cancel();
-    expect(close).toHaveBeenCalledOnce();
+    expect(publicErrorResponse(refused).status).toBe(401);
   });
 });

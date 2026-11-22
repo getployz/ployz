@@ -17,9 +17,9 @@
 //! reader sees the old file or the new one, never a partial one.
 //!
 //! Cloud answers the token poll from better-auth's device authorization plugin, which the
-//! dashboard wires at `dashboard/src/server/auth.server.ts::cliSignInPlugins`. The first token request
+//! dashboard wires at `dashboard/src/modules/identity/auth.server.ts::cliSignInPlugins`. The first token request
 //! for an approved code consumes its row. A later request finds no row and gets
-//! invalid_grant, as `dashboard/src/server/auth.server.postgres.test.ts` pins.
+//! invalid_grant, as `dashboard/src/modules/identity/auth.server.postgres.test.ts` pins.
 //!
 //! The finding: two `ployz login` processes wait on one code. The first to poll after the
 //! browser approves gets the token and saves the SignedIn. The other's next poll gets
@@ -1231,7 +1231,7 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
     let who = match action {
         Action::Approve(code) => {
             return format!(
-                "Browser: a signed-in member approves {code} at /device (`dashboard/src/server/auth.server.ts::cliSignInPlugins`)"
+                "Browser: a signed-in member approves {code} at /device (`dashboard/src/modules/identity/auth.server.ts::cliSignInPlugins`)"
             );
         }
         Action::Deny(code) => {
@@ -1239,7 +1239,7 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
         }
         Action::Lapse(code) => {
             return format!(
-                "Clock: {code} passes its expiry, better-auth's default 30 minutes, which `dashboard/src/server/auth.server.ts::cliSignInPlugins` keeps"
+                "Clock: {code} passes its expiry, better-auth's default 30 minutes, which `dashboard/src/modules/identity/auth.server.ts::cliSignInPlugins` keeps"
             );
         }
         Action::Step(who) => who,

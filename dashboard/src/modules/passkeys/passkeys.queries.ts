@@ -1,3 +1,4 @@
+/** @data-source remote: your passkeys and what one Server says of each, prefetched by the Account page; polled every 5 seconds while one waits, since it is approved on a Server's terminal and no Cloud write announces it */
 import { queryOptions } from "@tanstack/react-query";
 import { listPasskeysServerFn } from "#/modules/passkeys/passkeys.functions";
 

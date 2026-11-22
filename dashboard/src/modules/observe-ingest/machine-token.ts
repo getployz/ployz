@@ -1,16 +1,6 @@
 import { Option, Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-
-/**
- * A Machine's bearer token for Cloud's OTLP routes: `ployz-otlp-v1.<payload>.<signature>`. The payload is the
- * base64url of `{"machine","iat","exp"}` JSON; the signature is the base64url of the Machine's management key signing
- * `ployz-otlp-v1\0` followed by the payload segment exactly as sent.
- */
-const BEARER = /^Bearer ployz-otlp-v1\.([A-Za-z0-9_-]{1,512})\.([A-Za-z0-9_-]{86})$/;
-const DOMAIN = Buffer.from("ployz-otlp-v1\0", "ascii");
-
-export const TOKEN_MAX_SKEW_SECONDS = 300;
-export const TOKEN_MAX_LIFETIME_SECONDS = 86_400;
+import { rustMachineIdSchema } from "#/lib/schema";
+import { MAX_SKEW_SECONDS, OTLP_BEARER, OTLP_DOMAIN, OTLP_TOKEN_MAX_LIFETIME_SECONDS } from "./machine-wire";
 
 const claims = Schema.Struct({
   machine: rustMachineIdSchema,
@@ -20,6 +10,11 @@ const claims = Schema.Struct({
 
 const decodeClaims = Schema.decodeUnknownOption(claims);
 
+/**
+ * A Machine's bearer token for Cloud's OTLP routes: `ployz-otlp-v1.<payload>.<signature>`. The payload is the
+ * base64url of `{"machine","iat","exp"}` JSON; the signature is the base64url of the Machine's management key signing
+ * `ployz-otlp-v1\0` followed by the payload segment exactly as sent.
+ */
 export type MachineToken = {
   readonly machine: Schema.Schema.Type<typeof claims>["machine"];
   readonly iat: number;
@@ -29,7 +24,7 @@ export type MachineToken = {
 };
 
 export function parseMachineToken(authorization: string | null): Option.Option<MachineToken> {
-  const match = BEARER.exec(authorization ?? "");
+  const match = OTLP_BEARER.exec(authorization ?? "");
   if (match === null) return Option.none();
   const [, payload, signature] = match;
   if (payload === undefined || signature === undefined) return Option.none();
@@ -41,11 +36,11 @@ export function parseMachineToken(authorization: string | null): Option.Option<M
   }
   return Option.map(decodeClaims(json), (decoded) => ({
     ...decoded,
-    message: Buffer.concat([DOMAIN, Buffer.from(payload, "ascii")]),
+    message: Buffer.concat([OTLP_DOMAIN, Buffer.from(payload, "ascii")]),
     signature: Buffer.from(signature, "base64url"),
   }));
 }
 
 export function machineTokenCurrent({ iat, exp }: Pick<MachineToken, "iat" | "exp">, nowSeconds: number) {
-  return iat <= nowSeconds + TOKEN_MAX_SKEW_SECONDS && exp > nowSeconds && exp > iat && exp - iat <= TOKEN_MAX_LIFETIME_SECONDS;
+  return iat <= nowSeconds + MAX_SKEW_SECONDS && exp > nowSeconds && exp > iat && exp - iat <= OTLP_TOKEN_MAX_LIFETIME_SECONDS;
 }

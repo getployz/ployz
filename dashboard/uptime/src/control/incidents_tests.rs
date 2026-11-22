@@ -549,7 +549,8 @@ async fn an_answer_blocked_past_its_showing_is_dropped_and_a_fresh_one_waits() {
 #[test]
 fn the_statements_match_the_dashboard_copies() {
     let ts = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/modules/uptime/incident-fence.ts"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/modules/uptime/incident-fence.test-fixture.ts"),
     )
     .unwrap();
     let quoted = |key: &str| {

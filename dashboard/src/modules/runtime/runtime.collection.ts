@@ -1,3 +1,4 @@
+/** @data-source runtime: SSE runtime watch */
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { collectionOptions, localOnlyCollectionOptions, type Collection, type VirtualRowProps } from "@tanstack/react-db";
 import { Schema } from "effect";
@@ -157,9 +158,6 @@ export const runtimeCertificateRecordSchema = Schema.Struct({
   ),
   viaProxy: Schema.Boolean,
 });
-
-export type RuntimeCertificateRecord =
-  typeof runtimeCertificateRecordSchema.Type;
 
 /** Incomplete IDs are evidence of an incomplete observation, never deletion. */
 export const runtimeIncompleteIdsSchema = Schema.Struct({

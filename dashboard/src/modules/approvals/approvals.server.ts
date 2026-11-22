@@ -12,28 +12,35 @@ import {
   approvalCommand,
   asksForAuthKey,
   approvalSubject,
+  operationAsked,
   type OperationVerb,
   type ServiceApply,
   type VolumeApply,
-  withoutSealedBefore,
 } from "#/modules/approvals/approvals";
+import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
+import { StoreRefused, type StoreRefusal } from "#/lib/refusal";
 import { type Actor, type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { beyondEnvironments, lacks, refusalOf } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
-import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
+import { isOwnedOnlyByAgents } from "#/modules/sandbox/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
+import { matchesEnvironmentRef } from "#/modules/config-store/environment-ref";
 
 type ApprovalRow = typeof operationApprovals.$inferSelect;
 
-/** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
-const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${approvalId}`);
+const NO_SUCH_APPROVAL = "No such approval.";
+
+/**
+ * A UUID that only `approvalId` produces under `seed`, so a second run under one approval replays the first instead of
+ * running. Each kind of run keeps its own seed, since the IDs of rows already written depend on it.
+ */
+export const approvalUuid = (seed: string, approvalId: string) => uuidFrom(`${seed}:${approvalId}`);
 
 /**
  * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
@@ -41,7 +48,7 @@ const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${appr
  * committed.
  */
 export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
-  if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
+  if (command.command === "admit") return { ...command, id: approvalUuid("ployz.agent.deploy", approvalId) };
   if (command.command === "publish" && command.version == null && reviewed !== null) return { ...command, version: reviewed.version };
   return command;
 };
@@ -232,7 +239,7 @@ const carried = Effect.fn("Approvals.carried")(function* (
 ): Effect.fn.Return<Carried, never, Database> {
   const row = yield* readRow(caller.organization.id, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
-    return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
+    return { ok: false, refusal: { code: "not_found", message: NO_SUCH_APPROVAL, details: { approval_id: approvalId } } };
   }
   const refused = notTheirs(caller, row, asked);
   return refused === null ? { ok: true, row } : { ok: false, refusal: { code: "forbidden", message: refused, details: { approval_id: approvalId } } };
@@ -285,7 +292,7 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
   const listed = (project: string | null) =>
     Effect.map(readStore(organizationId, { query: "environments", project }), ({ environments }) => environments);
   const named = (ref: EnvironmentRef) =>
-    Effect.map(listed(ref.project), (environments) => environments.find((listing) => ref.environment == null ? listing.default : listing.name === ref.environment)?.id);
+    Effect.map(listed(ref.project), (environments) => environments.find((listing) => matchesEnvironmentRef(listing, ref))?.id);
   const target = Effect.gen(function* () {
     switch (command.command) {
       case "remove":
@@ -300,7 +307,7 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
         if (command.into != null) return yield* named(command.into);
         // Omitted, it lands in the sender's Parent.
         const environments = yield* listed(command.from.project);
-        const parent = environments.find((listing) => command.from.environment == null ? listing.default : listing.name === command.from.environment)?.parent;
+        const parent = environments.find((listing) => matchesEnvironmentRef(listing, command.from))?.parent;
         return parent == null ? undefined : environments.find((listing) => listing.name === parent)?.id;
       }
       case "take":
@@ -380,6 +387,20 @@ const pending = {
 const askedAgain = (caller: Caller, review: ApprovalReview) =>
   caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), via: caller.via, review };
 
+/** The pending row for `caller`'s ask of `command` on `subject`, new or the one an earlier ask left. */
+const upsertPending = Effect.fn("Approvals.upsertPending")(function* (
+  caller: Caller,
+  row: { readonly subject: string; readonly command: string; readonly review: ApprovalReview; readonly digest: string },
+) {
+  const { drizzle } = yield* Database;
+  const [recorded] = yield* drizzle.insert(operationApprovals).values({
+    organizationId: caller.organization.id,
+    ...requester(caller),
+    ...row,
+  }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, row.review) }).returning({ id: operationApprovals.id });
+  return recorded ?? (yield* Effect.die("an upsert returned no row"));
+});
+
 /** A protected ask names its Environment; one from the dashboard also keeps what to run once approved. */
 const storeReview = (
   caller: Caller,
@@ -432,18 +453,12 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   const pruning = { ...(prunes && { prunes }), ...(prunes && dropped && dropped.length > 0 && { dropped }) };
   const shown = { effects, diff: withoutSealedBefore(diff), ...(redeploy && { redeploy }), ...pruning };
   const review = storeReview(caller, command, shown, guarded);
-  const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.insert(operationApprovals).values({
-      organizationId,
-      subject: diff.environment.id,
-      ...requester(caller),
-      command: approvalCommand(command),
-      review,
-      digest,
-    }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
-    return row ?? (yield* Effect.die("an upsert returned no row"));
-  }), staleEnvironment(organizationId, diff.environment));
+  const recorded = yield* recordAndSweep(
+    organizationId,
+    diff.environment.id,
+    upsertPending(caller, { subject: diff.environment.id, command: approvalCommand(command), review, digest }),
+    staleEnvironment(organizationId, diff.environment),
+  );
   const asked = { effects, approval: digest, diff, approval_id: recorded.id, ...pruning };
   const details = redeploy ? { ...asked, redeploy: { deployment: redeploy.deployment, rolls_back: redeploy.rolls_back } } : asked;
   return { ...refused, details: guarded ? { ...details, protected: true } : details };
@@ -451,11 +466,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /**
-   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `cluster:<organization id>`,
-   * `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
-   * `environment:<environment id>` or `project:<name>`.
-   */
+  /** `<kind>:<key>`, a `SubjectKind` and what it names, such as `server:<machine id>` or `service:<environment id>/<name>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -485,35 +496,24 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   const shown = { effects: asked.effects, operation: { ...operation, preview: asked.preview } };
   const guarded = asked.protected === undefined ? shown : { ...shown, protected: { environment: asked.protected } };
   const review: ApprovalReview = asked.apply === undefined ? guarded : { ...guarded, apply: asked.apply };
-  const recorded = yield* recordAndSweep(organizationId, asked.subject, Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.insert(operationApprovals).values({
-      organizationId,
-      subject: asked.subject,
-      ...requester(caller),
-      command: asked.verb,
-      review,
-      digest,
-    }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
-    return row ?? (yield* Effect.die("an upsert returned no row"));
-  }), stale);
+  const recorded = yield* recordAndSweep(
+    organizationId,
+    asked.subject,
+    upsertPending(caller, { subject: asked.subject, command: asked.verb, review, digest }),
+    stale,
+  );
   // The subject rides in the refusal, not the stored review: approvalView adds it from the row.
-  const renames = asked.verb === "set_cluster_name";
-  const switches = asked.verb === "set_ingress_doors";
+  const previewed = asked.verb === "set_cluster_name" || asked.verb === "set_ingress_doors";
   const details = {
     effects: asked.effects,
     approval: digest,
     approval_id: recorded.id,
-    operation: renames || switches ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
+    operation: previewed ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
-  const what = renames ? `renaming the Cluster to ${asked.name}`
-    : switches ? `switching web traffic ${asked.name}`
-    : asked.verb === "set_private_access" ? `turning Private Access ${asked.name}`
-    : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
-    message: `A human must approve ${what} before it runs.`,
+    message: `A human must approve ${operationAsked(asked.verb, asked.name)} before it runs.`,
     details: asked.protected === undefined ? details : { ...details, protected: { environment: asked.protected } },
   } satisfies StoreRefusal;
 });
@@ -598,7 +598,7 @@ export const askAgain = (caller: Caller, asked: OperationAsked) =>
 export const getApproval = <R = never>(organizationId: string, id: string, operationDigest?: OperationDigest<R>) =>
   Effect.gen(function* () {
     const row = yield* readRow(organizationId, id);
-    if (row === undefined) return yield* new NotFound({ message: "No such approval." });
+    if (row === undefined) return yield* new NotFound({ message: NO_SUCH_APPROVAL });
     return approvalView(yield* freshen(row, operationDigest));
   }).pipe(Effect.withSpan("Approvals.get"));
 
@@ -657,7 +657,7 @@ const decide = <R>(
   keyed: boolean,
 ) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
-  if (found === undefined) return yield* new NotFound({ message: "No such approval." });
+  if (found === undefined) return yield* new NotFound({ message: NO_SUCH_APPROVAL });
   const conflict = (message: string, current: ApprovalRow): Decided =>
     ({ ok: false, refusal: { code: "conflict", message, details: { approval: approvalView(current) } } });
   const settled = (current: ApprovalRow): Decided => {
@@ -695,7 +695,7 @@ const decide = <R>(
     .returning();
   if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
   const current = yield* readRow(caller.organization.id, id);
-  return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
+  return current === undefined ? yield* new NotFound({ message: NO_SUCH_APPROVAL }) : settled(current);
 });
 
 /**

@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
+import { serviceVolumes } from "#/modules/config-store/store-lookup.server";
 import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
 import { DISK_METRIC, HOST_METRICS, SCRAPES_METRIC, SERVICE_METRICS, VOLUME_METRICS } from "./metrics-history";
 import type { SeriesWindow } from "./metrics-series";
@@ -177,6 +178,26 @@ export const latestReading = Effect.fn("MetricsStore.latestReading")(function* (
         : "ResourceAttributes['ployz.namespace'] = {namespace:String} AND ResourceAttributes['ployz.service.name'] = {service:String}"}
       AND TimeUnix >= fromUnixTimestamp64Milli({since:Int64})`, params({ ...scope, since }), Schema.Struct({ readings: Schema.Number, latest: Schema.Number }));
   return row === undefined || row.readings === 0 ? null : row.latest;
+});
+
+/** A Service's rows with its Volumes' on every Machine, and when it last reported. */
+export const readServiceReadings = Effect.fn("MetricsStore.serviceReadings")(function* (organizationId: string, range: StoreRange, namespace: string, service: string) {
+  const [rows, volumes, latest] = yield* Effect.all([
+    readServiceRows(organizationId, range, namespace, service),
+    serviceVolumes(organizationId, namespace, service).pipe(Effect.flatMap((names) => readVolumeRows(organizationId, range, names))),
+    latestReading(organizationId, { namespace, service }, range.window.from),
+  ]);
+  return { rows: [...rows, ...volumes], latest };
+});
+
+/** A Machine's host and disk rows, and when it last reported, looking back at least a minute before `at`. */
+export const readHostReadings = Effect.fn("MetricsStore.hostReadings")(function* (organizationId: string, range: StoreRange, machine: string, at: number) {
+  const [rows, disk, latest] = yield* Effect.all([
+    readHostRows(organizationId, range, machine),
+    readDiskRows(organizationId, range, machine),
+    latestReading(organizationId, { machine }, Math.min(range.window.from, at - 60_000)),
+  ]);
+  return { rows, disk, latest };
 });
 
 /**

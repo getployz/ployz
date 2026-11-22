@@ -13,13 +13,13 @@ import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
 import { useStoreBusy, useStoreNeverSyncs } from "#/modules/config-store/store-pending";
 import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
-import { fetchStoreView, servicesQuery, syncQuery, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { receivingEnvironment, servicesQuery, syncQuery, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useSealing } from "#/modules/variables/sealing";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 /**
  * The one review of a Sync, "Make into match from": each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
@@ -95,10 +95,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
       const seal = await sealing.sealer();
       const under = seal.publicKey;
       if (last.sent?.under !== under) {
-        last.sent = { under, command: receivingValues({ sealer: async () => seal }, entries, async () => {
-          const services = await fetchStoreView(organizationSlug, scope, servicesQuery(receiving));
-          return { environment: services.environment.id, services: services.services };
-        }, "drop").then((sent) => command(Object.fromEntries(sent.map((one) => [one.row, one.value])))) };
+        last.sent = { under, command: receivingValues({ sealer: async () => seal }, entries, () => receivingEnvironment(organizationSlug, scope, receiving), "drop").then((sent) => command(Object.fromEntries(sent.map((one) => [one.row, one.value])))) };
       }
       try {
         return await last.sent.command;
