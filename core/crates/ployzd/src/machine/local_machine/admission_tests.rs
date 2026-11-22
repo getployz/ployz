@@ -259,31 +259,40 @@ async fn a_kept_start_stops_once_the_grant_narrows_to_its_service_or_moves_to_an
 
 /// A rotation removes the old key once the new one is in place, and `key rm` removes a
 /// leaked one. A Container only that key admitted no longer starts, and its refusal says
-/// why and what heals it.
+/// why and what heals it, even when the key's edit runs the image the person approved:
+/// the person signed the parent, not the edit.
 #[tokio::test]
 async fn a_kept_start_after_its_key_is_removed_says_the_key_went_and_to_deploy_again() {
-    let fixture = fixture().await;
-    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
-    let kept = admitted_by_ci(&fixture, &opening_shared(&fixture)).await;
-    assert_eq!(start(&fixture, &kept), Ok(()));
+    let spec = |fixture: &Fixture| opening_shared(fixture);
+    let unchanged = |fixture: &Fixture| approved(&opening_shared(fixture));
+    for (case, edited) in [
+        ("an edit of another image", spec as fn(&Fixture) -> Value),
+        ("an edit to the approved image", unchanged),
+    ] {
+        let fixture = fixture().await;
+        trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+        let kept = admitted_by_ci(&fixture, &edited(&fixture)).await;
+        assert_eq!(start(&fixture, &kept), Ok(()), "{case}");
 
-    fixture
-        .machine
-        .owner
-        .mutate(|store| {
-            store
-                .remove_key(ployz_core::authority::KeyRef::Signing {
-                    key: ci().public().into(),
-                })
-                .unwrap()
-        })
-        .await
-        .unwrap();
-    let refused = start(&fixture, &kept).unwrap_err();
-    assert_eq!(
-        super::refusal_text(&refused),
-        "The key that approved this was rotated or removed; deploy again."
-    );
+        fixture
+            .machine
+            .owner
+            .mutate(|store| {
+                store
+                    .remove_key(ployz_core::authority::KeyRef::Signing {
+                        key: ci().public().into(),
+                    })
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+        let refused = start(&fixture, &kept).unwrap_err();
+        assert_eq!(
+            super::refusal_text(&refused),
+            "The key that approved this was rotated or removed; deploy again.",
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]

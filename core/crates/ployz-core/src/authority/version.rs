@@ -164,7 +164,8 @@ pub struct Approved {
 }
 
 /// Check `versions` against the creation `facts` names. Only a statement with the digest
-/// of the requested spec may admit it; any other is presented as a parent. Each statement
+/// of the requested spec may admit it; any other is presented as a parent, and so is a
+/// parentless one of that digest that an admitting edit names as its parent. Each statement
 /// whose signature a key trusted here made, opened as a proposal step or alone, admits
 /// when it names this Cluster, Namespace and Service, the spec runs a content-addressed
 /// image, a hook creation has a hook, and its one signer covers the whole spec: its host
@@ -216,7 +217,7 @@ pub fn verify(
         }
         opened += 1;
         match admits(version, facts, &requested, &mut parents, budget) {
-            Ok(approved) => by.push(approved),
+            Ok(approved) => by.push((approved, version.open().ok().and_then(|body| body.parent))),
             Err(refusal) => {
                 if claims_forget(version, facts.trusted) {
                     forget_refused.get_or_insert_with(|| refusal.clone());
@@ -235,13 +236,22 @@ pub fn verify(
     if let Some(refusal) = forget_refused {
         return Err(refusal);
     }
+    // An edit that left the spec as it was presents its parent with the requested digest.
+    // That parent's signer approved the parent, not the edit, so it admits nothing here
+    // and only its time reaches the edit's floor.
+    if by
+        .iter()
+        .any(|(_, parent)| *parent == Some(requested.digest))
+    {
+        by.retain(|(_, parent)| parent.is_some());
+    }
     if by.is_empty() {
         return Err(first.unwrap_or(AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow,
         }));
     }
     Ok(VersionAdmitted {
-        by,
+        by: by.into_iter().map(|(approved, _)| approved).collect(),
         digest: requested.digest,
         reach: requested.reach,
     })
