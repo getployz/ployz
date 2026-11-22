@@ -399,9 +399,9 @@ export type CachedStoreRead<T> = { result: StoreResult<T> | undefined; failed: b
  * `useCachedStoreView`, with whether its latest read failed. Each refetch puts an unanswered query back to pending, so
  * only the read times remember a failure.
  */
-export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> {
+export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> & { refetch: () => void } {
   const read = useCachedQuery(organizationSlug, query);
-  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt };
+  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt, refetch: () => void read?.refetch() };
 }
 
 function useCachedQuery<Q extends ConfigQuery>(organizationSlug: string, query: Q | null) {

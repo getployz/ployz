@@ -19,7 +19,7 @@ import { cn } from "#/lib/utils";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { Command, CommandGroup, CommandItem, CommandList, CommandSeparator } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
-import { environmentsQuery, projectsQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, projectsQuery, useCachedStoreRead } from "#/modules/config-store/store-view.queries";
 import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
@@ -111,13 +111,15 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
 
 /** Chrome never waits on a Store view: pending until it's read, with a retry when it can't be. */
 function useStoreEnvironments(scope: EnvironmentScope) {
-  const result = useCachedStoreView(scope.organizationSlug, environmentsQuery(scope.projectSlug));
-  return { data: result?.ok ? result.value.environments : [], isPending: result === undefined };
+  const { result, failed, refetch } = useCachedStoreRead(scope.organizationSlug, environmentsQuery(scope.projectSlug));
+  const unread = result?.ok !== true;
+  return { data: result?.ok ? result.value.environments : [], isPending: result === undefined && !failed, retry: unread && (failed || result !== undefined) ? refetch : undefined };
 }
 
 function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
-  const result = useCachedStoreView(scope.organizationSlug, projectsQuery());
+  const { result, failed, refetch } = useCachedStoreRead(scope.organizationSlug, projectsQuery());
   const projects = result?.ok ? result.value.projects : [];
+  const retry = result?.ok !== true && (failed || result !== undefined) ? refetch : undefined;
   const navigate = useNavigate();
   const section = useDashboardSection();
   const [open, setOpen] = useState(false);
@@ -127,7 +129,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
       <CrumbTrigger label="Project" name={scope.projectSlug} />
       <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch project</PopoverTitle>
-        <SwitcherLoading isPending={result === undefined}>
+        <SwitcherLoading isPending={result === undefined && !failed} retry={retry}>
           <Command tabIndex={0} label="Projects" defaultValue={scope.projectSlug}>
             <CommandList className="max-h-[min(20rem,45dvh)]">
               <CommandGroup heading="Projects">
@@ -155,7 +157,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
 }
 
 function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
-  const { data: environments, isPending } = useStoreEnvironments(scope);
+  const { data: environments, isPending, retry } = useStoreEnvironments(scope);
   const navigate = useNavigate();
   const section = useDashboardSection();
   const [open, setOpen] = useState(false);
@@ -168,7 +170,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
       <CrumbTrigger label="Environment" name={scope.environmentSlug} current />
       <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch environment</PopoverTitle>
-        <SwitcherLoading isPending={isPending}>
+        <SwitcherLoading isPending={isPending} retry={retry}>
           <Command tabIndex={0} label="Environments" defaultValue={scope.environmentSlug}>
             <CommandList className="max-h-[min(20rem,45dvh)]">
               <CommandGroup heading="Environments">
