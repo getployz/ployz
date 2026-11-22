@@ -540,7 +540,13 @@ async fn run_all(
                         stage: MachineUpgradeStage::Acquiring,
                         error: reason,
                     } if reason
-                        == &format!("release selection: no such release {}", attempt.target) =>
+                        == &format!("release selection: no such release {}", attempt.target)
+                        // An older daemon words a missing release this way.
+                        || reason
+                            == &format!(
+                                "release selection: download release checksums: release {} has no checksums.txt",
+                                attempt.target
+                            ) =>
                     {
                         Some(Error::not_found(format!(
                             "No Ployz release {}.",
@@ -1040,29 +1046,34 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_release_is_not_found_before_any_server_changes() {
-        let mut server = machine('a', 1);
-        server.name = MachineName::parse("machine-1").unwrap();
-        let mut client = Sequence {
-            outcomes: vec![MachineUpgradeOutcome::Failed {
-                stage: ployz_core::MachineUpgradeStage::Acquiring,
-                error: "release selection: no such release 9.9.9".into(),
-            }]
-            .into(),
-            ingress: None,
-            moved: 0,
-        };
-        let (_, outcome) = run_all(
-            &mut client,
-            &[server],
-            MachineRelease::parse("9.9.9").unwrap(),
-            "ployz server upgrade 9.9.9 machine-1".into(),
-            &CancellationToken::new(),
-        )
-        .await;
-        let error = outcome.unwrap_err();
-        assert!(error.is_outcome());
-        assert_eq!(error.report().code, RpcErrorCode::NotFound);
-        assert_eq!(error.report().message, "No Ployz release 9.9.9.");
+        for reason in [
+            "release selection: no such release 9.9.9",
+            "release selection: download release checksums: release 9.9.9 has no checksums.txt",
+        ] {
+            let mut server = machine('a', 1);
+            server.name = MachineName::parse("machine-1").unwrap();
+            let mut client = Sequence {
+                outcomes: vec![MachineUpgradeOutcome::Failed {
+                    stage: ployz_core::MachineUpgradeStage::Acquiring,
+                    error: reason.into(),
+                }]
+                .into(),
+                ingress: None,
+                moved: 0,
+            };
+            let (_, outcome) = run_all(
+                &mut client,
+                &[server],
+                MachineRelease::parse("9.9.9").unwrap(),
+                "ployz server upgrade 9.9.9 machine-1".into(),
+                &CancellationToken::new(),
+            )
+            .await;
+            let error = outcome.unwrap_err();
+            assert!(error.is_outcome());
+            assert_eq!(error.report().code, RpcErrorCode::NotFound);
+            assert_eq!(error.report().message, "No Ployz release 9.9.9.");
+        }
     }
 
     #[tokio::test]
