@@ -1328,7 +1328,7 @@ mod tests {
             local
                 .key_step(trust_step(&local, ci_key(ci, &["app"])))
                 .await,
-            Err(Error::Store(StoreError::KeyRemoved(_)))
+            Err(Error::Store(StoreError::GrantRemoved(_)))
         ));
     }
 

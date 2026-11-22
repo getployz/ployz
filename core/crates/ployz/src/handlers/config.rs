@@ -603,6 +603,9 @@ pub(super) fn edit_or_discard(
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unchanged = unchanged(&changes);
+    let removes = changes
+        .iter()
+        .all(|change| matches!(change, Change::Unset { .. }));
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
@@ -614,6 +617,8 @@ pub(super) fn edit_or_discard(
     let edited = store.try_edit(&edit).map_err(fail)?;
     let (verb, then) = if discarded(&store, &edited)? {
         ("Discarded", Then::Diff)
+    } else if removes {
+        ("Staged removal of", Then::Deploy)
     } else {
         ("Staged", Then::Deploy)
     };

@@ -1079,7 +1079,7 @@ impl LocalMachineStore {
     ///   changes nothing, so a rotation resumes with it.
     ///
     /// # Errors
-    /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed,
+    /// Returns [`StoreError::GrantRemoved`] for a key this Machine removed,
     /// [`StoreError::GrantKind`] for a key granted here as the other kind,
     /// [`StoreError::GrantHeld`] for a trust with no `prior` of a key already granted
     /// here, [`StoreError::GrantMoved`] when the grant `prior` names isn't the one held
@@ -1097,7 +1097,7 @@ impl LocalMachineStore {
             key: trusted.grant.key.into(),
         };
         if self.record.removes_key(&removed) {
-            return Err(StoreError::KeyRemoved(removed));
+            return Err(StoreError::GrantRemoved(trusted.grant.key.code()));
         }
         let grant_of = |key| {
             self.record
@@ -1421,6 +1421,10 @@ pub enum StoreError {
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{}", removed_key_text(.0))]
     KeyRemoved(KeyRef),
+    #[error(
+        "CI or agent key {0} was removed from this Server for good. Make a new one with ployz key add."
+    )]
+    GrantRemoved(DeviceCode),
     #[error(
         "Key {0} is the last person's or full CLI key this Server trusts. Approve another first."
     )]

@@ -790,7 +790,7 @@ fn answered(reach: &Reach, answers: Vec<(MachineId, DeviceSet)>) -> Vec<Answer> 
 }
 
 fn results(servers: &[Answer]) -> Table {
-    let mut table = Table::new(["SERVER", "RESULT"], "No servers answered.");
+    let mut table = Table::new(["SERVER", "RESULT"], "No server changed.");
     for answer in servers {
         let result = match answer.outcome {
             DeviceSet::Approved { .. } => "trusted",

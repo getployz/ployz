@@ -1657,6 +1657,7 @@ fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::KeyRemoved(_)
+        | StoreError::GrantRemoved(_)
         | StoreError::LastKey(_)
         | StoreError::AmbiguousCode(_)
         | StoreError::GrantKind { .. }
