@@ -10,9 +10,9 @@ import {
   cardLine, hangingCopies, LAST_REPORTED, type MirrorCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
 } from "#/modules/volume-copies/volume-copies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { stagedSurface } from "./node-status";
+import { stagedSurface } from "#/modules/runtime/node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 
 const STAGED_LIFECYCLE = { new: "create", primary: "update", removing: "delete" } as const satisfies Record<StagedCopy, ReviewLifecycleKind>;

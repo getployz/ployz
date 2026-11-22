@@ -22,7 +22,7 @@ import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlu
 import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StoreRegionSection } from "./store-region-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 

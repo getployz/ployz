@@ -3,8 +3,8 @@ import { createFileRoute, Outlet, retainSearchParams, useNavigate, useParams } f
 import { Schema } from "effect";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
-import { DashboardShell } from "#/components/dashboard-shell";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
+import { DashboardShell } from "#/components/shell/dashboard-shell";
+import type { DashboardScope } from "#/components/shell/dashboard-navigation-model";
 import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
 import { FirstCloudflareRunner } from "./_org/~/servers/-components/first-tunnel";

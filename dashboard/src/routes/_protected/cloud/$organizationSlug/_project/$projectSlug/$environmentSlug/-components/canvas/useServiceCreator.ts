@@ -14,7 +14,7 @@ import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import type { CreatePanel } from "#/components/create-menu-items";
 import type { CanvasResourceNode, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "#/lib/environment-routes";
 
 /** Where a new Service goes: its Environment, and where the canvas put it. */
 export type NewServicePlacement = { store: EnvironmentRef; environmentId: string; position: FlowPosition };

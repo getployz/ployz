@@ -4,6 +4,7 @@ import { ContainerLogs } from "#/components/container-logs";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs",
 )({
+  staticData: { section: "logs" },
   component: RouteComponent,
 });
 

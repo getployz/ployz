@@ -32,7 +32,7 @@ import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
-} from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+} from "#/lib/environment-routes";
 import {
   type CreatedService,
   type NewServicePlacement,

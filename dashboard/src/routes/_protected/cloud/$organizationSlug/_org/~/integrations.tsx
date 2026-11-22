@@ -4,6 +4,7 @@ import { useRoleGate } from "#/modules/organization/members.queries";
 import { Integrations } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/integrations";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/integrations")({
+  staticData: { section: "integrations" },
   component: RouteComponent,
 });
 

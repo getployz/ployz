@@ -30,7 +30,7 @@ import { desiredReplicas } from "#/modules/config-store/replica-rows";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";

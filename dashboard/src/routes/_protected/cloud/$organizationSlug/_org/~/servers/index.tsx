@@ -28,6 +28,7 @@ import { IntakeTray } from "./-components/waiting-list";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
+  staticData: { section: "servers" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ token: Schema.optional(Schema.String) })),
   // The release on the Servers' own line waits for the versions they report.
   loader: ({ params, context }) => prefetchRemote(

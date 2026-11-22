@@ -13,10 +13,6 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "#/components/ui/empty";
-import { Route } from "#/routes/__root";
-import { Route as CloudRoute } from "#/routes/_protected/cloud/index";
-import { Route as ProtectedRoute } from "#/routes/_protected/route";
-import { Route as OrganizationHomeRoute } from "#/routes/_protected/cloud/$organizationSlug/_org/~/index";
 
 const decodeFormerMember = Schema.decodeUnknownOption(Schema.Struct({ formerOrganization: Schema.String }));
 
@@ -39,7 +35,7 @@ function NoLongerMember({ organization }: { organization: string }) {
           <EmptyDescription>Ask someone in {organization} for a new invite.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="sm:flex-row sm:justify-center">
-          <Link to={CloudRoute.to} className={buttonVariants()}>
+          <Link to="/cloud" className={buttonVariants()}>
             Go to Cloud
           </Link>
         </EmptyContent>
@@ -50,12 +46,12 @@ function NoLongerMember({ organization }: { organization: string }) {
 
 function MissingPage() {
   const protectedMatch = useMatch({
-    from: ProtectedRoute.id,
+    from: "/_protected",
     shouldThrow: false,
   });
 
   const organizationHomeMatch = useMatch({
-    from: OrganizationHomeRoute.id,
+    from: "/_protected/cloud/$organizationSlug/_org/~/",
     shouldThrow: false,
   });
 
@@ -65,7 +61,7 @@ function MissingPage() {
   // not-found happened inside the protected area without already resolving to a
   // concrete organization route.
   const homeRoute =
-    protectedMatch && !organizationHomeMatch ? CloudRoute.to : Route.to;
+    protectedMatch && !organizationHomeMatch ? "/cloud" : "/";
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-16">

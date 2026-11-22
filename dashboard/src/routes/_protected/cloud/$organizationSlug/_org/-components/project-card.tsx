@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import type { RuntimeLensStatus, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { cn } from "#/lib/utils";
-import { servicesOnline } from "../../-components/services-online";
+import { servicesOnline } from "#/modules/runtime/services-online";
 
 // Two rows of tiles fit the canvas's minimum height; the narrowest card holds four per row.
 const MAX_TILES = 8;

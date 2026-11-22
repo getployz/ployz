@@ -26,8 +26,8 @@ import {
 import {
   getDashboardDestination,
   type DashboardScope,
-} from "#/components/dashboard-navigation-model";
-import { useDashboardSection } from "#/components/use-dashboard-section";
+} from "#/components/shell/dashboard-navigation-model";
+import { useDashboardSection } from "#/components/shell/use-dashboard-section";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { toast } from "sonner";
 import { NewOrganizationDialog } from "./new-organization-dialog";

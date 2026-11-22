@@ -44,8 +44,8 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/EnvironmentChangesReview.tsx": "a Save or Deploy waiting on the Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/OnMerge.tsx": "an On merge choice waiting on the Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncButton.tsx": "a Sync waiting on the Store",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/new-organization-dialog.tsx": "create in flight",
+  "components/shell/create-environment-dialog.tsx": "create in flight",
+  "components/shell/new-organization-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
@@ -149,7 +149,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/connect.tsx": "the answer sends the browser to the agent's callback, a URL only the server builds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
+  "components/shell/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
@@ -195,7 +195,7 @@ describe("data boundaries", () => {
 
   it("renders one shell, gated once on the Org Store", () => {
     expect(filesMatching(/<DashboardShell\b/)).toEqual(["routes/_protected/cloud/$organizationSlug/route.tsx"]);
-    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);
+    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/shell/dashboard-shell.tsx"]);
   });
 
   it("writes to the Config Store only through its writer", () => {

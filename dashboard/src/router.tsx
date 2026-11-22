@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { DashboardSection } from "#/components/shell/dashboard-navigation-model";
 import { initializeAuthSession } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { followPostHogNavigation, getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "#/modules/analytics/posthog";
@@ -104,5 +105,7 @@ declare module "@tanstack/react-router" {
     crumb?: ComponentType;
     /** The page's URL is itself a secret, so analytics never sees it (see modules/analytics/posthog.ts). */
     secret?: boolean;
+    /** The rail place the page belongs to. A page without one is a panel over the canvas, so it is Architecture. */
+    section?: DashboardSection;
   }
 }

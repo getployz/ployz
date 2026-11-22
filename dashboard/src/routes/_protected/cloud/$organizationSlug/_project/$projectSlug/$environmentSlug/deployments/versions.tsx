@@ -7,6 +7,7 @@ import { DeploymentsPageError, DeploymentsPagePending } from "#/routes/_protecte
 
 /** The Environment's Saved versions. `revision` picks one out. */
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions")({
+  staticData: { section: "deployments" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
     revision: Schema.optional(Schema.Number.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),

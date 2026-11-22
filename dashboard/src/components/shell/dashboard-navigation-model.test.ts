@@ -1,10 +1,14 @@
+import type { RegisteredRouter } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
 
 import {
   createDashboardNavigation,
   getDashboardDestination,
-  getDashboardSectionFromRouteId,
-} from "#/components/dashboard-navigation-model";
+  getDashboardSectionFromStaticData,
+  type DashboardSection,
+} from "#/components/shell/dashboard-navigation-model";
+
+type RegisteredRouteId = RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["id"];
 
 const environment = {
   kind: "environment",
@@ -65,8 +69,8 @@ describe("dashboard navigation model", () => {
 
   it("lists Deployments' Runs and Versions, open by the route", () => {
     const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
-    const open = (routeId: Parameters<typeof getDashboardSectionFromRouteId>[0]) =>
-      createDashboardNavigation(environment, { section: getDashboardSectionFromRouteId(routeId), routeId }).places
+    const open = (routeId: RegisteredRouteId, section: DashboardSection = "deployments") =>
+      createDashboardNavigation(environment, { section, routeId }).places
         .find((place) => place.label === "Deployments");
 
     const runs = open(`${environmentRoute}/deployments/`);
@@ -77,7 +81,7 @@ describe("dashboard navigation model", () => {
     ]);
     expect(open(`${environmentRoute}/deployments/$deploymentId`)?.sections.find((item) => item.current)?.label).toBe("Runs");
     expect(open(`${environmentRoute}/deployments/versions`)?.sections.find((item) => item.current)?.label).toBe("Versions");
-    expect(open(`${environmentRoute}/logs`)?.sections.some((item) => item.current)).toBe(false);
+    expect(open(`${environmentRoute}/logs`, "logs")?.sections.some((item) => item.current)).toBe(false);
   });
 
   it("makes Billing a section of Organization, only when billing is configured", () => {
@@ -127,18 +131,9 @@ describe("dashboard navigation model", () => {
     });
   });
 
-  it("reads the current place from the route", () => {
-    const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/logs`)).toBe("logs");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/settings`)).toBe("settings");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/`)).toBe("deployments");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/$deploymentId`)).toBe("deployments");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/versions`)).toBe("deployments");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("architecture");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("architecture");
-    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/")).toBe("projects");
-    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/billing")).toBe("billing");
-    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/servers/$serverId")).toBe("servers");
-    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/servers/tokens")).toBe("servers");
+  it("reads the current place from the route's static data, and a page without one is Architecture", () => {
+    expect(getDashboardSectionFromStaticData({ section: "logs" })).toBe("logs");
+    expect(getDashboardSectionFromStaticData({})).toBe("architecture");
+    expect(getDashboardSectionFromStaticData(undefined)).toBe("architecture");
   });
 });

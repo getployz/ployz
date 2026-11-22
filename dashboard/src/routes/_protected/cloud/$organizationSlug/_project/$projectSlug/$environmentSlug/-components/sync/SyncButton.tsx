@@ -3,7 +3,7 @@ import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentListing, EnvironmentRef, Synced } from "@ployz/sdk";
 import { ChevronDownIcon, GitBranchIcon } from "lucide-react";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
 import { ButtonGroup } from "#/components/ui/button-group";
@@ -23,7 +23,7 @@ import {
 } from "#/modules/config-store/store-view.queries";
 import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
 

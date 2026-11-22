@@ -1,6 +1,6 @@
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { useStorePendingName, useStorePendingNodes, type NodeKind } from "#/modules/config-store/store-pending";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 /** A canvas node's name under a pending rename, and whether a pending removal is taking it away. */
 export function usePendingNode(node: NodeKind, storeName: string) {

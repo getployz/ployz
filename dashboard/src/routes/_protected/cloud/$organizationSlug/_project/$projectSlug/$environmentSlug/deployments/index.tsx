@@ -7,6 +7,7 @@ import { DeploymentsPageError, DeploymentsPagePending } from "#/routes/_protecte
 
 /** The Environment's Runs, newest first. `service` narrows them to one, from the Environment's Services. */
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/")({
+  staticData: { section: "deployments" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ service: Schema.optional(Schema.String) })),
   loader: ({ params, context }) => {
     const store = { project: params.projectSlug, environment: params.environmentSlug };

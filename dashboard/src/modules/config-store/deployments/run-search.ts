@@ -1,15 +1,13 @@
 import { linkOptions } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import {
+  DEPLOYMENT_ROUTE_TO,
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_LIVE_NODE_ROUTE_TO,
   ENVIRONMENT_RESOURCE_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
   type EnvironmentRouteParams,
-} from "../environment-route-paths";
-
-export const DEPLOYMENT_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId";
-export const VERSIONS_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions";
+} from "#/lib/environment-routes";
 
 /** The Architecture node a run was opened from. A Live Node goes by its name, the token its route takes. */
 const ArchitectureNodeRef = Schema.Union([

@@ -19,7 +19,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DashboardPage } from "#/components/dashboard-page";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 import { notSetToast, sealedOnlyPaths } from "./history-not-set";
 import { toErrorMessage } from "#/lib/error-message";

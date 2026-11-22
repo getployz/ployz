@@ -1,7 +1,7 @@
 import { createContext, use, useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BranchPreset } from "@ployz/sdk";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
@@ -18,7 +18,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { PickingViewProvider, usePickingView, type PickingView } from "./branch-picking";
 import { NameSection } from "./NameSection";
 import { ServicesSection } from "./ServicesSection";

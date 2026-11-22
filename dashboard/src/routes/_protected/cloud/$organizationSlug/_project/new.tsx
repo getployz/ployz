@@ -11,6 +11,7 @@ import { ServiceCreateCommand } from "#/components/service-create-command";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/new",
 )({
+  staticData: { section: "projects" },
   component: RouteComponent,
 });
 

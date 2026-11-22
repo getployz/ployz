@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLoaderData } from "@tanstack/react-router";
+import { useOrganizationContext } from "#/collections/use-organization-context";
 import { toast } from "sonner";
 import { getServerUpgradeSettingsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -75,7 +75,7 @@ type Change = { readonly automatic: boolean } | { readonly channel: ReleaseChann
 export function useServerUpgradeSettings(organizationSlug: string) {
   const collection = getServerUpgradeSettingsCollection(organizationSlug, useCollectionScope());
   const { data: rows } = useLiveSuspenseQuery(collection);
-  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const { organizationId } = useOrganizationContext();
   const settings = serverUpgradeSettings(rows);
   const set = createOptimisticAction<Change>({
     onMutate: (change) => {

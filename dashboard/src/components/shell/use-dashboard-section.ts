@@ -3,9 +3,9 @@ import { useMatches, useSearch } from "@tanstack/react-router";
 import {
   canvasRouteId,
   createDashboardNavigation,
-  getDashboardSectionFromRouteId,
+  getDashboardSectionFromStaticData,
   type DashboardScope,
-} from "#/components/dashboard-navigation-model";
+} from "#/components/shell/dashboard-navigation-model";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 
 function useDeepestRouteId() {
@@ -13,7 +13,7 @@ function useDeepestRouteId() {
 }
 
 export function useDashboardSection() {
-  return getDashboardSectionFromRouteId(useDeepestRouteId());
+  return useMatches({ select: (matches) => getDashboardSectionFromStaticData(matches.at(-1)?.staticData) });
 }
 
 /** The deepest route's crumb, if it declares one in `staticData`. */
@@ -23,7 +23,7 @@ export function useRouteCrumb() {
 
 export function useDashboardNavigation(scope: DashboardScope) {
   const routeId = useDeepestRouteId();
-  const section = getDashboardSectionFromRouteId(routeId);
+  const section = useDashboardSection();
   const search = useSearch({ strict: false });
   // Self-hosted Cloud has no billing, so no Billing destination.
   const billingEnabled =

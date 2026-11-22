@@ -47,7 +47,7 @@ import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modu
 import type { RegionNames, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { useTimeZone } from "#/utils/time-zone";
-import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { HealthcheckField, type HealthcheckSetting } from "../HealthcheckField";
 import { RangePicker } from "./RangePicker";
 import { ResponseTooltip } from "./ResponseTooltip";
