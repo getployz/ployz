@@ -102,6 +102,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "fails closed: an older daemon refuses a signed version naming a parent for its unknown field, so a client that signs one checks for it on every Server first",
     ),
     (
+        "ployz.authority.key-prior.v1",
+        "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, and a `remove_grant` for its unknown kind, so `ployz key` checks for it on every Server first",
+    ),
+    (
         "ployz.metrics.live.v1",
         "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),

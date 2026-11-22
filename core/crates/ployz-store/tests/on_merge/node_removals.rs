@@ -662,6 +662,7 @@ fn deploy_by_hand(
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )

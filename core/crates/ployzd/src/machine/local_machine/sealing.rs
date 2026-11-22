@@ -269,6 +269,7 @@ impl LocalMachine {
                 == ployz_core::Claim::Advertises)
             .then(|| Removals {
                 removed_keys: record.removed_keys().to_vec(),
+                removed_grants: record.removed_grants().to_vec(),
                 removed_members: record.removed_members().to_vec(),
             });
         Ok(key.seal_from(
@@ -401,13 +402,17 @@ impl LocalMachine {
         if removals == Removals::default() {
             return Ok(());
         }
+        let grants = removals.removed_grants;
         let set = ployz_core::JoinRestrictionSet {
             removed_keys: removals.removed_keys,
             removed_members: removals.removed_members,
             floors: Default::default(),
         };
         self.owner
-            .mutate(move |store| store.apply_join_restrictions(&set))
+            .mutate(move |store| {
+                store.apply_join_restrictions(&set)?;
+                store.hold_removed_grants(&grants)
+            })
             .await??;
         Ok(())
     }

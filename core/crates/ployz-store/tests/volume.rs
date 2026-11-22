@@ -171,6 +171,7 @@ fn admit_named(
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted {
                 volumes: observed,
@@ -1519,6 +1520,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),

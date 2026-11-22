@@ -32,7 +32,9 @@ pub use birth::{BirthError, Births, Mounts, PlannedVolume, PlannedVolumes};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member, PasskeyJoinDraft};
-pub use key::{KeyChange, KeyFacts, KeyMember, KeyRef, KeyStep, KeyVerified, NewKey};
+pub use key::{
+    GRANT_MOVED, KeyChange, KeyFacts, KeyMember, KeyRef, KeyStep, KeyVerified, NewKey, Prior,
+};
 pub use keys::{
     Approver, KeySignature, OwnPrompt, Purpose, Signed, Signer, SignerKey, SigningPublicKey,
     Statement,
@@ -50,8 +52,8 @@ pub use rule::{
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use scope::{
-    Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyPlace, KeyPlaces, KeyScope,
-    PlaceService, Reach, TrustedGrant, ValueReach,
+    Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyPlace, KeyPlaces,
+    KeyScope, PlaceService, Reach, TrustedGrant, ValueReach,
 };
 pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKey,

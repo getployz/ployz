@@ -27,6 +27,11 @@ use thiserror::Error;
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
     pub force_recreate: bool,
+    /// Services whose Containers it recreates even when the resolved spec matches,
+    /// beside `force_recreate`, which recreates every Service's.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub recreate: BTreeSet<ServiceName>,
     /// Skip waiting on container health after start or replace.
     pub skip_health_monitor: bool,
     /// Caller-supplied entropy keeps the planner pure while varying equal-priority placement.
@@ -65,6 +70,12 @@ pub struct PlanOptions {
 }
 
 impl PlanOptions {
+    /// Whether it recreates `service`'s Containers even when the resolved spec matches.
+    #[must_use]
+    pub fn recreates(&self, service: &ServiceName) -> bool {
+        self.force_recreate || self.recreate.contains(service)
+    }
+
     /// Who runs this Deploy, which the planner reads instead of the loose runner fields.
     /// A Deploy is a runner's exactly when it blocks unmountable Services, the one flag
     /// a runner always sets; `ended_runs` means nothing without it.
@@ -84,13 +95,15 @@ impl PlanOptions {
 
     /// These options as `runner` plans them: driven as its operator, recording each
     /// Service's outcome, with its `ended_runs` as the runs that can no longer change
-    /// the Namespace. The one place a runner sets what `mode` reads.
+    /// the Namespace, and recreating what its claim lists. The one place a runner sets
+    /// what `mode` reads.
     #[must_use]
     pub fn as_runner(self, runner: RunnerOptions) -> Self {
         Self {
             operator: runner.operator,
             block_unmountable: true,
             ended_runs: runner.ended_runs,
+            recreate: runner.recreate,
             ..self
         }
     }
@@ -105,6 +118,7 @@ impl PlanOptions {
             } => Some(RunnerOptions {
                 operator,
                 ended_runs: ended_runs.clone(),
+                recreate: self.recreate.clone(),
             }),
             PlanMode::Interactive { .. } => None,
         }
@@ -112,14 +126,18 @@ impl PlanOptions {
 }
 
 /// What a runner sets on the `PlanOptions` it plans with, which the Store's lowering
-/// cannot know: who drives the Deploy, and the runs that can no longer change the
-/// Namespace. Applied by `PlanOptions::as_runner`.
+/// cannot know: who drives the Deploy, the runs that can no longer change the
+/// Namespace, and the Services its claim recreates. Applied by `PlanOptions::as_runner`,
+/// so a runner that lowers the Intent again keeps all three.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunnerOptions {
     /// Who drives the Deploy, which a refusal's way back depends on.
     pub operator: Operator,
     /// The runs that can no longer change the Namespace.
     pub ended_runs: BTreeSet<crate::DeploymentLogId>,
+    /// The Services whose Containers it recreates even when the resolved spec matches,
+    /// as the claimed Deployment lists them.
+    pub recreate: BTreeSet<ServiceName>,
 }
 
 /// How the planner treats a Deploy, read from `PlanOptions::mode`. Never serialized: the
@@ -1780,6 +1798,7 @@ mod tests {
         let runner = interactive.as_runner(RunnerOptions {
             operator: Operator::Cli,
             ended_runs: ended.clone(),
+            recreate: BTreeSet::new(),
         });
         assert_eq!(
             runner.mode(),
@@ -1813,6 +1832,7 @@ mod tests {
         let given = RunnerOptions {
             operator: Operator::Cli,
             ended_runs: ended,
+            recreate: BTreeSet::from([ServiceName::parse("web").unwrap()]),
         };
         assert_eq!(PlanOptions::default().runner(), None);
         assert_eq!(
@@ -1832,6 +1852,7 @@ mod tests {
         let runner = lowered.clone().as_runner(RunnerOptions {
             operator: Operator::Cloud,
             ended_runs: BTreeSet::new(),
+            recreate: BTreeSet::new(),
         });
         assert_eq!(
             runner,

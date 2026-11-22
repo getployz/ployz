@@ -238,6 +238,7 @@ fn grant_b(narrowed: bool) -> TrustedGrant {
                 }]),
             },
             volumes: Vec::new(),
+            name: None,
             issued_at: time(0),
         },
         approved_by: PasskeyApprover::Server,

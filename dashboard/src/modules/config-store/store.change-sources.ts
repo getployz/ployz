@@ -127,4 +127,6 @@ export const storeViewRefreshedBy = {
   versions: ["store_deployment"],
   // A parent is the newest applied Deployment's signed version, with the Saved spec it ran.
   parent: ["store_environment", "store_deployment"],
+  // What a Service runs now is the newest applied Deployment's spec, with the signed versions kept for it.
+  running: ["store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;

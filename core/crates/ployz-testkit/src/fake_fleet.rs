@@ -771,11 +771,15 @@ impl Fleet {
             }
             RpcRequestBody::Inspect(_) => {
                 let machine = self.by_id(target)?;
-                let record = machine.record();
+                let mut record = machine.record();
+                // A daemon reports its local record here, which never carries the Sealing
+                // Key: only `sealing` below does.
+                record.runtime.sealing = None;
                 unary(
                     MachineDetails {
                         devices: Vec::new(),
                         removed_keys: Vec::new(),
+                        removed_grants: Vec::new(),
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
                         public_key: record.public_key,

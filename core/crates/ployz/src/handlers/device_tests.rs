@@ -90,6 +90,7 @@ async fn cluster(
                 RpcResponse::from(ployz_core::MachineDetails {
                     devices: Vec::new(),
                     removed_keys: Vec::new(),
+                    removed_grants: Vec::new(),
                     id: target,
                     public_key: listed.public_key,
                     machine: Some(listed),
@@ -697,6 +698,7 @@ async fn fleet(
                         RpcResponse::from(ployz_core::MachineDetails {
                             devices,
                             removed_keys,
+                            removed_grants: Vec::new(),
                             id: target,
                             public_key: listed.public_key,
                             machine: Some(listed),
@@ -989,6 +991,7 @@ async fn raced(
                     RpcResponse::from(ployz_core::MachineDetails {
                         devices: Vec::new(),
                         removed_keys: Vec::new(),
+                        removed_grants: Vec::new(),
                         id: id('1'),
                         public_key: listed_machine.public_key,
                         machine: Some(listed_machine),

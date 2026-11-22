@@ -900,6 +900,7 @@ fn ended_options(ended: &[&str]) -> crate::deploy::PlanOptions {
             .iter()
             .map(|run| DeploymentLogId::parse(*run).unwrap())
             .collect(),
+        recreate: std::collections::BTreeSet::new(),
     })
 }
 

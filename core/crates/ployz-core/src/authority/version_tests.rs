@@ -394,6 +394,7 @@ fn trusting_ci(person: &Signer, ci: &Signer) -> TrustedKeys {
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),
+                name: None,
             },
             approved_by: PasskeyApprover::Server,
         }],

@@ -207,6 +207,31 @@ fn a_join_trusts_what_its_admitting_server_sealed_and_not_the_approvals_lists() 
     assert!(record.filters_peers());
 }
 
+/// A joiner holds a CI key its admitting Server removed as a removed CI key, so `ployz key
+/// rm` run again still finds it there, and never takes a grant the sender didn't remove.
+#[test]
+fn a_join_keeps_which_removed_keys_were_ci_or_agent_keys() {
+    let (_dir, mut store) = fresh();
+    let cluster = ApprovingCluster::new(1);
+    let ci = ployz_core::authority::SigningPublicKey::from(DeviceKey::from_bytes([21; 32]));
+    let unremoved = ployz_core::authority::SigningPublicKey::from(DeviceKey::from_bytes([22; 32]));
+    let approval = cluster.approval(store.record());
+    let trust = JoinTrust {
+        removed_keys: vec![KeyRef::Signing { key: ci.into() }],
+        removed_grants: vec![ci, unremoved],
+        ..trust_of(&approval)
+    };
+    let registration = sealed(&cluster, store.record(), Some(&trust));
+
+    assert_eq!(
+        store
+            .enroll(member(registration, Some(cluster.pin())))
+            .unwrap(),
+        EnrollPlan::Fresh(())
+    );
+    assert_eq!(store.record().removed_grants(), [ci]);
+}
+
 /// An admitting Server from before keys.2 seals no trust, and its approval's lists are
 /// Cloud's to rewrite, so the joiner refuses rather than fall back to them.
 #[test]

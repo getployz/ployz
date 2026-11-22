@@ -98,6 +98,7 @@ fn admit(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -4263,6 +4264,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4367,6 +4369,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4485,6 +4488,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         prune: false,
                         no_prune: false,
                         versions: Vec::new(),
+                        recreate: Vec::new(),
                     }),
                     &Trusted::default(),
                 )
@@ -4573,6 +4577,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4704,6 +4709,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4748,6 +4754,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: Vec::new(),
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4832,6 +4839,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
         )
     };
@@ -5351,6 +5359,7 @@ fn deploy_choosing(
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        recreate: Vec::new(),
     };
     choose(&mut deploy);
     store.write_trusted(who, &Admit::Deploy(deploy), trusted)
@@ -5866,6 +5875,7 @@ fn agent_deploys_only(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -5912,6 +5922,7 @@ fn agent_deploys_upload(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -7252,6 +7263,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -7326,6 +7338,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -7369,6 +7382,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -8184,6 +8198,7 @@ fn a_deploy_plan_lowers_exactly_what_its_runner_is_handed() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -9113,6 +9128,7 @@ fn admit_with(
             prune: false,
             no_prune: false,
             versions,
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -9392,6 +9408,7 @@ fn admit_services(
             prune: false,
             no_prune: false,
             versions,
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -9404,6 +9421,129 @@ fn a_deploy_of_one_service_keeps_the_pin_of_an_unchanged_service_it_references()
     let web = posted(&store, &who, "web", P1);
     admit_services(&store, &who, (2, &["web"]), vec![web]).unwrap();
     assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+}
+
+/// The digest Deployment `n` runs `service` at, and the digest each signed version it
+/// sends for it names.
+fn admitted_by(
+    store: &ConfigStore,
+    n: u8,
+    service: &str,
+) -> (
+    ployz_core::authority::PayloadDigest,
+    Vec<ployz_core::authority::PayloadDigest>,
+) {
+    let claimed = store.claim(&id(n), &runner("runner-a")).unwrap();
+    let ran = &claimed.ran[&ServiceName::parse(service).unwrap()];
+    let signed = ran
+        .versions
+        .iter()
+        .map(|version| version.open().unwrap().digest)
+        .collect();
+    (ran.ran.digest, signed)
+}
+
+#[test]
+fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_under_what_a_person_signed()
+ {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let api = signed_spec(&store, &who, "api", P1);
+    let root = signed_spec(&store, &who, "web", P1);
+    let child = |n: u8, recreate: Vec<ServiceName>| {
+        let version = ployz_store::PostedVersion {
+            statement: edit("web", signed_spec(&store, &who, "web", P2), root),
+            pin: Some(ployz_store::TagPin {
+                tag: "nginx:1".to_owned(),
+                image: P2.to_owned(),
+            }),
+            births: Default::default(),
+        };
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: vec![version],
+                    recreate,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    let web = ServiceName::parse("web").unwrap();
+    let api_name = ServiceName::parse("api").unwrap();
+    // A silent `deploy web --image`, then a key rotation's redeploy of what it signed.
+    for (n, recreate) in [(2, Vec::new()), (3, vec![web.clone()])] {
+        child(n, recreate.clone());
+        assert_eq!(admitted_by(&store, n, "api"), (api, vec![api]), "#{n}");
+        let options = apply(&store, n).options;
+        assert_eq!(options.recreates(&web), !recreate.is_empty(), "#{n}");
+        // The rotation ships api only because web reads it: its Container stays.
+        assert!(!options.recreates(&api_name), "#{n}");
+    }
+}
+
+// Catches a retry that starts with no recreate list: a key rotation's Deployment that
+// failed before replacing web must replace it when retried, and when that retry is.
+#[test]
+fn a_retry_of_a_rotation_recreates_what_the_rotation_did() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let root = signed_spec(&store, &who, "web", P1);
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(2),
+                environment: EnvironmentRef::default(),
+                services: vec![web.clone()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: vec![ployz_store::PostedVersion {
+                    statement: edit("web", signed_spec(&store, &who, "web", P2), root),
+                    pin: Some(ployz_store::TagPin {
+                        tag: "nginx:1".to_owned(),
+                        image: P2.to_owned(),
+                    }),
+                    births: Default::default(),
+                }],
+                recreate: vec![web.clone()],
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let fail = |n: u8| {
+        let a = runner("runner-a");
+        let intent = store.claim(&id(n), &a).unwrap().intent;
+        store
+            .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+            .unwrap();
+        intent.options
+    };
+    assert!(fail(2).recreates(&web));
+    retry(&store, &who, 3, 2).unwrap();
+    assert!(
+        fail(3).recreates(&web),
+        "a retry recreates what its source did"
+    );
+    retry(&store, &who, 4, 3).unwrap();
+    let options = apply(&store, 4).options;
+    assert!(options.recreates(&web), "so does a retry of a retry");
+    assert!(!options.recreates(&ServiceName::parse("api").unwrap()));
 }
 
 #[test]

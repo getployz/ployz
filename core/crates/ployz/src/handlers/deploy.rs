@@ -10,6 +10,8 @@ mod follow_tests;
 mod forget;
 pub(crate) mod progress;
 mod silent;
+#[cfg(test)]
+mod stage_tests;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress, State};
@@ -19,13 +21,13 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{ArgAction, ArgMatches, Command, ValueHint};
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, Change, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentRef,
-    EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath, Start, Unresolved,
-    UploadBase, UploadedSource, VolumeName,
+    DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentQuery,
+    EnvironmentRef, EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath,
+    Start, Unresolved, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Store, environment, mint, next, scoped, store};
@@ -114,18 +116,30 @@ pub(super) fn deploy_command(command: Command) -> Command {
 
 /// `--events` and `--detach`, for every command that queues a Deployment and follows it.
 pub(super) fn following(command: Command) -> Command {
-    command
-        .arg(
-            value("events", None)
-                .value_name("FILE")
-                .value_hint(ValueHint::FilePath)
-                .help("Also write progress to FILE as NDJSON"),
-        )
-        .arg(
-            switch("detach", None)
-                .conflicts_with("events")
-                .help("Return the queued Deployment at once instead of following it"),
-        )
+    command.arg(events_arg()).arg(
+        switch("detach", None)
+            .conflicts_with("events")
+            .help("Return the queued Deployment at once instead of following it"),
+    )
+}
+
+/// `--events FILE`, for a command that follows its Deployments to the end.
+pub(super) fn events_arg() -> Arg {
+    value("events", None)
+        .value_name("FILE")
+        .value_hint(ValueHint::FilePath)
+        .help("Also write progress to FILE as NDJSON")
+}
+
+/// Whether the command asked to return a queued Deployment at once. A command without
+/// `--detach`, such as `key rotate`, always follows.
+fn detaches(matches: &ArgMatches) -> bool {
+    matches
+        .try_get_one::<bool>("detach")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false)
 }
 
 /// The [`following`] flags as typed, so a rerun follows (or detaches) the same way.
@@ -335,11 +349,13 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
-    let edits = images(matches, store, (&environment, &services))?;
+    let staged = images(matches, store, (&environment, &services))?;
+    let edits = &staged.edits;
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
-        None => approve::sign(matches, store, (&environment, &services), &edits)?,
+        None => approve::sign(matches, store, (&environment, &services), edits)
+            .map_err(|error| staged.unstage(store, error))?,
     };
     // Under `--forget-older` every version this Device signed is marked to forget.
     let forgets: Vec<_> = if approve::flag(matches, "forget-older") {
@@ -349,7 +365,7 @@ pub(super) fn upload_and_ship(
             .map(|posted| posted.statement.clone())
             .collect();
         if forgets.is_empty() {
-            return Err(unforgettable());
+            return Err(staged.unstage(store, unforgettable()));
         }
         forgets
     } else {
@@ -357,7 +373,9 @@ pub(super) fn upload_and_ship(
     };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
-        store.upload(&id, dir, listing)?;
+        store
+            .upload(&id, dir, listing)
+            .map_err(|error| staged.unstage(store, error))?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
@@ -374,6 +392,7 @@ pub(super) fn upload_and_ship(
                 .as_ref()
                 .map(|device| device.versions.clone())
                 .unwrap_or_default(),
+            recreate: Vec::new(),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     let forgot = (!forgets.is_empty())
@@ -383,6 +402,38 @@ pub(super) fn upload_and_ship(
     shipped.approved = device.map(|device| device.approved).unwrap_or_default();
     shipped.forgot = forgot;
     Ok(shipped)
+}
+
+/// The `--image` edits a deploy staged, the edit that sets back each image it replaced,
+/// and the Services whose image it can't set back.
+struct Staged {
+    edits: Vec<silent::ImageEdit>,
+    undo: Option<Edit>,
+    kept: Vec<ServiceName>,
+}
+
+impl Staged {
+    /// Set back what this deploy staged, because `error` refuses it before admission: a
+    /// staged image left behind would refuse every later silent deploy. Only an image
+    /// the deploy replaced goes back, and only while no edit came since; anything else
+    /// stays staged, and a warning says so.
+    fn unstage(&self, store: &Store, error: Error) -> Error {
+        let mut kept: Vec<&str> = self.kept.iter().map(ServiceName::as_str).collect();
+        if let Some(undo) = &self.undo
+            && store.try_edit(undo).is_err()
+        {
+            kept.extend(self.edits.iter().map(|edit| edit.service.as_str()));
+            kept.sort_unstable();
+            kept.dedup();
+        }
+        if !kept.is_empty() {
+            ui::warn(format!(
+                "The new image of {} stays staged. ployz diff shows what is staged.",
+                kept.join(", ")
+            ));
+        }
+        error
+    }
 }
 
 /// Pin each `--image SERVICE=IMAGE`, then stage it as `ployz set SERVICE.image=IMAGE`
@@ -397,10 +448,14 @@ fn images(
     matches: &ArgMatches,
     store: &Store,
     (environment, services): (&EnvironmentRef, &[ServiceName]),
-) -> Result<Vec<silent::ImageEdit>, Error> {
+) -> Result<Staged, Error> {
     let typed = silent::typed(matches)?;
     if typed.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Staged {
+            edits: Vec::new(),
+            undo: None,
+            kept: Vec::new(),
+        });
     }
     if let Some((service, _)) = typed
         .iter()
@@ -417,21 +472,62 @@ fn images(
         .map(|listing| (listing.service.name, listing.service.private_dns))
         .collect();
     let edits = silent::pinned(typed, &runtime)?;
-    let changes = edits
+    let paths = edits
         .iter()
-        .map(|edit| {
-            Ok(Change::Set {
-                path: SettingPath::parse(&format!("{}.image", edit.service))?,
-                value: serde_json::Value::String(edit.image.clone()),
-            })
-        })
-        .collect::<Result<_, Error>>()?;
-    store.try_edit(&Edit {
+        .map(|edit| SettingPath::parse(&format!("{}.image", edit.service)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let working = store.read(&EnvironmentQuery {
         environment: environment.clone(),
-        expect: None,
-        changes,
+        path: None,
+        all: false,
     })?;
-    Ok(edits)
+    let mut changes = Vec::new();
+    let mut undo = Vec::new();
+    let mut kept = Vec::new();
+    for (edit, path) in edits.iter().zip(paths) {
+        let image = serde_json::Value::String(edit.image.clone());
+        let before = working
+            .settings
+            .iter()
+            .find(|row| row.path == path)
+            .map(|row| row.value.clone())
+            .unwrap_or_default();
+        // An image set on a Service that had none replaced its Git or upload source and
+        // build settings, which unsetting it doesn't bring back.
+        if before.is_null() {
+            kept.push(edit.service.clone());
+        } else if before != image {
+            undo.push(Change::Set {
+                path: path.clone(),
+                value: before,
+            });
+        }
+        changes.push(Change::Set { path, value: image });
+    }
+    let staging = Edit {
+        environment: environment.clone(),
+        expect: Some(working.environment.revision),
+        changes,
+    };
+    // Another edit after the read could be overwritten and lost, so stop and let the
+    // person deploy again over what is there now.
+    let edited = match store.try_edit(&staging) {
+        Ok(edited) => edited,
+        Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Conflict => {
+            return Err(Error::coded(
+                RpcErrorCode::Conflict,
+                "Someone changed this environment while the deploy read it. Run the deploy \
+                 again. Nothing staged or deployed.",
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let undo = (!undo.is_empty()).then(|| Edit {
+        environment: environment.clone(),
+        expect: Some(edited.environment.revision),
+        changes: undo,
+    });
+    Ok(Staged { edits, undo, kept })
 }
 
 /// The refusal of `--forget-older` on a deploy this Device doesn't sign: only a signed
@@ -527,7 +623,7 @@ struct WithApproved<'a> {
 }
 
 impl Shipped {
-    fn finish(self) -> Result<(), Error> {
+    pub(super) fn finish(self) -> Result<(), Error> {
         if let Some(skipped) = prune_skipped(&self.view.deployment, self.view.preview.as_ref()) {
             ui::warn(skipped);
         }
@@ -580,7 +676,7 @@ pub(super) fn execute(
         }
         Some(_) | None => None,
     };
-    let detached = runner.is_none() && matches.get_flag("detach");
+    let detached = runner.is_none() && detaches(matches);
     let followed = if detached {
         store
             .read(&ployz_store::DeploymentQuery {

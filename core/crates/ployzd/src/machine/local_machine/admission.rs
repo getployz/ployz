@@ -161,10 +161,11 @@ impl Standing {
                     Some(floor) if keys.iter().any(|(key, _)| covers(key).is_ok()) => {
                         Err(AuthorityRefusal::Forgotten { floor })
                     }
-                    _ => Err(keys
-                        .first()
-                        .and_then(|(key, _)| covers(key).err())
-                        .unwrap_or(AuthorityRefusal::UnknownPasskey)),
+                    _ => Err(gone_key(
+                        keys.first()
+                            .and_then(|(key, _)| covers(key).err())
+                            .unwrap_or(AuthorityRefusal::UnknownPasskey),
+                    )),
                 }
             }
             AdmittedBy::Rule {
@@ -187,6 +188,20 @@ impl Standing {
             AdmittedBy::Free => Ok(()),
         })
     }
+}
+
+/// A kept admission's refusal for keys this Machine no longer trusts, which says they
+/// went away rather than that they never approved: a rotation or removal took them.
+fn gone_key(refusal: AuthorityRefusal) -> AuthorityRefusal {
+    if matches!(
+        refusal,
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey
+    ) {
+        return AuthorityRefusal::Mismatch {
+            field: MismatchField::KeptKey,
+        };
+    }
+    refusal
 }
 
 /// The refusal for a time `admits` refused.
@@ -704,8 +719,12 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::RetiredBuilder { .. } => {
             "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
         }
-        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
-            "This server doesn't trust the device that approved this deploy."
+        // A CI or agent key is a key too, and a removed one is unknown here by kind.
+        AuthorityRefusal::UnknownKey { .. } => {
+            "This server doesn't trust the key that approved this deploy."
+        }
+        AuthorityRefusal::UnknownPasskey => {
+            "This server doesn't trust the passkey that approved this deploy."
         }
         AuthorityRefusal::OutOfScope { code, kind, what } => {
             return format!(

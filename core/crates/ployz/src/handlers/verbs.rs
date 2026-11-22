@@ -311,6 +311,15 @@ pub(crate) const DEVICE_REQUEST: Verb = Verb::local(
 .docs("servers/manage-servers.md");
 pub(crate) const KEY_ADD: Verb =
     Verb::local("key add", Always, key::add_command, key::add).docs("servers/manage-servers.md");
+pub(crate) const KEY_LS: Verb =
+    Verb::local("key ls", Never, key::list_command, key::list).docs("servers/manage-servers.md");
+pub(crate) const KEY_RM: Verb = Verb::local("key rm", Always, key::remove_command, key::remove)
+    .docs("servers/manage-servers.md");
+pub(crate) const KEY_ROTATE: Verb =
+    Verb::local("key rotate", Always, key::rotate_command, key::rotate)
+        .docs("servers/manage-servers.md");
+pub(crate) const KEY_SCOPE: Verb = Verb::local("key scope", Always, key::scope_command, key::scope)
+    .docs("servers/manage-servers.md");
 pub(crate) const DIFF: Verb =
     Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/settings.md");
 pub(crate) const DISCARD: Verb =
@@ -802,7 +811,7 @@ pub(crate) const VOLUME_INSPECT: Verb = Verb::cloud(
     volume::inspect,
 );
 pub(crate) const VOLUME_LS: Verb =
-    Verb::cloud("volume ls", Never, volume::list_command, volume::list);
+    Verb::cloud("volume ls", Never, volume::list_command, volume::list).docs("services/volumes.md");
 pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
     "volume mirror",
     Never,
@@ -905,7 +914,6 @@ pub(crate) const VERBS: &[Verb] = &[
     DEVICE_PIN,
     DEVICE_RM,
     DEVICE_REQUEST,
-    KEY_ADD,
     DIFF,
     DISCARD,
     DOCS,
@@ -945,6 +953,11 @@ pub(crate) const VERBS: &[Verb] = &[
     INGRESS,
     INGRESS_USE,
     HISTORY_UNDO,
+    KEY_ADD,
+    KEY_LS,
+    KEY_RM,
+    KEY_ROTATE,
+    KEY_SCOPE,
     LINK,
     LOGIN,
     LOGOUT,

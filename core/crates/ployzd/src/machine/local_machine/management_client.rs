@@ -4,8 +4,8 @@ use ployz_core::{
     ClientKey, DeviceCode, DeviceKey, DeviceSet, KeyStepRequest, ManagementCapability,
     SetDeviceRequest, SetKeyRequest, SetManagementClientRequest, SetManagementClientResponse,
     authority::{
-        Approver, KeyFacts, KeyKind, KeyMember, KeyVerified, NewKey, PasskeyApprover, Timestamp,
-        TrustedGrant, TrustedPasskey, key,
+        Approver, AuthorityRefusal, KeyFacts, KeyKind, KeyMember, KeyVerified, MismatchField,
+        NewKey, PasskeyApprover, Prior, Timestamp, TrustedGrant, TrustedPasskey, key,
     },
 };
 
@@ -95,7 +95,7 @@ impl LocalMachine {
                     let by = full.approver(store.record())?;
                     match request {
                         SetDeviceRequest::Approve { key } => {
-                            trust(store, NewKey::Device { key }, by, Timestamp::now())
+                            trust(store, (NewKey::Device { key }, None), by, Timestamp::now())
                         }
                         SetDeviceRequest::Remove { code } => {
                             let removed = store.remove_by_code(code)?;
@@ -103,6 +103,10 @@ impl LocalMachine {
                         }
                         SetDeviceRequest::RemoveKey { key } => {
                             let removed = store.remove_key(key)?;
+                            Ok(removal(key.code(), removed, by))
+                        }
+                        SetDeviceRequest::RemoveGrant { key, retired } => {
+                            let removed = store.remove_grant(key, retired)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
@@ -126,7 +130,7 @@ impl LocalMachine {
                 .mutate(move |store| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
-                    trust(store, request.key.into(), by, Timestamp::now())
+                    trust(store, (request.key.into(), None), by, Timestamp::now())
                 })
                 .await?
         })
@@ -176,7 +180,11 @@ impl LocalMachine {
                         Approver::Passkey(_) => PasskeyApprover::Unknown,
                     };
                     match change {
-                        KeyVerified::Trust { key, issued_at } => trust(store, key, by, issued_at),
+                        KeyVerified::Trust {
+                            key,
+                            issued_at,
+                            prior,
+                        } => trust(store, (*key, prior), by, issued_at),
                         KeyVerified::Remove { key } => {
                             let removed = store.remove_key(key)?;
                             Ok(removal(key.code(), removed, by))
@@ -240,12 +248,13 @@ fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
     }
 }
 
-/// Trust `key` here, approved by `by` under a bundle issued at `issued_at`, refusing a key
-/// that collides with one held by another kind or another passkey's credential, so a CI or
-/// agent key never shares its key with a Device or passkey.
+/// Trust `key` here over the grant `prior` names, approved by `by` under a bundle issued at
+/// `issued_at`, refusing a key that collides with one held by another kind or another
+/// passkey's credential, so a CI or agent key never shares its key with a Device or
+/// passkey. A `prior` is only ever a grant's, so a Device or passkey with one is refused.
 fn trust(
     store: &mut crate::machine::LocalMachineStore,
-    key: NewKey,
+    (key, prior): (NewKey, Option<Prior>),
     by: PasskeyApprover,
     issued_at: Timestamp,
 ) -> Result<DeviceSet, Error> {
@@ -263,6 +272,11 @@ fn trust(
             DeviceSet::AlreadyApproved { code }
         }
     };
+    if prior.is_some() && key.clone().grant(issued_at).is_none() {
+        return Err(Error::KeyRefused(AuthorityRefusal::Mismatch {
+            field: MismatchField::Grant,
+        }));
+    }
     match key {
         NewKey::Device { key } => {
             if record
@@ -335,10 +349,13 @@ fn trust(
                 .expect("a CI or agent key carries a grant");
             let kind = KeyKind::from(grant.kind);
             Ok(approved(
-                store.approve_grant(TrustedGrant {
-                    grant,
-                    approved_by: by,
-                })?,
+                store.approve_grant(
+                    TrustedGrant {
+                        grant,
+                        approved_by: by,
+                    },
+                    prior,
+                )?,
                 &kind.to_string(),
             ))
         }
@@ -779,21 +796,26 @@ mod tests {
 
     /// A trust of `key` on `local` alone, as the only step of a bundle [`signer`] signed now.
     fn trust_step(local: &LocalMachine, key: NewKey) -> KeyStepRequest {
-        trust_step_at(local, key, Timestamp::now())
+        trust_step_at(local, (key, None), Timestamp::now())
     }
 
-    /// [`trust_step`] under a bundle issued at `issued_at`.
-    fn trust_step_at(local: &LocalMachine, key: NewKey, issued_at: Timestamp) -> KeyStepRequest {
+    /// [`trust_step`] over the grant `prior` names, under a bundle issued at `issued_at`.
+    fn trust_step_at(
+        local: &LocalMachine,
+        (key, prior): (NewKey, Option<Prior>),
+        issued_at: Timestamp,
+    ) -> KeyStepRequest {
         let record = local.record();
         let operation = ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
         let step = KeyStep {
             cluster: cluster_of(local),
             change: KeyChange::Trust {
-                key,
+                key: Box::new(key),
                 members: vec![KeyMember {
                     id: record.id(),
                     public_key: record.private_key().public_key(),
                 }],
+                prior,
             },
             signer: signer().public().into(),
             proposal: Some(ProposalRef {
@@ -863,6 +885,7 @@ mod tests {
                 ),
             },
             volumes: Vec::new(),
+            name: None,
         }
     }
 
@@ -870,61 +893,91 @@ mod tests {
         Signer::from_seed(&[12; 32])
     }
 
+    /// The scope and issue time of the one grant `local` holds of `key`.
+    fn grant_of(
+        local: &LocalMachine,
+        key: ployz_core::authority::SigningPublicKey,
+    ) -> Option<(ployz_core::authority::KeyScope, Timestamp)> {
+        local
+            .record()
+            .grants()
+            .iter()
+            .find(|held| held.grant.key == key)
+            .map(|held| (held.grant.scope.clone(), held.grant.issued_at))
+    }
+
+    fn scope(key: &NewKey) -> ployz_core::authority::KeyScope {
+        match key {
+            NewKey::Ci { scope, .. } | NewKey::Agent { scope, .. } => scope.clone(),
+            NewKey::Device { .. } | NewKey::Passkey { .. } => unreachable!("a grant"),
+        }
+    }
+
+    fn minutes_ago(minutes: u64) -> Timestamp {
+        Timestamp::from_millis(Timestamp::now().as_millis() - minutes * 60_000).unwrap()
+    }
+
     #[tokio::test]
-    async fn only_a_newer_bundle_edits_a_ci_keys_scope_so_an_older_wider_one_cant_be_replayed() {
+    async fn an_edit_lands_only_over_the_grant_it_read_so_a_replay_or_unread_edit_changes_nothing()
+    {
         let dir = tempfile::tempdir().unwrap();
         let local = keyed(dir.path()).await;
-        let now = Timestamp::now();
-        let earlier = Timestamp::from_millis(now.as_millis() - 120_000).unwrap();
-        let first = Timestamp::from_millis(now.as_millis() - 60_000).unwrap();
+        let (earlier, first, now) = (minutes_ago(2), minutes_ago(1), Timestamp::now());
         let ci = ci_signer().public();
         let code = ci.code();
-        let scope_of = |local: &LocalMachine| {
-            let record = local.record();
-            let [held] = record.grants() else {
-                panic!("one grant");
-            };
-            (held.grant.scope.clone(), held.grant.issued_at)
-        };
 
         let staging = ci_key(ci, &["staging"]);
-        assert_eq!(
-            local
-                .key_step(trust_step_at(&local, staging.clone(), first))
-                .await
-                .unwrap(),
-            DeviceSet::Approved { code }
-        );
-        let wider = ci_key(ci, &["staging", "prod"]);
-        assert_eq!(
-            local
-                .key_step(trust_step_at(&local, wider, earlier))
-                .await
-                .unwrap(),
-            DeviceSet::AlreadyApproved { code }
-        );
-        let NewKey::Ci {
-            scope: staging_scope,
-            ..
-        } = staging
-        else {
-            unreachable!()
-        };
-        assert_eq!(scope_of(&local), (staging_scope, first));
+        let added = local
+            .key_step(trust_step_at(&local, (staging.clone(), None), first))
+            .await;
+        assert_eq!(added.unwrap(), DeviceSet::Approved { code });
+        let again = local
+            .key_step(trust_step_at(&local, (staging.clone(), None), first))
+            .await;
+        assert_eq!(again.unwrap(), DeviceSet::AlreadyApproved { code });
+        let unread = local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(ci, &["staging", "prod"]), None),
+                now,
+            ))
+            .await;
+        assert!(matches!(
+            unread,
+            Err(Error::Store(StoreError::GrantHeld(held))) if held == code
+        ));
+        let older = local
+            .key_step(trust_step_at(
+                &local,
+                (
+                    ci_key(ci, &["staging", "prod"]),
+                    Some(Prior::Edit { issued_at: first }),
+                ),
+                earlier,
+            ))
+            .await;
+        assert!(matches!(
+            older,
+            Err(Error::Store(StoreError::GrantMoved(_)))
+        ));
+        assert_eq!(grant_of(&local, ci), Some((scope(&staging), first)));
 
         let narrowed = ci_key(ci, &["web-staging"]);
-        local
-            .key_step(trust_step_at(&local, narrowed.clone(), now))
-            .await
-            .unwrap();
-        let NewKey::Ci {
-            scope: narrowed_scope,
-            ..
-        } = narrowed
-        else {
-            unreachable!()
-        };
-        assert_eq!(scope_of(&local), (narrowed_scope, now));
+        let edit = trust_step_at(
+            &local,
+            (narrowed.clone(), Some(Prior::Edit { issued_at: first })),
+            now,
+        );
+        assert_eq!(
+            local.key_step(edit.clone()).await.unwrap(),
+            DeviceSet::Approved { code }
+        );
+        assert_eq!(
+            local.key_step(edit).await.unwrap(),
+            DeviceSet::AlreadyApproved { code },
+            "the same edit again changes nothing"
+        );
+        assert_eq!(grant_of(&local, ci), Some((scope(&narrowed), now)));
         assert_eq!(
             local
                 .record()
@@ -932,6 +985,271 @@ mod tests {
             None,
             "a CI key holds no slot"
         );
+    }
+
+    /// Two people read a grant of two Namespaces and each narrows it to a different one.
+    /// The second, signed later from the same read, would hand back the Namespace the
+    /// first took away. It is refused, so its signer reads the grant again.
+    #[tokio::test]
+    async fn a_narrowing_from_a_stale_read_is_refused_and_restores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let read = minutes_ago(2);
+        let ci = ci_signer().public();
+        local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(ci, &["staging", "prod"]), None),
+                read,
+            ))
+            .await
+            .unwrap();
+
+        let first = ci_key(ci, &["staging"]);
+        let at = minutes_ago(1);
+        local
+            .key_step(trust_step_at(
+                &local,
+                (first.clone(), Some(Prior::Edit { issued_at: read })),
+                at,
+            ))
+            .await
+            .unwrap();
+        // The other edit, issued in the same millisecond, isn't the one this Server holds.
+        let same_moment = local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(ci, &["prod"]), Some(Prior::Edit { issued_at: read })),
+                at,
+            ))
+            .await;
+        assert!(matches!(
+            same_moment,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == ci.code()
+        ));
+        let stale = local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(ci, &["prod"]), Some(Prior::Edit { issued_at: read })),
+                Timestamp::now(),
+            ))
+            .await;
+        assert!(matches!(
+            stale,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == ci.code()
+        ));
+        assert_eq!(grant_of(&local, ci), Some((scope(&first), at)));
+    }
+
+    /// A rotation read the source grant, then another person removed or narrowed it. The
+    /// replacement, signed from that read, would keep the withdrawn grant alive under a new
+    /// key. Each is refused, and the new key holds nothing here.
+    #[tokio::test]
+    async fn a_rotation_over_a_withdrawn_or_narrowed_source_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let read = minutes_ago(2);
+        let old = ci_signer().public();
+        let wide = ci_key(old, &["staging", "prod"]);
+        local
+            .key_step(trust_step_at(&local, (wide.clone(), None), read))
+            .await
+            .unwrap();
+        let new = Signer::from_seed(&[13; 32]).public();
+        let rotate = |local: &LocalMachine| {
+            trust_step_at(
+                local,
+                (
+                    ci_key(new, &["staging", "prod"]),
+                    Some(Prior::Replace {
+                        key: old,
+                        issued_at: read,
+                    }),
+                ),
+                Timestamp::now(),
+            )
+        };
+
+        local
+            .key_step(trust_step_at(
+                &local,
+                (
+                    ci_key(old, &["staging"]),
+                    Some(Prior::Edit { issued_at: read }),
+                ),
+                minutes_ago(1),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            local.key_step(rotate(&local)).await,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == old.code()
+        ));
+        assert_eq!(grant_of(&local, new), None, "narrowed source");
+
+        local
+            .key_step(removal_step(
+                &local,
+                KeyRef::Signing { key: old.into() },
+                &signer(),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            local.key_step(rotate(&local)).await,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == old.code()
+        ));
+        assert_eq!(grant_of(&local, new), None, "removed source");
+    }
+
+    /// A rotation over the grant it read trusts the new key with the same scope beside the
+    /// old one, and the same rotation sent again, as a resumed run sends it, changes
+    /// nothing.
+    #[tokio::test]
+    async fn a_rotation_over_the_grant_it_read_lands_once_and_resumes_with_the_same_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let read = minutes_ago(1);
+        let old = ci_signer().public();
+        let wide = ci_key(old, &["staging", "prod"]);
+        local
+            .key_step(trust_step_at(&local, (wide.clone(), None), read))
+            .await
+            .unwrap();
+        let new = Signer::from_seed(&[13; 32]).public();
+        let prior = Some(Prior::Replace {
+            key: old,
+            issued_at: read,
+        });
+        let first = trust_step_at(
+            &local,
+            (ci_key(new, &["staging", "prod"]), prior),
+            Timestamp::now(),
+        );
+        assert_eq!(
+            local.key_step(first).await.unwrap(),
+            DeviceSet::Approved { code: new.code() }
+        );
+        let resumed = trust_step_at(
+            &local,
+            (ci_key(new, &["staging", "prod"]), prior),
+            Timestamp::now().plus(1),
+        );
+        assert_eq!(
+            local.key_step(resumed).await.unwrap(),
+            DeviceSet::AlreadyApproved { code: new.code() }
+        );
+        assert_eq!(
+            grant_of(&local, new).map(|(scope, _)| scope),
+            Some(scope(&wide))
+        );
+        assert_eq!(
+            grant_of(&local, old).map(|(scope, _)| scope),
+            Some(scope(&wide))
+        );
+    }
+
+    /// A rotation read both grants, then another person narrowed the old key before its
+    /// removal arrived. Retiring the old key then would leave the new key with the wider
+    /// grant, so the removal is refused and the old key keeps the narrowed grant.
+    #[tokio::test]
+    async fn retiring_a_rotated_key_after_a_narrowing_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let read = minutes_ago(3);
+        let old = ci_signer().public();
+        local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(old, &["staging", "prod"]), None),
+                read,
+            ))
+            .await
+            .unwrap();
+        let new = Signer::from_seed(&[13; 32]).public();
+        let replaced = minutes_ago(2);
+        local
+            .key_step(trust_step_at(
+                &local,
+                (
+                    ci_key(new, &["staging", "prod"]),
+                    Some(Prior::Replace {
+                        key: old,
+                        issued_at: read,
+                    }),
+                ),
+                replaced,
+            ))
+            .await
+            .unwrap();
+        let retire = |issued_at| SetDeviceRequest::RemoveGrant {
+            key: old,
+            retired: Some(ployz_core::Retired {
+                issued_at,
+                by: new,
+                by_issued_at: replaced,
+            }),
+        };
+
+        let narrowed = ci_key(old, &["staging"]);
+        let at = minutes_ago(1);
+        local
+            .key_step(trust_step_at(
+                &local,
+                (narrowed.clone(), Some(Prior::Edit { issued_at: read })),
+                at,
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            local.set_device(retire(read)).await,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == old.code()
+        ));
+        assert_eq!(grant_of(&local, old), Some((scope(&narrowed), at)));
+
+        assert_eq!(
+            local.set_device(retire(at)).await.unwrap(),
+            DeviceSet::Removed { code: old.code() }
+        );
+        assert_eq!(grant_of(&local, old), None);
+        assert_eq!(local.record().removed_grants(), [old]);
+    }
+
+    /// `ployz key rm` names a Device's key, read from a Server that holds it as a grant
+    /// nowhere: the Server that trusts it as a Device, or removed it as one, keeps it.
+    #[tokio::test]
+    async fn removing_a_grant_never_removes_a_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let device = Signer::from_seed(&[14; 32]).public();
+        local
+            .set_device(SetDeviceRequest::Approve { key: device.into() })
+            .await
+            .unwrap();
+        let remove = || SetDeviceRequest::RemoveGrant {
+            key: device,
+            retired: None,
+        };
+
+        assert!(matches!(
+            local.set_device(remove()).await,
+            Err(Error::Store(StoreError::NotGrant(code))) if code == device.code()
+        ));
+        assert!(local.record().devices().any(|held| held == device.into()));
+
+        local
+            .set_device(SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            local.set_device(remove()).await.unwrap(),
+            DeviceSet::NotPresent {
+                code: device.code()
+            }
+        );
+        assert!(local.record().removed_grants().is_empty());
     }
 
     #[tokio::test]
@@ -1031,7 +1349,7 @@ mod tests {
             local
                 .key_step(trust_step(&local, ci_key(ci, &["app"])))
                 .await,
-            Err(Error::Store(StoreError::KeyRemoved(_)))
+            Err(Error::Store(StoreError::GrantRemoved(_)))
         ));
     }
 

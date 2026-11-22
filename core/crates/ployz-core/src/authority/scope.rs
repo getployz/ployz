@@ -457,8 +457,64 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<GrantVolume>>")]
     pub volumes: Vec<GrantVolume>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<KeyName>,
     /// When the bundle that set this scope was issued. Only a newer bundle edits it.
     pub issued_at: Timestamp,
+}
+
+/// What a person calls a CI or agent key, such as the pipeline that holds it. Only a
+/// label: printable, at most 64 characters. Control and Unicode format characters are
+/// refused so a name can't make a terminal show another.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+pub struct KeyName(String);
+
+impl KeyName {
+    /// # Errors
+    /// Returns a [`ValueError`] for an empty, overlong or unprintable name.
+    ///
+    /// [`ValueError`]: crate::ValueError
+    pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
+        if value.trim().is_empty()
+            || value.chars().count() > 64
+            || value.chars().any(super::trusted_key::unprintable)
+        {
+            return Err(crate::ValueError::new(
+                "key name",
+                value,
+                "1 to 64 printable characters",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for KeyName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for KeyName {
+    type Error = crate::ValueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<KeyName> for String {
+    fn from(name: KeyName) -> Self {
+        name.0
+    }
 }
 
 /// A grant this Machine trusts, and who approved it here.

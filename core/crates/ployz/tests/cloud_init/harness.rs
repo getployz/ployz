@@ -695,6 +695,7 @@ impl FakeMachine for JoinDaemon {
         reply(MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating

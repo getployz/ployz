@@ -14,7 +14,7 @@ pub enum AuthorityRefusal {
     Unsigned { purpose: Purpose },
     #[error("the {purpose} approval is malformed: {problem}")]
     Malformed { purpose: Purpose, problem: String },
-    #[error("device {} is not approved on this Machine", .key.code())]
+    #[error("key {} is not trusted on this Machine", .key.code())]
     UnknownKey { key: SigningPublicKey },
     #[error("the signature by device {} does not verify", .key.code())]
     BadSignature { key: SigningPublicKey },
@@ -80,6 +80,8 @@ pub enum MismatchField {
     SigningTime,
     /// A Container a CI or agent key admitted before this Machine kept what it reaches.
     KeptReach,
+    /// A kept Container whose every admitting key was rotated away or removed here.
+    KeptKey,
     /// A CI or agent key's version names no parent, or none of the statements presented
     /// with that digest is a parentless version a person or full CLI signed for the same
     /// Service.
@@ -91,6 +93,8 @@ pub enum MismatchField {
     JoiningMachine,
     ApprovedDevices,
     ApprovedGrants,
+    /// A Device or passkey added with a prior, which only a CI or agent key's grant has.
+    Grant,
     SealingRecipient,
     MachineAllocation,
     AdmittingMachine,
@@ -166,6 +170,7 @@ impl MismatchField {
             Self::SystemNamespace => "the system Namespace",
             Self::SigningTime => "a signing time",
             Self::KeptReach => "a kept reach",
+            Self::KeptKey => "a kept key",
             Self::Parent => "a parent version",
             Self::ForgetParent => "a forget on an edit",
             Self::Signer => "the signer",
@@ -173,6 +178,7 @@ impl MismatchField {
             Self::JoiningMachine => "a joining Machine",
             Self::ApprovedDevices => "approved Devices",
             Self::ApprovedGrants => "approved grants",
+            Self::Grant => "a grant",
             Self::SealingRecipient => "a sealing recipient",
             Self::MachineAllocation => "a Machine allocation",
             Self::AdmittingMachine => "an admitting Machine",
@@ -273,6 +279,7 @@ impl MismatchField {
             Self::KeptReach => {
                 "A CI or agent key approved this container before this server kept what it reaches, so the server no longer starts it. Deploy it again."
             }
+            Self::KeptKey => "The key that approved this was rotated or removed; deploy again.",
             Self::Parent => {
                 "This deploy edits an earlier version a person approved, but that version didn't arrive with it or isn't one this server trusts. Deploy the service once from a terminal."
             }
@@ -284,6 +291,7 @@ impl MismatchField {
             | Self::JoiningMachine
             | Self::ApprovedDevices
             | Self::ApprovedGrants
+            | Self::Grant
             | Self::SealingRecipient
             | Self::MachineAllocation
             | Self::AdmittingMachine
@@ -377,12 +385,14 @@ impl MismatchField {
             }
             Self::SystemNamespace
             | Self::KeptReach
+            | Self::KeptKey
             | Self::Parent
             | Self::ForgetParent
             | Self::OneAdmittingMachine
             | Self::JoiningMachine
             | Self::ApprovedDevices
             | Self::ApprovedGrants
+            | Self::Grant
             | Self::SealingRecipient
             | Self::MachineAllocation
             | Self::AdmittingMachine

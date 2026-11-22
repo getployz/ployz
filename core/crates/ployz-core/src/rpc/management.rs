@@ -31,14 +31,39 @@ pub struct SetManagementClientResponse {
 /// that key, so a code names one kind of key. `Remove` removes the Device the code names, or
 /// else the passkey, and leaves its key removed for good. `RemoveKey` removes a key by its
 /// full public key, and marks it removed even on a Machine that never held it, so a grant
-/// still in flight never lands there; only a Machine with key-step.v1 takes it. Strict for
-/// the same reason as [`SetManagementClientRequest`].
+/// still in flight never lands there; only a Machine with key-step.v1 takes it.
+/// `RemoveGrant` does the same for a CI or agent key only, refused where the key is a
+/// Device; only a Machine with key-prior.v1 takes it. Strict for the same reason as
+/// [`SetManagementClientRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetDeviceRequest {
-    Approve { key: DeviceKey },
-    Remove { code: DeviceCode },
-    RemoveKey { key: crate::authority::KeyRef },
+    Approve {
+        key: DeviceKey,
+    },
+    Remove {
+        code: DeviceCode,
+    },
+    RemoveKey {
+        key: crate::authority::KeyRef,
+    },
+    RemoveGrant {
+        key: crate::authority::SigningPublicKey,
+        /// Set by a rotation: the removal applies only while both grants are as it read
+        /// them here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retired: Option<Retired>,
+    },
+}
+
+/// What a rotation read on one Machine before it retires the key it replaced: when the
+/// old key's grant was issued, and the new key's grant beside it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Retired {
+    pub issued_at: crate::authority::Timestamp,
+    pub by: crate::authority::SigningPublicKey,
+    pub by_issued_at: crate::authority::Timestamp,
 }
 
 /// Trust one person's passkey or CLI Device on this Machine alone, as root on this Server

@@ -54,6 +54,10 @@ pub struct MachineDetails {
     /// and an entry this build can't read is left out.
     #[serde(default, deserialize_with = "crate::authority::key::readable_keys")]
     pub removed_keys: Vec<crate::authority::KeyRef>,
+    /// The keys of `removed_keys` this Machine removed as a CI or agent key. A daemon from
+    /// before key-prior.v1 omits it, and a key removed before then is in neither.
+    #[serde(default)]
+    pub removed_grants: Vec<crate::authority::SigningPublicKey>,
     /// The passkeys this Machine trusts to approve workflows. A daemon from before
     /// passkeys omits it, and an entry this build can't read is left out.
     #[serde(

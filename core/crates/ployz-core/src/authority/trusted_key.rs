@@ -243,12 +243,7 @@ impl PasskeyAccount {
     /// # Errors
     /// Returns a [`ValueError`] for an empty, overlong or unprintable account.
     pub fn parse(value: &str) -> Result<Self, ValueError> {
-        if value.is_empty()
-            || value.chars().count() > 254
-            || value
-                .chars()
-                .any(|character| character.is_control() || is_format(character))
-        {
+        if value.is_empty() || value.chars().count() > 254 || value.chars().any(unprintable) {
             return Err(ValueError::new(
                 "passkey account",
                 value,
@@ -262,6 +257,11 @@ impl PasskeyAccount {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// A control character, or one of Unicode's format characters, which a label refuses.
+pub(super) fn unprintable(character: char) -> bool {
+    character.is_control() || is_format(character)
 }
 
 /// Unicode's format characters (general category Cf): invisible, and some reorder text.

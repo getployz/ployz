@@ -1366,6 +1366,10 @@ fn finish(result: Result<impl Into<RpcResponse>, LocalMachineError>) -> Answer {
 }
 
 fn store_error(error: StoreError) -> RpcError {
+    if let StoreError::GrantMoved(key) = &error {
+        let details = serde_json::json!({ ployz_core::authority::GRANT_MOVED: key });
+        return RpcError::caused(RpcErrorCode::Conflict, &error).with_details(details);
+    }
     let code = match error {
         StoreError::JoinRefused(_)
         | StoreError::NotFirstKey { .. }
@@ -1375,9 +1379,13 @@ fn store_error(error: StoreError) -> RpcError {
         StoreError::JoinRestrictionsPending => RpcErrorCode::Conflict,
         StoreError::FirstKey(_) => RpcErrorCode::Internal,
         StoreError::KeyRemoved(_)
+        | StoreError::GrantRemoved(_)
         | StoreError::LastKey(_)
         | StoreError::AmbiguousCode(_)
-        | StoreError::GrantKind { .. } => RpcErrorCode::Conflict,
+        | StoreError::GrantKind { .. }
+        | StoreError::GrantHeld(_)
+        | StoreError::GrantMoved(_)
+        | StoreError::NotGrant(_) => RpcErrorCode::Conflict,
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

@@ -128,6 +128,7 @@ async fn readiness_refuses_another_machine_of_the_selection() {
     let details = MachineDetails {
         devices: Vec::new(),
         removed_keys: Vec::new(),
+        removed_grants: Vec::new(),
         id: fallback.id,
         phase: LocalMachinePhase::Participating,
         public_key: fallback.public_key,
@@ -196,6 +197,7 @@ async fn readiness_waits_through_the_enrollment_connection() {
         let details = MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: machine.id,
             phase: LocalMachinePhase::Participating,
             public_key: machine.public_key,
@@ -314,6 +316,7 @@ async fn assert_resumed_enrollment_waits_for_published_machine(founder: bool) {
     let details = MachineDetails {
         devices: Vec::new(),
         removed_keys: Vec::new(),
+        removed_grants: Vec::new(),
         id: machine.id,
         phase: LocalMachinePhase::Participating,
         public_key: machine.public_key,
@@ -468,6 +471,7 @@ async fn unacknowledged_enroll_never_reports_committed_joining() {
         let details = MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: machine.id,
             phase: LocalMachinePhase::Uninitialized,
             public_key: machine.public_key,
@@ -599,6 +603,7 @@ fn a_forgotten_server_rejoining_through_cloud_is_reset_first() {
     let details = |phase| MachineDetails {
         devices: Vec::new(),
         removed_keys: Vec::new(),
+        removed_grants: Vec::new(),
         id: listed.id,
         phase,
         public_key: listed.public_key,
@@ -677,6 +682,7 @@ async fn an_add_on_another_cluster_is_refused_only_with_different_observed_keys(
         let details = MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: assigned.id,
             phase: LocalMachinePhase::Participating,
             machine: Some(assigned.clone()),
@@ -780,6 +786,7 @@ fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
     let details = |phase, machine: Option<&Machine>| MachineDetails {
         devices: Vec::new(),
         removed_keys: Vec::new(),
+        removed_grants: Vec::new(),
         id: assigned.id,
         phase,
         public_key: assigned.public_key,

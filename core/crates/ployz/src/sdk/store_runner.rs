@@ -621,9 +621,11 @@ impl Run {
             .iter()
             .filter_map(|ended| ended.as_str().parse().ok())
             .collect();
+        let recreate = std::mem::take(&mut claimed.intent.options.recreate);
         claimed.intent.options = claimed.intent.options.as_runner(RunnerOptions {
             operator,
             ended_runs,
+            recreate,
         });
         Ok(claimed)
     }

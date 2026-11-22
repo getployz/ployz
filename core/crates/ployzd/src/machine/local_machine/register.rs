@@ -296,6 +296,7 @@ fn join_trust(record: &LocalMachineRecord) -> crate::sealing_key::JoinTrust {
             .map(|held| held.grant.clone())
             .collect(),
         removed_keys: record.removed_keys().to_vec(),
+        removed_grants: record.removed_grants().to_vec(),
         removed_members: record.removed_members().to_vec(),
     }
 }

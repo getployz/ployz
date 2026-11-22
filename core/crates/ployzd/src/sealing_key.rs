@@ -31,6 +31,9 @@ pub(crate) struct JoinTrust {
     pub passkeys: Vec<ployz_core::authority::Passkey>,
     pub grants: Vec<ployz_core::authority::Grant>,
     pub removed_keys: Vec<ployz_core::authority::KeyRef>,
+    /// The keys of `removed_keys` removed as a CI or agent key. An older sender omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_grants: Vec<ployz_core::authority::SigningPublicKey>,
     pub removed_members: Vec<ployz_core::RemovedMember>,
 }
 
@@ -40,6 +43,9 @@ pub(crate) struct JoinTrust {
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Removals {
     pub removed_keys: Vec<ployz_core::authority::KeyRef>,
+    /// The keys of `removed_keys` removed as a CI or agent key. An older sender omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_grants: Vec<ployz_core::authority::SigningPublicKey>,
     pub removed_members: Vec<ployz_core::RemovedMember>,
 }
 

@@ -6214,7 +6214,7 @@ mod ensure_container {
                     Some(&signed),
                 )
                 .await,
-                "doesn't trust the device",
+                "doesn't trust the key that approved",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
@@ -6252,7 +6252,7 @@ mod ensure_container {
             deploy_ensure(service, stopped, None).await.unwrap();
             deploy_refused(
                 deploy_ensure(service, started(&id), None).await,
-                "doesn't trust the device",
+                "was rotated or removed",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }

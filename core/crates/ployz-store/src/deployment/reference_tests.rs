@@ -122,6 +122,7 @@ fn admit(
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
         )
         .unwrap()
@@ -299,6 +300,7 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
         )
         .unwrap();

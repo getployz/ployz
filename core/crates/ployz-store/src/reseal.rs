@@ -1169,6 +1169,7 @@ mod tests {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: Vec::new(),
                 }),
             )
             .map(|_| ())

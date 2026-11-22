@@ -103,6 +103,13 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PostedVersion>>")]
     pub versions: Vec<PostedVersion>,
+    /// Services whose running Containers it replaces even when their spec is unchanged,
+    /// so each Server admits them again under the versions this Deploy posts. A key
+    /// rotation names the Services it carries, so no Container stays kept under the key
+    /// it retires, and a Service they only reference stays as it runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub recreate: Vec<ServiceName>,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -587,6 +594,7 @@ fn deploy(
     )?;
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     deployment::versions::post(tx, &summary.id, &admit.versions)?;
+    deployment::versions::recreate(tx, &summary.id, &admit.recreate)?;
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = frozen.targeting.as_ref().map(|_| {
         frozen

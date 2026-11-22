@@ -166,6 +166,8 @@ macro_rules! rpc_catalog {
                 SCOPED_KEYS_CAPABILITY: ("ployz.authority.scoped-keys.v1", Always),
                 /// A signed version may name the parentless version a person or full CLI signed that it edits, and a CI or agent key's version must.
                 PARENT_VERSIONS_CAPABILITY: ("ployz.authority.parent-versions.v1", Always),
+                /// A Key step's trust may name the grant it replaces and the key's name, and applies only over that grant. `SetDevice` takes `remove_grant`, which removes only a CI or agent key, and only over the grants a rotation read.
+                KEY_PRIOR_CAPABILITY: ("ployz.authority.key-prior.v1", Always),
             }
         }
     };

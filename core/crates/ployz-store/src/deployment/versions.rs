@@ -81,6 +81,10 @@ struct Record {
     #[serde(flatten)]
     origin: Origin,
     services: Ran,
+    /// Services whose running Containers its runner replaces even when their spec is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    recreate: BTreeSet<ServiceName>,
 }
 
 /// Where a Service a Deployment names no pin for takes one from when it is claimed.
@@ -218,19 +222,61 @@ pub(crate) fn post(
     write_record(tx, id, &record)
 }
 
-/// What a retry or rollback of `source` records before it is claimed, as JSON for its
-/// `ran` column: only its source. Its claim reads what `source` ran, after what the
-/// retry itself posted.
+/// What a retry or rollback of `source` that ships the runtime Services `ships` records
+/// before it is claimed, as JSON for its `ran` column: its source, and which of `ships`
+/// the source recreates. Its claim reads what `source` ran, after what the retry itself
+/// posted. A retry of a retry copies its source's copy.
 ///
 /// # Errors
-/// Returns `corrupt` when the record doesn't serialize.
-pub(super) fn replaying(source: &DeploymentId) -> Result<String, RpcError> {
+/// Returns `corrupt` when the source's record doesn't read or this one doesn't
+/// serialize, or a storage error.
+pub(super) fn replaying(
+    tx: &mut dyn Tx,
+    source: &DeploymentId,
+    ships: &BTreeSet<&ServiceName>,
+) -> Result<String, RpcError> {
+    let recreate = record_of(tx, source)?
+        .recreate
+        .into_iter()
+        .filter(|service| ships.contains(service))
+        .collect();
     json_text(&Record {
         origin: Origin::Replay {
             source: source.clone(),
         },
         services: Ran::new(),
+        recreate,
     })
+}
+
+/// Have Deployment `id`'s runner replace each running Container of `services`, even one
+/// whose spec is unchanged.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a record that doesn't read.
+pub(crate) fn recreate(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    services: &[ServiceName],
+) -> Result<(), RpcError> {
+    if services.is_empty() {
+        return Ok(());
+    }
+    let mut record = record_of(tx, id)?;
+    record.recreate.extend(services.iter().cloned());
+    write_record(tx, id, &record)
+}
+
+/// The Services whose running Containers Deployment `id`'s runner replaces even when
+/// their spec is unchanged.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a record that doesn't read.
+pub(crate) fn recreates(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<BTreeSet<ServiceName>, RpcError> {
+    Ok(record_of(tx, id)?.recreate)
 }
 
 /// Every signed version kept for `service` in `namespace` at `digest`, newest first, each
@@ -379,17 +425,7 @@ pub(crate) fn parents(
     trusted.writes(&environment.summary.name)?;
     let namespace = super::namespace(tx, who, &environment.summary)?;
     let organization = who.organization.as_str();
-    let records: Vec<(DeploymentId, Record)> = tx
-        .query(
-            "SELECT id, ran FROM config_deployment \
-             WHERE environment_id = ?1 AND ran IS NOT NULL AND (status = 'applied' OR id IN \
-             (SELECT deployment_id FROM config_applied WHERE environment_id = ?1)) \
-             ORDER BY number DESC",
-            &[environment.summary.id.as_str().into()],
-        )?
-        .iter()
-        .map(|row| Ok((row.parse(0, "Deployment")?, parse(row.text(1)?)?)))
-        .collect::<Result<_, RpcError>>()?;
+    let records = ran_records(tx, &environment.summary)?;
     let applied = super::head(tx, &environment)?.applied;
     let mut services = BTreeMap::new();
     for service in &query.services {
@@ -405,6 +441,98 @@ pub(crate) fn parents(
         services.insert(service.clone(), parent);
     }
     Ok(ParentView {
+        namespace,
+        services,
+    })
+}
+
+/// What each Deployment of `environment` that put anything into Applied State ran,
+/// newest first.
+fn ran_records(
+    tx: &mut dyn Tx,
+    environment: &crate::EnvironmentSummary,
+) -> Result<Vec<(DeploymentId, Record)>, RpcError> {
+    tx.query(
+        "SELECT id, ran FROM config_deployment \
+         WHERE environment_id = ?1 AND ran IS NOT NULL AND (status = 'applied' OR id IN \
+         (SELECT deployment_id FROM config_applied WHERE environment_id = ?1)) \
+         ORDER BY number DESC",
+        &[environment.id.as_str().into()],
+    )?
+    .iter()
+    .map(|row| Ok((row.parse(0, "Deployment")?, parse(row.text(1)?)?)))
+    .collect()
+}
+
+/// What each Service a key rotation carries runs now, so it can sign it again under the
+/// new key.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RunningQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// By the name its spec runs under.
+    pub services: Vec<ServiceName>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct RunningView {
+    pub namespace: Namespace,
+    /// Each named Service a Deployment applied. One none applied is absent.
+    pub services: BTreeMap<ServiceName, Running>,
+}
+
+/// What the newest Deployment that applied a Service ran it with, and every signed
+/// version kept for that spec. The Store checks no signature or digest: the reader does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Running {
+    pub spec: Box<RequestedServiceSpec>,
+    /// The tag its Saved image names and what it was pinned to. None when the Saved
+    /// State names the image by digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pin: Option<TagPin>,
+    /// Newest first, at most as many as one request carries.
+    pub versions: Vec<Signed<ServiceVersion>>,
+}
+
+/// What `organization` keeps of what each Service `query` names runs now: the newest
+/// Deployment of its Environment that applied it, the spec it ran, and the signed
+/// versions kept for that spec.
+///
+/// # Errors
+/// Returns a storage error, `corrupt` for a record that doesn't read, and what reading
+/// the Environment refuses, write access included: the spec carries its Sealed values.
+pub(crate) fn running(
+    tx: &mut dyn Tx,
+    who: &crate::Actor,
+    trusted: &crate::Trusted,
+    query: &RunningQuery,
+) -> Result<RunningView, RpcError> {
+    let environment = crate::scope::environment(tx, who, &query.environment)?;
+    trusted.writes(&environment.summary.name)?;
+    let namespace = super::namespace(tx, who, &environment.summary)?;
+    let organization = who.organization.as_str();
+    let records = ran_records(tx, &environment.summary)?;
+    let mut services = BTreeMap::new();
+    for service in &query.services {
+        let found = records.iter().find_map(|(id, record)| {
+            let ran = record.services.get(service)?;
+            Some((ran, ran_spec(tx, id, service, ran)?))
+        });
+        if let Some((ran, spec)) = found {
+            let versions = kept(tx, organization, (&namespace, service), ran.digest)?;
+            services.insert(
+                service.clone(),
+                Running {
+                    spec: Box::new(spec),
+                    pin: ran.pin.clone(),
+                    versions,
+                },
+            );
+        }
+    }
+    Ok(RunningView {
         namespace,
         services,
     })

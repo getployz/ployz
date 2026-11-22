@@ -605,6 +605,7 @@ mod tests {
             sealing: None,
             founding: Default::default(),
             grants: Vec::new(),
+            removed_grants: Vec::new(),
         };
 
         let asked = joining_as_approved(&details(LocalMachinePhase::Joining), rediscovered.clone());

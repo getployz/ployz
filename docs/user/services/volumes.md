@@ -34,6 +34,8 @@ mounts one there; `/data/` and `/data` are the same directory. A volume can't mo
 type: a discard, a sync from another environment or a restore from history that would break one is
 refused the same way. A mount saved before these rules existed doesn't block your other changes.
 
+`ployz volume ls` lists an environment's volumes and what the next deploy does to them.
+
 ## Choose the storage limit
 
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole

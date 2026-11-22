@@ -382,15 +382,7 @@ impl Parents<'_> {
             .filter(|statement| statement.open().is_ok_and(|body| body.digest == digest));
         for statement in with_digest {
             budget.reserve(statement, trusted)?;
-            let Ok((body, by, _)) = open_approval(statement, trusted, Some(child.cluster)) else {
-                continue;
-            };
-            let human = trusted
-                .of(&by)
-                .is_some_and(|key| key.kind().whole_cluster());
-            if human
-                && body.parent.is_none()
-                && body.cluster == child.cluster
+            if let Ok(body) = open_root(statement, trusted, child.cluster)
                 && body.namespace == child.namespace
                 && body.service == child.service
             {
@@ -401,6 +393,30 @@ impl Parents<'_> {
             field: MismatchField::Parent,
         })
     }
+}
+
+/// Open `version` as a root, the way a Server opens an edit's parent: signed for Cluster
+/// `cluster` by a person's or full CLI's key trusted here, alone or as a step of a bundle,
+/// and naming no parent of its own. The caller checks its Namespace, Service and digest.
+///
+/// # Errors
+/// Returns the opening's refusal, and [`AuthorityRefusal::Mismatch`] naming the Cluster
+/// for another Cluster's, or [`MismatchField::Parent`] for one a CI or agent key signed or one
+/// that names a parent.
+pub fn open_root(
+    version: &Signed<ServiceVersion>,
+    trusted: &TrustedKeys,
+    cluster: SealingPublicKey,
+) -> Result<ServiceVersion, AuthorityRefusal> {
+    let (body, by, _) = open_approval(version, trusted, Some(cluster))?;
+    let human = trusted
+        .of(&by)
+        .is_some_and(|key| key.kind().whole_cluster());
+    first_mismatch([
+        (MismatchField::Cluster, body.cluster == cluster),
+        (MismatchField::Parent, human && body.parent.is_none()),
+    ])?;
+    Ok(body)
 }
 
 /// A signed version that asks every Member to forget the versions of its Service signed

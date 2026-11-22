@@ -170,6 +170,8 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     versions: same,
     // Support reads where an Environment runs, never the specs its parents ran, which carry settings.
     parent: (view) => ({ ...view, services: {} }),
+    // Nor the specs Services run now, which carry settings.
+    running: (view) => ({ ...view, services: {} }),
   };
 }
 

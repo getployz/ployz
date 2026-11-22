@@ -399,6 +399,7 @@ fn a_ci_key_signs_no_rule_even_over_the_whole_cluster() {
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),
+                name: None,
             },
             approved_by: crate::authority::PasskeyApprover::Server,
         }],

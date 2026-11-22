@@ -5314,6 +5314,7 @@ fn a_follow_into_a_branch_ignores_what_the_deployer_may_protect() {
         prune: false,
         no_prune: true,
         versions: Vec::new(),
+        recreate: Vec::new(),
     });
     // Protected, production waits for an admin's yes to exactly this deploy.
     let asked = store.write_trusted(&ada, &admit, &deployer).unwrap_err();

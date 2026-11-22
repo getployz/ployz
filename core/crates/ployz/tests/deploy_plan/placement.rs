@@ -3463,6 +3463,7 @@ fn a_deploy_removes_first_the_copies_ended_runs_left_pending() {
             .into_iter()
             .map(|run| ployz_core::DeploymentLogId::parse(run).unwrap())
             .collect(),
+        recreate: std::collections::BTreeSet::new(),
     });
     let intent = DeployIntent::apply_all(Namespace::parse("app").unwrap(), [&requested], options);
 

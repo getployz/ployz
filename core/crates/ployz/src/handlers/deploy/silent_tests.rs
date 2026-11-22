@@ -140,6 +140,7 @@ fn server_trust() -> TrustedKeys {
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),
+                name: None,
             },
             approved_by: PasskeyApprover::Server,
         }],
@@ -412,6 +413,7 @@ fn staged_by_store(edits: &[(&str, Value)]) -> Vec<ployz_store::NodeChange> {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
