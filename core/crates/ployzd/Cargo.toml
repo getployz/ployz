@@ -73,6 +73,7 @@ ployz-store.workspace = true
 ployz-testkit.workspace = true
 serde_norway = "0.9.42"
 rand_core = { version = "0.9.5", features = ["os_rng"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "hooks"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
 tokio-rustls = { version = "0.26.4", default-features = false }

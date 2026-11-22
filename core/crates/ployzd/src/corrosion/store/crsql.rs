@@ -5,7 +5,7 @@
 //! `__corro_seq_bookkeeping`) belong to the Corrosion image, not to `schema.sql`, and every
 //! query on them is here. They were checked against the image [`IMAGE`](crate::corrosion::service::IMAGE) pins, so a bump of
 //! that digest must re-run the `#[ignore]`d integration tests in `corrosion::integration_tests`
-//! before it ships. The test double stands the tables in with `crsql_stand_ins` in `store_tests`.
+//! before it ships. The test double stands the tables in with `crsql_stand_ins` in `fake_cluster`.
 
 use std::collections::{BTreeMap, BTreeSet};
 

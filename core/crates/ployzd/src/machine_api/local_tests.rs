@@ -1394,7 +1394,7 @@ mod ingress_doors {
     async fn a_reboot_places_a_held_door_only_while_the_cluster_declares_it() {
         use crate::corrosion::{
             AdminClient,
-            store_tests::{corrosion_db, identity_store},
+            fake_cluster::{corrosion_db, identity_store},
         };
         let (data_dir, store, _without_cluster, _fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-declared").await;
@@ -6399,7 +6399,7 @@ mod read_routes {
     use super::*;
     use crate::corrosion::{
         AdminClient, IngressRouteAck, IngressRouteChange, ReplicatedStore,
-        store_tests::{corrosion_db, identity_store},
+        fake_cluster::{corrosion_db, identity_store},
     };
 
     fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {
