@@ -50,8 +50,8 @@ describe("databaseCommand", () => {
   // production. The Store generates one per Environment, so each New, empty Volume initializes with its own.
   it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("asks the Store to generate %s's password", (_, preset) => {
     const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id }));
-    const { env } = patch.value as { readonly env: Readonly<Record<string, unknown>> };
-    expect(Object.values(env)).toContainEqual({ value: GENERATED_PASSWORD, exported: true });
+    const password = Object.entries(preset.env).find(([, value]) => value === GENERATED_PASSWORD)?.[0] ?? "no generated password";
+    expect(patch.value).toHaveProperty(["env", password], { value: GENERATED_PASSWORD, exported: true });
   });
 
   it("starts Redis with its password", () => {
