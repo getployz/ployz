@@ -640,75 +640,79 @@ fn a_cloud_name_taken_from_an_invalid_hostname_is_normalised() {
     assert_eq!(add_name("Web-1", "box-1"), "Web-1");
 }
 
-#[test]
-fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home() {
-    let instruction = EnrollInstruction {
-        attempt_id: "att_1".to_owned(),
-        token: ployz_core::CloudEnrollToken::parse(TOKEN).unwrap(),
-        name: "web-1".to_owned(),
-        storage: EnrollStorage::Zfs { device: None },
-        policy: EnrollPolicy {
-            labels: BTreeMap::from([("tier".to_owned(), "edge".to_owned())]),
-            accepts_builds: false,
-            accepts_services: true,
-            accepts_ingress: true,
-        },
-        founding_cluster_name: None,
-        founding_ingress_closed: false,
-    };
-
-    let arguments = add_arguments(&instruction, "https://cloud.example", false);
-
-    assert_eq!(
-        arguments,
-        [
-            "ployz",
-            "server",
-            "add",
-            "--yes",
-            "--connect",
-            "unix:///run/ployz/ployz.sock",
-            "--storage",
-            "zfs",
-            "--cloud-url",
-            "https://cloud.example",
-            "--name",
-            "web-1",
-            "--accepts-builds=false",
-            "--accepts-services=true",
-            "--accepts-ingress=true",
-            "--label-add",
-            "tier=edge",
-            "--ployz-config",
-            "/root/.config/ployz/config.yaml",
-        ]
-    );
-    assert!(!arguments.iter().any(|argument| argument.contains(TOKEN)));
-    assert!(
-        crate::cli::command()
-            .try_get_matches_from(&arguments)
-            .is_ok()
-    );
-    assert!(
-        !add_arguments(&instruction, "https://cloud.example", true)
-            .contains(&"--ployz-config".to_owned())
-    );
+fn plan(instruction: &EnrollInstruction) -> Result<crate::handlers::server::EnrollPlan, String> {
+    crate::handlers::server::EnrollPlan::from_instruction(
+        instruction,
+        std::path::PathBuf::from(ROOT_CONFIG),
+    )
+    .map_err(|error| error_chain::row(&error))
 }
 
-fn built_for(instruction: &EnrollInstruction, home_set: bool) -> String {
-    let mut arguments = add_arguments(instruction, "https://cloud.example", home_set);
-    // The config path the command line would default to, given outright, so a `PLOYZ_CONFIG` in
-    // the environment the tests run under cannot reach the view.
-    if !arguments.contains(&"--ployz-config".to_owned()) {
-        arguments.extend([
-            "--ployz-config".to_owned(),
-            "~/.config/ployz/config.yaml".to_owned(),
-        ]);
-    }
-    match crate::cli::command().try_get_matches_from(arguments) {
-        Ok(root) => crate::handlers::server::engine_view(&root),
-        Err(error) => format!("parse: {error}"),
-    }
+/// The new Server `instruction` enrolls, as `server add` reads it: refused before anything is
+/// enrolled, refused by the engine as it reads the value, or its name, Cluster name, storage,
+/// labels, roles and Doors.
+fn enrolls(instruction: &EnrollInstruction) -> String {
+    let plan = match plan(instruction) {
+        Ok(plan) => plan,
+        Err(error) => return format!("refused: {error}"),
+    };
+    let shaping = plan.shaping();
+    let read = || -> Result<String, crate::handlers::Error> {
+        let asked = shaping.policy()?;
+        let name = shaping.name()?;
+        let cluster = shaping.cluster_name()?;
+        shaping.token_request()?;
+        let policy = asked.settle(None, |_| String::new())?;
+        let labels: Vec<String> = policy
+            .labels
+            .iter()
+            .map(|(key, value)| format!("{}={}", key.as_str(), value.as_str()))
+            .collect();
+        let roles: Vec<&str> = [
+            (policy.accepts_builds, "builds"),
+            (policy.accepts_services, "services"),
+            (policy.accepts_ingress, "ingress"),
+        ]
+        .into_iter()
+        .filter_map(|(on, role)| on.then_some(role))
+        .collect();
+        Ok(format!(
+            "name {} cluster {} storage {} labels {} roles {} doors {}",
+            name.as_ref().map_or("-", |name| name.as_str()),
+            cluster.as_ref().map_or("-", |cluster| cluster.as_str()),
+            shaping.storage(),
+            labels.join(","),
+            roles.join(","),
+            if shaping.ingress_closed() {
+                "closed"
+            } else {
+                "open"
+            },
+        ))
+    };
+    read().unwrap_or_else(|error| format!("engine refuses: {error} {:?}", error.hints()))
+}
+
+#[test]
+fn an_instruction_enrolls_this_host_through_its_socket_without_asking() {
+    let plan = plan(&odd_instruction()).unwrap();
+    assert!(plan.shaping().yes(), "nobody answers a prompt in the loop");
+    assert!(!plan.shaping().reset(), "the loop never resets a Server");
+    assert_eq!(plan.destination(), None);
+    assert_eq!(
+        plan.reach().connect().as_deref(),
+        Some("unix:///run/ployz/ployz.sock")
+    );
+    assert_eq!(plan.reach().config(), Path::new(ROOT_CONFIG));
+    assert_eq!(
+        plan.shaping().network().to_string(),
+        "10.210.0.0/16",
+        "a founder takes server add's Cluster network"
+    );
+    assert!(
+        !plan.reach().rerun(&["status"]).contains(TOKEN),
+        "the token stays out of every command line"
+    );
 }
 
 fn odd_instruction() -> EnrollInstruction {
@@ -736,7 +740,7 @@ fn labelled(labels: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn the_engine_reads_an_instruction_as_it_read_the_arguments_built_from_it() {
+fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
     let with = |change: &dyn Fn(&mut EnrollInstruction)| {
         let mut instruction = odd_instruction();
         change(&mut instruction);
@@ -745,29 +749,55 @@ fn the_engine_reads_an_instruction_as_it_read_the_arguments_built_from_it() {
     let zfs = |device: Option<&str>| EnrollStorage::Zfs {
         device: device.map(str::to_owned),
     };
-    let cases: Vec<(&str, EnrollInstruction, bool)> = vec![
-        ("plain", odd_instruction(), true),
-        ("without HOME", odd_instruction(), false),
-        ("zfs", with(&|i| i.storage = zfs(None)), true),
+    const LABEL_VALUE: &str =
+        "a nonempty printable ASCII Swarm value without leading or trailing whitespace []";
+    const CLUSTER_NAME: &str = "engine refuses: Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit. []";
+    let cases: Vec<(&str, EnrollInstruction, String)> = vec![
+        (
+            "plain",
+            odd_instruction(),
+            "name web-1 cluster - storage none labels region=default roles builds,services,ingress doors open".to_owned(),
+        ),
+        (
+            "zfs",
+            with(&|i| i.storage = zfs(None)),
+            "name web-1 cluster - storage zfs labels region=default roles builds,services,ingress doors open".to_owned(),
+        ),
         (
             "zfs device",
             with(&|i| i.storage = zfs(Some("/dev/disk/by-id/spare"))),
-            true,
+            "name web-1 cluster - storage zfs:/dev/disk/by-id/spare labels region=default roles builds,services,ingress doors open".to_owned(),
         ),
         (
             "zfs empty device",
             with(&|i| i.storage = zfs(Some(""))),
-            true,
+            r#"refused: Cloud asked for ZFS on the device "": invalid ZFS device "": an absolute device path"#.to_owned(),
         ),
         (
             "zfs dash device",
             with(&|i| i.storage = zfs(Some("-x"))),
-            true,
+            r#"refused: Cloud asked for ZFS on the device "-x": invalid ZFS device "-x": an absolute device path"#.to_owned(),
         ),
-        ("no name", with(&|i| i.name = String::new()), true),
-        ("dash name", with(&|i| i.name = "-x".to_owned()), true),
-        ("spaced name", with(&|i| i.name = "web 1".to_owned()), true),
-        ("flag name", with(&|i| i.name = "--yes".to_owned()), true),
+        (
+            "no name",
+            with(&|i| i.name = String::new()),
+            "name - cluster - storage none labels region=default roles builds,services,ingress doors open".to_owned(),
+        ),
+        (
+            "dash name",
+            with(&|i| i.name = "-x".to_owned()),
+            r#"refused: Cloud asked for the Server name "-x", which can't start with '-'."#.to_owned(),
+        ),
+        (
+            "spaced name",
+            with(&|i| i.name = "web 1".to_owned()),
+            r#"engine refuses: invalid Machine Name "web 1": a 1-63 character lowercase DNS label [Closest("web-1")]"#.to_owned(),
+        ),
+        (
+            "flag name",
+            with(&|i| i.name = "--yes".to_owned()),
+            r#"refused: Cloud asked for the Server name "--yes", which can't start with '-'."#.to_owned(),
+        ),
         (
             "policy",
             with(&|i| {
@@ -775,71 +805,76 @@ fn the_engine_reads_an_instruction_as_it_read_the_arguments_built_from_it() {
                 i.policy.accepts_builds = false;
                 i.policy.accepts_ingress = false;
             }),
-            true,
+            format!(r#"engine refuses: invalid Machine Label value "a=b": {LABEL_VALUE}"#),
+        ),
+        (
+            "roles and labels",
+            with(&|i| {
+                i.policy.labels = labelled(&[("tier", "edge"), ("zone", "b")]);
+                i.policy.accepts_builds = false;
+                i.policy.accepts_ingress = false;
+            }),
+            "name web-1 cluster - storage none labels region=default,tier=edge,zone=b roles services doors open".to_owned(),
         ),
         (
             "label value with comma",
             with(&|i| i.policy.labels = labelled(&[("a", "b,c")])),
-            true,
+            r#"engine refuses: invalid label "c": expected KEY=VALUE []"#.to_owned(),
         ),
         (
             "label key with space",
             with(&|i| i.policy.labels = labelled(&[("Bad Key", "v")])),
-            true,
+            r#"engine refuses: invalid Machine Label key "Bad Key": nonempty ASCII letters, digits, '_', '.', or '-' []"#.to_owned(),
         ),
         (
             "label key with equals",
             with(&|i| i.policy.labels = labelled(&[("k=x", "v")])),
-            true,
+            format!(r#"engine refuses: invalid Machine Label value "x=v": {LABEL_VALUE}"#),
         ),
         (
             "label key with dash",
             with(&|i| i.policy.labels = labelled(&[("-x", "v")])),
-            true,
+            r#"refused: Cloud asked for the label "-x=v", which can't start with '-'."#.to_owned(),
         ),
         (
             "label empty value",
             with(&|i| i.policy.labels = labelled(&[("a", "")])),
-            true,
+            format!(r#"engine refuses: invalid Machine Label value "": {LABEL_VALUE}"#),
         ),
         (
             "cluster name",
             with(&|i| i.founding_cluster_name = Some("acme".to_owned())),
-            true,
+            "name web-1 cluster acme storage none labels region=default roles builds,services,ingress doors open".to_owned(),
         ),
         (
             "dash cluster name",
             with(&|i| i.founding_cluster_name = Some("-x".to_owned())),
-            true,
+            r#"refused: Cloud asked for the Cluster name "-x", which can't start with '-'."#.to_owned(),
         ),
         (
             "spaced cluster name",
             with(&|i| i.founding_cluster_name = Some("A B".to_owned())),
-            true,
+            CLUSTER_NAME.to_owned(),
         ),
         (
             "empty cluster name",
             with(&|i| i.founding_cluster_name = Some(String::new())),
-            true,
+            CLUSTER_NAME.to_owned(),
         ),
         (
             "ingress closed",
             with(&|i| i.founding_ingress_closed = true),
-            true,
+            "name web-1 cluster - storage none labels region=default roles builds,services,ingress doors closed".to_owned(),
         ),
         (
             "region",
             with(&|i| i.policy.labels = labelled(&[("region", "fsn")])),
-            true,
+            "name web-1 cluster - storage none labels region=fsn roles builds,services,ingress doors open".to_owned(),
         ),
     ];
-    let views: String = cases
-        .iter()
-        .map(|(label, instruction, home_set)| {
-            format!("{label} => {}\n", built_for(instruction, *home_set))
-        })
-        .collect();
-    assert_eq!(views, include_str!("enroll_views.golden"));
+    for (label, instruction, expected) in cases {
+        assert_eq!(enrolls(&instruction), expected, "{label}");
+    }
 }
 
 #[test]
@@ -1278,25 +1313,19 @@ fn a_founder_founds_the_cluster_with_the_name_cloud_sends() {
     let Some(Answer::Enroll(founder)) = wire::answer(founder.as_bytes()) else {
         panic!("enroll instruction");
     };
-    let arguments = add_arguments(&founder, "https://cloud.example", true);
-    let root = crate::cli::command()
-        .try_get_matches_from(&arguments)
-        .unwrap();
-    let add = root
-        .subcommand_matches("server")
-        .and_then(|server| server.subcommand_matches("add"))
-        .unwrap();
-    assert_eq!(
-        add.get_one::<String>("cluster-name").map(String::as_str),
-        Some("acme")
-    );
+    let named = plan(&founder).unwrap().shaping().cluster_name().unwrap();
+    assert_eq!(named.as_ref().map(|name| name.as_str()), Some("acme"));
 
     let Some(Answer::Enroll(joiner)) = wire::answer(instruction("none").as_bytes()) else {
         panic!("enroll instruction");
     };
     assert!(
-        !add_arguments(&joiner, "https://cloud.example", true)
-            .contains(&"--cluster-name".to_owned()),
+        plan(&joiner)
+            .unwrap()
+            .shaping()
+            .cluster_name()
+            .unwrap()
+            .is_none(),
         "an instruction without clusterName, as an older Cloud sends, founds with no name"
     );
 }
@@ -1310,22 +1339,13 @@ fn a_founder_cloud_sends_closed_founds_with_no_door_open() {
     let Some(Answer::Enroll(founder)) = wire::answer(founder.as_bytes()) else {
         panic!("enroll instruction");
     };
-    let arguments = add_arguments(&founder, "https://cloud.example", true);
-    let root = crate::cli::command()
-        .try_get_matches_from(&arguments)
-        .unwrap();
-    let add = root
-        .subcommand_matches("server")
-        .and_then(|server| server.subcommand_matches("add"))
-        .unwrap();
-    assert!(add.get_flag("ingress-closed"));
+    assert!(plan(&founder).unwrap().shaping().ingress_closed());
 
     let Some(Answer::Enroll(open)) = wire::answer(instruction("none").as_bytes()) else {
         panic!("enroll instruction");
     };
     assert!(
-        !add_arguments(&open, "https://cloud.example", true)
-            .contains(&"--ingress-closed".to_owned()),
+        !plan(&open).unwrap().shaping().ingress_closed(),
         "an instruction without ingressClosed, as an older Cloud sends, founds with the Public Door"
     );
 }
@@ -1349,10 +1369,9 @@ fn the_zfs_device_reaches_server_add() {
             device: Some("/dev/disk/by-id/spare".to_owned())
         }
     );
-    assert!(
-        add_arguments(&instruction, "https://cloud.example", true)
-            .windows(2)
-            .any(|pair| pair == ["--storage", "zfs:/dev/disk/by-id/spare"])
+    assert_eq!(
+        plan(&instruction).unwrap().shaping().storage().to_string(),
+        "zfs:/dev/disk/by-id/spare"
     );
 }
 
@@ -1498,44 +1517,52 @@ async fn a_new_fleet_token_does_not_reuse_joined_or_an_old_attempt_with_install(
 #[test]
 fn the_host_adapter_overrides_remote_context_and_connection_environment() {
     const CHILD: &str = "PLOYZ_TEST_HOST_ADAPTER";
-    if std::env::var_os(CHILD).is_none() {
+    let Some(child) = std::env::var_os(CHILD) else {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("remote.yaml");
         fs::write(&config, "current_context: remote\ncontexts:\n  remote:\n    connections:\n      - tcp: 127.0.0.1:9\n").unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "checkin::enroll::tests::the_host_adapter_overrides_remote_context_and_connection_environment", "--nocapture"])
-            .env(CHILD, "1")
-            .env("PLOYZ_CONFIG", &config)
-            .env("PLOYZ_CONTEXT", "remote")
-            .env("PLOYZ_CONNECT", "tcp://127.0.0.1:9")
-            .output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(
-            stdout.contains("running 1 test\n"),
-            "the child did not run exactly one test: {stdout}"
-        );
-        assert!(
-            stdout.contains("1 passed;"),
-            "the child did not pass its test: {stdout}"
-        );
+        for home in [true, false] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "checkin::enroll::tests::the_host_adapter_overrides_remote_context_and_connection_environment", "--nocapture"])
+                .env(CHILD, &config)
+                .env("PLOYZ_CONFIG", &config)
+                .env("PLOYZ_CONTEXT", "remote")
+                .env("PLOYZ_CONNECT", "tcp://127.0.0.1:9");
+            if !home {
+                command.env_remove("HOME");
+            }
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "HOME {home}: {stdout}\n{stderr}");
+            assert!(
+                stdout.contains("running 1 test\n"),
+                "the child did not run exactly one test: {stdout}"
+            );
+            assert!(
+                stdout.contains("1 passed;"),
+                "the child did not pass its test: {stdout}"
+            );
+        }
         return;
-    }
+    };
     let Some(Answer::Enroll(instruction)) = wire::answer(instruction("none").as_bytes()) else {
         panic!("enroll");
     };
-    let root = crate::cli::command()
-        .try_get_matches_from(add_arguments(&instruction, "https://cloud.example", true))
-        .unwrap();
-    let matches = root
-        .subcommand_matches("server")
-        .unwrap()
-        .subcommand_matches("add")
-        .unwrap();
+    let plan =
+        crate::handlers::server::EnrollPlan::from_instruction(&instruction, this_host_config())
+            .unwrap();
+    let reach = plan.reach();
+    // Without HOME, as systemd runs the loop, enrolling keeps root's config.
+    let config = match std::env::var_os("HOME") {
+        Some(_) => std::path::PathBuf::from(child),
+        None => std::path::PathBuf::from(ROOT_CONFIG),
+    };
+    assert_eq!(reach.config(), config);
     let selected = crate::connect::resolve_connections(
-        Path::new(matches.get_one::<String>("ployz-config").unwrap()),
-        matches.get_one::<String>("connect").map(String::as_str),
+        &reach.config(),
+        reach.connect().as_deref(),
         None,
         &ployz_core::MachineLayout::production().socket(),
     )
@@ -1645,140 +1672,4 @@ async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes
             assert_eq!(fixture.status().view.answer, Seen::Joined);
         }
     }
-}
-
-fn equivalence_view(plan: &crate::handlers::server::EnrollPlan) -> String {
-    let shaping = plan.shaping();
-    let parsed = (|| -> Result<_, crate::handlers::Error> {
-        let policy = shaping.policy()?;
-        let name = shaping.name()?;
-        let cluster = shaping.cluster_name()?;
-        let request = shaping.token_request()?;
-        Ok((policy, name, cluster, shaping.storage(), request))
-    })()
-    .map_err(|error| format!("{error} {:?}", error.hints()));
-    let reach = plan.reach();
-    format!(
-        "{parsed:?} {:?} {:?}",
-        (
-            plan.destination(),
-            plan.no_install(),
-            shaping.reset(),
-            shaping.yes(),
-            shaping.ingress_closed(),
-            plan.shows_recovery_code(),
-        ),
-        (
-            shaping.wg_mtu(),
-            shaping.network(),
-            shaping.version(),
-            reach.config(),
-            reach.connect(),
-            reach.ssh_timeout(),
-        )
-    )
-}
-
-#[test]
-fn equivalence_the_typed_plan_matches_the_clap_plan() {
-    let with = |change: &dyn Fn(&mut EnrollInstruction)| {
-        let mut instruction = odd_instruction();
-        change(&mut instruction);
-        instruction
-    };
-    let zfs = |device: Option<&str>| EnrollStorage::Zfs {
-        device: device.map(str::to_owned),
-    };
-    let mut corpus: Vec<EnrollInstruction> = vec![odd_instruction()];
-    for device in [
-        None,
-        Some("/dev/disk/by-id/spare"),
-        Some(""),
-        Some("-x"),
-        Some("-"),
-        Some("--"),
-        Some("relative"),
-        Some("/dev/x y"),
-        Some("/dev/a,b"),
-        Some("/dev/-x"),
-        Some("zfs:/dev/x"),
-    ] {
-        corpus.push(with(&|i| i.storage = zfs(device)));
-    }
-    for name in [
-        "", "-x", "-", "--", "-1", "--x=y", "--yes", "web 1", "a=b", "a,b", "Web-1", "web-1-",
-        " web", "é", "x-",
-    ] {
-        corpus.push(with(&|i| i.name = name.to_owned()));
-    }
-    for cluster in ["acme", "-x", "-", "--", "A B", "", "--yes", "a,b"] {
-        corpus.push(with(&|i| {
-            i.founding_cluster_name = Some(cluster.to_owned())
-        }));
-    }
-    for labels in [
-        &[("tier", "edge"), ("zone", "a=b")][..],
-        &[("a", "b,c")],
-        &[("Bad Key", "v")],
-        &[("k=x", "v")],
-        &[("-x", "v")],
-        &[("-", "v")],
-        &[("", "v")],
-        &[("", "-v")],
-        &[("a", "")],
-        &[("a", "-v")],
-        &[("a", ",")],
-        &[("a", "b,")],
-        &[("x,y", "v")],
-        &[("region", "fsn")],
-        &[("region", "FSN")],
-        &[("region", "-x")],
-        &[("a", "1"), ("b", "2"), ("c", "3")],
-    ] {
-        corpus.push(with(&|i| i.policy.labels = labelled(labels)));
-    }
-    for accepts in 0..8u8 {
-        corpus.push(with(&|i| {
-            i.policy.accepts_builds = accepts & 1 != 0;
-            i.policy.accepts_services = accepts & 2 != 0;
-            i.policy.accepts_ingress = accepts & 4 != 0;
-        }));
-    }
-    corpus.push(with(&|i| i.founding_ingress_closed = true));
-    corpus.push(with(&|i| {
-        i.founding_ingress_closed = true;
-        i.founding_cluster_name = Some("acme".to_owned());
-        i.storage = zfs(Some("/dev/sdb"));
-        i.policy.labels = labelled(&[("tier", "edge"), ("region", "fsn")]);
-        i.name = String::new();
-    }));
-    let mut refused = 0;
-    for instruction in &corpus {
-        for home_set in [true, false] {
-            let old = plan_from_instruction(instruction, "https://cloud.example", home_set);
-            let config = if home_set {
-                crate::context::expand_home(Path::new(
-                    &std::env::var(crate::env::CONFIG)
-                        .unwrap_or_else(|_| crate::context::default_config_path()),
-                ))
-            } else {
-                std::path::PathBuf::from(ROOT_CONFIG)
-            };
-            let new = crate::handlers::server::EnrollPlan::from_instruction(instruction, config);
-            match (old, new) {
-                (Ok(old), Ok(new)) => assert_eq!(
-                    equivalence_view(&old),
-                    equivalence_view(&new),
-                    "{instruction:?} home {home_set}"
-                ),
-                (Err(_), Err(_)) => refused += 1,
-                (old, new) => panic!(
-                    "{instruction:?} home {home_set}: old {:?}, new {:?}",
-                    old.err(),
-                    new.err()
-                ),
-            }
-        }
-    }
-    println!("{} instructions, {refused} refusals", corpus.len() * 2);
 }

@@ -448,7 +448,7 @@ pub(super) fn storage_or_default(given: Option<StoragePreparation>) -> StoragePr
 /// Every input the enrollment engine reads from `root`, in the order it reads them, as text:
 /// the first refusal, or the parsed values and flags.
 #[cfg(test)]
-pub(crate) fn engine_view(root: &ArgMatches) -> String {
+fn engine_view(root: &ArgMatches) -> String {
     let plan = super::EnrollPlan::from_matches(root);
     let shaping = plan.shaping();
     let parsed = (|| -> Result<_, Error> {

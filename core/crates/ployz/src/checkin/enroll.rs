@@ -2,7 +2,11 @@
 //! loop keeps reporting the attempt's stage on each check-in.
 
 use ployz_core::error_chain;
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use tokio::sync::watch;
@@ -245,11 +249,9 @@ pub(super) async fn server_add(
         name: add_name(&instruction.name, &system.hostname()),
         ..instruction.clone()
     };
-    let plan = plan_from_instruction(
-        instruction,
-        &system.cloud,
-        std::env::var_os("HOME").is_some(),
-    )?;
+    let plan =
+        crate::handlers::server::EnrollPlan::from_instruction(instruction, this_host_config())
+            .map_err(|error| error_chain::row(&error))?;
     let install = |installation| {
         let ployzd = system.ployzd.clone();
         async move {
@@ -271,17 +273,17 @@ pub(super) async fn server_add(
     Committed::from_setup(setup)
 }
 
-/// What `instruction` asks to enroll, read as the `server add` arguments built from it: a value
-/// `server add` would refuse is refused here in clap's words.
-fn plan_from_instruction(
-    instruction: &EnrollInstruction,
-    cloud: &str,
-    home_set: bool,
-) -> Result<crate::handlers::server::EnrollPlan, String> {
-    let root = crate::cli::command()
-        .try_get_matches_from(add_arguments(instruction, cloud, home_set))
-        .map_err(|error| error.to_string())?;
-    Ok(crate::handlers::server::EnrollPlan::from_matches(&root))
+/// The config enrolling keeps on this host: the one `ployz` reads under `HOME`, or root's when
+/// the loop runs without `HOME`, as systemd starts it.
+fn this_host_config() -> PathBuf {
+    if std::env::var_os("HOME").is_none() {
+        return PathBuf::from(ROOT_CONFIG);
+    }
+    let config = std::env::var_os(crate::env::CONFIG).map_or_else(
+        || PathBuf::from(crate::context::default_config_path()),
+        PathBuf::from,
+    );
+    crate::context::expand_home(&config)
 }
 
 fn failure_message(error: &crate::handlers::Error) -> String {
@@ -293,67 +295,14 @@ fn failure_message(error: &crate::handlers::Error) -> String {
     message
 }
 
-/// The `--name` for `server add`, empty to leave it out. Cloud names a Server by its raw
-/// hostname by default, so a hostname that isn't a Machine Name is normalised rather than
-/// refused as typed. One with nothing usable is left to `server add`'s Machine ID fallback.
+/// The name to enroll as, empty to leave it out. Cloud names a Server by its raw hostname by
+/// default, so a hostname that isn't a Machine Name is normalised rather than refused as
+/// typed. One with nothing usable is left to `server add`'s Machine ID fallback.
 pub(super) fn add_name(name: &str, hostname: &str) -> String {
     if name != hostname || ployz_core::MachineName::parse(name).is_ok() {
         return name.to_owned();
     }
     ployz_core::MachineName::from_hostname(name).map_or_else(String::new, String::from)
-}
-
-pub(super) fn add_arguments(
-    instruction: &EnrollInstruction,
-    cloud: &str,
-    home_set: bool,
-) -> Vec<String> {
-    let policy = &instruction.policy;
-    let storage = match &instruction.storage {
-        EnrollStorage::None => "none".to_owned(),
-        EnrollStorage::Zfs { device: None } => "zfs".to_owned(),
-        EnrollStorage::Zfs {
-            device: Some(device),
-        } => format!("zfs:{device}"),
-    };
-    let mut arguments: Vec<String> = [
-        "ployz",
-        "server",
-        "add",
-        "--yes",
-        "--connect",
-        &format!(
-            "unix://{}",
-            ployz_core::MachineLayout::production().socket().display()
-        ),
-        "--storage",
-        &storage,
-        "--cloud-url",
-        cloud,
-    ]
-    .map(str::to_owned)
-    .into();
-    if !instruction.name.is_empty() {
-        arguments.extend(["--name".to_owned(), instruction.name.clone()]);
-    }
-    if let Some(cluster_name) = &instruction.founding_cluster_name {
-        arguments.extend(["--cluster-name".to_owned(), cluster_name.clone()]);
-    }
-    if instruction.founding_ingress_closed {
-        arguments.push("--ingress-closed".to_owned());
-    }
-    arguments.extend([
-        format!("--accepts-builds={}", policy.accepts_builds),
-        format!("--accepts-services={}", policy.accepts_services),
-        format!("--accepts-ingress={}", policy.accepts_ingress),
-    ]);
-    for (label, value) in &policy.labels {
-        arguments.extend(["--label-add".to_owned(), format!("{label}={value}")]);
-    }
-    if !home_set {
-        arguments.extend(["--ployz-config".to_owned(), ROOT_CONFIG.to_owned()]);
-    }
-    arguments
 }
 
 pub(super) async fn discard_zfs_build(ployzd: &Path) -> Result<(), String> {
