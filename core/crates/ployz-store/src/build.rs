@@ -379,11 +379,12 @@ fn clock(
     let (set, now) = match status {
         BuildStatus::Building => (
             "started = COALESCE(started, ?3), finished = NULL",
-            Some(deployment::now()),
+            Some(crate::storage::now()),
         ),
-        BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => {
-            ("finished = COALESCE(finished, ?3)", Some(deployment::now()))
-        }
+        BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => (
+            "finished = COALESCE(finished, ?3)",
+            Some(crate::storage::now()),
+        ),
         BuildStatus::Pending => ("started = NULL, finished = NULL", None),
     };
     let mut params: Vec<Param<'_>> = vec![id.as_str().into(), service.as_str().into()];
@@ -1183,9 +1184,7 @@ pub(crate) fn github_rule(
     }
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     Ok(rule.filter(|signed| {
-        signed
-            .open()
-            .is_ok_and(|rule| rule.service(&id.service).is_some())
+        crate::auto_rule::opened(signed).is_some_and(|rule| rule.service(&id.service).is_some())
     }))
 }
 
@@ -1437,9 +1436,7 @@ pub(crate) fn github_check_in(
         run: held.run().clone(),
         started: Started {
             grant: grant.clone(),
-            at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.as_secs()),
+            at: crate::storage::now().unsigned_abs(),
             received: 0,
         },
     };
@@ -1605,7 +1602,10 @@ fn built_token(
     else {
         return Ok(None);
     };
-    let Some(Ok(rule)) = github_rule(tx, id)?.map(|rule| rule.open()) else {
+    let Some(rule) = github_rule(tx, id)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened)
+    else {
         return Ok(None);
     };
     Ok(Some(ImageToken {

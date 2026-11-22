@@ -115,7 +115,7 @@ pub(crate) fn insert(
                 .filter(|message| !message.is_empty())
                 .into(),
             who.principal.as_ref().map(crate::Principal::as_str).into(),
-            crate::deployment::now().into(),
+            crate::storage::now().into(),
             accepted_json(revision.accepted).as_deref().into(),
             changed.as_deref().into(),
         ],

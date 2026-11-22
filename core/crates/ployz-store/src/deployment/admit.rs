@@ -485,7 +485,7 @@ fn deploy(
         trusted,
     )?;
     let id = &environment.summary.id;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(
         tx,
@@ -666,7 +666,7 @@ fn reapply(
         .iter()
         .map(|service| crate::scope::service_name(service))
         .collect::<Result<Vec<_>, _>>()?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let cluster_domain = trusted
         .domains
         .cluster_domain

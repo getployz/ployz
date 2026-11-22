@@ -81,7 +81,7 @@ use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::json_text;
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::{Row, Tx, name_of, now};
 use crate::variables;
 
 use self::loss::VolumeLoss;
@@ -1785,21 +1785,61 @@ pub(crate) fn cluster_domain(
 
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
-/// Organization holds that, then suffixed with this Environment's ID. `reserve`
-/// fixes a new one; a plan only looks.
+/// Organization holds that, then suffixed with this Environment's ID. A plan only
+/// looks; [`reserve_namespace`] fixes a new one.
 pub(crate) fn namespace(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentSummary,
-    reserve: bool,
 ) -> Result<Namespace, RpcError> {
-    let rows = tx.query(
+    match kept_namespace(tx, environment)? {
+        Some(namespace) => Ok(namespace),
+        None => free_namespace(tx, who, environment),
+    }
+}
+
+/// [`namespace`], fixed for `environment` if it was new.
+pub(crate) fn reserve_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
+    if let Some(namespace) = kept_namespace(tx, environment)? {
+        return Ok(namespace);
+    }
+    let namespace = free_namespace(tx, who, environment)?;
+    tx.execute(
+        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            who.organization.as_str().into(),
+            namespace.as_str().into(),
+            environment.id.as_str().into(),
+        ],
+    )?;
+    Ok(namespace)
+}
+
+fn kept_namespace(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentSummary,
+) -> Result<Option<Namespace>, RpcError> {
+    tx.query(
         "SELECT namespace FROM config_namespace WHERE environment_id = ?1",
         &[environment.id.as_str().into()],
-    )?;
-    if let Some(row) = rows.first() {
-        return row.parse::<Namespace>(0, "Namespace");
-    }
+    )?
+    .first()
+    .map(|row| row.parse::<Namespace>(0, "Namespace"))
+    .transpose()
+}
+
+/// The first of `environment`'s candidate Namespaces no other Environment of `who`'s
+/// Organization holds.
+fn free_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
     let base = format!("{}-{}", environment.project, environment.name);
     let suffix: String = environment
         .id
@@ -1823,17 +1863,6 @@ pub(crate) fn namespace(
             .is_empty();
         if namespace.is_reserved() || taken {
             continue;
-        }
-        if reserve {
-            tx.execute(
-                "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
-                 VALUES (?1, ?2, ?3)",
-                &[
-                    who.organization.as_str().into(),
-                    namespace.as_str().into(),
-                    environment.id.as_str().into(),
-                ],
-            )?;
         }
         return Ok(namespace);
     }
@@ -2161,16 +2190,6 @@ fn invalid_evidence(what: &str) -> RpcError {
         format!("The runner's {what} does not match this Deployment"),
         json!({}),
     )
-}
-
-/// Seconds since the Unix epoch: when a Deployment was admitted, which the idle
-/// rule for Branches reads.
-pub(crate) fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]

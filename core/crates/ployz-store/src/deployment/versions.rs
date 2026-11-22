@@ -20,10 +20,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{TargetNode, now, organization};
+use super::{TargetNode, organization};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::Tx;
+use crate::storage::now;
 
 /// A signed version a client posts with a Deploy, and the image it pinned for it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

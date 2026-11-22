@@ -412,7 +412,7 @@ pub(crate) fn remove(
             if !held {
                 live.accepted = accepted;
             }
-            live.retried = deployment::now();
+            live.retried = crate::storage::now();
             live
         }
         None => {
@@ -490,7 +490,7 @@ fn review_member(
 ) -> Result<Reviewed, RpcError> {
     let id = &environment.summary.id;
     let review = crate::review::review(tx, &environment)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let deployed = approval::deployed(&review.head);
     let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;

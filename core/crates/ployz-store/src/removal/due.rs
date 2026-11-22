@@ -410,7 +410,7 @@ fn admit_member(
     }
     let forget = deployment::forgettable(tx, id, trusted)?;
     let review = crate::review::review(tx, environment)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let losses = match forget {
         Some(_) => Vec::new(),
@@ -722,7 +722,7 @@ pub(crate) fn shut_down(
     if let Some(version) = admit.version.as_deref() {
         crate::review::check(&review, Some(version))?;
     }
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let losses = match forget {
         Some(_) => Vec::new(),

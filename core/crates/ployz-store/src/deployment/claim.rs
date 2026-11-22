@@ -231,7 +231,7 @@ fn take(
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     let generation = rule
         .as_ref()
-        .and_then(|rule| rule.open().ok())
+        .and_then(crate::auto_rule::opened)
         .map(|rule| rule.generation);
     let image_tokens = match generation {
         None => BTreeMap::new(),

@@ -767,7 +767,9 @@ fn admit(
     let names = plan.names(&selected)?;
     // A push of a live rule's branch deploys only the settings the rule approves: any
     // other Deployment would fail on every Server, so it waits for a person instead.
-    let rule = crate::auto_rule::stored(tx, id)?.and_then(|rule| rule.open().ok());
+    let rule = crate::auto_rule::stored(tx, id)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened);
     if let Some(rule) = rule.filter(|rule| {
         !rule.ended
             && rule.source.repository_id == push.repository_id.get()
@@ -780,7 +782,7 @@ fn admit(
             (&environment, &saved.intent),
             &[],
         )?;
-        let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace = deployment::namespace(tx, who, &environment.summary)?;
         let ships: Vec<ServiceName> = selected
             .iter()
             .filter(|(_, follows)| *follows)
@@ -1004,7 +1006,7 @@ pub(crate) fn auto_admit(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     crate::deployment::admit::gate(
         tx,
         who,

@@ -270,7 +270,7 @@ pub(crate) fn plan(
     let mut review = review::review(tx, &environment)?;
     let rows = review::service_rows(&mut review.view.changes);
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary)?;
     let target = canonicalize_environment_intent(environment.working.clone());
     // Which Docker Volumes a removal deletes only the Servers can say. Naming
     // Services saves Working State too, which reviews what it drops.
@@ -427,7 +427,7 @@ pub(crate) fn saved_target(
         },
         removals: deployment::ServiceRemovals::default(),
     };
-    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary)?;
     let cluster_domain = trusted
         .domains
         .cluster_domain
@@ -489,7 +489,7 @@ pub(crate) fn namespace(
     query: &NamespaceQuery,
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary)?;
     let head = deployment::head(tx, &environment)?;
     let clusters = deployment::cluster_domains(tx, &environment.summary.id, &head)?;
     let applied = &head.applied;

@@ -473,7 +473,7 @@ pub(crate) fn hold(
         return Ok(());
     }
     supersede(tx, condition, &key)?;
-    let namespace = namespace(tx, who, environment, false)?;
+    let namespace = namespace(tx, who, environment)?;
     let deployment = DeploymentId::fresh();
     let listed = next_listed(tx, id)?;
     insert(
