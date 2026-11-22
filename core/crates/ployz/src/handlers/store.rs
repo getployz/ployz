@@ -26,9 +26,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use ployz_store::{
-    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit, Edited,
-    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, Publish, Published, Removal,
-    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, VolumeObservation,
+    Actor, Admit, AdmitRemoval, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
+    DueQuery, Edit, Edited, EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb,
+    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
+    Sweep, SystemEvent, Tell, Trusted, VolumeObservation,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -324,12 +325,37 @@ impl<'m> Store<'m> {
         )
     }
 
-    /// Move every removal on in the in-process Store, as Cloud's sweep does there.
-    pub(crate) fn sweep(&self) -> Result<(), StoreCallError> {
-        match &self.backend {
-            Backend::Local(store, who) => sweep(store, who).map_err(StoreCallError::Refused),
-            Backend::Cloud(..) => Ok(()),
+    /// Do in the in-process Store what Cloud's scheduler does on its own: sweep every
+    /// removal on, then admit the removal Deployments now due for `project`, or only
+    /// its `environment`. Over HTTPS this admits nothing.
+    pub(crate) fn admit_due_removals(
+        &self,
+        project: &ProjectName,
+        environment: Option<&EnvironmentName>,
+    ) -> Result<Vec<DeploymentSummary>, Error> {
+        let Backend::Local(store, who) = &self.backend else {
+            return Ok(Vec::new());
+        };
+        sweep(store, who).map_err(|error| self.fail(StoreCallError::Refused(error)))?;
+        let mut admitted = Vec::new();
+        for due in self.read(&DueQuery {})? {
+            let summary = due.environment;
+            if summary.project != *project || environment.is_some_and(|name| *name != summary.name)
+            {
+                continue;
+            }
+            admitted.push(
+                self.admit(&Admit::Remove(AdmitRemoval {
+                    id: DeploymentId::parse(mint())?,
+                    environment: EnvironmentRef {
+                        project: Some(project.clone()),
+                        environment: Some(summary.name),
+                    },
+                }))
+                .map_err(|error| self.fail(error))?,
+            );
         }
+        Ok(admitted)
     }
 
     /// `--context`; without it, this reaches the Cluster `--connect` or the current
