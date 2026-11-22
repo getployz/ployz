@@ -10,7 +10,7 @@
 //!
 //! Four processes take part. The daemon runs `request_locked` in a task (`ployzd::installer::upgrade::request`) and hosts
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
-//! through `admit_installation` (local_machine.rs). A kill ends all of them at once.
+//! through `admit_installation` (local_machine/turns.rs). A kill ends all of them at once.
 //! systemd restarts it (`Restart=always` in `machine_daemon_service_unit`, installer/host.rs), and daemon start
 //! reconciles before it serves (`Daemon::start`, before it serves). The worker is its own unit (`ployzd::installer::upgrade::launch_worker`),
 //! `ployzd install` its own process, and the volume plugin its own unit
@@ -266,7 +266,7 @@ impl Reader {
 /// Whose `try_mutation` answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Asker {
-    /// A daemon RPC, through `admit_installation` (local_machine.rs) or the Update
+    /// A daemon RPC, through `admit_installation` (local_machine/turns.rs) or the Update
     /// fast path (`try_mutation` in `LocalMachine::update`). It runs only while the daemon serves.
     Daemon,
     /// The volume plugin's `ployzd::volume_plugin::storage::VolumeStorage::admit_mutation`, its own unit.
@@ -1617,7 +1617,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
             "Install: the ployzd install process is killed; any lock it held is released".to_owned()
         }
         Action::Mutate(Asker::Daemon) => format!(
-            "Daemon RPC: admit_installation's try_mutation {} (local_machine.rs)",
+            "Daemon RPC: admit_installation's try_mutation {} (local_machine/turns.rs)",
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Plugin) => format!(
