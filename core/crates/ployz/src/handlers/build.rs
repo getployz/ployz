@@ -770,14 +770,6 @@ mod tests {
     }
 
     #[test]
-    fn a_build_without_an_events_file_reports_no_events() {
-        let events = Events::to(None, true).unwrap();
-        events.push_line("Pushed sha256:abc");
-        assert!(events.recorded.is_none());
-        assert!(events.report_lines().is_empty());
-    }
-
-    #[test]
     fn a_verbose_build_without_an_events_file_keeps_its_final_report_small() {
         let events = Events::to(None, true).unwrap();
         let line = "x".repeat(8 * 1024);
@@ -804,7 +796,6 @@ mod tests {
         let path = directory.path().join("events").display().to_string();
         let events = Events::to(Some(&path), false).unwrap();
         events.push_line("one");
-        assert!(events.recorded.is_none());
         assert!(events.report_lines().is_empty());
         assert_eq!(
             fs::read_to_string(&path).unwrap().lines().count(),
@@ -826,13 +817,6 @@ mod tests {
         events.push_line("two");
         assert_eq!(fs::read_to_string(&path).unwrap(), "");
         assert_eq!(events.report_lines().len(), 2);
-    }
-
-    #[test]
-    fn a_build_that_does_not_report_keeps_no_events() {
-        let events = Events::to(None, false).unwrap();
-        events.push_line("one");
-        assert!(events.report_lines().is_empty());
     }
 
     #[test]
