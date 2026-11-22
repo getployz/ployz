@@ -785,7 +785,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
             : cannotKeepDoors
             ? new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true })
             : identityConflict
-            ? new Conflict({ message: `The Cluster already lists a Server with this one's ID or address under another key. Remove it with \`ployz server rm ${input.identity.name}\`, then add this Server again.`, userFacing: true })
+            ? new Conflict({ message: `The Cluster already lists a Server with this one's ID or address under another key. Find it in \`ployz server ls\`, remove it with \`ployz server rm\`, then add this Server again.`, userFacing: true })
             : needsApproval
               ? new JoinApprovalRequired({ message })
               : error);
