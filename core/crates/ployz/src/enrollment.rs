@@ -115,7 +115,15 @@ fn checked_registration(
     saved.request.capabilities = Vec::new();
     saved.request.first_key = None;
     ployz_core::allocate_enrollment(&saved.request, snapshot, std::slice::from_ref(&saved))
-        .map_err(|error| RpcError::conflict(error.to_string()))?;
+        .map_err(|error| {
+            let conflict = RpcError::conflict(error.to_string());
+            if error == ployz_core::EnrollmentError::Conflict {
+                // Cloud tells the person to remove the Server the Cluster lists, by this reason.
+                conflict.with_details(serde_json::json!({ "reason": "identity_conflict" }))
+            } else {
+                conflict
+            }
+        })?;
     Ok(registration(assignment))
 }
 
@@ -242,6 +250,63 @@ mod tests {
         let registered = super::checked_registration(&saved, &snapshot).unwrap();
         assert_eq!(registered.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
         assert_eq!(registered.assigned_subnet, Some(saved.machine.subnet));
+    }
+
+    /// A `server add` stopped after the joiner enrolled leaves its row published with the
+    /// approval it joined under. Running the add again must reach the admitting Server, which
+    /// replays the join; only another identity under the same Machine ID conflicts.
+    #[test]
+    fn an_interrupted_add_resumes_once_its_row_is_published_with_its_approval() {
+        use ployz_core::authority::{JoinApproval, Signed, Signer, Timestamp};
+        let empty = ployz_core::EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: Vec::new(),
+            target_versions: Default::default(),
+            doors: None,
+        };
+        let request = assignment(Vec::new()).request;
+        let saved = ployz_core::allocate_enrollment(&request, &empty, &[]).unwrap();
+        let signer = Signer::from_seed(&[1; 32]);
+        let issued_at = Timestamp::from_millis(1_700_000_000_000).unwrap();
+        let mut published = saved.machine.clone();
+        published.join_approval = Some(
+            Signed::sign(
+                &JoinApproval {
+                    cluster: ployz_core::SealingPublicKey::from_bytes([5; 32]),
+                    machine: (&saved.machine).into(),
+                    network: saved.network,
+                    sealing_recipient: saved.machine.public_key,
+                    devices: vec![signer.public().into()],
+                    passkeys: Vec::new(),
+                    grants: Vec::new(),
+                    admitting_machines: vec![MachineId::parse("b".repeat(32)).unwrap()],
+                    bootstrap: Vec::new(),
+                    issued_at,
+                    expires_at: issued_at.plus(60_000),
+                    signer: signer.public().into(),
+                    proposal: None,
+                },
+                &signer,
+            )
+            .unwrap(),
+        );
+        let joined = ployz_core::EnrollmentSnapshot {
+            machines: vec![published],
+            ..empty
+        };
+
+        let resumed = super::checked_registration(&saved, &joined).unwrap();
+        assert_eq!(resumed.assigned_subnet, Some(saved.machine.subnet));
+
+        let mut impostor = saved;
+        impostor.request.public_key = WireGuardPublicKey([8; 32]);
+        impostor.machine.public_key = WireGuardPublicKey([8; 32]);
+        let refused = super::checked_registration(&impostor, &joined).unwrap_err();
+        assert_eq!(refused.code, ployz_core::RpcErrorCode::from("conflict"));
+        assert_eq!(
+            refused.details,
+            serde_json::json!({ "reason": "identity_conflict" })
+        );
     }
 
     /// A Server added through Cloud registers with no runtime, so only this claim tells

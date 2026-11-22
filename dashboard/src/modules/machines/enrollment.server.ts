@@ -774,6 +774,9 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           const cannotKeepDoors = Schema.is(Schema.Struct({
             details: Schema.Struct({ capability: Schema.Literal(DOORS_CAPABILITY) }),
           }))(error.cause);
+          const identityConflict = Schema.is(Schema.Struct({
+            details: Schema.Struct({ reason: Schema.Literal("identity_conflict") }),
+          }))(error.cause);
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
             : approveWith(input.identity.firstKey, joinCode(assignment.machine.id, assignment.machine.public_key));
@@ -781,6 +784,8 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
             ? new Conflict({ message: "This Server was forgotten, so it can't join again as it is. Add it with `ployz server add --reset`, and reinstall it first if it never finished joining.", userFacing: true })
             : cannotKeepDoors
             ? new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true })
+            : identityConflict
+            ? new Conflict({ message: `The Cluster already lists a Server with this one's ID or address under another key. Remove it with \`ployz server rm ${input.identity.name}\`, then add this Server again.`, userFacing: true })
             : needsApproval
               ? new JoinApprovalRequired({ message })
               : error);

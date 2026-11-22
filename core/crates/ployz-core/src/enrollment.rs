@@ -222,8 +222,11 @@ pub fn allocate_enrollment(
         .chain(saved.iter().map(|a| &a.machine))
     {
         if other.id == id {
+            // A published row carries the approval it joined under, which no allocation
+            // holds; the identity and allocation are what must match.
             let mut comparable = other.clone();
             comparable.runtime.clone_from(&machine.runtime);
+            comparable.join_approval = None;
             if comparable != machine {
                 return Err(EnrollmentError::Conflict);
             }
