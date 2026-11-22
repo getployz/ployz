@@ -33,6 +33,7 @@ use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
 mod asked_policy;
+pub(crate) mod catch_up;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
