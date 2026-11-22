@@ -497,14 +497,12 @@ mod code_table_tests;
 mod tests {
     use std::{error::Error as StdError, io};
 
-    use ployz_core::{MachineName, MachineTarget, RpcError, RpcErrorCode, op};
+    use ployz_core::{MachineTarget, RpcError, RpcErrorCode, op};
     use serde_json::Value;
 
     use super::*;
-    use crate::{
-        cloud, connect::TransportError, context::ConfigError, provisioning::ProvisionError,
-    };
-    use ployz_core::{ContainerSelectorError, MachineSelectorError, ValueError};
+    use crate::{cloud, connect::TransportError, context::ConfigError};
+    use ployz_core::{ContainerSelectorError, MachineSelectorError};
 
     fn unsupported(details: Value) -> RpcError {
         RpcError::unsupported("unimplemented").with_details(details)
@@ -649,33 +647,6 @@ mod tests {
         StdError::source(failure)
             .and_then(|error| error.downcast_ref())
             .expect("command Failure should keep the original error")
-    }
-
-    #[test]
-    fn missing_config_prints_the_no_config_string() {
-        let failure = Failure::from(ContextError::NoConfig);
-        assert_eq!(
-            failure.to_string(),
-            "no Ployz config or local daemon socket is available"
-        );
-        assert!(matches!(
-            source::<ContextError>(&failure),
-            ContextError::NoConfig
-        ));
-    }
-
-    #[test]
-    fn invalid_machine_name_display_is_stable() {
-        let error = MachineName::parse("BAD NAME").unwrap_err();
-        let failure = Failure::from(error);
-        assert_eq!(
-            failure.to_string(),
-            "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
-        );
-        assert_eq!(
-            source::<ValueError>(&failure).to_string(),
-            "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
-        );
     }
 
     #[test]
@@ -832,51 +803,11 @@ mod tests {
     }
 
     #[test]
-    fn rpc_error_keeps_the_rpc_error() {
-        let failure = Failure::from(RpcError::internal("boom"));
-        assert_eq!(failure.to_string(), "boom");
-        assert_eq!(source::<RpcError>(&failure).message, "boom");
-        assert_eq!(source::<RpcError>(&failure).code, RpcErrorCode::Internal);
-    }
-
-    #[test]
-    fn usage_is_not_a_library_error() {
-        let failure = Failure::usage("nope");
-        assert_eq!(failure.to_string(), "nope");
-        assert_eq!(source::<Message>(&failure).to_string(), "nope");
-    }
-
-    #[test]
-    fn missing_root_is_unauthenticated() {
-        let failure = Failure::from(ProvisionError::NotRoot);
-        assert_eq!(failure.report().code, RpcErrorCode::Unauthenticated);
-    }
-
-    #[test]
     fn cloud_coded_conflict_keeps_its_code() {
         let failure = Failure::from(cloud::enroll::Error::CodedConflict {
             body: serde_json::json!({"error": "Bring existing Servers online."}).to_string(),
         });
         assert_eq!(failure.report().code, RpcErrorCode::Conflict);
-    }
-
-    #[test]
-    fn cloud_http_status_codes_map_to_their_meaning() {
-        for (status, code) in [
-            (429, RpcErrorCode::Unavailable),
-            (408, RpcErrorCode::Unavailable),
-            (404, RpcErrorCode::NotFound),
-            (409, RpcErrorCode::Conflict),
-            (403, RpcErrorCode::Unauthenticated),
-            (422, RpcErrorCode::InvalidArgument),
-            (503, RpcErrorCode::Unavailable),
-        ] {
-            let failure = Failure::from(cloud::enroll::Error::Status {
-                status,
-                body: String::new(),
-            });
-            assert_eq!(failure.report().code, code, "HTTP {status}");
-        }
     }
 
     #[test]
@@ -922,14 +853,6 @@ mod tests {
             });
             assert_eq!(enrolled.report().code, code, "enroll HTTP {status}");
         }
-    }
-
-    #[test]
-    fn bad_log_tail_is_invalid_argument() {
-        let failure = Failure::from(crate::operator::input::InputError::InvalidTail(
-            "bad".into(),
-        ));
-        assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
     }
 
     #[test]
