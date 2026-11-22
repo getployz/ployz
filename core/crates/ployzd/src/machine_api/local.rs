@@ -1458,6 +1458,8 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         }
         LocalMachineError::PasskeyIsDevice(_)
         | LocalMachineError::DeviceIsPasskey(_)
+        | LocalMachineError::KeyHeld { .. }
+        | LocalMachineError::KeyIsClient(_)
         | LocalMachineError::CredentialHeld { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
@@ -1673,9 +1675,10 @@ fn finish(
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
-        StoreError::KeyRemoved(_) | StoreError::LastKey(_) | StoreError::AmbiguousCode(_) => {
-            RpcErrorCode::Conflict
-        }
+        StoreError::KeyRemoved(_)
+        | StoreError::LastKey(_)
+        | StoreError::AmbiguousCode(_)
+        | StoreError::GrantKind { .. } => RpcErrorCode::Conflict,
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

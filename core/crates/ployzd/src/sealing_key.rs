@@ -1075,6 +1075,7 @@ mod tests {
                 sealing_recipient: WireGuardPublicKey([6; 32]),
                 devices: vec![signer.public().into()],
                 passkeys: Vec::new(),
+                grants: Vec::new(),
                 admitting_machines: vec![],
                 bootstrap: vec![],
                 issued_at,

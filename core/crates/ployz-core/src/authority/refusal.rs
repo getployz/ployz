@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::admission::DataReach;
 use super::canonical::Timestamp;
 use super::keys::{Purpose, SigningPublicKey};
+use super::scope::KeyKind;
 use crate::DeviceCode;
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -19,8 +20,13 @@ pub enum AuthorityRefusal {
     BadSignature { key: SigningPublicKey },
     #[error("the passkey is not approved on this Machine")]
     UnknownPasskey,
-    #[error("passkey {code} may approve workflows and rules only, not a {purpose} statement")]
-    ApproveOnly { code: DeviceCode, purpose: Purpose },
+    /// The key is trusted here, but its kind or scope doesn't reach what it signed.
+    #[error("the {kind} key {code} may not approve {what} here")]
+    OutOfScope {
+        code: DeviceCode,
+        kind: KeyKind,
+        what: &'static str,
+    },
     #[error("the spec {reach}, and nothing signed it")]
     NeedsSignature { reach: DataReach },
     #[error("the approval names {field} this request does not match")]

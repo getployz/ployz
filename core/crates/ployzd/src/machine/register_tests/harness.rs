@@ -282,6 +282,7 @@ pub(super) async fn approve_recipient(
         expires_at: issued_at.plus(60_000),
         signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
         proposal: None,
+        grants: Vec::new(),
     };
     Signed::sign(&body, &signer).unwrap()
 }

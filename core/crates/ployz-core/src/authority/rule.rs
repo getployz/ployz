@@ -21,6 +21,7 @@ use super::{
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
+    scope::Ask,
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
@@ -367,6 +368,9 @@ impl StepBody for AutoDeployRule {
     }
     fn namespace(&self) -> Option<&Namespace> {
         Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Rule
     }
 }
 

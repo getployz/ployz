@@ -49,7 +49,7 @@ fn removal(signer: SignerKey) -> KeyStep {
     KeyStep {
         cluster: cluster(),
         change: KeyChange::Remove {
-            key: KeyRef::Device {
+            key: KeyRef::Signing {
                 key: DeviceKey::from_bytes([3; 32]),
             },
         },
@@ -96,10 +96,7 @@ fn device_bundle(step: KeyStep) -> Signed<KeyStep> {
 }
 
 fn trusted() -> TrustedKeys {
-    TrustedKeys {
-        devices: vec![device().public().into()],
-        passkeys: Vec::new(),
-    }
+    TrustedKeys::new(vec![device().public().into()], Vec::new(), [])
 }
 
 fn facts(trusted: &TrustedKeys, now: u64) -> KeyFacts<'_> {
@@ -161,13 +158,14 @@ fn a_removal_stands_after_its_window_alone_or_in_a_bundle() {
 #[test]
 fn a_passkey_tap_on_a_bundle_trusts_a_key() {
     let authenticator = Authenticator::eddsa([9; 32]);
-    let trusted = TrustedKeys {
-        devices: Vec::new(),
-        passkeys: vec![crate::authority::TrustedPasskey {
+    let trusted = TrustedKeys::new(
+        Vec::new(),
+        vec![crate::authority::TrustedPasskey {
             passkey: authenticator.passkey(),
             approved_by: crate::authority::PasskeyApprover::Server,
         }],
-    };
+        [],
+    );
     let passkey = SignerKey::Passkey(crate::authority::OwnPrompt::Passkey);
     let step = bundled(trust(vec![here()], passkey), passkey, |plan| {
         let unsigned = Signed::unsigned(plan).unwrap();

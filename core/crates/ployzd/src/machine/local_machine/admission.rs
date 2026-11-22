@@ -66,8 +66,7 @@ impl KeptKey {
         match self {
             Self::Device(key) => trusted.signing_keys().any(|trusted| trusted == key),
             Self::Passkey(code) => trusted
-                .passkeys
-                .iter()
+                .passkeys()
                 .any(|trusted| trusted.passkey.code() == code),
         }
     }
@@ -83,7 +82,7 @@ impl KeptKey {
 impl From<Approver> for KeptKey {
     fn from(approver: Approver) -> Self {
         match approver {
-            Approver::Device(key) => Self::Device(key),
+            Approver::Signing(key) => Self::Device(key),
             Approver::Passkey(code) => Self::Passkey(code),
         }
     }
@@ -701,9 +700,13 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved this deploy."
         }
+        AuthorityRefusal::OutOfScope { code, kind, what } => {
+            return format!(
+                "The {kind} key {code} that approved this deploy may not approve {what} here."
+            );
+        }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }
-        | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::ProofReplayed => {

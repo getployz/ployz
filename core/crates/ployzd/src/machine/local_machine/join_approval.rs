@@ -289,6 +289,11 @@ impl LocalMachine {
                         .iter()
                         .map(|trusted| trusted.passkey.clone())
                         .collect(),
+                    grants: record
+                        .grants()
+                        .iter()
+                        .map(|held| held.grant.clone())
+                        .collect(),
                     admitting_machines: vec![record.id()],
                     bootstrap: peers.iter().map(Into::into).collect(),
                     issued_at,
