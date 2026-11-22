@@ -21,7 +21,8 @@ import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMir
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
-import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { cleanOrphans } from "#/modules/volume-run/volume-run.orphans.server";
+import { closeVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";

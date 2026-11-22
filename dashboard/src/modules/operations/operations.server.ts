@@ -22,7 +22,8 @@ import { environmentProtected } from "#/modules/config-store/store-lookup.server
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
+import { admitRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.rows.server";
+import { planVolumeRun } from "#/modules/volume-run/volume-run.cluster.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 

@@ -10,7 +10,8 @@ import { UNANSWERED } from "#/modules/volume-placement/volume-placement.server";
 import { volumeMirrorStatus } from "#/modules/volume-run/tables";
 import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
 import { unheardOf } from "#/modules/volume-run/volume-run";
-import { askCopy, inspectVolumeCopies, observeVolumeMembers, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { askCopy, inspectVolumeCopies, observeVolumeMembers } from "#/modules/volume-run/volume-run.cluster.server";
+import { resolveVolume } from "#/modules/volume-run/volume-run.rows.server";
 import { Database } from "#/server/database.server";
 
 const silent = (names: readonly string[], failures: readonly string[] = []): StoreRefusal => ({
