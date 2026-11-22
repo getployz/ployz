@@ -28,7 +28,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{DockerVolumeName, MachineId, SendSource, SendStream, SnapshotName};
+use ployz_core::{DockerVolumeName, ManagementAddress, SendSource, SendStream, SnapshotName};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
@@ -38,43 +38,28 @@ pub mod protocol;
 use crate::{
     dataset_layout::DatasetLayout,
     host_command::{self, Exit, Ran},
+    machine::LocalMachineError as Error,
     machine_pool,
     storage::Plugin,
     volume_copy::{SEND_POINT_ROUTE, SendPoint, SendPointRequest},
 };
 
-/// Whether this Machine sends a Volume to a mesh peer.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Sends {
-    /// The address is the management address of this accepted Machine.
-    Member(MachineId),
-    /// No accepted Machine has the address.
-    Refused,
-}
-
 /// Who this Machine sends a Volume's streams to.
 pub trait Recipients: Clone + Send + Sync + 'static {
-    /// Whether the mesh address `peer` may read `snapshot` of `volume`, or with none the
-    /// bound of the copy. An error is a record this Machine could not read.
-    fn sends(
-        &self,
-        peer: IpAddr,
-        volume: &DockerVolumeName,
-        snapshot: Option<&SnapshotName>,
-    ) -> impl Future<Output = Result<Sends, String>> + Send;
+    /// Whether the mesh address `peer` may read this Machine's Volumes. An error is a
+    /// record this Machine could not read.
+    fn accepts(&self, peer: IpAddr) -> impl Future<Output = Result<bool, Error>> + Send;
 }
 
 impl Recipients for crate::machine::LocalMachine {
-    async fn sends(
-        &self,
-        peer: IpAddr,
-        volume: &DockerVolumeName,
-        snapshot: Option<&SnapshotName>,
-    ) -> Result<Sends, String> {
-        let _ = (volume, snapshot);
-        self.sends_volume(peer)
-            .await
-            .map_err(|error| error.to_string())
+    async fn accepts(&self, peer: IpAddr) -> Result<bool, Error> {
+        let IpAddr::V6(address) = peer.to_canonical() else {
+            return Ok(false);
+        };
+        Ok(self
+            .machine_at(&ManagementAddress(address))
+            .await?
+            .is_some())
     }
 }
 
@@ -251,17 +236,16 @@ async fn send_point(
         })
 }
 
-/// Refuse with no bytes of the Volume unless `recipients` sends `snapshot` of `volume` to
-/// `peer`.
+/// Refuse with no bytes of the Volume unless `recipients` accepts `peer`.
 async fn admit<R: Recipients>(
     recipients: &R,
     peer: IpAddr,
     volume: &DockerVolumeName,
     snapshot: Option<&SnapshotName>,
 ) -> Result<(), Response> {
-    match recipients.sends(peer, volume, snapshot).await {
-        Ok(Sends::Member(_)) => Ok(()),
-        Ok(Sends::Refused) => {
+    match recipients.accepts(peer).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
             tracing::warn!(
                 %peer,
                 %volume,
@@ -544,37 +528,18 @@ mod tests {
     struct ToAll;
 
     impl Recipients for ToAll {
-        async fn sends(
-            &self,
-            _: IpAddr,
-            _: &DockerVolumeName,
-            _: Option<&SnapshotName>,
-        ) -> Result<Sends, String> {
-            Ok(Sends::Member(MachineId::random()))
+        async fn accepts(&self, _: IpAddr) -> Result<bool, Error> {
+            Ok(true)
         }
     }
 
-    type Asks = std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Option<String>)>>>;
-
-    /// Answers each ask from a fixed table, and counts the asks.
+    /// Answers each ask from a fixed table.
     #[derive(Clone)]
-    struct Asked {
-        answer: fn(IpAddr, Option<&SnapshotName>) -> Result<Sends, String>,
-        asks: Asks,
-    }
+    struct Asked(fn(IpAddr) -> Result<bool, Error>);
 
     impl Recipients for Asked {
-        async fn sends(
-            &self,
-            peer: IpAddr,
-            _: &DockerVolumeName,
-            snapshot: Option<&SnapshotName>,
-        ) -> Result<Sends, String> {
-            self.asks
-                .lock()
-                .unwrap()
-                .push((peer, snapshot.map(|name| name.as_str().to_owned())));
-            (self.answer)(peer, snapshot)
+        async fn accepts(&self, peer: IpAddr) -> Result<bool, Error> {
+            (self.0)(peer)
         }
     }
 
@@ -690,22 +655,14 @@ esac
     const STRANGER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
 
     /// One peer is a Server of the Cluster, the other is not.
-    fn member(peer: IpAddr, _: Option<&SnapshotName>) -> Result<Sends, String> {
-        Ok(if peer == MEMBER {
-            Sends::Member(MachineId::random())
-        } else {
-            Sends::Refused
-        })
+    fn member(peer: IpAddr) -> Result<bool, Error> {
+        Ok(peer == MEMBER)
     }
 
     #[tokio::test]
     async fn serves_a_member_and_refuses_any_other_before_zfs_runs() {
         let dir = TestDir::new("ployzd-volume-send");
-        let asked = Asked {
-            answer: member,
-            asks: Default::default(),
-        };
-        let (base, shutdown) = start_for(&dir, POOLS, asked.clone()).await;
+        let (base, shutdown) = start_for(&dir, POOLS, Asked(member)).await;
         assert_eq!(
             get_from(MEMBER, &base, "/volume-send/data?target=w-1-2&base=11").await,
             (StatusCode::OK, "incremental stream".to_owned())
@@ -727,32 +684,18 @@ esac
             );
             assert!(!body.contains("stream"), "no bytes of the Volume: {body}");
         }
-        assert_eq!(
-            asked.asks.lock().unwrap().get(..3),
-            Some(
-                &[
-                    (MEMBER, Some("w-1-2".to_owned())),
-                    (MEMBER, None),
-                    (STRANGER, Some("w-1-2".to_owned())),
-                ][..]
-            ),
-            "the stream asks for the snapshot it would send, and the bound for none"
-        );
         shutdown.cancel();
     }
 
     #[tokio::test]
     async fn refuses_every_stream_while_its_records_are_unread() {
         let dir = TestDir::new("ployzd-volume-send");
-        let unread = Asked {
-            answer: |_, _| Err("the approvals log is unreadable".to_owned()),
-            asks: Default::default(),
-        };
+        let unread = Asked(|_| Err(Error::ClusterStoreUnavailable));
         let (base, shutdown) = start_for(&dir, POOLS, unread).await;
         for path in ["/volume-send/data?target=w-1-2", "/volume-bound/data"] {
             let (status, body) = get(&base, path).await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}: {body}");
-            assert!(!body.contains("unreadable"), "{path}: {body}");
+            assert!(!body.contains("Cluster store"), "{path}: {body}");
         }
         shutdown.cancel();
     }
