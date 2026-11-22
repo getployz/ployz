@@ -3,6 +3,7 @@
 use clap::ArgMatches;
 use ployz_agent_tools::Confirmation;
 use ployz_core::{Hint, RpcErrorCode};
+use ployz_store::Stale;
 
 use super::super::Error;
 use super::{Store, next};
@@ -13,12 +14,8 @@ impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
         match error {
             StoreCallError::Refused(mut error) => {
-                // A stale review hands back the whole fresh one; a retry needs only its version.
-                if error.code == RpcErrorCode::Conflict
-                    && let Some(diff) = error.details.get_mut("diff")
-                    && let Some(version) = diff.get("version").cloned()
-                {
-                    *diff = serde_json::json!({ "version": version });
+                if error.code == RpcErrorCode::Conflict {
+                    Stale::keep_version(&mut error.details);
                 }
                 error.into()
             }
@@ -38,7 +35,8 @@ impl Store<'_> {
         } = with_next(
             error,
             |refusal| {
-                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
+                refusal.code == RpcErrorCode::Ambiguous
+                    && ployz_store::lists_projects(&refusal.details)
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
         );
@@ -136,24 +134,16 @@ impl Store<'_> {
         let carried = self.carried();
         let next = match &refusal.error {
             StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => {
-                let loss = error
-                    .details
-                    .get("volume_loss")
-                    .map(Confirmation::of)
-                    .unwrap_or_default();
-                let accept = accepted_names(&loss);
-                match loss.version {
+                let stale = Stale::of(&error.details);
+                let accept = accepted_names(&stale.loss);
+                match stale.loss.version {
                     Some(bound)
                         if !accept.is_empty()
                             && accept.iter().all(|name| carried.accept.contains(name)) =>
                     {
                         Some((bound, accept))
                     }
-                    Some(_) | None => error
-                        .details
-                        .pointer("/diff/version")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|version| (version.to_owned(), Vec::new())),
+                    Some(_) | None => stale.version.map(|version| (version, Vec::new())),
                 }
             }
             StoreCallError::Refused(_) | StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => {

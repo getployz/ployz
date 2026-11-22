@@ -152,7 +152,7 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
         store.fail(store::with_next(
             error,
             |refusal| {
-                refusal.details.get("version").is_some()
+                ployz_store::carries_plan_version(&refusal.details)
                     || matches!(
                         refusal.code,
                         ployz_core::RpcErrorCode::NotFound | ployz_core::RpcErrorCode::Ambiguous

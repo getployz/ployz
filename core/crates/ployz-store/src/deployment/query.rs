@@ -20,6 +20,31 @@ use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 
+/// What a plan leaves for the Servers to decide when the Deployment runs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "String")]
+pub enum Unresolved {
+    /// Which containers start and stop, and where.
+    #[serde(rename = "operations")]
+    Operations,
+    /// Which Volume data is deleted.
+    #[serde(rename = "volume data")]
+    VolumeData,
+    /// One a newer Store names, as it wrote it.
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl From<String> for Unresolved {
+    fn from(said: String) -> Self {
+        match said.as_str() {
+            "operations" => Self::Operations,
+            "volume data" => Self::VolumeData,
+            _ => Self::Other(said),
+        }
+    }
+}
+
 /// What `deploy` would ship, from authored state alone: nothing builds or runs.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -53,7 +78,8 @@ pub struct PlanView {
     pub changes: Vec<NodeChange>,
     /// What the Deployment decides from the Servers: which containers start, stop or
     /// move, and where.
-    pub unresolved: Vec<String>,
+    #[ts(as = "Vec<String>")]
+    pub unresolved: Vec<Unresolved>,
     /// The spec of each Service this Deploy ships, as its runner would ask a Server to
     /// run it, when the query asked for `target`. A narrowed Deploy lists the Services
     /// it names and those they reference.
@@ -293,9 +319,9 @@ pub(crate) fn plan(
         deletes: Vec::new(),
     })
     .collect();
-    let mut unresolved = vec!["operations".to_owned()];
+    let mut unresolved = vec![Unresolved::Operations];
     if !removed.is_empty() {
-        unresolved.push("volume data".to_owned());
+        unresolved.push(Unresolved::VolumeData);
     }
     let landing = deployment::Landing::of(&review.head);
     let frozen = deployment::freeze(
@@ -400,7 +426,7 @@ fn redeploy_plan(
         environment: environment.summary,
         version,
         changes: Vec::new(),
-        unresolved: vec!["operations".to_owned()],
+        unresolved: vec![Unresolved::Operations],
         target,
         regions: BTreeMap::new(),
         replicas: BTreeMap::new(),

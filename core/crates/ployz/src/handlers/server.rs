@@ -16,7 +16,7 @@ use ployz_core::{
 };
 
 use ployz_store::region_key;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -27,9 +27,9 @@ use crate::{
 };
 
 use super::{Error, leaf_matches, route, string_values, with_client};
+use crate::enrollment::output::{ingress_incomplete, server_json};
 
 mod add;
-pub(crate) mod catch_up;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
@@ -76,8 +76,8 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 
 /// Whether this CLI holds a Device key, so its Management connections dial as that Device.
 pub(super) fn holds_device_key(matches: &ArgMatches) -> Result<bool, Error> {
-    let key = super::device::key::path(&super::config_path(matches)?);
-    Ok(super::device::key::load(&key)?.is_some())
+    let key = crate::device::key::path(&super::config_path(matches)?);
+    Ok(crate::device::key::load(&key)?.is_some())
 }
 
 /// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
@@ -155,38 +155,6 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
         .get_one::<String>(name)
         .map(String::as_str)
         .ok_or_else(|| Error::usage(format!("{name} is required")))
-}
-
-/// The command that takes out a Server that never joined. By ID, since a rerun of its add
-/// can list a second Server under the same name.
-pub(crate) fn forget_unarrived(id: MachineId) -> String {
-    shell_words::join([
-        "ployz",
-        "server",
-        "forget",
-        id.as_str(),
-        "--confirm",
-        "dead",
-    ])
-}
-
-/// A Machine as every `server` command prints it: its WireGuard public key in base64,
-/// as `wg` prints it, and without its Sealing state.
-pub(super) fn machine_json(machine: &Machine) -> Value {
-    let mut value = serde_json::to_value(machine).expect("a Machine serializes");
-    if let Value::Object(fields) = &mut value {
-        fields.insert("public_key".into(), json!(machine.public_key.to_string()));
-        if let Some(Value::Object(runtime)) = fields.get_mut("runtime") {
-            runtime.remove("sealing");
-        }
-    }
-    value
-}
-
-/// A Server as `server add`, `init`, `set` and `rm` print it: the `server ls` and
-/// `server show` shape, its Machine under `machine`.
-pub(crate) fn server_json(machine: &Machine) -> Value {
-    json!({ "machine": machine_json(machine) })
 }
 
 pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
@@ -302,7 +270,11 @@ impl IngressFollowUp<'_> {
 
     /// The log hints alone, for a failure that has the reader do something else first.
     fn log_hints(&self, error: Error) -> Error {
-        super::ingress_log_hints(error, |args| self.command(args), |id| self.server(id))
+        crate::enrollment::output::ingress_log_hints(
+            error,
+            |args| self.command(args),
+            |id| self.server(id),
+        )
     }
 }
 
@@ -662,7 +634,7 @@ async fn turn_back_off(
                 StartFailure::PortTaken => format!(
                     "Web traffic stays off on {name}: port 80 or 443 is in use. Free it, then try again."
                 ),
-                StartFailure::Unhealthy => super::ingress_headline(
+                StartFailure::Unhealthy => crate::enrollment::output::ingress_headline(
                     &format!("Web traffic stays off on {name}; its Ingress Proxy didn't start"),
                     &failed,
                 ),
@@ -673,7 +645,7 @@ async fn turn_back_off(
                 .hint(Hint::Next(rerun))
         }
         Err(error) => {
-            let headline = super::ingress_headline(
+            let headline = crate::enrollment::output::ingress_headline(
                 &format!(
                     "The Ingress Proxy didn't start on {name}, and turning web traffic back off \
                      failed, so it may still be on"
@@ -688,16 +660,6 @@ async fn turn_back_off(
                 .hint(Hint::Next(off))
         }
     }
-}
-
-/// A committed Server change whose Ingress Proxy follow-up failed: name it, and `then`, the step
-/// that finishes it.
-pub(crate) fn ingress_incomplete(committed: &str, error: Error, then: Hint) -> Error {
-    let headline = super::ingress_headline(
-        &format!("{committed}; the Ingress Proxy did not follow"),
-        &error,
-    );
-    error.context(headline).hint(then)
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
@@ -949,6 +911,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[tokio::test(start_paused = true)]
     async fn setting_services_waits_until_the_entry_lists_the_new_role() {
@@ -1439,7 +1402,7 @@ mod tests {
                 .is_some()
         );
         let server = server_json(&machine).get("machine").cloned().unwrap();
-        for json in [machine_json(&machine), server] {
+        for json in [crate::enrollment::output::machine_json(&machine), server] {
             let runtime = runtime(&json);
             assert!(runtime.get("sealing").is_none(), "{json}");
             assert_eq!(

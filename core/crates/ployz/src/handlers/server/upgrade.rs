@@ -130,7 +130,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             let cancellation = crate::cancellation::on_ctrl_c();
             let (result, outcome) = run_all(client, &machines, release, rerun, &cancellation).await;
             let outcome = outcome.map_err(|error| {
-                super::super::ingress_hints(error, |args| {
+                crate::enrollment::output::ingress_hints(error, |args| {
                     super::super::rerun(&recovery_matches, args)
                 })
             });
@@ -638,9 +638,9 @@ async fn run_all(
         ),
     }
     .value();
-    let outcome = moved
-        .map(drop)
-        .map_err(|error| super::ingress_incomplete("Servers upgraded", error, Hint::Next(rerun)));
+    let outcome = moved.map(drop).map_err(|error| {
+        crate::enrollment::output::ingress_incomplete("Servers upgraded", error, Hint::Next(rerun))
+    });
     (Some(result), outcome)
 }
 

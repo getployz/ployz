@@ -1,9 +1,5 @@
-use crate::cluster::Call;
 use clap::{ArgMatches, Command};
-use ployz_core::{
-    ClusterName, ClusterNamed, Hint, READ_CLUSTER_NAME_CAPABILITY, ReadClusterNameRequest,
-    RpcErrorCode, SET_CLUSTER_NAME_CAPABILITY, SetClusterNameRequest, op,
-};
+use ployz_core::{ClusterName, ClusterNamed, Hint};
 use serde::Serialize;
 use serde_json::json;
 
@@ -12,7 +8,7 @@ use crate::approval;
 use crate::cli::{base, positional};
 use crate::cloud::account::Credential;
 use crate::cloud::http::Via;
-use crate::cluster::Client;
+use crate::cluster::name::{parse, read, set};
 use crate::published;
 use crate::ui;
 use ployz_store::OperationVerb;
@@ -115,49 +111,4 @@ fn through_cloud(
 
 fn saved(name: &str) -> String {
     format!("Saved {name} as the Cluster's name. It applies when a Server is online.")
-}
-
-pub(crate) const VALID_NAME: &str =
-    "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit.";
-
-pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
-    ClusterName::parse(name).map_err(|_| {
-        Error::detailed(
-            RpcErrorCode::InvalidArgument,
-            VALID_NAME,
-            json!({ "name": name }),
-        )
-    })
-}
-
-pub(crate) async fn set(client: &Client, name: ClusterName) -> Result<ClusterNamed, Error> {
-    require(client, SET_CLUSTER_NAME_CAPABILITY).await?;
-    Ok(client
-        .call_shared::<op::SetClusterName>(SetClusterNameRequest { name }, Call::once())
-        .await
-        .map_err(crate::connect::rpc_error)?)
-}
-
-async fn read(client: &Client) -> Result<ClusterNamed, Error> {
-    require(client, READ_CLUSTER_NAME_CAPABILITY).await?;
-    Ok(client
-        .call_shared::<op::ReadClusterName>(ReadClusterNameRequest {}, Call::once())
-        .await
-        .map_err(crate::connect::rpc_error)?)
-}
-
-async fn require(client: &Client, capability: &str) -> Result<(), Error> {
-    if client
-        .supports(None, capability)
-        .await
-        .map_err(crate::connect::rpc_error)?
-    {
-        return Ok(());
-    }
-    Err(Error::detailed(
-        RpcErrorCode::Unsupported,
-        "This Server's Ployz release can't name a Cluster.",
-        json!({ "capability": capability }),
-    )
-    .hint(Hint::Next("ployz server upgrade".into())))
 }
