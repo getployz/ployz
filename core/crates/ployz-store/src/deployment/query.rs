@@ -420,16 +420,12 @@ pub(crate) fn saved_target(
     let id = &environment.summary.id;
     let mut saved = target.clone();
     crate::volume::size::held(tx, id, &mut saved.volumes)?;
-    let removals = deployment::ServiceRemovals::default();
-    let ships = match services.is_empty() {
-        true => deployment::Ships::All {
-            removals,
-            prune: false,
+    let ships = deployment::Ships {
+        targeting: match services.is_empty() {
+            true => deployment::Targeting::Full { prune: false },
+            false => deployment::Targeting::Named(services.to_vec()),
         },
-        false => deployment::Ships::Named {
-            services: services.to_vec(),
-            removals,
-        },
+        removals: deployment::ServiceRemovals::default(),
     };
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
     let cluster_domain = trusted

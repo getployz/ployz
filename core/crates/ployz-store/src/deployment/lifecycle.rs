@@ -99,7 +99,7 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
-    let full = frozen.full;
+    let full = frozen.targeting.is_full();
     let mut nodes = frozen.nodes.clone();
     inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
@@ -112,7 +112,7 @@ pub(crate) fn admit(
     }
     let admitted_at = now();
     let run = Run {
-        prune: frozen.prune,
+        prune: frozen.targeting.prunes(),
         ..Run::default()
     };
     let (targets_text, nodes_text, run_text, credentials_text) = (

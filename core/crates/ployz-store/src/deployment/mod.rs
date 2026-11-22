@@ -981,18 +981,15 @@ impl DeployedNode {
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
     /// Whether it ships every Service: nodes alone can't say, since a full
-    /// Deployment tears down what Saved dropped too.
-    pub(crate) full: bool,
-    /// Whether it also removes every Service of the Namespace this Store never held.
-    pub(crate) prune: bool,
+    /// Deployment tears down what Saved dropped too. A named one holds, by runtime
+    /// name, every Service it hands the runner: the named ones and each they
+    /// reference, changed or not.
+    pub(crate) targeting: Targeting<BTreeSet<ServiceName>>,
     pub(crate) namespace: Namespace,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.
     pub(crate) sourceless: Vec<String>,
-    /// By runtime name, every Service a narrowed one hands the runner: the named
-    /// ones and each they reference, changed or not. Empty for a full one.
-    pub(crate) shipped: BTreeSet<ServiceName>,
 }
 
 impl Frozen {
@@ -1004,7 +1001,10 @@ impl Frozen {
     /// Whether this Deployment hands the runner `service`: every one for a full
     /// Deployment, else a named one, one of a Saved change it ships, or one they reference.
     pub(crate) fn hands(&self, service: &SavedServiceIntent) -> bool {
-        self.full || self.shipped.contains(&service.config.private_dns)
+        match &self.targeting {
+            Targeting::Full { .. } => true,
+            Targeting::Named(shipped) => shipped.contains(&service.config.private_dns),
+        }
     }
 
     /// Whether this Deployment ships Service `name`, named or referenced.
@@ -1102,8 +1102,7 @@ impl Stored {
     /// Service it ran as then, unless a Service of `saved` runs as it now and so
     /// replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
-        let targeting = self.targeting();
-        let full = targeting.is_full();
+        let full = self.targeting().is_full();
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
@@ -1138,19 +1137,15 @@ impl Stored {
                 TargetNode::Volume { .. } | TargetNode::Config { .. } => {}
             }
         }
-        match targeting {
-            Targeting::Full => Ships::All {
-                removals,
-                prune: self.run.prune,
-            },
-            Targeting::Named(targeted) => {
-                let services = targeted
+        Ships {
+            targeting: self.targeting().map(|targeted| {
+                targeted
                     .iter()
                     .filter(|service| shipped.contains(service))
                     .cloned()
-                    .collect();
-                Ships::Named { services, removals }
-            }
+                    .collect()
+            }),
+            removals,
         }
     }
 }

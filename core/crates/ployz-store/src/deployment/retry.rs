@@ -550,10 +550,12 @@ fn retried(
                     &organization,
                     &source,
                     &landing,
-                    Scope::All {
-                        losses,
+                    Scope {
+                        targeting: Targeting::Full {
+                            prune: stored.summary.prune,
+                        },
                         retire: &retire,
-                        prune: stored.summary.prune,
+                        losses,
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

@@ -469,10 +469,10 @@ fn admit_taking_everything_off(
         &who.organization,
         &scope::empty(&environment.working.environment_slug),
         &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All {
-            losses,
+        deployment::Scope {
+            targeting: deployment::Targeting::Full { prune: true },
             retire: &[],
-            prune: true,
+            losses,
         },
         namespace,
         None,

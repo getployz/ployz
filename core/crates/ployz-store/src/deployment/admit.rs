@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, PostedVersion, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
@@ -505,12 +504,7 @@ fn deploy(
             &who.organization,
             &saved_intent,
             &landing,
-            deployment::Scope::Narrow {
-                services: &admit.services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(&admit.services, &[]),
             namespace.clone(),
             cluster_domain,
         )?),
@@ -561,10 +555,10 @@ fn deploy(
                 &who.organization,
                 &saved_intent,
                 &landing,
-                deployment::Scope::All {
-                    losses: &losses,
+                deployment::Scope {
+                    targeting: deployment::Targeting::Full { prune: prunes },
                     retire: &retire,
-                    prune: prunes,
+                    losses: &losses,
                 },
                 namespace,
                 cluster_domain,
@@ -595,18 +589,15 @@ fn deploy(
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     deployment::versions::post(tx, &summary.id, &admit.versions)?;
     // What merges landed and this Deploy ships no longer waits for a push.
-    let shipped = match admit.services.is_empty() {
-        true => Shipped::All(&saved_intent),
-        false => Shipped::Services(
-            frozen
-                .nodes
-                .iter()
-                .filter(|node| node.service().is_some())
-                .map(TargetNode::id)
-                .collect(),
-        ),
-    };
-    crate::automation::shipped_landed(tx, id, &shipped)?;
+    let shipped = frozen.targeting.as_ref().map(|_| {
+        frozen
+            .nodes
+            .iter()
+            .filter(|node| node.service().is_some())
+            .map(TargetNode::id)
+            .collect()
+    });
+    crate::automation::shipped_landed(tx, id, &saved_intent, &shipped)?;
     Ok(summary)
 }
 
@@ -713,7 +704,7 @@ fn reapply(
         services: saved
             .services
             .iter()
-            .filter(|service| frozen.shipped.contains(&service.config.private_dns))
+            .filter(|service| frozen.hands(service))
             .cloned()
             .collect(),
         ..saved.clone()
@@ -768,12 +759,7 @@ fn unchanged(
             &who.organization,
             &saved,
             landing,
-            deployment::Scope::Narrow {
-                services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(services, &[]),
             namespace.clone(),
             cluster_domain,
         )?;
