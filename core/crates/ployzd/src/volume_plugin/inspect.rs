@@ -1,11 +1,11 @@
 //! What this Machine holds for one Volume name: its root or slot and its newest snapshot.
 
+use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use axum::{Json, extract::State};
 use ployz_core::{
     InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
     SnapshotName, VolumeCopy, VolumeCopyView, VolumeOrigin, WriterEpoch,
 };
-use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
 use super::{
     Dataset, PluginError, Result, VolumeName, VolumeStorage, marks::Mark, transfer::Status,

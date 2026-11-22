@@ -27,7 +27,7 @@ pub(super) fn set_property(test: &TestDir, dataset: &str, property: &str, value:
 
 #[tokio::test]
 async fn inspect_reports_a_root_with_its_newest_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         "tank/ployz/data",
@@ -58,7 +58,7 @@ async fn inspect_reports_a_root_with_its_newest_snapshot() {
 
 #[tokio::test]
 async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Volume.Inspect", json!({"name": "copy"})).await;
@@ -81,7 +81,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
 
 #[tokio::test]
 async fn inspect_without_a_pool_holds_nothing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
     assert_eq!(response, json!({"Ok": {"copy": null}}));

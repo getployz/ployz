@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use ployzd::{
+use crate::{
     dataset_layout::{DatasetLayout, MOUNT_ROOT, Place, SlotAt},
     machine_pool::MachinePool,
 };
@@ -32,7 +32,7 @@ pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
     pub(super) mutation: MutationLock,
-    pub(super) installation: ployzd::mutation::MutationGate,
+    pub(super) installation: crate::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
@@ -114,7 +114,7 @@ impl VolumeStorage {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
             mutation: MutationLock::default(),
-            installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
+            installation: crate::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
@@ -135,7 +135,7 @@ impl VolumeStorage {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
             mutation: MutationLock::default(),
-            installation: ployzd::mutation::MutationGate::new(
+            installation: crate::mutation::MutationGate::new(
                 fixture.join("admission-run"),
                 fixture.join("admission-data"),
             ),
@@ -149,7 +149,7 @@ impl VolumeStorage {
 
     pub(super) async fn admit_mutation(
         &self,
-    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
+    ) -> Result<(HeldMutation, crate::mutation::MutationGuard)> {
         let local = self.mutation.lock().await;
         let installation = self
             .installation
@@ -176,7 +176,7 @@ impl VolumeStorage {
             let marks = self.marks(&existing.name);
             if marks.unregistered().await? {
                 marks.clear_promote().await?;
-                ployzd::faults::kill_inside("Create", None);
+                crate::faults::kill_inside("Create", None);
             }
             return Ok(());
         }

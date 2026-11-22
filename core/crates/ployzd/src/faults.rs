@@ -4,10 +4,10 @@ use ployz_core::{
     DockerVolumeName, SnapshotGuid, SnapshotName, VolumeGen, WantedCopy, WriterEpoch,
 };
 
+#[cfg(all(feature = "verify-faults", test))]
+pub(crate) use enabled::PATH_ENV;
 #[cfg(feature = "verify-faults")]
-pub use enabled::{PATH_ENV, kill_inside, leak_memory};
-#[cfg(feature = "verify-faults")]
-pub(crate) use enabled::{apply, check};
+pub(crate) use enabled::{apply, check, kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]

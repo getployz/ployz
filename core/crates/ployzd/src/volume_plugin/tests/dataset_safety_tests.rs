@@ -11,7 +11,7 @@ async fn create_rejects_read_only_roots_and_volumes() {
             "tank/ployz/data",
         ),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         for marker in markers {
             fs::write(test.0.join(marker), "").unwrap();
         }
@@ -41,7 +41,7 @@ async fn create_rejects_read_only_roots_and_volumes() {
 
 #[tokio::test]
 async fn mount_and_path_reject_a_read_only_volume() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "readonly-volume"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -68,7 +68,7 @@ async fn mount_and_path_reject_a_read_only_volume() {
 
 #[tokio::test]
 async fn mount_and_path_reject_a_volume_with_a_cleared_refquota() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "unbounded-volume"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -94,7 +94,7 @@ async fn mount_and_path_reject_a_volume_with_a_cleared_refquota() {
 
 #[tokio::test]
 async fn create_rejects_a_volume_with_a_descendant_dataset() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "descendant"] {
         fs::write(test.0.join(marker), "").unwrap();
     }

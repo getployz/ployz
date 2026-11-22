@@ -1,8 +1,6 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("ployzd supports Linux only");
 
-mod volume_plugin;
-
 use std::{
     io,
     net::SocketAddr,
@@ -256,8 +254,8 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::VolumePlugin)) {
-        let socket = volume_plugin::listener(Path::new(ployzd::VOLUME_PLUGIN_SOCKET))?;
-        volume_plugin::run(socket.listener, &args.data_dir, &run_dir).await?;
+        let socket = ployzd::volume_plugin::listener(Path::new(ployzd::VOLUME_PLUGIN_SOCKET))?;
+        ployzd::volume_plugin::run(socket.listener, &args.data_dir, &run_dir).await?;
         drop(socket.claim);
         return Ok(ExitCode::SUCCESS);
     }

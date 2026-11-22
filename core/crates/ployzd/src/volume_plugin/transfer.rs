@@ -12,11 +12,11 @@ use std::{
     time::Duration,
 };
 
+use crate::faults::{Identity, Want};
 use futures_util::{FutureExt as _, StreamExt as _};
 use ployz_core::{
     ManagementAddress, SendSource, SendStream, SnapshotName, VolumeGen, error_chain::inline,
 };
-use ployzd::faults::{Identity, Want};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
@@ -637,7 +637,7 @@ impl VolumeStorage {
                     let before = received;
                     received += bytes.len() as u64;
                     if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
-                        ployzd::faults::kill_inside(fault, Some(identity));
+                        crate::faults::kill_inside(fault, Some(identity));
                     }
                 }
                 Err(error) => {

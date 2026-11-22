@@ -6,7 +6,7 @@ use super::*;
 
 #[tokio::test]
 async fn departure_demotes_each_root_to_a_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         "tank/ployz/data",
@@ -62,7 +62,7 @@ async fn departure_demotes_each_root_to_a_slot() {
 
 #[tokio::test]
 async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(
@@ -99,7 +99,7 @@ async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snaps
 
 #[tokio::test]
 async fn departure_without_a_pool_demotes_nothing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(
@@ -111,7 +111,7 @@ async fn departure_without_a_pool_demotes_nothing() {
 
 #[tokio::test]
 async fn departure_on_a_machine_without_zfs_demotes_nothing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, "", &[]);
     fs::remove_file(test.0.join("zpool")).unwrap();
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -130,7 +130,7 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
         &["root", "mirror-root", "mirror", "mirror-fs"][..],
         &["root", "mirror-root", "mirror"],
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         set_property(
             &test,
             "tank/ployz-mirror/data/fs",
@@ -169,7 +169,7 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
 
 #[tokio::test]
 async fn seal_keeps_a_pulled_mirror_and_seals_roots() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
     let response = post(&socket, "/Storage.Seal", json!(null)).await;
     assert_eq!(
@@ -187,7 +187,7 @@ async fn seal_keeps_a_pulled_mirror_and_seals_roots() {
     );
     server.abort();
 
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         "tank/ployz-mirror/data/fs",
@@ -218,7 +218,7 @@ async fn seal_keeps_a_pulled_mirror_and_seals_roots() {
 
 #[tokio::test]
 async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror-root", "mirror"]);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/mirror-child-appears"), "").unwrap();
@@ -236,7 +236,7 @@ async fn departure_keeps_a_mirror_root_a_slot_appeared_in() {
 /// "has children" in the Machine's locale, and a busy or vanished root errs otherwise.
 #[tokio::test]
 async fn departure_answers_what_it_demoted_when_the_empty_mirror_root_stays() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror-root", "mirror"]);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(
@@ -269,7 +269,7 @@ async fn departure_keeps_a_copy_this_machine_wrote() {
         ("ployz:cut", "on"),
         ("ployz:epoch", "3"),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         set_property(&test, "tank/ployz-mirror/data/fs", property, value);
         let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
@@ -368,7 +368,7 @@ async fn departure_keeps_every_slot_no_landed_pull_marked() {
         ),
     ];
     for (case, props) in cases {
-        let test = TestDir::new();
+        let test = test_dir();
         set_property(&test, "tank/ployz-mirror/data/fs", "snapshots", NEWEST);
         for (dataset, property, value) in *props {
             set_property(&test, dataset, property, value);
@@ -390,7 +390,7 @@ async fn departure_keeps_every_slot_no_landed_pull_marked() {
 /// Only a local mark counts: a value the slot inherits was set on another dataset.
 #[tokio::test]
 async fn departure_keeps_a_slot_that_only_inherits_a_pulled_mark() {
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         "tank/ployz-mirror/data/fs",
@@ -418,7 +418,7 @@ async fn departure_keeps_a_slot_that_only_inherits_a_pulled_mark() {
 /// but the run failed before landing it and the source may since have pruned the point.
 #[tokio::test]
 async fn departure_keeps_a_released_seed_that_never_landed() {
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         "tank/ployz/data",
@@ -474,7 +474,7 @@ fn failure_reason(response: &Value) -> &str {
 
 #[tokio::test]
 async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -496,7 +496,7 @@ async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
 /// leaves both and fails that Volume alone.
 #[tokio::test]
 async fn departure_leaves_a_root_beside_a_slot_that_holds_a_copy_and_demotes_the_rest() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(
         &test,
         USABLE_POOL,
@@ -531,7 +531,7 @@ async fn departure_leaves_a_root_beside_a_slot_that_holds_a_copy_and_demotes_the
 #[tokio::test]
 async fn departure_of_two_roots_makes_the_mirror_root_once() {
     for route in ["/Storage.Demote", "/Storage.Seal"] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
 
         let response = post(&socket, route, json!(null)).await;
@@ -550,7 +550,7 @@ async fn departure_of_two_roots_makes_the_mirror_root_once() {
 /// daemon forgets it: a retry judges it departed and answers nothing for it.
 #[tokio::test]
 async fn departure_answers_what_it_demoted_before_a_volume_failed() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(
@@ -588,7 +588,7 @@ async fn departure_answers_what_it_demoted_before_a_volume_failed() {
 
 #[tokio::test]
 async fn departure_interrupted_before_the_rename_finishes_on_retry() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "rename-fails"]);
 
     let interrupted = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -613,7 +613,7 @@ async fn departure_interrupted_before_the_rename_finishes_on_retry() {
 
 #[tokio::test]
 async fn departure_interrupted_after_the_rename_seals_the_slot_on_retry() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
     fs::create_dir_all(test.0.join("props")).unwrap();
     let toggle = test.0.join("props").join("fail-properties");
@@ -661,7 +661,7 @@ async fn storage_inspection_derives_each_copy_role() {
         },
     ];
     for case in cases {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = start(&test, USABLE_POOL, case.markers);
         let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
         assert_eq!(
@@ -693,7 +693,7 @@ async fn mount_admits_a_writable_root_and_refuses_an_absent_or_readonly_one() {
             Some("Provisioned Volume data does not exist"),
         ),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = start(&test, USABLE_POOL, markers);
         let response = post(
             &socket,

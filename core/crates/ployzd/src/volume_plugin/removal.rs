@@ -1,13 +1,13 @@
 //! Docker Volume plugin removal and lookup endpoints.
 
-use axum::{
-    Json,
-    extract::{State, rejection::JsonRejection},
-};
-use ployzd::{
+use crate::{
     VolumePluginStatus,
     dataset_layout::{DatasetLayout, MOUNT_ROOT},
     machine_pool::MachinePool,
+};
+use axum::{
+    Json,
+    extract::{State, rejection::JsonRejection},
 };
 use serde::Serialize;
 

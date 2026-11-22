@@ -29,7 +29,7 @@ pub(super) fn begun(guid: u64, text: &str) -> Vec<u8> {
     stream.extend(1_u64.to_le_bytes());
     stream.extend([0; 16]);
     stream.extend(guid.to_le_bytes());
-    stream.resize(ployzd::volume_send::begin::RECORD_BYTES, 0);
+    stream.resize(crate::volume_send::begin::RECORD_BYTES, 0);
     stream.extend_from_slice(text.as_bytes());
     stream
 }

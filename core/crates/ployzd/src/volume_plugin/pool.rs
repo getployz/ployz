@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::machine_pool::{self, DeviceMarker, DevicePoolFiles, MachinePool};
 use ployz_core::MachineLayout;
-use ployzd::machine_pool::{self, DeviceMarker, DevicePoolFiles, MachinePool};
 
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
@@ -138,7 +138,7 @@ impl PoolStorage {
             stat: "stat".into(),
             df: "df".into(),
             files: DevicePoolFiles::new(MachineLayout::production().machine_pool_file()),
-            volume_root: ployzd::dataset_layout::MOUNT_ROOT.into(),
+            volume_root: crate::dataset_layout::MOUNT_ROOT.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
         }

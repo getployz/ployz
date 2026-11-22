@@ -69,7 +69,7 @@ fn slot_copy(
 
 #[tokio::test]
 async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot_copy(&test, &[("f-1", 13)]);
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
     set_property(&test, SLOT_FS, "ployz:pulled", "13");
@@ -105,7 +105,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
 
 #[tokio::test]
 async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_rename() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot_copy(&test, &[("f-1", 13)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
 
@@ -136,7 +136,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
 
 #[tokio::test]
 async fn copy_writer_raises_a_roots_epoch_before_it_reopens_it() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[("f-1", 13)]);
     set_property(&test, ROOT, "ployz:epoch", "1");
     set_property(&test, ROOT, "ployz:cut", "on");
@@ -169,7 +169,7 @@ async fn copy_writer_raises_a_roots_epoch_before_it_reopens_it() {
 
 #[tokio::test]
 async fn copy_cut_marks_the_root_cut_before_it_parks_it_as_an_old_copy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
 
     let reply = post(
@@ -199,7 +199,7 @@ async fn copy_cut_marks_the_root_cut_before_it_parks_it_as_an_old_copy() {
 #[tokio::test]
 async fn a_landed_pull_marks_the_slot_in_this_order() {
     let source = Source::start(Some(1_073_741_824), "snapshot w-1-2 12\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     for (mark, value) in [
@@ -238,7 +238,7 @@ async fn a_landed_pull_marks_the_slot_in_this_order() {
 #[tokio::test]
 async fn a_pull_of_the_slots_own_newest_sets_only_the_role_and_clears_the_pull() {
     let source = Source::start(Some(1_073_741_824), "snapshot w-1-1 11\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
@@ -281,7 +281,7 @@ fn seed_request() -> Value {
 /// promote marks are set, and only then does the rename make it the root.
 #[tokio::test]
 async fn a_landing_seed_marks_the_slot_before_it_renames_it_the_root() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(
         &test,
         USABLE_POOL,
@@ -319,7 +319,7 @@ async fn a_landing_seed_marks_the_slot_before_it_renames_it_the_root() {
 /// What a departure reads before it destroys or keeps a slot's copy: the four marks one
 /// at a time, stopping at the first set, then `ployz:pulled` set on the copy itself.
 async fn departure_trace(setup: impl FnOnce(&TestDir)) -> (Vec<String>, String) {
-    let test = TestDir::new();
+    let test = test_dir();
     set_property(
         &test,
         SLOT_FS,
@@ -421,7 +421,7 @@ async fn an_inherited_pulled_mark_is_not_read_as_written_here() {
 
 #[tokio::test]
 async fn a_departure_that_parks_a_root_sets_its_role_before_the_rename() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[("w-3-1", 901)]);
 
     let reply = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -439,7 +439,7 @@ async fn a_departure_that_parks_a_root_sets_its_role_before_the_rename() {
 #[tokio::test]
 async fn remove_reads_promote_as_an_effective_value() {
     for inherited in [false, true] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = writer_root(&test, &[]);
         if inherited {
             inherit_property(&test, ROOT, "ployz:promote", "on");
@@ -463,7 +463,7 @@ async fn remove_reads_promote_as_an_effective_value() {
 
 #[tokio::test]
 async fn create_of_an_existing_unregistered_root_clears_its_promote() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[]);
     set_property(&test, ROOT, "ployz:promote", "on");
 
@@ -488,7 +488,7 @@ async fn create_of_an_existing_unregistered_root_clears_its_promote() {
 #[tokio::test]
 async fn get_hides_a_root_whose_promote_is_set_here_or_inherited() {
     for inherited in [false, true] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = writer_root(&test, &[]);
         if inherited {
             inherit_property(&test, ROOT, "ployz:promote", "on");
@@ -509,7 +509,7 @@ async fn get_hides_a_root_whose_promote_is_set_here_or_inherited() {
 
 #[tokio::test]
 async fn get_of_a_cut_volume_reads_cut_on_the_slot_copy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot_copy(&test, &[("f-1", 13)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
 
@@ -524,7 +524,7 @@ async fn get_of_a_cut_volume_reads_cut_on_the_slot_copy() {
 
 #[tokio::test]
 async fn list_reads_promote_once_per_volume_in_listing_order() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
     set_property(&test, "tank/ployz/sibling", "ployz:promote", "on");
 
@@ -542,7 +542,7 @@ async fn list_reads_promote_once_per_volume_in_listing_order() {
 
 #[tokio::test]
 async fn list_hides_a_volume_whose_promote_is_inherited() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
     inherit_property(&test, "tank/ployz/sibling", "ployz:promote", "on");
 
@@ -556,7 +556,7 @@ async fn list_hides_a_volume_whose_promote_is_inherited() {
 /// is gone with an error. The answer is a List error and no Volumes.
 #[tokio::test]
 async fn list_fails_whole_when_a_volumes_mark_read_fails() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
     fs::write(
         test.0.join("props/fail-command"),
@@ -586,7 +586,7 @@ async fn list_fails_whole_when_a_volumes_mark_read_fails() {
 
 #[tokio::test]
 async fn list_fails_whole_when_a_volume_vanishes_after_the_listing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(
@@ -620,7 +620,7 @@ async fn list_fails_whole_when_a_volume_vanishes_after_the_listing() {
 
 #[tokio::test]
 async fn inspect_reads_the_marks_of_a_read_only_root_in_order() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[("f-1", 13)]);
     fs::write(test.0.join("readonly-volume"), "").unwrap();
     for (mark, value) in [
@@ -651,7 +651,7 @@ async fn inspect_reads_the_marks_of_a_read_only_root_in_order() {
 
 #[tokio::test]
 async fn inspect_of_an_unmarked_root_reads_promote_alone() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer_root(&test, &[("f-1", 13)]);
 
     post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
@@ -667,7 +667,7 @@ async fn inspect_of_an_unmarked_root_reads_promote_alone() {
 
 #[tokio::test]
 async fn inspect_of_a_slot_reads_its_role_pull_and_resume_token() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot_copy(&test, &[("f-1", 13)]);
 
     post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
@@ -704,7 +704,7 @@ async fn copy_destroy_reads_promote_then_seed_before_it_destroys_a_root() {
             ][..],
         ),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = writer_root(&test, &[("w-1-1", 11)]);
         for (mark, value) in marks {
             set_property(&test, ROOT, mark, value);
@@ -719,7 +719,7 @@ async fn copy_destroy_reads_promote_then_seed_before_it_destroys_a_root() {
 
 #[tokio::test]
 async fn a_stale_seed_slot_reads_the_four_marks_before_it_clears() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(
         &test,
         USABLE_POOL,
