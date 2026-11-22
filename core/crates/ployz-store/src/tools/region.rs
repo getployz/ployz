@@ -7,7 +7,7 @@ use super::act::servers;
 use super::cloud::ServersAnswer;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool};
-use crate::{NameRegion, RegionKey, RegionName, RegionsQuery, region_servers};
+use crate::{NameRegion, RegionName, RegionsQuery, region_servers};
 
 tool_input! {
     pub(crate) struct RegionList {}
@@ -47,8 +47,9 @@ impl Tool for RegionList {
 tool_input! {
     pub(crate) struct RegionRename {
         /// The region's key, the `region` label its Servers carry, e.g. `default`.
+        #[serde(deserialize_with = "crate::region::deserialize_key")]
         #[schemars(with = "String", pattern(ployz_core::Region::PATTERN), example = &"default")]
-        region: RegionKey,
+        region: ployz_core::Region,
         /// Its new name, one line of 1 to 40 characters.
         #[schemars(with = "String", length(min = 1, max = 40), example = &"Falkenstein")]
         name: RegionName,

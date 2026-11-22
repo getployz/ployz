@@ -2,7 +2,7 @@
 //! `region` label; a name is only what people see, so renaming restarts nothing.
 
 use clap::{ArgMatches, Command};
-use ployz_store::{NameRegion, REGION_LABEL, RegionKey, RegionName, RegionsQuery, region_servers};
+use ployz_store::{NameRegion, RegionName, RegionsQuery, region_key, region_servers};
 use serde_json::json;
 
 use super::route::connect_or_none;
@@ -42,7 +42,7 @@ fn server_region(machine: &ployz_core::Machine) -> (&str, Option<&str>) {
     let region = machine
         .labels
         .iter()
-        .find(|(key, _)| key.as_str() == REGION_LABEL)
+        .find(|(key, _)| key.as_str() == ployz_core::Region::LABEL)
         .map(|(_, region)| region.as_str());
     (machine.name.as_str(), region)
 }
@@ -95,7 +95,7 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let key = RegionKey::parse(required(matches, "region")?)?;
+    let key = region_key(required(matches, "region")?)?;
     let name = RegionName::parse(required(matches, "name")?)?;
     let labels = machines(matches)?
         .iter()
