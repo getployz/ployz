@@ -156,7 +156,7 @@ export function variableReferrers(view: EnvironmentView, service: string, key: s
 /** Default built-in reference values; authored variables take precedence. */
 export function storeManagedExports(service: ServiceListing, environment: EnvironmentView["environment"]) {
   return getManagedServiceExports({
-    id: service.id, lineageId: service.id, name: service.name, slug: service.name, privateDns: service.private_dns,
+    id: service.id, privateDns: service.private_dns,
     environmentId: environment.id, environmentSlug: environment.name,
   });
 }

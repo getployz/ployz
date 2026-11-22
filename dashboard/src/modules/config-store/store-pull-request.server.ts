@@ -158,7 +158,6 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
     config.app.url.href,
   );
   if (!run) return "skipped" as const;
-  if (views.length === 0) return "skipped" as const;
   return yield* postInstallationCheckRun(installationAccess(payload.installationId), payload.repositoryId, {
     ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,
