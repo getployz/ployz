@@ -444,7 +444,7 @@ fn refuse_another_key(
         }
     };
     Err(Error::conflict(format!(
-        "Server {} trusts only {expected} from its install command, so it would refuse this computer's device {}. {how} Nothing was approved.",
+        "Server {} trusts only {expected}, not this computer's device {}. {how} Nothing was approved.",
         body.machine.name,
         own.code()
     )))

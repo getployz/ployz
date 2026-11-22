@@ -726,7 +726,7 @@ async fn refuse_spent(
         "This Server already used its First Key, so a token alone can't make it found a Cluster. {next}. Nothing was founded."
     ))
     .hint(Hint::Next(
-        "ployz server add --command here, then run the line it prints at a terminal on the Server and type the code it asks for".into(),
+        "run ployz server add --command, then run the line it prints at a terminal on the Server".into(),
     ))
 }
 

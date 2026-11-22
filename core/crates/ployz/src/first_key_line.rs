@@ -124,7 +124,7 @@ fn confirm(held: &FirstKey, line: &LineKey) -> Result<(), Failure> {
     };
     if crate::ui::json() {
         return Err(refused(
-            "You confirm a new key at this Server's terminal, which --json skips, so nothing changed.",
+            "--json can't ask you to confirm the new key, so nothing changed.",
         ));
     }
     let no_terminal = || refused("No terminal here to confirm the new key, so nothing changed.");

@@ -110,19 +110,21 @@ ployz device approve --join CODE
 ```
 
 The code carries 100 bits of the server's identity and key fingerprint. Check the name, subnet
-and endpoints the CLI shows before it signs. On a computer whose device isn't the one the line
-carries, the command stops before it signs and names the key the server waits for:
+and endpoints the CLI shows before it signs. It also lists the devices the server will trust, and
+the passkeys, if your cluster has any, with what a passkey can do. Then enroll the server again:
+choose **Enroll** for it in the dashboard, or run the same join command on the server again, with
+its token and options. A new admission needs an approval less than 15 minutes old. If the reply
+is lost, run the same command again to recover the stored capsule, even after the approval expires.
+
+On a computer whose device isn't the one the line carries, the command stops before it signs and
+names the key the server waits for:
 
 ```text
-Server web-2 trusts only passkey tbpigkmhxf from its install command, so it would refuse this computer's device vgu6xrfgwt. Approve it with that passkey: choose Approve with passkey on the Servers page in Ployz Cloud. Nothing was approved.
+Server web-2 trusts only passkey tbpigkmhxf, not this computer's device vgu6xrfgwt. Approve it with that passkey: choose Approve with passkey on the Servers page in Ployz Cloud. Nothing was approved.
 ```
 
 If a join was approved with another key anyway, the server refuses it and the join stays open
-until the server joins. Approve it again with the key the server waits for, then enroll it again. It also lists the devices the server will trust, and
-the passkeys, if your cluster has any, with what a passkey can do. Then enroll the server again: choose **Enroll**
-for it in the dashboard, or run the same join command on the server again, with its token and
-options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
-run the same command again to recover the stored capsule, even after the approval expires.
+until the server joins. Approve it again with the key the server waits for, then enroll it again.
 
 A new server refuses to join without an approval. If the approval goes missing on the way, the
 join stops and says the join approval carries no signature. Nothing changes on the server, so
@@ -204,6 +206,10 @@ sudo ployz key add pk1_…
 Removing a server with `ployz server rm`, which resets it, and the uninstaller use up the first
 key too. To add a server you removed or reinstalled, run `sudo ployz key add` with the key from a
 new install command at the server's terminal, then join it again.
+
+`ployz server add USER@HOST --reset` can't make such a server found a cluster through Ployz Cloud,
+since no line names its key. Run `ployz server add --command` instead, and run the line it prints
+at the server's terminal. With `--json`, `ployz key add` never asks, so it changes nothing there.
 
 ## Add a standalone server
 
