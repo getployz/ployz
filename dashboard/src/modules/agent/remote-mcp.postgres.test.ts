@@ -9,9 +9,10 @@ import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
+import { ASKS, INTENT_REFUSAL } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { asTestDouble } from "#/lib/test-double";
-import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { McpAnalytics, type McpAnalyticsService, type McpCapture } from "#/modules/agent/agent-calls.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -19,12 +20,12 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
 import { jwks, oauthClient, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
-import { member, session, verification } from "#/modules/identity/tables";
+import { session, verification } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
 import { CLI_USER_AGENT_PREFIX, revokeCredential } from "#/modules/identity/organization-token.server";
-import { organization } from "#/modules/organization/tables";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, type StoreCloud, storeTestCloudWith } from "#/test/store-cloud";
 
@@ -399,7 +400,7 @@ it.live("a call that does not say why it is made is refused, and feedback needs 
     for (const said of [null, "   "]) {
       expect(yield* agent.call("environment_show", SHOP, said)).toMatchObject({
         isError: true,
-        body: { ok: false, refusal: { code: "invalid_argument", message: "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves." } },
+        body: { ok: false, refusal: { code: "invalid_argument", message: INTENT_REFUSAL } },
       });
     }
     const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { type: "missing_capability", message: "I could not list backups." } }));
@@ -469,14 +470,9 @@ it.live("a call refused before it runs is recorded once as a failed call under t
       },
       captureFeedback: (event: Named) => { recorded.push("feedback"); clients.push(event.properties?.["$mcp_client_name"]); },
     };
-    const sink: PostHogService = {
-      capture: () => Effect.void,
-      identify: () => Effect.void,
-      identifyOrganization: () => Effect.void,
-      mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
-    };
+    const sink: McpAnalyticsService = { record: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))) };
     const real = yield* hostedShop();
-    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(PostHog, sink))) };
+    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(McpAnalytics, sink))) };
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     const refused: ReadonlyArray<readonly [string, JsonObject]> = [
       ["deploy", { ...SHOP, approval: 42 }],
@@ -548,7 +544,7 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
       expect(tools.find((tool) => tool.name === name)?.description).toContain("stage them in a proposal");
     }
     for (const name of ["service_restart", "service_stop"]) {
-      expect(tools.find((tool) => tool.name === name)?.description).toContain("May stop to ask a human to approve.");
+      expect(tools.find((tool) => tool.name === name)?.description).toContain(ASKS);
     }
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("a human approves it in the dashboard");
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("It runs without approval");

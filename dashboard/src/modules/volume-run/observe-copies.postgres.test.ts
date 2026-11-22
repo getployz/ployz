@@ -7,7 +7,7 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { VolumeCopyObserver } from "#/modules/runtime/ployz.server";
-import { observeOrganization } from "#/modules/volume-run/volume-run.server";
+import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
 import { logged } from "#/test/logged";

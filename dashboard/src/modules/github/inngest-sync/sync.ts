@@ -1,7 +1,6 @@
-import { Data, Effect, Schema } from "effect";
-import { listInstallationReposPage } from "#/modules/github/github.api";
+import { Data, Effect } from "effect";
 import type { GithubRepository } from "#/modules/github/github";
-import type { GithubApi } from "#/modules/github/github-observation.api";
+import { listInstallationReposPage, type GithubApi } from "#/modules/github/github-observation.api";
 import {
   lockGithubRepositoryCache,
   markGithubRepositoriesSynced,
@@ -12,9 +11,9 @@ import {
 import { Database } from "#/server/database.server";
 import type { AppConfig } from "#/server/config.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
+import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
+import { requiredEventData } from "#/modules/inngest/define-event";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
  * A request replaces the installation's running sync rather than being skipped: a run that already wrote may still be
@@ -25,14 +24,6 @@ export const SYNC_GITHUB_REPOSITORIES_SINGLETON = {
   key: "event.data.installationId",
   mode: "cancel",
 } as const;
-
-const GithubRepositorySyncEventData = Schema.Struct({
-  installationId: Schema.Number.check(
-    Schema.isInt(),
-    Schema.isGreaterThan(0),
-  ),
-  reason: Schema.optionalKey(Schema.String),
-});
 
 export type GithubRepositorySyncStepTools = Pick<PloyzStepTools, "run">;
 
@@ -115,11 +106,7 @@ export async function executeSyncGithubRepositories(
   },
   runEffect: GithubSyncEffectRunner,
 ) {
-  const installationId = await step.run("decode-repository-sync-event", () =>
-    decodeInngestEnvelope(GithubRepositorySyncEventData)(event.data, {
-      onExcessProperty: "preserve",
-    }).installationId,
-  );
+  const { installationId } = requiredEventData(githubRepositoriesSyncRequested)(event);
   const result = await step.run("sync-repositories", () =>
     runEffect(syncGithubRepositories(installationId)),
   );
@@ -131,7 +118,7 @@ export const createSyncGithubRepositories = (inngest: PloyzInngest) =>
   {
     id: "sync-github-repositories",
     retries: 3,
-    triggers: [{ event: githubRepositoriesSyncRequestedEventType }],
+    triggers: [{ event: githubRepositoriesSyncRequested.eventType }],
     singleton: SYNC_GITHUB_REPOSITORIES_SINGLETON,
     concurrency: [{ key: "event.data.installationId", limit: 1 }],
   },

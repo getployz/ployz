@@ -1,17 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand } from "#/modules/commands/command.server";
-import { RELEASE_CHANNELS } from "#/modules/server-upgrade/server-upgrade";
+import { defineCommand } from "#/modules/commands/define";
+import { RELEASE_CHANNELS, ServerUpgradeSettingsChange } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgradeSettings, setServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.server";
 
 const UpgradePolicy = Schema.Struct({ channel: Schema.Literals(RELEASE_CHANNELS), automatic: Schema.Boolean });
-
-// `ServerUpgradeSettingsChange` with each field worded for a caller choosing it; `run` hands it to
-// `setServerUpgradeSettings`, so a field that stops fitting that schema fails to compile.
-const PolicyChange = Schema.Struct({
-  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS).annotate({ description: "The Release Channel every Upgrade follows from now on: stable or beta. Leave it out to keep the current one" })),
-  automatic: Schema.optionalKey(Schema.Boolean.annotate({ description: "true lets Servers behind the channel upgrade on their own, false stops that. Leave it out to keep it as it is" })),
-});
 
 export const serverUpgradePolicyShow = defineCommand({
   name: "server_upgrade_policy_show",
@@ -49,7 +42,7 @@ export const serverUpgradePolicySet = defineCommand({
   openWorld: false,
   typed: null,
   positional: [],
-  input: PolicyChange,
+  input: ServerUpgradeSettingsChange,
   output: UpgradePolicy,
   render: "record",
   run: (caller, change) => setServerUpgradeSettings(caller.organization.id, change).pipe(

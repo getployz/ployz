@@ -158,7 +158,7 @@ fn the_grant_and_image_audiences_are_d2s_golden_bytes() {
     );
     let built = built_claim(
         &grant,
-        ImageDigest::from_bytes([0x44; 32]),
+        BuiltImageDigest::from_bytes([0x44; 32]),
         checked_in.attest,
     );
     assert_eq!(
@@ -190,11 +190,15 @@ fn the_image_token_names_the_attest_key_the_secrets_opened_with() {
         .seal_for_build(&attest, &keys.recipient.recipient(), &audience)
         .unwrap();
     OpenedSealed::open_build(&sealed, &keys.recipient, &checked_in.attest, &audience).unwrap();
-    let built = built_claim(&grant, ImageDigest::from_bytes([2; 32]), checked_in.attest);
+    let built = built_claim(
+        &grant,
+        BuiltImageDigest::from_bytes([2; 32]),
+        checked_in.attest,
+    );
     assert_eq!(
         built.stage,
         BuildStage::Built {
-            image: ImageDigest::from_bytes([2; 32]),
+            image: BuiltImageDigest::from_bytes([2; 32]),
             attest: attest.attest(),
         }
     );

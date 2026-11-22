@@ -1,5 +1,5 @@
-import { Effect, Option, Schema } from "effect";
-import { activeCloudflareZone } from "#/modules/cloudflare/source.server";
+import { Effect, Option } from "effect";
+import { activeCloudflareZone } from "#/modules/ingress/cloudflare.source.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
@@ -10,17 +10,10 @@ import {
   recordClusterDomainCheck,
   renewClusterDomainLease,
 } from "#/modules/cluster-domain/sync.server";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import {
-  clusterDomainSyncRequestedEventType,
-  createClusterDomainSyncRequestedEvent,
-} from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
-
-const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
+import { eventData } from "#/modules/inngest/define-event";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
  * The Servers the records name: those that answered, or, when every Server is IPv6 Cloud couldn't check, those. One
@@ -42,14 +35,12 @@ function recordedServers<Server>(
  * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
-  { event, step }: { event: { data: unknown }; step: StepTools },
+  { event, step }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent"> },
   runEffect: EffectRunner,
 ) {
-  const organizationId = await step.run("normalize-organization-id", () => {
-    const decoded = Schema.decodeUnknownOption(SyncRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value.organizationId : null;
-  });
-  if (organizationId === null) return { organizationId: null, skipped: true };
+  const requested = eventData(clusterDomainSyncRequested)(event);
+  if (Option.isNone(requested)) return { organizationId: null, skipped: true };
+  const { organizationId } = requested.value;
 
   // Only staging or deploying a generated domain reserves the name.
   const name = await step.run("load-name", () =>
@@ -80,12 +71,12 @@ export async function executeSyncClusterDomain(
   return { organizationId, name, observed: probe.kind !== "unknown", recordsPut, certificateIssued, certificatePublished };
 }
 
-export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {
+export async function executeScheduleClusterDomainSync({ step }: { step: StepTools<"run" | "sendEvent"> }, runEffect: EffectRunner) {
   const organizationIds = await step.run("list-cluster-domain-organization-ids", () => runEffect(listClusterDomainOrganizationIds()));
   if (organizationIds.length > 0) {
     await step.sendEvent(
       "request-cluster-domain-syncs",
-      organizationIds.map((organizationId) => createClusterDomainSyncRequestedEvent({ organizationId })),
+      organizationIds.map((organizationId) => clusterDomainSyncRequested.create({ organizationId })),
     );
   }
   return { organizationCount: organizationIds.length };
@@ -96,7 +87,7 @@ export const createSyncClusterDomain = (inngest: PloyzInngest, runEffect: Effect
     {
       id: "sync-cluster-domain",
       retries: 3,
-      triggers: [{ event: clusterDomainSyncRequestedEventType }],
+      triggers: [{ event: clusterDomainSyncRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
       debounce: { key: "event.data.organizationId", period: "5s" },
     },

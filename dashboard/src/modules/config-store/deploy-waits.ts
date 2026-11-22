@@ -1,5 +1,5 @@
 import type { JsonValue } from "@ployz/sdk";
-import { parseDockerVolumeName } from "#/modules/volume-run/volume-run";
+import { parseDockerVolumeName } from "#/modules/runtime/naming";
 import { replicaRows } from "./replica-rows";
 
 /** A Service the next Deploy leaves waiting, or refuses, and why, in the reason `ployz deploy` then gives. */

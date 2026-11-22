@@ -60,7 +60,7 @@ fn assert_landed(test: &TestDir) {
 
 #[tokio::test]
 async fn seed_copies_the_point_into_a_slot_then_lands_it_as_a_root() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
 
@@ -97,7 +97,7 @@ async fn seed_copies_the_point_into_a_slot_then_lands_it_as_a_root() {
 /// a seed lands in place must lose its mark before it becomes the root.
 #[tokio::test]
 async fn a_seed_landed_over_a_pulled_mirror_leaves_its_root_unmarked() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(
         &test,
         USABLE_POOL,
@@ -119,7 +119,7 @@ async fn a_seed_landed_over_a_pulled_mirror_leaves_its_root_unmarked() {
 
 #[tokio::test]
 async fn destroy_drops_a_landed_seed_docker_never_adopted() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     let landed = settled(&socket).await;
@@ -151,7 +151,7 @@ async fn destroy_drops_a_landed_seed_docker_never_adopted() {
 
 #[tokio::test]
 async fn destroy_drops_a_seed_and_the_slot_parent_a_crashed_landing_left() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     settled(&socket).await;
@@ -190,7 +190,7 @@ fn effects_since(test: &TestDir, log: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn the_same_seed_twice_has_one_effect_and_the_same_reply() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     let landed = settled(&socket).await;
@@ -210,7 +210,7 @@ async fn the_same_seed_twice_has_one_effect_and_the_same_reply() {
 
 #[tokio::test]
 async fn a_seed_whose_plugin_restarted_after_the_receive_lands_on_resend() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     post(&socket, "/Volume.Seed", seed(77)).await;
@@ -240,7 +240,7 @@ async fn a_seed_whose_plugin_restarted_after_the_receive_lands_on_resend() {
 
 #[tokio::test]
 async fn seed_finishes_an_interrupted_landing_on_resend() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     set_property(
@@ -276,7 +276,7 @@ async fn seed_finishes_an_interrupted_landing_on_resend() {
 /// read-only with its received snapshot, and the parent keeps its record.
 #[tokio::test]
 async fn a_renamed_seed_whose_parent_holds_a_record_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(
         &test,
         USABLE_POOL,
@@ -317,7 +317,7 @@ async fn a_renamed_seed_whose_parent_holds_a_record_is_refused() {
 
 #[tokio::test]
 async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
@@ -350,7 +350,7 @@ async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
 
 #[tokio::test]
 async fn seed_refuses_a_point_the_writer_no_longer_holds() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
 
@@ -368,7 +368,7 @@ async fn seed_refuses_a_point_the_writer_no_longer_holds() {
 
 #[tokio::test]
 async fn seed_refuses_a_root_it_did_not_make() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume", "seed-volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
 
@@ -382,7 +382,7 @@ async fn seed_refuses_a_root_it_did_not_make() {
 
 #[tokio::test]
 async fn a_seed_resent_while_its_copy_runs_answers_the_slot_and_copies_once() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("stall-read"), "").unwrap();
@@ -396,7 +396,7 @@ async fn a_seed_resent_while_its_copy_runs_answers_the_slot_and_copies_once() {
 
 #[tokio::test]
 async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("stall-read"), "").unwrap();
@@ -427,7 +427,7 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
 /// Participating and the source is still the writer for the resend.
 #[tokio::test]
 async fn a_seed_resent_after_a_failed_departure_stopped_its_copy_starts_it_over() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("stall-read"), "").unwrap();
@@ -477,7 +477,7 @@ async fn completed_seed(test: &TestDir, into: &str, point: &str, guid: &str) -> 
 async fn departure_keeps_a_completed_seed_whose_source_pruned_its_point() {
     // `base` is judged before `data` and `seed` after it.
     for into in ["base", "seed"] {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = completed_seed(&test, into, POINT, "77").await;
         set_property(
             &test,
@@ -503,7 +503,7 @@ async fn departure_keeps_a_completed_seed_whose_source_pruned_its_point() {
 
 #[tokio::test]
 async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let point = "tank/ployz/data@dep-1700000000\t77\t1700000000";
     let socket = completed_seed(&test, "seed", point, "77").await;
 
@@ -522,7 +522,7 @@ async fn departure_keeps_a_completed_seed_of_a_departure_snapshot() {
 /// or a later zfs call fails. Its source may since have pruned the point.
 #[tokio::test]
 async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(
         test.0.join("props/fail-command"),
@@ -573,7 +573,7 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
 
 #[tokio::test]
 async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_stop() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
@@ -618,7 +618,7 @@ async fn a_seed_refuses_a_slot_holding_a_copy_this_machine_wrote() {
         ("ployz:cut", "on"),
         ("ployz:epoch", "3"),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, _server) = start(
             &test,
             USABLE_POOL,
@@ -641,7 +641,7 @@ async fn a_seed_refuses_a_slot_holding_a_copy_this_machine_wrote() {
 #[tokio::test]
 async fn a_seed_refuses_a_slot_no_mirror_pull_marked() {
     for pulling in [false, true] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, _server) = start(
             &test,
             USABLE_POOL,
@@ -671,7 +671,7 @@ async fn a_seed_refuses_a_slot_no_mirror_pull_marked() {
 #[tokio::test]
 async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
     for pulled in [true, false] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, _server) = start(
             &test,
             USABLE_POOL,
@@ -735,7 +735,7 @@ async fn promoted_back_seed(test: &TestDir, socket: &Path) -> Value {
 
 #[tokio::test]
 async fn a_seeded_volume_promoted_back_after_a_departure_is_a_writer() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     let writer = promoted_back_seed(&test, &socket).await;
 
@@ -755,7 +755,7 @@ async fn a_seeded_volume_promoted_back_after_a_departure_is_a_writer() {
 
 #[tokio::test]
 async fn a_seed_resent_to_a_volume_promoted_back_after_a_departure_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     let writer = promoted_back_seed(&test, &socket).await;
     let promoted = post(&socket, "/Volume.Copy.Writer", writer).await;
@@ -783,7 +783,7 @@ async fn a_seed_resent_to_a_volume_promoted_back_after_a_departure_is_refused() 
 
 #[tokio::test]
 async fn a_writer_whose_seed_mark_clear_failed_promotes_a_writer_on_resend() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     let writer = promoted_back_seed(&test, &socket).await;
     fs::write(
@@ -807,7 +807,7 @@ async fn a_writer_whose_seed_mark_clear_failed_promotes_a_writer_on_resend() {
 /// that carries both marks, and the resend lands it.
 #[tokio::test]
 async fn a_seed_whose_landing_stopped_before_its_rename_lands_on_resend() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(
         &test,
         USABLE_POOL,
@@ -837,7 +837,7 @@ async fn a_seed_whose_landing_stopped_before_its_rename_lands_on_resend() {
 
 #[tokio::test]
 async fn a_seed_replaces_a_slot_parent_with_no_fs() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume", "seed-slot"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
 
@@ -860,7 +860,7 @@ async fn a_seed_replaces_a_slot_parent_with_no_fs() {
 /// still finds its own root.
 #[tokio::test]
 async fn a_seed_resent_after_docker_adopted_its_root_answers_the_root() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     settled(&socket).await;
@@ -892,7 +892,7 @@ async fn a_seed_resent_after_docker_adopted_its_root_answers_the_root() {
 /// failure from the registry, since no receive is left to show it.
 #[tokio::test]
 async fn a_seed_answers_once_a_failed_copy_whose_receive_already_ended() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
@@ -927,7 +927,7 @@ async fn a_seed_answers_once_a_failed_copy_whose_receive_already_ended() {
 /// The same value stamped here seeds, and the root carries it.
 #[tokio::test]
 async fn a_seed_of_a_received_origin_refuses_and_keeps_the_mirror_in_its_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, _server) = start(
         &test,
         USABLE_POOL,

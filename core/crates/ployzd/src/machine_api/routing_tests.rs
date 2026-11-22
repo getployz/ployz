@@ -1,6 +1,4 @@
-use crate::machine_api::{
-    MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route,
-};
+use super::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use ployz_core::{

@@ -10,15 +10,17 @@ import { asTestDouble } from "#/lib/test-double";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
-import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { McpAnalytics, type McpAnalyticsService, type McpCapture } from "#/modules/agent/agent-calls.server";
+import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
-import { approvalBadge } from "#/modules/approvals/approvals";
+import { approvalBadge } from "#/components/agent-sidebar/approval-copy";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { scriptedAgent } from "#/test/agent-call";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
@@ -275,12 +277,7 @@ it.live("a denied Service restart names the restart and its Service", () =>
 const toolCallsSeen = () => {
   const seen: Array<string> = [];
   const capture = { captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { seen.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); } };
-  const sink: PostHogService = {
-    capture: () => Effect.void,
-    identify: () => Effect.void,
-    identifyOrganization: () => Effect.void,
-    mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
-  };
+  const sink: McpAnalyticsService = { record: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))) };
   return { seen, sink };
 };
 
@@ -293,14 +290,14 @@ it.live("a gated call the sidebar refuses to run beside another call, and one wh
       { toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }, { name: "service_inspect", input: { intent: "Look at web.", service: "web" } }] },
       { text: "Done." },
     ]);
-    yield* say("restart web and look at it", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    yield* say("restart web and look at it", { page: architecture }, model).pipe(Effect.provideService(McpAnalytics, sink));
     expect([...seen].sort()).toEqual(["service_inspect ok", "service_restart validation"]);
 
     seen.length = 0;
     model.setResponses([{ toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }] }, { text: "Not restarting." }]);
-    yield* say("restart web", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    yield* say("restart web", { page: architecture }, model).pipe(Effect.provideService(McpAnalytics, sink));
     expect(seen, "an approval that still waits is not a call yet").toEqual([]);
-    yield* resume("cancelled").pipe(Effect.provideService(PostHog, sink));
+    yield* resume("cancelled").pipe(Effect.provideService(McpAnalytics, sink));
     expect(seen).toEqual(["service_restart cancelled"]);
   }));
 
@@ -1433,7 +1430,6 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     const model = scriptedAgent({ cache: true });
     const reported: TokenUsage[] = [];
@@ -1490,7 +1486,6 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
@@ -1541,7 +1536,6 @@ it.live("a refused tool call shows in PostHog as an error", () =>
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
 
@@ -1560,7 +1554,6 @@ it.live("an approved call finished by a resumed run hangs under that run's trace
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
 
@@ -1580,7 +1573,6 @@ it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, 
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
@@ -1599,7 +1591,6 @@ it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      mcp: () => Effect.void,
     };
     const model = scriptedAgent({ tokensPerSecond: 200 });
     model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);

@@ -1,59 +1,37 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import {
-  addableCopies, cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, type OldCopy, type Snapshot, traySpeech, unheardReason,
+  cardLine, hangingCopies, type MirrorCopy, type OldCopy, traySpeech, unheardReason,
   type VolumeCopies,
 } from "./volume-copies";
 
 const today = (time: string) => new Date(`2026-10-12T${time}:00Z`);
 const server = (name: string) => ({ id: name.padEnd(32, "0") as MachineId, name });
-const snapshots = (n: number): Snapshot[] =>
-  Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6 }));
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
-const offsite: OffsiteCopy = {
-  kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: today("07:04"), staged: null, busy: null,
-};
 const old: OldCopy = { kind: "old", id: "web-3", server: server("web-3"), name: "pg-data-old", since: null, bytes: 900e6, staged: null, busy: null };
 
 const pgData = (elsewhere: VolumeCopies["elsewhere"], live: Partial<VolumeCopies["live"]> = {}): VolumeCopies => ({
   volume: { id: "v1", name: "pg-data" },
-  live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(13), ...live },
+  live: { server: { ...server("web-1"), state: "live" }, restore: null, moveTo: null, busy: null, ...live },
   elsewhere,
   unheard: [],
 });
-const redisData: VolumeCopies = {
-  volume: { id: "v2", name: "redis-data" },
-  live: { server: { ...server("web-2"), state: "live" }, restore: null, moveTo: null, busy: null, snapshots: snapshots(4) },
-  elsewhere: [],
-  unheard: [],
-};
-
 describe("protected", () => {
   const now = today("14:04");
-  const copies = pgData([mirror(today("14:00")), offsite, old]);
+  const copies = pgData([mirror(today("14:00")), old]);
 
-  it("hangs the mirror and offsite copy under the tray and keeps the old copy in the drawer", () => {
-    expect(hangingCopies(copies).map((copy) => copy.kind)).toEqual(["mirror", "offsite"]);
+  it("hangs the mirror under the tray and keeps the old copy in the drawer", () => {
+    expect(hangingCopies(copies).map((copy) => copy.kind)).toEqual(["mirror"]);
     expect(hangingCopies(copies).map((copy) => cardLine(copy, now))).toEqual([
       { spin: false, words: "Mirror", age: "4 minutes ago", stale: false },
-      { spin: false, words: "Offsite", age: "7 hours ago", stale: false },
     ]);
   });
 
   it("keeps the tray silent", () => {
     expect(traySpeech(copies)).toBeNull();
-  });
-
-  it("offers Add copy only for a kind still missing", () => {
-    expect(addableCopies(copies, ["mirror", "offsite"])).toEqual([]);
-    expect(addableCopies(pgData([mirror(today("14:00"))]), ["mirror", "offsite"])).toEqual(["offsite"]);
-  });
-
-  it("offers every copy kind to a volume with none", () => {
-    expect(addableCopies(redisData, ["mirror", "offsite"])).toEqual(["mirror", "offsite"]);
   });
 
   it("shows a mirror Deploy has yet to add without an age", () => {

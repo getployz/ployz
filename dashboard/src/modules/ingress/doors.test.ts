@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
+import { doorsOpenOn } from "#/modules/ingress/door-frames";
 import {
   type CloudflareSetup,
   collidingMoves,

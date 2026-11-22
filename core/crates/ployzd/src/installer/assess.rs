@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::os_release;
 use super::zfs_route::{RouteStop, choose};
-use super::{Error, InstallPaths, command_exists, run_command, run_host};
+use super::{Error, InstallPaths, command_exists, run_command, run_host, systemctl};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const MINIMUM_DISK_BYTES: u64 = 30 * GIB;
@@ -155,19 +155,14 @@ fn keep_ok<T>(keep: &mut impl FnMut(Option<Error>), result: Result<T, Error>) ->
 /// set to restart with it. Install starts it that way, and only that start shows whether a service
 /// that failed before fails again.
 fn docker_behind_its_socket() -> Option<&'static str> {
-    let systemctl = |verb, unit| {
-        Command::new("systemctl")
-            .args([verb, "--quiet", unit])
-            .status()
-            .is_ok_and(|status| status.success())
-    };
+    let unit_is = |verb, unit| systemctl("check Docker unit", [verb, "--quiet", unit]).is_ok();
     if !command_exists("dockerd")
-        || !systemctl("is-active", "docker.socket")
-        || systemctl("is-active", "docker.service")
+        || !unit_is("is-active", "docker.socket")
+        || unit_is("is-active", "docker.service")
     {
         return None;
     }
-    Some(if systemctl("is-failed", "docker.service") {
+    Some(if unit_is("is-failed", "docker.service") {
         "docker.service failed the last time it ran, and install will try to start it through docker.socket"
     } else {
         "docker.socket is listening but docker.service isn't running, and asking Docker would start it"

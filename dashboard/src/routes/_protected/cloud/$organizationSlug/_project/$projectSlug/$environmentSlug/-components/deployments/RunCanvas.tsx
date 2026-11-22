@@ -10,8 +10,8 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { RunningTime } from "#/components/relative-time";
 import { Card, CardHeader, CardTitle, CardDescription } from "#/components/ui/card";
 import { formatDuration } from "#/utils/relative-time";
-import { cleanupLabel, type RunGraph, type RunNode, type RunTiming } from "./run-graph";
-import { DEPLOYMENT_ROUTE_TO } from "./run-search";
+import { cleanupLabel, type RunGraph, type RunNode, type RunTiming } from "#/modules/config-store/deployments/run-graph";
+import { DEPLOYMENT_ROUTE_TO } from "#/lib/environment-routes";
 
 const NODE_WIDTH = 224;
 const NODE_HEIGHT = 72;

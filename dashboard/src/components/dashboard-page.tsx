@@ -2,21 +2,14 @@ import type { ReactNode } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "#/lib/utils";
 
-const dashboardPageVariants = cva("mx-auto flex w-full flex-col", {
+const dashboardPageVariants = cva("mx-auto flex w-full flex-col gap-6 px-4 py-6 md:px-6 md:py-8", {
   variants: {
-    density: {
-      compact: "gap-4 px-4 py-4 md:px-6 md:py-5",
-      standard: "gap-6 px-4 py-6 md:px-6 md:py-8",
-      spacious: "gap-8 px-4 py-8 md:px-6 md:py-12",
-    },
     width: {
       content: "max-w-5xl",
       standard: "max-w-6xl",
-      wide: "max-w-7xl",
     },
   },
   defaultVariants: {
-    density: "standard",
     width: "standard",
   },
 });
@@ -24,7 +17,6 @@ const dashboardPageVariants = cva("mx-auto flex w-full flex-col", {
 /** A page's column. `title` is the page's one h1, in a row with its `actions`, lined up with the content below. */
 export function DashboardPage({
   className,
-  density,
   width,
   title,
   actions,
@@ -33,7 +25,7 @@ export function DashboardPage({
 }: React.ComponentProps<"div"> & VariantProps<typeof dashboardPageVariants> & { title?: ReactNode; actions?: ReactNode }) {
   return (
     <div
-      className={cn(dashboardPageVariants({ density, width }), className)}
+      className={cn(dashboardPageVariants({ width }), className)}
       {...props}
     >
       {title === undefined ? null : (

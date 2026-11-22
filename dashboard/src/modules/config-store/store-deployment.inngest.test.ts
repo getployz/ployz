@@ -3,10 +3,10 @@ import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 
 const admitted = {
-  name: configDeploymentAdmittedEvent,
+  name: configDeploymentAdmitted.name,
   data: { organizationId: "org", environmentId: "env", deploymentId: "dep", trigger: "github" as const },
 };
 

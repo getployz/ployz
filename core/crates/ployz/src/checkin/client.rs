@@ -21,7 +21,8 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::cloud_reply::{self, Hold};
+use crate::cloud;
+use crate::cloud::reply::Hold;
 use crate::failure::Failure;
 
 use super::token_file::FleetToken;
@@ -159,10 +160,10 @@ pub(super) enum Reply {
 
 impl CheckinClient {
     pub(crate) fn new(cloud_url: &str, token: FleetToken) -> Result<Self, reqwest::Error> {
-        let http = crate::cloud_account::builder(REQUEST_TIMEOUT).build()?;
+        let http = crate::cloud::http::builder(REQUEST_TIMEOUT).build()?;
         Ok(Self {
             http,
-            url: crate::cloud_origin::CloudOrigin::new(cloud_url).checkin_url(),
+            url: crate::cloud::origin::CloudOrigin::new(cloud_url).checkin_url(),
             token,
         })
     }
@@ -267,7 +268,7 @@ pub(super) fn reply(
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
-        return match cloud_reply::checkin_hold(body) {
+        return match cloud::reply::checkin_hold(body) {
             // A full token stays full until someone enrolls or removes its waiting servers, so its
             // servers wait a full backoff rather than ask every second.
             Some((Hold::Full, why)) => Reply::Held(after.max(BACKOFF), Hold::Full, why),
@@ -278,7 +279,7 @@ pub(super) fn reply(
             },
         };
     }
-    if let Some(why) = cloud_reply::message(body) {
+    if let Some(why) = cloud::reply::message(body) {
         return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
     }
     if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
@@ -290,7 +291,7 @@ pub(super) fn reply(
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
 /// inside Cloud's window. Anything else may be a proxy or a clock, and says nothing about it.
 fn unauthorized(cloud: Option<DateTime<Utc>>, body: &[u8]) -> Reply {
-    if !cloud_reply::checkin_refused(body) {
+    if !cloud::reply::checkin_refused(body) {
         return Reply::Unreachable(
             BACKOFF,
             format!("Cloud answered {}", StatusCode::UNAUTHORIZED),

@@ -19,7 +19,7 @@ import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import * as ids from "#/test/ids";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";

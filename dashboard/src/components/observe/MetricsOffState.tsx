@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { ObserveOffState } from "#/components/observe/ObserveOffState";
+import { docsUrl } from "#/lib/docs";
 
-export const METRICS_DOCS = "https://ployz.dev/docs/observe/metrics";
+export const METRICS_DOCS = docsUrl("/docs/observe/metrics");
 
 /** ClickHouse is not set up, so Cloud keeps no metrics. */
 export function MetricsNotEnabled({ subject }: { subject: "Service" | "Server" }) {

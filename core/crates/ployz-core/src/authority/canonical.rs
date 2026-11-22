@@ -284,8 +284,6 @@ impl From<Timestamp> for u64 {
     }
 }
 
-pub(super) use crate::hex::{decode as hex_bytes, write as write_hex};
-
 /// `deserialize_with` for a list a signed body keeps strictly ascending, so a set of
 /// elements has one encoding and one signature input.
 ///

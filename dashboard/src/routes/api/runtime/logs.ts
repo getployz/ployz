@@ -1,33 +1,34 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Option, Schema } from "effect";
+import { Effect } from "effect";
 import { logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
 import { containerLogResponse, hiddenLogResponse, offlineLogResponse, whileLogsShown } from "#/modules/runtime/container-log-events.server";
 import { logHistorySchema, readHistoryPage } from "#/modules/runtime/log-history-page.server";
-import { runAppEffect } from "#/server/run.server";
-import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
+import { apiRoute, decodeJsonBody, decodeSearch } from "#/server/api-route";
+import { Validation } from "#/server/public-error";
+import type { AppServices } from "#/server/runtime.server";
+
+const invalidSelection = () => new Validation({ message: "Invalid log selection." });
 
 export const Route = createFileRoute("/api/runtime/logs")({
-  server: { handlers: {
-    GET: async ({ request }) => {
-      try {
-        const search = Schema.decodeUnknownOption(logSearchSchema)(Object.fromEntries(new URL(request.url).searchParams));
-        if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "Invalid log selection." }));
-        const result = await runAppEffect(openContainerLogs(request, search.value), { signal: request.signal });
-        if (result.type === "offline") return offlineLogResponse(request);
-        if (result.type === "hidden") return hiddenLogResponse(request);
-        const { logsShown } = result;
-        const events = logsShown ? whileLogsShown(result.events, () => runAppEffect(logsShown, { signal: request.signal })) : result.events;
-        return containerLogResponse(request, events, () => runAppEffect(result.close));
-      } catch (cause) { return publicErrorResponse(cause); }
-    },
-    POST: async ({ request }) => {
-      try {
-        const search = Schema.decodeUnknownOption(logHistorySchema)(await request.json().catch(() => null));
-        if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "Invalid log selection." }));
-        const page = await runAppEffect(readHistoryPage(request, search.value), { signal: request.signal });
-        return Response.json(page, { headers: { "Cache-Control": "private, no-store" } });
-      } catch (cause) { return publicErrorResponse(cause); }
-    },
-    ANY: (): Response => methodNotAllowed(Route),
-  } },
+  server: {
+    handlers: apiRoute({
+      GET: ({ request }) =>
+        Effect.gen(function* () {
+          const search = yield* decodeSearch(logSearchSchema, request, invalidSelection());
+          const result = yield* openContainerLogs(request, search);
+          if (result.type === "offline") return offlineLogResponse(request);
+          if (result.type === "hidden") return hiddenLogResponse(request);
+          const run = Effect.runPromiseWith(yield* Effect.context<AppServices>());
+          const { logsShown } = result;
+          const events = logsShown ? whileLogsShown(result.events, () => run(logsShown)) : result.events;
+          return containerLogResponse(request, events, () => run(result.close));
+        }),
+      POST: ({ request }) =>
+        Effect.gen(function* () {
+          const search = yield* decodeJsonBody(logHistorySchema, request, invalidSelection());
+          const page = yield* readHistoryPage(request, search);
+          return Response.json(page, { headers: { "Cache-Control": "private, no-store" } });
+        }),
+    }),
+  },
 });

@@ -1,8 +1,16 @@
+/** @data-source remote: every Volume's mirrors and staged placement; the change stream refetches them when a row changes */
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { listPlacementsServerFn } from "./volume-placement.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** Volume placements; the change stream's `volume_placement` invalidates this root. */
 export const volumePlacementKeys = { all: ["volume-placement"] as const };
+
+export const volumePlacementChange = defineChange({
+  name: "volume_placement",
+  sources: ["volume_placement"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all }),
+});
 
 export function volumePlacementsQueryOptions(organizationSlug: string) {
   return queryOptions({

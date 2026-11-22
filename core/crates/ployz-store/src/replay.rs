@@ -5,7 +5,7 @@
 //! one. A scope that resolves nowhere, or to no single place, after a rename, removal
 //! or a second Project, cannot name another place, so the first answer stands.
 
-use crate::command::{Keyed, Staged};
+use crate::command::{Answer, InEnvironment};
 use crate::deployment::admit::Admit;
 use crate::error::conflict;
 use crate::id::ProjectId;
@@ -21,7 +21,13 @@ use ployz_core::RpcErrorCode;
     clippy::unnecessary_wraps,
     reason = "every replay rule has one signature"
 )]
-pub(crate) const fn any<P, A>(_: &mut dyn Tx, _: &Actor, _: &P, _: &A) -> Result<(), RpcError> {
+pub(crate) const fn any<P, A>(
+    _: &mut dyn Tx,
+    _: &Actor,
+    _: &P,
+    _: &A,
+    _: &str,
+) -> Result<(), RpcError> {
     Ok(())
 }
 
@@ -56,19 +62,14 @@ fn environment(
 }
 
 /// For a keyed create or save whose Environment the caller named.
-pub(crate) fn same_environment<P: Keyed, A: Staged>(
+pub(crate) fn same_environment<P: InEnvironment, A: Answer>(
     tx: &mut dyn Tx,
     who: &Actor,
     c: &P,
     first: &A,
+    id: &str,
 ) -> Result<(), RpcError> {
-    environment(
-        tx,
-        who,
-        c.environment(),
-        Some(first.environment_id()),
-        c.key(),
-    )
+    environment(tx, who, c.environment(), first.config(), id)
 }
 
 /// A Retry names its Deployment rather than a scope.
@@ -77,6 +78,7 @@ pub(crate) fn admit(
     who: &Actor,
     c: &Admit,
     first: &DeploymentSummary,
+    id: &str,
 ) -> Result<(), RpcError> {
     let at = match c {
         Admit::Deploy(deploy) => &deploy.environment,
@@ -85,7 +87,7 @@ pub(crate) fn admit(
         Admit::Reapply(reapply) => &reapply.environment,
         Admit::Retry(_) => return Ok(()),
     };
-    environment(tx, who, at, Some(&first.environment_id), c.id().as_str())
+    environment(tx, who, at, Some(&first.environment_id), id)
 }
 
 /// The Branch must still hang off the Environment `from` names now, while it is open.
@@ -94,9 +96,10 @@ pub(crate) fn branch(
     who: &Actor,
     c: &CreateBranch,
     first: &Branched,
+    id: &str,
 ) -> Result<(), RpcError> {
     let parent = crate::branch::row(tx, &first.branch.environment.id)?.map(|row| row.parent);
-    environment(tx, who, &c.from, parent.as_ref(), c.id.as_str())
+    environment(tx, who, &c.from, parent.as_ref(), id)
 }
 
 pub(crate) fn project(
@@ -104,6 +107,7 @@ pub(crate) fn project(
     who: &Actor,
     c: &CreateEnvironment,
     first: &EnvironmentCreated,
+    id: &str,
 ) -> Result<(), RpcError> {
     let rows = tx.query(
         "SELECT project_id FROM config_environment WHERE id = ?1",
@@ -116,7 +120,7 @@ pub(crate) fn project(
     match now(scope::project(tx, who, c.project.as_ref()))? {
         Some(now) if now.id != first => Err(conflict(
             "This ID was already used in another Project; send a new ID to use this one.",
-            serde_json::json!({ "id": c.id }),
+            serde_json::json!({ "id": id }),
         )),
         _ => Ok(()),
     }

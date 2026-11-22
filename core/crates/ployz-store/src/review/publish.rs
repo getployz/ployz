@@ -4,7 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    EnvironmentNodeType, ReviewLifecycleKind, ServiceSettingChange, canonicalize_environment_intent,
+    EnvironmentNodeType, ReviewLifecycleKind, SavedEnvironmentIntent, ServiceSettingChange,
+    canonicalize_environment_intent,
 };
 
 use serde::{Deserialize, Serialize};
@@ -173,6 +174,132 @@ fn after_ending(
     Ok(Some(whole.summary))
 }
 
+/// Review `environment` for a Save that ships `shipping`, then end the draft's
+/// proposals: what they brought is the Save's own now. A stale `version` is refused
+/// with what the fresh review deletes. Returns the review, and whether it ended any
+/// proposal.
+pub(crate) fn review_for_save(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &scope::Environment,
+    (shipping, version): (review::Shipping<'_>, Option<&str>),
+    trusted: &Trusted,
+) -> Result<(review::Review, bool), RpcError> {
+    let review = review::review(tx, environment)?;
+    if let Err(stale) = review::check(&review, version) {
+        let target = canonicalize_environment_intent(environment.working.clone());
+        let probe =
+            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
+                review::destructive(
+                    tx,
+                    who,
+                    &review,
+                    (&target, &namespace, shipping),
+                    (None, &[], review::consent(review.saved.as_ref())),
+                    trusted.volumes.as_ref(),
+                )
+            });
+        return Err(review::with_loss(stale, probe));
+    }
+    let consumed = crate::branch::end_included(tx, &environment.summary.id, None)?;
+    Ok((review, consumed))
+}
+
+/// What a Save that keeps the latest Saved revision, because it holds the same
+/// document, does with the losses saved with that revision as the next Deploy's
+/// consent.
+#[derive(Clone, Copy)]
+pub(crate) enum UnchangedSave {
+    /// Replace them with the losses this Save reviewed: a Publish reviews every
+    /// pending removal, so it records the consent the next Deploy reads.
+    RenewsConsent,
+    /// Leave them: a Deploy ships its reviewed losses itself, and a narrowed one
+    /// reviews no pending removal.
+    KeepsConsent,
+}
+
+/// A Save of `environment`'s Working State, reviewed by [`review_for_save`].
+pub(crate) struct Save<'a> {
+    pub(crate) environment: &'a scope::Environment,
+    pub(crate) review: &'a review::Review,
+    /// Working State, canonical.
+    pub(crate) target: &'a SavedEnvironmentIntent,
+    pub(crate) namespace: &'a ployz_core::Namespace,
+    pub(crate) shipping: review::Shipping<'a>,
+    pub(crate) pruning: &'a review::Pruning,
+    pub(crate) version: Option<&'a str>,
+    pub(crate) accept_volume_loss: &'a [VolumeName],
+    pub(crate) message: Option<&'a str>,
+    pub(crate) unchanged: UnchangedSave,
+}
+
+/// Save Working State as the next Saved revision, or keep the latest when it holds
+/// the same document. In order, it refuses a Volume loss not accepted, a source
+/// change the caller may not protect, and a prune the caller may not destroy, then
+/// asks for approval. Returns the revision Saved State is now at, whether this
+/// created it, and the losses it reviewed, saved as the next Deploy's consent: a
+/// loss that deletes nothing too, since the Servers held no data, so a push removes
+/// it while they still hold none.
+pub(crate) fn save(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    save: &Save<'_>,
+    trusted: &Trusted,
+) -> Result<(Revision, bool, Vec<crate::VolumeLoss>), RpcError> {
+    let Save {
+        environment,
+        review,
+        target,
+        namespace,
+        shipping,
+        pruning,
+        version,
+        accept_volume_loss,
+        message,
+        unchanged,
+    } = *save;
+    let id = &environment.summary.id;
+    let losses = review::destructive(
+        tx,
+        who,
+        review,
+        (target, namespace, shipping),
+        (
+            version,
+            accept_volume_loss,
+            review::consent(review.saved.as_ref()),
+        ),
+        trusted.volumes.as_ref(),
+    )?;
+    review::guard_saving(
+        tx,
+        Evidence::Caller(trusted),
+        id,
+        review.saved.as_ref(),
+        target,
+    )?;
+    pruning.admit(trusted, None)?;
+    let gate = review::Gate::new(tx, id, trusted)?;
+    review::approve(who, review, (target, shipping, pruning), &gate)?;
+    let (saved, created) = review::publish(
+        tx,
+        Evidence::Caller(trusted),
+        who,
+        id,
+        environment.working.clone(),
+        review.saved.as_ref(),
+        (message, &losses),
+    )?;
+    if let UnchangedSave::RenewsConsent = unchanged
+        && !created
+        && let Some(latest) = review.saved.as_ref()
+        && latest.accepted != losses
+    {
+        review::reconsent(tx, id, latest.revision, &losses)?;
+    }
+    Ok((saved, created, losses))
+}
+
 pub(crate) fn publish(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -182,24 +309,13 @@ pub(crate) fn publish(
     let environment = scope::lock(tx, who, &publish.environment)?;
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
-    let review = review::review(tx, &environment)?;
-    if let Err(stale) = review::check(&review, publish.version.as_deref()) {
-        let target = canonicalize_environment_intent(environment.working.clone());
-        let probe =
-            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
-                review::destructive(
-                    tx,
-                    who,
-                    &review,
-                    (&target, &namespace, review::Shipping::Publish),
-                    (None, &[], review::consent(review.saved.as_ref())),
-                    trusted.volumes.as_ref(),
-                )
-            });
-        return Err(review::with_loss(stale, probe));
-    }
-    // A manual Save ends the draft's proposals: what they brought is its own now.
-    let consumed = crate::branch::end_included(tx, &environment.summary.id, None)?;
+    let (review, consumed) = review_for_save(
+        tx,
+        who,
+        &environment,
+        (review::Shipping::Publish, publish.version.as_deref()),
+        trusted,
+    )?;
     if review.saved.is_none()
         && canonicalize_environment_intent(environment.working.clone())
             == canonicalize_environment_intent(review.head.intent.clone())
@@ -217,50 +333,23 @@ pub(crate) fn publish(
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-    let losses = review::destructive(
+    let (saved, created, _) = save(
         tx,
         who,
-        &review,
-        (&target, &namespace, review::Shipping::Publish),
-        (
-            publish.version.as_deref(),
-            &publish.accept_volume_loss,
-            review::consent(review.saved.as_ref()),
-        ),
-        trusted.volumes.as_ref(),
+        &Save {
+            environment: &environment,
+            review: &review,
+            target: &target,
+            namespace: &namespace,
+            shipping: review::Shipping::Publish,
+            pruning: &review::Pruning::Off,
+            version: publish.version.as_deref(),
+            accept_volume_loss: &publish.accept_volume_loss,
+            message: publish.message.as_deref(),
+            unchanged: UnchangedSave::RenewsConsent,
+        },
+        trusted,
     )?;
-    review::guard_saving(
-        tx,
-        Evidence::Caller(trusted),
-        &environment.summary.id,
-        review.saved.as_ref(),
-        &target,
-    )?;
-    let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
-    review::approve(
-        who,
-        &review,
-        (&target, review::Shipping::Publish, &review::Pruning::Off),
-        &gate,
-    )?;
-    // Saved as the next Deploy's consent, a loss that deletes nothing too: the
-    // Servers held no data, so a push removes it while they still hold none.
-    let lost = losses;
-    let (saved, created) = review::publish(
-        tx,
-        Evidence::Caller(trusted),
-        who,
-        &environment.summary.id,
-        environment.working,
-        review.saved.as_ref(),
-        (publish.message.as_deref(), &lost),
-    )?;
-    if !created
-        && let Some(latest) = review.saved.as_ref()
-        && latest.accepted != lost
-    {
-        review::reconsent(tx, &environment.summary.id, latest.revision, &lost)?;
-    }
     // Saved State already held it.
     let summary = after_ending(tx, trusted, &environment.summary.id, consumed && !created)?
         .unwrap_or(environment.summary);

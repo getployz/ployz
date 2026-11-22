@@ -1,4 +1,4 @@
-import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
+import type { MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 
 /**
  * What the toast says once a removal settled. Cloud keeps its hold only when it says so; a Server the Cluster had

@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::RpcError;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
@@ -14,46 +15,49 @@ use crate::Actor;
 use crate::error;
 use crate::storage::Tx;
 
-/// The Machine Label that holds a Server's region.
-pub const REGION_LABEL: &str = "region";
-
-const KEY_RULE: &str = "A region is the value of a Server's region label: up to 63 letters, digits, hyphens, underscores and dots, for example fsn.";
 const NAME_RULE: &str = ployz_core::Region::NAME_RULE;
 const DERIVED_RULE: &str = "Use at least one letter a-z or digit.";
 
-/// A region's key: a Server's `region` label value in lowercase, as placement compares it.
-/// Its grammar is [`ployz_core::Region`]'s, the one placement reads.
+/// `value` in lowercase, when that is a region key.
+///
+/// # Errors
+/// Returns `invalid_argument` saying what a key is.
+pub fn region_key(value: impl Into<String>) -> Result<ployz_core::Region, RpcError> {
+    ployz_core::Region::parse(value.into())
+        .map_err(|_| error::invalid(ployz_core::Region::KEY_RULE, Value::Null))
+}
+
+/// A region key a request carries, refused with what a key is.
+pub(crate) fn deserialize_key<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ployz_core::Region, D::Error> {
+    region_key(String::deserialize(deserializer)?).map_err(D::Error::custom)
+}
+
+pub(crate) fn deserialize_optional_key<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ployz_core::Region>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| region_key(value).map_err(D::Error::custom))
+        .transpose()
+}
+
+/// A name a region was given: one line of 1 to 40 characters, trimmed.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
-pub struct RegionKey(String);
+pub struct RegionName(String);
 
-impl RegionKey {
-    /// `value` in lowercase, when that is a key.
-    ///
-    /// # Errors
-    /// Returns `invalid_argument` saying what a key is.
-    pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
-        ployz_core::Region::parse(value.into())
-            .map(|region| Self(region.as_str().to_owned()))
-            .map_err(|_| error::invalid(KEY_RULE, Value::Null))
-    }
-
-    /// Where a Server starts when it joins with no region.
-    #[must_use]
-    pub fn default_region() -> Self {
-        Self("default".to_owned())
-    }
-
-    /// The key a new region named `name` takes: its letters and digits in lowercase, each
+impl RegionName {
+    /// The key a new region with this name takes: its letters and digits in lowercase, each
     /// run of anything else one hyphen, with no hyphen at either end. A name's 40
     /// characters keep it within a key's 63.
     ///
     /// # Errors
-    /// Returns `invalid_argument` when `name` has no letter a-z or digit to make it from.
-    pub fn from_name(name: &RegionName) -> Result<Self, RpcError> {
+    /// Returns `invalid_argument` when the name has no letter a-z or digit to make it from.
+    pub fn key(&self) -> Result<ployz_core::Region, RpcError> {
         let mut key = String::new();
-        for character in name.as_str().chars().map(|c| c.to_ascii_lowercase()) {
+        for character in self.0.chars().map(|c| c.to_ascii_lowercase()) {
             if character.is_ascii_lowercase() || character.is_ascii_digit() {
                 key.push(character);
             } else if !key.ends_with('-') {
@@ -64,42 +68,9 @@ impl RegionKey {
         if key.is_empty() {
             return Err(error::invalid(DERIVED_RULE, Value::Null));
         }
-        Self::parse(key)
+        region_key(key)
     }
 
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for RegionKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for RegionKey {
-    type Error = RpcError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl From<RegionKey> for String {
-    fn from(value: RegionKey) -> Self {
-        value.0
-    }
-}
-
-/// A name a region was given: one line of 1 to 40 characters, trimmed.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
-#[ts(as = "String")]
-pub struct RegionName(String);
-
-impl RegionName {
     /// `value` trimmed, when that is a name.
     ///
     /// # Errors
@@ -140,10 +111,10 @@ impl From<RegionName> for String {
 /// The name region `key` shows as: the one it was given, else `Default` for the default
 /// region and the key itself for any other.
 #[must_use]
-pub(crate) fn shown(key: &RegionKey, given: Option<&RegionName>) -> String {
+pub(crate) fn shown(key: &ployz_core::Region, given: Option<&RegionName>) -> String {
     match given {
         Some(name) => name.to_string(),
-        None if *key == RegionKey::default_region() => "Default".to_owned(),
+        None if key.as_str() == ployz_core::Region::DEFAULT => "Default".to_owned(),
         None => key.to_string(),
     }
 }
@@ -152,7 +123,9 @@ pub(crate) fn shown(key: &RegionKey, given: Option<&RegionName>) -> String {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[ts(rename = "NamedRegion")]
 pub struct Region {
-    pub key: RegionKey,
+    #[serde(deserialize_with = "deserialize_key")]
+    #[ts(as = "String")]
+    pub key: ployz_core::Region,
     /// The name it was given, else its built-in one (see [`shown`]).
     pub name: String,
 }
@@ -162,11 +135,11 @@ pub struct Region {
 #[must_use]
 pub(crate) fn regions<'a>(
     labels: impl IntoIterator<Item = &'a str>,
-    given: &BTreeMap<RegionKey, RegionName>,
+    given: &BTreeMap<ployz_core::Region, RegionName>,
 ) -> Vec<Region> {
-    let mut keys: Vec<RegionKey> = labels
+    let mut keys: Vec<ployz_core::Region> = labels
         .into_iter()
-        .filter_map(|label| RegionKey::parse(label).ok())
+        .filter_map(|label| region_key(label).ok())
         .chain(given.keys().cloned())
         .collect();
     keys.sort();
@@ -183,7 +156,7 @@ pub(crate) fn regions<'a>(
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RegionServers<'a> {
     pub name: String,
-    pub key: RegionKey,
+    pub key: ployz_core::Region,
     pub servers: Vec<&'a str>,
 }
 
@@ -203,12 +176,7 @@ pub fn region_servers<'a>(
 ) -> ServersByRegion<'a> {
     let keyed = servers
         .iter()
-        .map(|(server, label)| {
-            (
-                *server,
-                label.and_then(|label| RegionKey::parse(label).ok()),
-            )
-        })
+        .map(|(server, label)| (*server, label.and_then(|label| region_key(label).ok())))
         .collect::<Vec<_>>();
     ServersByRegion {
         regions: regions
@@ -232,7 +200,11 @@ pub fn region_servers<'a>(
 }
 
 /// The region of `known` that has the key `key` or shows `name`, in any case.
-fn taken<'a>(known: &'a [Region], key: &RegionKey, name: &RegionName) -> Option<&'a Region> {
+fn taken<'a>(
+    known: &'a [Region],
+    key: &ployz_core::Region,
+    name: &RegionName,
+) -> Option<&'a Region> {
     known
         .iter()
         .find(|region| region.key == *key)
@@ -262,8 +234,11 @@ fn already(region: &Region) -> RpcError {
 /// # Errors
 /// Returns `invalid_argument` when `name` makes no key, or `conflict` naming the region
 /// that has the key or the name.
-pub(crate) fn new_region(name: &RegionName, known: &[Region]) -> Result<RegionKey, RpcError> {
-    let key = RegionKey::from_name(name)?;
+pub(crate) fn new_region(
+    name: &RegionName,
+    known: &[Region],
+) -> Result<ployz_core::Region, RpcError> {
+    let key = name.key()?;
     match taken(known, &key, name) {
         Some(region) => Err(already(region)),
         None => Ok(key),
@@ -299,7 +274,9 @@ pub struct NewRegionQuery {
 /// The key a new region takes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct NewRegionView {
-    pub key: RegionKey,
+    #[serde(deserialize_with = "deserialize_key")]
+    #[ts(as = "String")]
+    pub key: ployz_core::Region,
 }
 
 /// Give a region a name. Its key stays, and so does every Server's label and every
@@ -308,7 +285,9 @@ pub struct NewRegionView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NameRegion {
-    pub key: RegionKey,
+    #[serde(deserialize_with = "deserialize_key")]
+    #[ts(as = "String")]
+    pub key: ployz_core::Region,
     pub name: RegionName,
     /// The `region` label value of each Server the caller sees: with the names given, the
     /// regions there are.
@@ -350,7 +329,7 @@ pub(crate) fn name(tx: &mut dyn Tx, who: &Actor, named: &NameRegion) -> Result<R
             .labels
             .iter()
             .map(String::as_str)
-            .chain([RegionKey::default_region().as_str()]),
+            .chain([ployz_core::Region::DEFAULT]),
         &given,
     );
     if named.creates {
@@ -393,7 +372,10 @@ pub(crate) fn name(tx: &mut dyn Tx, who: &Actor, named: &NameRegion) -> Result<R
     })
 }
 
-fn given(tx: &mut dyn Tx, who: &Actor) -> Result<BTreeMap<RegionKey, RegionName>, RpcError> {
+fn given(
+    tx: &mut dyn Tx,
+    who: &Actor,
+) -> Result<BTreeMap<ployz_core::Region, RegionName>, RpcError> {
     tx.query(
         "SELECT key, name FROM config_region_name WHERE organization_id = ?1",
         &[who.organization.as_str().into()],
@@ -411,8 +393,8 @@ mod tests {
         RegionName::parse(text).unwrap()
     }
 
-    fn key(text: &str) -> RegionKey {
-        RegionKey::parse(text).unwrap()
+    fn key(text: &str) -> ployz_core::Region {
+        region_key(text).unwrap()
     }
 
     #[test]
@@ -422,8 +404,8 @@ mod tests {
         assert_eq!(key("eu_west.1").as_str(), "eu_west.1");
         for refused in ["", "eu west", "zürich", "fsn/1", "a:b"] {
             assert_eq!(
-                RegionKey::parse(refused).unwrap_err().message,
-                KEY_RULE,
+                region_key(refused).unwrap_err().message,
+                ployz_core::Region::KEY_RULE,
                 "{refused:?}"
             );
         }
@@ -444,17 +426,17 @@ mod tests {
 
     #[test]
     fn a_region_without_a_name_shows_default_or_its_key() {
-        assert_eq!(shown(&RegionKey::default_region(), None), "Default");
+        assert_eq!(shown(&ployz_core::Region::default(), None), "Default");
         assert_eq!(shown(&key("syd"), None), "syd");
         assert_eq!(
-            shown(&RegionKey::default_region(), Some(&name("Falkenstein"))),
+            shown(&ployz_core::Region::default(), Some(&name("Falkenstein"))),
             "Falkenstein"
         );
     }
 
     #[test]
     fn a_new_regions_key_comes_from_its_name() {
-        let derived = |text: &str| RegionKey::from_name(&name(text)).map(String::from);
+        let derived = |text: &str| name(text).key().map(String::from);
         assert_eq!(derived("Sydney").unwrap(), "sydney");
         assert_eq!(derived("US East (Ohio)").unwrap(), "us-east-ohio");
         assert_eq!(derived("--Zürich 2--").unwrap(), "z-rich-2");
@@ -463,23 +445,20 @@ mod tests {
             derived(&"Ab-".repeat(13)).unwrap(),
             format!("{}ab", "ab-".repeat(12))
         );
-        assert_eq!(
-            RegionKey::from_name(&name("東京")).unwrap_err().message,
-            DERIVED_RULE
-        );
+        assert_eq!(name("東京").key().unwrap_err().message, DERIVED_RULE);
     }
 
     #[test]
     fn regions_are_the_servers_keys_and_the_named_ones_in_lowercase() {
         let given = BTreeMap::from([
-            (RegionKey::default_region(), name("Falkenstein")),
+            (ployz_core::Region::default(), name("Falkenstein")),
             (key("lhr"), name("London")),
         ]);
         assert_eq!(
             regions(["SYD", "default", "syd", "eu west"], &given),
             [
                 Region {
-                    key: RegionKey::default_region(),
+                    key: ployz_core::Region::default(),
                     name: "Falkenstein".into()
                 },
                 Region {

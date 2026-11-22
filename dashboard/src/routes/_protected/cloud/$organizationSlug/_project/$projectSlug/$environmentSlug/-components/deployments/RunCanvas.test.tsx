@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { RunCanvas } from "./RunCanvas";
-import type { RunGraph } from "./run-graph";
+import type { RunGraph } from "#/modules/config-store/deployments/run-graph";
 
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });

@@ -10,17 +10,19 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
-    FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, PartialResult,
-    QualifiedService, RpcError, ServiceContainer, ServiceObservation, ServiceSelector,
-    StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
+    FanoutSelector, Hint, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId,
+    MachineLogService, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
+    PartialResult, QualifiedService, RpcError, RpcErrorCode, ServiceContainer, ServiceObservation,
+    ServiceSelector, StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
     resolve_machine_selectors, select_service,
 };
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
+use crate::coded::Coded;
 use crate::connect::{Client, ConnectError, TransportError};
 use input::{ExecMode, InputError, ServiceArg};
 use ployz_core::EnvironmentValues;
@@ -142,6 +144,67 @@ pub enum OperatorError {
     },
 }
 
+impl Coded for OperatorError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            OperatorError::Connect(error) => error.code(),
+            OperatorError::Rpc(error)
+            | OperatorError::StartExec { source: error, .. }
+            | OperatorError::ExecConnectionLost { source: error, .. } => error.to_rpc_error().code,
+            OperatorError::Selector(error) => error.code(),
+            OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
+            OperatorError::MachineSelector(error) => error.code(),
+            OperatorError::Container(error) => error.code(),
+            OperatorError::Codec(error) => error.code(),
+            OperatorError::OpenContainerLogs { source, .. }
+            | OperatorError::OpenMachineLogs { source, .. } => source.code(),
+            OperatorError::Input(error) => error.code(),
+            OperatorError::Value(_) | OperatorError::UnsupportedLogService { .. } => {
+                RpcErrorCode::InvalidArgument
+            }
+            OperatorError::NoRegularContainer
+            | OperatorError::NoContainersOnMachines { .. }
+            | OperatorError::NoMachines
+            | OperatorError::NoServices
+            | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
+            OperatorError::StreamClosed
+            | OperatorError::NotRunningOnAnswered { .. }
+            | OperatorError::ExecContainerStopped { .. }
+            | OperatorError::NoServableContainer
+            | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
+            OperatorError::Protocol(_) => RpcErrorCode::Internal,
+        }
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        if let Self::StartExec { source, .. } = self {
+            return Some(source.to_rpc_error().details);
+        }
+        if let Self::NotRunningOnAnswered { gaps, .. } = self {
+            return Some(
+                serde_json::json!({ "failures": gaps.failures, "omitted": gaps.omissions }),
+            );
+        }
+        if let Self::Container(container) = self {
+            return container.evidence();
+        }
+        None
+    }
+
+    fn hints(&self) -> Vec<Hint> {
+        if let Self::Container(container) = self {
+            return container.hints();
+        }
+        if let Self::NotRunning {
+            running_in_scope, ..
+        } = self
+        {
+            return vec![Hint::valid(running_in_scope)];
+        }
+        Vec::new()
+    }
+}
+
 impl OperatorError {
     /// Whether this says the Service or its container was not observed, which an
     /// unanswered Server could change.
@@ -256,14 +319,7 @@ fn running_container(service: &ServiceObservation) -> Option<&ServiceContainer> 
     service
         .containers
         .iter()
-        .find(|container| is_running(container))
-}
-
-fn is_running(container: &ServiceContainer) -> bool {
-    matches!(
-        container.as_observation().runtime,
-        ployz_core::ContainerRuntimeObservation::Running { .. }
-    )
+        .find(|container| container.as_observation().runtime.is_running())
 }
 
 /// The Service Name as the person typed it, not the Namespace the CLI scoped it to.
@@ -383,7 +439,9 @@ pub async fn open_exec(
     let unanswered =
         container_selector.is_none() && (!gaps.failures.is_empty() || !gaps.omissions.is_empty());
     let (service, container) = match selected {
-        Ok((service, container)) if !unanswered || is_running(container) => {
+        Ok((service, container))
+            if !unanswered || container.as_observation().runtime.is_running() =>
+        {
             (service, container.as_observation())
         }
         Err(error) if !unanswered || !error.is_not_found() => return Err(error),
@@ -448,7 +506,7 @@ pub async fn exec_container_stopped(
     client: &mut Client,
     target: &ExecTarget,
 ) -> Result<Option<ContainerStopped>, OperatorError> {
-    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing, Running};
+    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing};
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
@@ -477,8 +535,7 @@ pub async fn exec_container_stopped(
         .flat_map(|service| &service.containers)
         .map(ServiceContainer::as_observation)
         .any(|container| {
-            container.container_id != target.container_id
-                && matches!(container.runtime, Running { .. })
+            container.container_id != target.container_id && container.runtime.is_running()
         });
     Ok(Some(ContainerStopped { another_runs }))
 }

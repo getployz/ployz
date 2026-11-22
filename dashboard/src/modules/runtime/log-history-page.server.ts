@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { organizationMachine } from "#/modules/machines/tables";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
@@ -9,8 +9,8 @@ import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
 import type { ContainerLogLine } from "./container-log.collection";
 import { type LogSearch, logSearchSchema, resolveLogFilter } from "./container-logs.server";
-import { clickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
-import { type LogHistoryRow, logHistoryCursor, readLogHistory, readLogServices } from "./log-history.server";
+import { type ClickhouseEndpoint, clickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
+import { type LogHistoryRow, type LogHistoryScope, logHistoryCursor, readLogHistory, readLogServices } from "./log-history.server";
 import { logLevel } from "./log-level";
 
 const HISTORY_PAGE = 500;
@@ -49,6 +49,20 @@ export const machineNames = Effect.fn("Runtime.historyMachineNames")(function* (
   return new Map(rows.flatMap((row) => row.machineName === null ? [] : [[row.machineId, row.machineName] as const]));
 });
 
+/** The newest page of `scope`'s stored lines, or the one behind `cursor`, each with its Machine's name. */
+export const readLogPage = Effect.fn("Runtime.readLogPage")(function* (
+  endpoint: ClickhouseEndpoint,
+  scope: LogHistoryScope,
+  paging: { readonly limit: number; readonly cursor?: string | undefined },
+) {
+  const page = yield* readLogHistory(endpoint, scope, paging);
+  const names = yield* machineNames(scope.organizationId, [...new Set(page.rows.map((row) => row.machineId))]);
+  return {
+    rows: page.rows.map((row) => ({ row, machineName: names.get(row.machineId) ?? row.machineId })),
+    cursor: page.cursor,
+  };
+});
+
 const authorizeHistory = Effect.fn("Runtime.authorizeHistory")(function* (request: Request, organizationSlug: string) {
   const access = yield* authorizeRequest(request.headers, organizationSlug, "logs:read");
   if (access.kind === "support" && !access.shows.logs) {
@@ -64,13 +78,12 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
   const filter = yield* resolveLogFilter(organizationId, input);
   // Cloud's lines carry no Deployment, so a Deployment's card reads its older lines from the server instead.
   if (filter.deploymentId !== undefined) return { rows: [], failures: [], cursor: null };
-  const page = yield* readLogHistory(endpoint, {
+  const page = yield* readLogPage(endpoint, {
     organizationId, namespace: filter.namespace, serviceName: filter.serviceName ?? input.service,
     machineId: input.machineId, search: input.contains,
   }, { limit: HISTORY_PAGE, cursor: input.cursor });
-  const names = yield* machineNames(organizationId, [...new Set(page.rows.map((row) => row.machineId))]);
   return {
-    rows: page.rows.map((row) => projectHistoryRow(row, names.get(row.machineId) ?? row.machineId)),
+    rows: page.rows.map(({ row, machineName }) => projectHistoryRow(row, machineName)),
     failures: [],
     cursor: page.cursor,
   };

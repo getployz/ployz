@@ -2,11 +2,11 @@ import "@tanstack/react-start/server-only";
 import { and, eq, lt, ne, or } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
-import { deployDialOf } from "#/modules/config-store/config-store.server";
-import { logForeignServers } from "#/modules/machines/connections.server";
+import { deployDialOf } from "#/modules/config-store/store-sdk.server";
+import { logForeignServers } from "#/modules/runtime/connections.server";
 import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from "#/modules/config-store/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/inngest/events";
+import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
 
 type RetireOutcome = { left: CleanupLeft[]; kept: CleanupLeft[] };

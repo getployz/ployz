@@ -1023,7 +1023,7 @@ impl Fleet {
             }
             .into());
         };
-        let decided = rotation::decide(&container.spec.rotation, want);
+        let decided = rotation::decide(&container_id, &container.spec.rotation, want);
         if let Ok(edge) = &decided {
             if let RotationEdge::Write(to) = edge {
                 container.spec.rotation = to.clone();

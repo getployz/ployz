@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import type { DiffView, JsonValue, NodeChange, RowId, ServiceSettingChange } from "@ployz/sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { type ApprovalReview, withoutSealedBefore } from "#/modules/approvals/approvals";
+import type { ApprovalReview } from "#/modules/approvals/approvals";
+import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000003651";

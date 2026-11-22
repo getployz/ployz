@@ -1,0 +1,385 @@
+import { StoreConfigMounts } from "./StoreMounts";
+import { useRef, useState } from "react";
+import { Schema } from "effect";
+import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";
+import { AlertTriangleIcon, EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import type { ConfigItemView, ConfigListing, DiffView, EnvironmentRef, ServiceListing } from "@ployz/sdk";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle,
+} from "#/components/ui/alert-dialog";
+import { Button } from "#/components/ui/button";
+import {
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+} from "#/components/ui/dropdown-menu";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
+import { FieldError } from "#/components/ui/field";
+import { Skeleton } from "#/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
+import { cn } from "#/lib/utils";
+import { previewSegments } from "#/modules/config-store/config-references";
+import { brokenFiles } from "#/modules/config-store/store-broken";
+import {
+  configBytesText, configEdits, configFileSizeError, configReferenceValues, draftAccess, EXECUTABLE_MODE, executableToggle, fileAccessLabel,
+  hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileDraft,
+} from "#/modules/config-store/store-configs";
+import { changedProps } from "#/modules/config-store/store-services";
+import { storeReferenceTargets } from "#/modules/config-store/store-variables";
+import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStorePendingName } from "#/modules/config-store/store-pending";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
+import { StoreRefused } from "#/lib/refusal";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";
+import { SettingsDanger, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
+import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
+import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
+import { CanvasInspectorNotFound } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
+import { useStoreChangeActions } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
+import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
+import { useConfigFileEditor } from "./config-file-editor-loader";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { configNodePath } from "#/modules/config-store/setting-paths";
+
+
+const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
+
+type ConfigRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
+type StoreConfig = { organizationSlug: string; environment: EnvironmentRef; config: ConfigListing };
+
+export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParams; config: ConfigListing }) {
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationSlug } = params;
+  const views = useStoreViews(organizationSlug,
+    [configsQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store), configQuery(store, `@${config.id}`)] as const);
+  const configs = requireView(views[0]).configs;
+  const services = requireView(views[1]).services;
+  const diff = requireView(views[2]);
+  const settings = requireView(views[3]);
+  const writer = useStoreWriter(organizationSlug);
+  const shownName = useStorePendingName(organizationSlug, store, "config", config.name);
+  if (!views[4].ok) return <CanvasInspectorNotFound noun="Config" />;
+  const item = views[4].value;
+  const state: StoreConfig = { organizationSlug, environment: store, config };
+  const removing = config.change === "delete";
+  const renamed = diff.changes.find((change) => change.type === "config" && change.id === config.id)
+    ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) =>
+    configs.some((other) => other.id !== config.id && other.name === name) ? `A config here is already named ${name}.` : undefined));
+  const targets = storeReferenceTargets(settings, services, "");
+  const values = configReferenceValues(settings, services);
+  const serviceNames = services.map((service) => service.name);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <CanvasInspectorHeader params={params}>
+        {removing ? <p className="truncate font-semibold">{config.name}</p> : (
+          <div className="min-w-0"><CanvasInspectorNameEditor value={shownName} schema={nameSchema} editTitle="Edit config name"
+            editDescription="Rename this config. Its files and mounts stay." placeholder="Config name"
+            {...changedProps(renamed)}
+            onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} /></div>
+        )}
+      </CanvasInspectorHeader>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
+          values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
+      </div>
+    </div>
+  );
+}
+
+function ConfigBody({ state, item, services, targets, serviceNames, values, removing, params, version, configs, diff }: {
+  state: StoreConfig; item: ConfigItemView; services: readonly ServiceListing[]; targets: readonly ReferenceTarget[];
+  serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>; removing: boolean;
+  params: ConfigRouteParams; version: string; configs: readonly ConfigListing[]; diff: DiffView;
+}) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const [drafts, setDrafts] = useState<ReadonlyMap<string, FileDraft>>(new Map());
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [failedSaves, setFailedSaves] = useState<ReadonlySet<string>>(new Set());
+  const [pendingSaves, setPendingSaves] = useState<ReadonlySet<ReadonlyMap<string, FileDraft>>>(new Set());
+  const submittedFiles = useRef(new Map<string, ReadonlyMap<string, FileDraft>>());
+  // A removed file stays gone until its write lands.
+  const [removed, holdRemoved] = useCommitHold<ReadonlySet<string>>(new Set());
+  const stored = item.files.map((file) => file.name).filter((name) => !removed.has(name));
+  const fileNames = [...stored, ...[...drafts.keys()].filter((name) => !stored.includes(name))];
+  const [selected, setSelected] = useState<string | null>(fileNames[0] ?? null);
+  const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
+  const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
+  const hidden = (file: string) => hiddenFile(item, file) && textOf(file) === "";
+  const inFlight = new Map([...pendingSaves].flatMap((submitted) => [...submitted]));
+  const edits = configEdits(item, drafts, failedSaves, inFlight);
+  const dirty = new Set(edits.map((edit) => edit.file));
+  const unsaved = new Set([...dirty, ...[...pendingSaves].flatMap((submitted) => [...submitted.keys()])]);
+  const oversized = fileNames.map((file) => ({ file, error: configFileSizeError(utf8Bytes(textOf(file))) }))
+    .find((one) => one.error !== null);
+
+  const blocker = useBlocker({
+    shouldBlockFn: ({ current: from, next }) => unsaved.size > 0 && from.pathname !== next.pathname,
+    enableBeforeUnload: () => unsaved.size > 0,
+    withResolver: true,
+  });
+
+  function draft(file: string, change: Partial<FileDraft>) {
+    setSaveError(null);
+    setDrafts((prev) => new Map(prev).set(file, { content: prev.get(file)?.content ?? item.contents[file] ?? "", ...prev.get(file), ...change }));
+  }
+
+  function save() {
+    if (edits.length === 0 || oversized) return;
+    const submitted = new Map([...drafts].filter(([file]) => dirty.has(file)));
+    for (const file of submitted.keys()) submittedFiles.current.set(file, submitted);
+    setPendingSaves((current) => new Set(current).add(submitted));
+    setFailedSaves((current) => new Set([...current].filter((file) => !submitted.has(file))));
+    setSaveError(null);
+    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).then(() => {
+      setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
+    }).catch((error) => {
+      setFailedSaves((current) => new Set([...current, ...[...submitted.keys()].filter((file) => submittedFiles.current.get(file) === submitted)]));
+      setDrafts((current) => new Map([
+        ...[...submitted].filter(([file]) => submittedFiles.current.get(file) === submitted && !current.has(file)),
+        ...current,
+      ]));
+      if ([...submitted.keys()].some((file) => submittedFiles.current.get(file) === submitted)) {
+        setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
+      }
+    }).finally(() => {
+      setPendingSaves((current) => new Set([...current].filter((pending) => pending !== submitted)));
+    });
+  }
+
+  function removeFile(file: string) {
+    setFailedSaves((current) => new Set([...current].filter((name) => name !== file)));
+    const submitted = new Map([...drafts].filter(([name]) => name === file));
+    submittedFiles.current.set(file, submitted);
+    setDrafts((current) => new Map([...current].filter(([name]) => name !== file)));
+    if (!stored.includes(file)) return;
+    const write = writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS);
+    holdRemoved(new Set([...removed, file]), write);
+    write.catch((error) => {
+      if (submittedFiles.current.get(file) !== submitted) return;
+      setDrafts((current) => new Map([...submitted, ...current]));
+      setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
+    });
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+        <SettingsSection id="files" title="Files">
+          <SettingsWorkspace label="Files" hint="Saved files reach each mount on your next deploy.">
+          <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
+            textOf={textOf} hidden={hidden} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
+            broken={brokenFiles(diff.broken ?? [], state.config.name)} onDraft={draft} onSave={save} onRemove={removeFile}
+            onAdd={(file) => { draft(file, { content: "" }); setSelected(file); }}
+            footer={removing ? null : (
+              <div className="flex items-center justify-end gap-3">
+                {saveError ?? oversized?.error ? <FieldError className="mr-auto">{saveError ?? `${oversized?.file}: ${oversized?.error}`}</FieldError> : null}
+                {unsaved.size > 0 ? (
+                  <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setPendingSaves(new Set()); setFailedSaves(new Set()); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
+                ) : null}
+                {unsaved.size > 0 ? <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button> : null}
+                {pendingSaves.size > 0 ? <span role="status" className="text-sm text-muted-foreground">Saving…</span> : null}
+              </div>
+            )} />
+          </SettingsWorkspace>
+        </SettingsSection>
+        {removing ? <SettingsSection id="mounts" title="Mounts">
+            <SettingsEmpty title="Removed on next deploy." />
+          </SettingsSection> : <StoreConfigMounts key={state.config.id} resourceId={state.config.id} organizationSlug={state.organizationSlug}
+            environment={state.environment} configs={configs} services={services} diff={diff} />}
+        <ConfigDanger state={state} params={params} version={version} />
+      </div>
+      <AlertDialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>Edits to {[...unsaved].join(", ")} are lost.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => blocker.reset?.()}>Keep editing</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => blocker.proceed?.()}>Discard</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+/** A file's path in its Config, as the Store checks it: 1 to 4 segments of at most 255 bytes, none empty, `.` or `..`. */
+const isConfigFileName = (name: string) => {
+  const segments = name.split("/");
+  return segments.length <= 4 && segments.every((segment) =>
+    !["", ".", ".."].includes(segment) && utf8Bytes(segment) <= 255 && !/\p{Cc}/u.test(segment));
+};
+
+function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
+  broken, onDraft, onSave, onRemove, onAdd, footer }: {
+  fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
+  drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string; hidden: (file: string) => boolean;
+  targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>;
+  /** Why each file with a broken reference is broken, by name. */
+  broken: ReadonlyMap<string, string>;
+  readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
+  onAdd: (file: string) => void; footer: React.ReactNode;
+}) {
+  const ConfigFileEditor = useConfigFileEditor();
+  const [view, setView] = useState<"edit" | "preview">("edit");
+  const [adding, setAdding] = useState<{ name: string; error: string | null } | null>(null);
+  const [permissionsFor, setPermissionsFor] = useState<string | null>(null);
+  const accessOf = (file: string) => draftAccess(item.files.find((one) => one.name === file), drafts.get(file));
+
+  function add() {
+    if (!adding) return;
+    const name = adding.name.trim();
+    const error = name === "" ? "Enter a file name."
+      : !isConfigFileName(name) ? "Use a relative path, like nginx/site.conf."
+      : fileNames.includes(name) ? `${name} already exists.` : null;
+    if (error) return setAdding({ ...adding, error });
+    onAdd(name);
+    setAdding(null);
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <div role="tablist" aria-label="Files" className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          {fileNames.map((file) => {
+            const access = accessOf(file);
+            const { mode } = access;
+            const toggle = executableToggle(access);
+            const active = file === current;
+            return (
+              <div key={file} className={cn("flex items-center rounded-md border", active ? "bg-muted" : "border-transparent")}>
+                <button type="button" role="tab" aria-selected={active} onClick={() => onSelect(file)}
+                  className="flex items-center gap-1.5 py-1 pl-2.5 pr-1 font-mono text-xs">
+                  {file}
+                  {broken.has(file) ? <AlertTriangleIcon className="size-3 text-destructive" aria-label="Broken reference" /> : null}
+                  {mode === EXECUTABLE_MODE ? <span className="text-muted-foreground" title="Executable">x</span> : null}
+                  {dirty.has(file) ? <span className="size-1.5 rounded-full bg-foreground" aria-label="Unsaved" /> : null}
+                </button>
+                {readOnly ? null : (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" aria-label={`${file} options`} />}>
+                      <EllipsisIcon />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>{hidden(file) ? "Hidden" : configBytesText(utf8Bytes(textOf(file)))} · Permissions {fileAccessLabel(access)}</DropdownMenuLabel>
+                        {toggle ? (
+                          <DropdownMenuCheckboxItem checked={toggle.executable} disabled={hidden(file)}
+                            onCheckedChange={(executable) => onDraft(file, { mode: executable ? EXECUTABLE_MODE : READ_ONLY_MODE })}>
+                            Executable
+                          </DropdownMenuCheckboxItem>
+                        ) : (
+                          <DropdownMenuCheckboxItem checked={false} disabled>Executable</DropdownMenuCheckboxItem>
+                        )}
+                        <DropdownMenuItem disabled={hidden(file)} onClick={() => setPermissionsFor(file)}>Permissions…</DropdownMenuItem>
+                        <DropdownMenuItem variant="destructive" onClick={() => onRemove(file)}>Remove file</DropdownMenuItem>
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+            );
+          })}
+          {readOnly ? null : (
+            <Button variant="ghost" size={fileNames.length ? "icon-sm" : "sm"} aria-label="Add file" onClick={() => setAdding({ name: "", error: null })}>
+              <PlusIcon />{fileNames.length === 0 ? "Add file" : null}
+            </Button>
+          )}
+        </div>
+        {current === null ? null : (
+          <ToggleGroup variant="outline" size="sm" spacing={0} value={[view]}
+            onValueChange={([next]) => { if (next === "edit" || next === "preview") setView(next); }}>
+            <ToggleGroupItem value="edit">Edit</ToggleGroupItem>
+            <ToggleGroupItem value="preview">Preview</ToggleGroupItem>
+          </ToggleGroup>
+        )}
+      </div>
+      {adding ? (
+        <SettingsFormField label="File name" htmlFor="config-new-file">
+          <ConfirmableInput id="config-new-file" commit="check" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
+            autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
+            onConfirm={add} onCancel={() => setAdding(null)} />
+        </SettingsFormField>
+      ) : null}
+      {current !== null && broken.has(current) ? (
+        <p role="status" className="flex items-center gap-1 text-xs text-destructive">
+          <AlertTriangleIcon className="size-3" />Broken reference: {broken.get(current)}
+        </p>
+      ) : null}
+      {current === null ? (
+        <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
+      ) : view === "preview" ? (
+        hidden(current) ? <Empty variant="placeholder"><EmptyDescription>Hidden</EmptyDescription></Empty>
+          : <ConfigPreview text={textOf(current)} values={values} />
+      ) : ConfigFileEditor === null ? (
+        <Skeleton className="h-80 w-full" />
+      ) : (
+        <div className="max-h-[32rem] overflow-auto rounded-md border">
+          <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} values={values} services={serviceNames}
+            ariaLabel={`${current} contents`} placeholder={hidden(current) ? "Hidden" : undefined} onSave={onSave}
+            onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
+        </div>
+      )}
+      {footer}
+      {permissionsFor === null ? null : (
+        <ConfigFilePermissionsDialog file={permissionsFor} access={accessOf(permissionsFor)} onClose={() => setPermissionsFor(null)}
+          onSubmit={(change) => onDraft(permissionsFor, change)} />
+      )}
+    </div>
+  );
+}
+
+function ConfigPreview({ text, values }: { text: string; values: ReturnType<typeof configReferenceValues> }) {
+  return (
+    <pre aria-label="Preview" className="ph-no-capture max-h-[32rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5 whitespace-pre-wrap">
+      {previewSegments(text, values).map((segment, index) =>
+        segment.kind === "text" ? segment.text
+        : segment.kind === "value" ? <span key={index} className="rounded bg-primary/10 px-0.5 text-foreground">{segment.text}</span>
+        : segment.kind === "secret" ? (
+          <span key={index} className="inline-flex items-center gap-1 rounded bg-muted px-1 align-middle text-muted-foreground"
+            aria-label="Secret"><LockIcon className="size-3" />••••••</span>
+        ) : <span key={index} className="text-destructive underline decoration-wavy">{segment.text}</span>)}
+    </pre>
+  );
+}
+
+function ConfigDanger({ state, params, version }: { state: StoreConfig; params: ConfigRouteParams; version: string }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const navigate = useNavigate();
+  const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)));
+  const { config } = state;
+  const removing = config.change === "delete";
+  const mounts = config.mounts.length;
+
+  function remove() {
+    writer.commit({ command: "delete_config", environment: state.environment, config: config.name });
+    void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (prev) => prev });
+  }
+
+  return (
+    <>
+      <SettingsSection id="danger" title="Danger">
+        <SettingsDanger
+        label={removing ? "Removed on next deploy" : "Delete this config"}
+        hint={removing ? "Keep the config to undo this."
+          : mounts > 0 ? `Unmounts from ${mounts} service${mounts === 1 ? "" : "s"} on next deploy.` : "Removed on next deploy."}
+        action={removing ? (
+          <Button variant="outline" onClick={() => actions.discard(configNodePath(config.id))}>Keep config</Button>
+        ) : (
+          <Button variant="destructive" onClick={remove}>
+            <Trash2Icon data-icon="inline-start" />
+            Delete config
+          </Button>
+        )} />
+      </SettingsSection>
+      {actions.dialog}
+    </>
+  );
+}

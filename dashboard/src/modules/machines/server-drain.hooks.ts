@@ -1,21 +1,18 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { moveServers, placementBlockers, unroutedServers } from "#/modules/volume-placement/daemon-release";
+import { moveServers, placementBlockers, unroutedServers } from "#/modules/runtime/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { drainView, type DrainView, stuckMessage } from "./server-drain-view";
 import { requestServerDrainServerFn } from "./server-drain.functions";
-import { serverDrainKeys, useServerDrains } from "./server-drain.queries";
-
-/** How long a click reads as starting before its row arrives; past it, the request was lost. */
-const PENDING_MS = 60_000;
+import { serverDrains } from "./server-drain.queries";
+import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 
 export type ServerDrain = {
   readonly view: DrainView;
-  /** Open the confirm dialog. */
   readonly ask: () => void;
   readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: (stops: readonly string[]) => void };
 };
@@ -33,20 +30,13 @@ export function useServerDrain(
   servers: ReadonlyArray<{ readonly machine: { readonly id: string }; readonly name: string }>,
 ): ServerDrain {
   const queryClient = useQueryClient();
-  const { servers: latest } = useServerDrains(organizationSlug);
+  const { servers: latest } = serverDrains.useLatest(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
-  const [requested, setRequested] = useState<string | null>(null);
+  const [requested, setRequested] = usePendingAttempt<string, string | undefined>(
+    latest[server.id]?.attemptId,
+    (attemptId, latestId) => latestId === attemptId,
+  );
   const [open, setOpen] = useState(false);
-  const arrived = requested !== null && latest[server.id]?.attemptId === requested;
-
-  useEffect(() => {
-    if (arrived) setRequested(null);
-  }, [arrived]);
-  useEffect(() => {
-    if (requested === null) return;
-    const timer = setTimeout(() => setRequested(null), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [requested]);
 
   const stageOff = () => {
     if (placementBlockers(machines).length > 0) return;
@@ -68,7 +58,7 @@ export function useServerDrain(
         setRequested((current) => (current === requestId ? answer.drain.attemptId : current));
         stageOff();
         // The change stream brings the row too; this covers a tab whose stream is reconnecting.
-        void queryClient.invalidateQueries({ queryKey: serverDrainKeys.all });
+        void queryClient.invalidateQueries({ queryKey: serverDrains.keys.all });
       },
       (error: Error) => {
         setRequested((current) => (current === requestId ? null : current));

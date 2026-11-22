@@ -11,6 +11,7 @@ use ployz_core::{ImageSummary, ListImagesRequest, MachineObservation};
 
 use super::*;
 
+#[cfg(test)]
 /// Transfer the completed image directly from its Build Machine. The client
 /// neither inspects Docker nor carries image bytes or selects another source.
 /// # Errors
@@ -249,10 +250,7 @@ fn stored<'store>(store: &'store MachineImages, image: &str) -> Option<&'store I
     if !store.containerd_store {
         return None;
     }
-    let digest = image
-        .rsplit_once('@')
-        .map(|(_, digest)| digest)
-        .or_else(|| image.starts_with("sha256:").then_some(image));
+    let digest = ployz_core::ImageRef::new(image).content_text();
     store.images.iter().find(|summary| match digest {
         Some(digest) => summary.id == digest,
         None => summary

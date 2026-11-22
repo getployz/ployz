@@ -311,6 +311,11 @@ pub(crate) fn last<S: Clone, A>(path: &[(S, Option<A>)]) -> S {
     path.last().expect("a path has a state").0.clone()
 }
 
+/// The last step taken was `branch`.
+pub(crate) fn took<B: PartialEq>(taken: Option<B>, branch: B) -> bool {
+    taken == Some(branch)
+}
+
 /// `action` was taken somewhere on `path`.
 pub(crate) fn took_action<S, A: PartialEq>(path: &[(S, Option<A>)], action: A) -> bool {
     path.iter()

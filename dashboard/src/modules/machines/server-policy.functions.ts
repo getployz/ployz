@@ -2,8 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
@@ -11,7 +10,7 @@ import {
 export const requestServerPolicyChangeServerFn = createServerFn({
   method: "POST",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(RequestServerPolicyChangeInput))
   .handler(({ context, data }) =>
     runActor(context, requestServerPolicyChange(context.actor, data)),

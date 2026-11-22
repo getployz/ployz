@@ -1,5 +1,8 @@
+//! The Corrosion stand-in tests run against: an in-memory SQLite database that
+//! holds the real `schema.sql`, served over Corrosion's HTTP API.
+
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     convert::Infallible,
     hash::{BuildHasher, RandomState},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -14,40 +17,51 @@ use axum::{
     routing::post,
 };
 use futures_util::{StreamExt, stream};
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
 
-use super::{ApiClient, ReplicatedStore, store::tombstone::Tombstone};
+use super::{
+    ApiClient, ReplicatedStore,
+    store::{SEALING_AWAITS_RECOVERY_CLUSTER_KEY, SEALING_PUBLIC_KEY_CLUSTER_KEY},
+};
 
-#[derive(Clone)]
-struct ClusterKv {
-    network: Option<String>,
-    name: Option<String>,
-    doors: Option<String>,
-    /// The awaited Sealing public key as it stood when the network was written,
-    /// so a test awaits the write instead of polling.
-    network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
-    sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
-    sealing_awaits_recovery: Option<String>,
-    machines: BTreeMap<String, String>,
-    /// Machine IDs whose row was deleted and not written since: the deletion evidence
-    /// `machines__crsql_pks` keeps.
-    deleted_machines: BTreeSet<String>,
-    containers: BTreeMap<String, (String, String)>,
-    volumes: BTreeMap<(String, String), String>,
-    ingress_routes: BTreeMap<(String, String), String>,
-    container_changes: broadcast::Sender<()>,
-    container_feed: ContainerFeed,
-    machine_changes: broadcast::Sender<()>,
-    /// No test writes a certificate; this only keeps the empty table's subscription open.
-    certificate_changes: broadcast::Sender<()>,
-    subscriptions: bool,
-    snapshots_fail: bool,
-    tokens: Vec<String>,
-    /// Counts subscription requests, so a test awaits a subscribe instead of polling.
-    subscribed: tokio::sync::watch::Sender<usize>,
-    held: Option<HeldQuery>,
+const CONTAINERS: &str = "containers";
+const CLUSTER: &str = "cluster";
+const NETWORK_KEY: &str = "network";
+const DEFAULT_NETWORK: &str = "10.210.0.0/16";
+
+/// Corrosion re-renders schema.sql before creating its tables, which declares
+/// the SQLite keyword column `key` as `KEY`; an unaliased `SELECT key` then
+/// reports `KEY`.
+pub(crate) fn corrosion_db() -> rusqlite::Connection {
+    let schema = include_str!("schema.sql").replacen("    key  ", "    KEY  ", 1);
+    assert_ne!(schema, include_str!("schema.sql"));
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(&schema).unwrap();
+    crsql_stand_ins(&db);
+    // cr-sqlite keeps a Machine's key after its row is deleted: the deletion evidence.
+    db.execute_batch(
+        "CREATE TRIGGER machines_crsql_pks AFTER INSERT ON machines BEGIN
+             INSERT OR IGNORE INTO machines__crsql_pks (id) VALUES (NEW.id);
+         END;",
+    )
+    .unwrap();
+    db
+}
+
+/// The cr-sqlite and Corrosion tables [`super::store::crsql`] reads, as the test double
+/// has no extension to create them. Their shapes are the ones the pinned image's
+/// `corrosion::integration_tests` exercise.
+pub(crate) fn crsql_stand_ins(db: &rusqlite::Connection) {
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id UNIQUE);
+         CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
 }
 
 /// What an open Container subscription sends when a Container row changes.
@@ -60,40 +74,164 @@ pub(crate) enum ContainerFeed {
     StalledSnapshot,
 }
 
-#[derive(Clone)]
+/// Holds one answer of the fake, as `FakeCluster::hold_query` does.
+#[derive(Clone, Default)]
+pub(crate) struct QueryHold(Arc<Mutex<Option<HeldQuery>>>);
+
 struct HeldQuery {
     query: String,
     nth: usize,
     gate: Arc<tokio::sync::Barrier>,
 }
 
-impl ClusterKv {
-    fn new(subscriptions: bool) -> Self {
-        let (container_changes, _) = broadcast::channel(16);
-        let (machine_changes, _) = broadcast::channel(16);
-        let (certificate_changes, _) = broadcast::channel(16);
+impl QueryHold {
+    /// Hold the answer to the `nth` run of `query` from now, read before the hold, until the
+    /// returned gate is waited on twice: once to see it held, once to release it.
+    pub(crate) fn hold(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *self.0.lock().unwrap() = Some(HeldQuery {
+            query: query.to_owned(),
+            nth,
+            gate: Arc::clone(&gate),
+        });
+        gate
+    }
+
+    fn due(&self, query: &str) -> Option<Arc<tokio::sync::Barrier>> {
+        let mut held = self.0.lock().unwrap();
+        let due = held.as_mut().is_some_and(|held| {
+            if held.query == query {
+                held.nth -= 1;
+            }
+            held.nth == 0
+        });
+        if due {
+            held.take().map(|held| held.gate)
+        } else {
+            None
+        }
+    }
+}
+
+struct Cluster {
+    db: rusqlite::Connection,
+    /// The `(table, rowid)` of each row a write changed, drained after each write.
+    touched: Arc<Mutex<Vec<(String, i64)>>>,
+    changes: HashMap<String, broadcast::Sender<()>>,
+    /// The awaited Sealing public key as it stood when the network was written,
+    /// so a test awaits the write instead of polling.
+    network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
+    sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
+    container_feed: ContainerFeed,
+    subscriptions: bool,
+    snapshots_fail: bool,
+    tokens: Vec<String>,
+    /// Counts subscription requests, so a test awaits a subscribe instead of polling.
+    subscribed: tokio::sync::watch::Sender<usize>,
+    hold: QueryHold,
+}
+
+type Shared = Arc<Mutex<Cluster>>;
+
+impl Cluster {
+    fn new(db: rusqlite::Connection, subscriptions: bool) -> Self {
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let hook = Arc::clone(&touched);
+        db.update_hook(Some(move |_, _: &str, table: &str, rowid| {
+            hook.lock().unwrap().push((table.to_owned(), rowid));
+        }))
+        .unwrap();
         Self {
-            network: Some("10.210.0.0/16".into()),
-            name: None,
-            doors: None,
+            db,
+            touched,
+            changes: HashMap::new(),
             network_written: tokio::sync::watch::Sender::new(None),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
-            sealing_awaits_recovery: None,
-            machines: BTreeMap::new(),
-            deleted_machines: BTreeSet::new(),
-            containers: BTreeMap::new(),
-            volumes: BTreeMap::new(),
-            ingress_routes: BTreeMap::new(),
-            container_changes,
             container_feed: ContainerFeed::Changes,
-            machine_changes,
-            certificate_changes,
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
             subscribed: tokio::sync::watch::Sender::new(0),
-            held: None,
+            hold: QueryHold::default(),
         }
+    }
+
+    fn with_network(self) -> Self {
+        self.db
+            .execute(
+                "INSERT INTO cluster (key, value) VALUES (?, ?)",
+                [NETWORK_KEY, DEFAULT_NETWORK],
+            )
+            .unwrap();
+        self.touched.lock().unwrap().clear();
+        self
+    }
+
+    fn changes(&mut self, table: &str) -> &broadcast::Sender<()> {
+        self.changes
+            .entry(table.to_owned())
+            .or_insert_with(|| broadcast::channel(16).0)
+    }
+
+    fn cluster_value(&self, key: &str) -> Option<String> {
+        self.db
+            .query_row("SELECT value FROM cluster WHERE key = ?", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    }
+
+    /// Tells the subscriptions and watches what the last write changed.
+    fn notify(&mut self) {
+        let touched = std::mem::take(&mut *self.touched.lock().unwrap());
+        let tables: BTreeSet<&str> = touched.iter().map(|(table, _)| table.as_str()).collect();
+        for table in tables {
+            let _ = self.changes(table).send(());
+        }
+        let network_written = touched.iter().any(|(table, rowid)| {
+            table == CLUSTER
+                && self
+                    .db
+                    .query_row("SELECT key FROM cluster WHERE rowid = ?", [rowid], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .is_ok_and(|key| key == NETWORK_KEY)
+        });
+        if network_written {
+            let awaited = self.cluster_value(SEALING_AWAITS_RECOVERY_CLUSTER_KEY);
+            self.network_written.send_replace(Some(awaited));
+        }
+        let published = self.cluster_value(SEALING_PUBLIC_KEY_CLUSTER_KEY);
+        self.sealing_public_key.send_if_modified(|key| {
+            let changed = *key != published;
+            key.clone_from(&published);
+            changed
+        });
+    }
+
+    fn write(&mut self, sql: &str, params: impl rusqlite::Params) {
+        self.db.execute(sql, params).unwrap();
+        self.notify();
+    }
+
+    /// The tables `query` reads.
+    fn reads(&self, query: &str) -> BTreeSet<String> {
+        let tables = Arc::new(Mutex::new(BTreeSet::new()));
+        let seen = Arc::clone(&tables);
+        self.db
+            .authorizer(Some(move |context: AuthContext<'_>| {
+                if let AuthAction::Read { table_name, .. } = context.action {
+                    seen.lock().unwrap().insert(table_name.to_owned());
+                }
+                Authorization::Allow
+            }))
+            .unwrap();
+        let prepared = self.db.prepare(query).map(drop);
+        self.db
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        prepared.unwrap_or_else(|error| panic!("unexpected query {query}: {error}"));
+        std::mem::take(&mut *tables.lock().unwrap())
     }
 }
 
@@ -110,31 +248,42 @@ struct Statement {
 }
 
 pub(crate) async fn store() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(false).await
+    serve(Cluster::new(corrosion_db(), false).with_network()).await
 }
 
 /// A store whose Machine and Container subscriptions fire on every publish.
 pub(crate) async fn store_with_subscriptions() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    bind(true).await
+    serve(Cluster::new(corrosion_db(), true).with_network()).await
 }
 
 /// A store the founder's publisher has not yet written the Cluster network to.
 pub(crate) async fn store_without_network() -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    let mut kv = ClusterKv::new(false);
-    kv.network = None;
-    serve(kv).await
+    serve(Cluster::new(corrosion_db(), false)).await
 }
 
-async fn bind(with_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    serve(ClusterKv::new(with_subscriptions)).await
+/// Exercise the store API against `db`'s rows, including corrupt imported documents.
+pub(crate) async fn identity_store(
+    db: rusqlite::Connection,
+) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    serve(Cluster::new(db, false)).await
 }
 
-async fn serve(kv: ClusterKv) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+/// `identity_store` with a hold on the answers to its queries.
+pub(crate) async fn held_identity_store(
+    db: rusqlite::Connection,
+) -> (ReplicatedStore, QueryHold, tokio::task::JoinHandle<()>) {
+    let cluster = Cluster::new(db, false);
+    let hold = cluster.hold.clone();
+    let (store, task) = serve(cluster).await;
+    (store, hold, task)
+}
+
+async fn serve(cluster: Cluster) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let kv = Arc::new(Mutex::new(kv));
+    let cluster = Arc::new(Mutex::new(cluster));
     let server = tokio::spawn(async move {
-        axum::serve(listener, router(kv)).await.unwrap();
+        axum::serve(listener, router(cluster)).await.unwrap();
     });
     (
         ReplicatedStore::new(ApiClient::http1(address, &test_token()).unwrap()),
@@ -142,12 +291,12 @@ async fn serve(kv: ClusterKv) -> (ReplicatedStore, tokio::task::JoinHandle<()>) 
     )
 }
 
-fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
+fn router(cluster: Shared) -> Router {
     Router::new()
         .route("/v1/queries", post(queries))
         .route("/v1/transactions", post(transactions))
         .route("/v1/subscriptions", post(subscriptions))
-        .with_state(kv)
+        .with_state(cluster)
 }
 
 /// A loopback address that stays free after a test releases it. The kernel
@@ -169,7 +318,7 @@ pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
 /// address.
 pub(crate) struct FakeCluster {
     address: SocketAddr,
-    kv: Arc<Mutex<ClusterKv>>,
+    cluster: Shared,
     runtime: Option<tokio::runtime::Runtime>,
     /// Disconnects once the serving task, and with it the listener, is dropped.
     serving: Option<std::sync::mpsc::Receiver<()>>,
@@ -178,14 +327,16 @@ pub(crate) struct FakeCluster {
 impl FakeCluster {
     pub(crate) fn start() -> Self {
         let listener = std::net::TcpListener::bind(unclaimed_loopback()).unwrap();
-        let mut cluster = Self {
+        let mut fake = Self {
             address: listener.local_addr().unwrap(),
-            kv: Arc::new(Mutex::new(ClusterKv::new(true))),
+            cluster: Arc::new(Mutex::new(
+                Cluster::new(corrosion_db(), true).with_network(),
+            )),
             runtime: None,
             serving: None,
         };
-        cluster.serve(listener);
-        cluster
+        fake.serve(listener);
+        fake
     }
 
     pub(crate) fn address(&self) -> SocketAddr {
@@ -216,67 +367,70 @@ impl FakeCluster {
     }
 
     pub(crate) fn feed_container_changes(&self, feed: ContainerFeed) {
-        self.kv.lock().unwrap().container_feed = feed;
+        self.cluster.lock().unwrap().container_feed = feed;
     }
 
+    /// Fail every read of the whole Container table, as a snapshot does.
     pub(crate) fn fail_snapshots(&self, fail: bool) {
-        self.kv.lock().unwrap().snapshots_fail = fail;
+        self.cluster.lock().unwrap().snapshots_fail = fail;
     }
 
     /// Hold the answer to the `nth` run of `query`, read before the hold, until the
     /// returned gate is waited on twice: once to see it held, once to release it.
     pub(crate) fn hold_query(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
-        let gate = Arc::new(tokio::sync::Barrier::new(2));
-        self.kv.lock().unwrap().held = Some(HeldQuery {
-            query: query.to_owned(),
-            nth,
-            gate: Arc::clone(&gate),
-        });
-        gate
+        self.cluster.lock().unwrap().hold.hold(query, nth)
     }
 
+    /// Write a route row whose containers are not a list of Container IDs.
     pub(crate) fn write_undecodable_route(&self, machine: &str, service: &str) {
-        let mut kv = self.kv.lock().unwrap();
-        kv.ingress_routes.insert(
-            (machine.to_owned(), service.to_owned()),
-            "not json".to_owned(),
+        self.cluster.lock().unwrap().write(
+            "INSERT INTO ingress_routes (machine_id, service_id, containers) \
+             VALUES (?, ?, '{\"not\":\"routes\"}')",
+            [machine, service],
         );
     }
 
     /// Write a Machine row whose document has not fully replicated.
     pub(crate) fn write_incomplete_machine(&self, machine: &str) {
-        let mut kv = self.kv.lock().unwrap();
-        kv.machines.insert(machine.to_owned(), "{}".to_owned());
-        let _ = kv.machine_changes.send(());
+        self.cluster.lock().unwrap().write(
+            "INSERT INTO machines (id, info) VALUES (?, '{}')",
+            [machine],
+        );
     }
 
     pub(crate) async fn sealing_public_key(&self) -> String {
-        let mut published = self.kv.lock().unwrap().sealing_public_key.subscribe();
+        let mut published = self.cluster.lock().unwrap().sealing_public_key.subscribe();
         let key = published.wait_for(Option::is_some).await.unwrap();
         key.clone().unwrap()
     }
 
     pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
-        self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
+        self.cluster.lock().unwrap().write(
+            "INSERT INTO cluster (key, value) VALUES (?, ?)",
+            [SEALING_AWAITS_RECOVERY_CLUSTER_KEY, key],
+        );
     }
 
     /// The awaited Sealing public key as it stood when the Cluster network was written.
     pub(crate) async fn awaited_key_at_network(&self) -> Option<String> {
-        let mut written = self.kv.lock().unwrap().network_written.subscribe();
+        let mut written = self.cluster.lock().unwrap().network_written.subscribe();
         let awaited = written.wait_for(Option::is_some).await.unwrap();
         awaited.clone().unwrap()
     }
 
     pub(crate) fn clear_network(&self) {
-        self.kv.lock().unwrap().network = None;
+        self.cluster
+            .lock()
+            .unwrap()
+            .write("DELETE FROM cluster WHERE key = ?", [NETWORK_KEY]);
     }
 
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
-        self.kv.lock().unwrap().tokens.clone()
+        self.cluster.lock().unwrap().tokens.clone()
     }
 
     pub(crate) async fn subscriptions(&self, count: usize) {
-        let mut subscribed = self.kv.lock().unwrap().subscribed.subscribe();
+        let mut subscribed = self.cluster.lock().unwrap().subscribed.subscribe();
         subscribed.wait_for(|seen| *seen >= count).await.unwrap();
     }
 
@@ -287,12 +441,12 @@ impl FakeCluster {
             .enable_all()
             .build()
             .unwrap();
-        let kv = self.kv.clone();
+        let cluster = self.cluster.clone();
         let (serving, stopped) = std::sync::mpsc::channel();
         runtime.spawn(async move {
             let _serving = serving;
             let listener = TcpListener::from_std(listener).unwrap();
-            axum::serve(listener, router(kv)).await.unwrap();
+            axum::serve(listener, router(cluster)).await.unwrap();
         });
         self.runtime = Some(runtime);
         self.serving = Some(stopped);
@@ -305,404 +459,178 @@ impl Drop for FakeCluster {
     }
 }
 
-async fn queries(
-    State(kv): State<Arc<Mutex<ClusterKv>>>,
-    body: Bytes,
-) -> Result<Vec<u8>, StatusCode> {
+async fn queries(State(cluster): State<Shared>, body: Bytes) -> Result<Vec<u8>, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    let gate = {
-        let mut kv = kv.lock().unwrap();
-        let due = kv.held.as_mut().is_some_and(|held| {
-            if held.query == statement.query {
-                held.nth -= 1;
-            }
-            held.nth == 0
-        });
-        if due {
-            kv.held.take().map(|held| held.gate)
+    let (gate, answer) = {
+        let cluster = cluster.lock().unwrap();
+        let gate = cluster.hold.due(&statement.query);
+        let answer = if cluster.snapshots_fail
+            && statement.params.is_empty()
+            && cluster.reads(&statement.query).contains(CONTAINERS)
+        {
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         } else {
-            None
-        }
+            Ok(query(&cluster.db, &statement))
+        };
+        (gate, answer)
     };
-    let answer = query(&kv, statement);
     if let Some(gate) = gate {
         gate.wait().await;
         gate.wait().await;
     }
-    answer.map(Into::into)
+    answer
 }
 
-async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> Vec<u8> {
-    execute(&kv, serde_json::from_slice(&body).unwrap()).into()
+fn query(db: &rusqlite::Connection, request: &Statement) -> Vec<u8> {
+    let mut statement = db
+        .prepare(&request.query)
+        .unwrap_or_else(|error| panic!("unexpected query {}: {error}", request.query));
+    let columns = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    let mut rows = statement
+        .query(rusqlite::params_from_iter(
+            request.params.iter().map(sql_param),
+        ))
+        .unwrap();
+    let mut response = serde_json::to_vec(&json!({"columns": columns})).unwrap();
+    let mut index = 0;
+    while let Some(row) = rows.next().unwrap() {
+        index += 1;
+        let values = (0..columns.len())
+            .map(|i| match row.get_ref(i).unwrap() {
+                rusqlite::types::ValueRef::Null => Value::Null,
+                rusqlite::types::ValueRef::Integer(value) => json!(value),
+                rusqlite::types::ValueRef::Text(value) => {
+                    json!(std::str::from_utf8(value).unwrap())
+                }
+                rusqlite::types::ValueRef::Blob(value) => json!(value),
+                value @ rusqlite::types::ValueRef::Real(_) => {
+                    panic!("unsupported test row value: {value:?}")
+                }
+            })
+            .collect::<Vec<_>>();
+        response.extend(serde_json::to_vec(&json!({"row": [index, values]})).unwrap());
+    }
+    response.extend(br#"{"eoq":{"time":0.0}}"#);
+    response
+}
+
+/// Runs the statements as one transaction, as Corrosion does: a failed statement
+/// rolls back the ones before it.
+async fn transactions(State(cluster): State<Shared>, body: Bytes) -> Vec<u8> {
+    let statements: Vec<Statement> = serde_json::from_slice(&body).unwrap();
+    let mut cluster = cluster.lock().unwrap();
+    cluster.db.execute_batch("BEGIN").unwrap();
+    let mut results = Vec::new();
+    let mut failed = false;
+    for statement in &statements {
+        let params = statement.params.iter().map(sql_param);
+        match cluster
+            .db
+            .execute(&statement.query, rusqlite::params_from_iter(params))
+        {
+            Ok(affected) => results.push(json!({"rows_affected": affected, "time": 0.0})),
+            Err(error) => {
+                results.push(json!({"error": error.to_string()}));
+                failed = true;
+                break;
+            }
+        }
+    }
+    if failed {
+        cluster.db.execute_batch("ROLLBACK").unwrap();
+        cluster.touched.lock().unwrap().clear();
+    } else {
+        cluster.db.execute_batch("COMMIT").unwrap();
+        cluster.notify();
+    }
+    serde_json::to_vec(&json!({"results": results, "time": 0.0})).unwrap()
 }
 
 async fn subscriptions(
-    State(kv): State<Arc<Mutex<ClusterKv>>>,
+    State(shared): State<Shared>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    let shared = Arc::clone(&kv);
-    let mut kv = kv.lock().unwrap();
-    kv.subscribed.send_modify(|seen| *seen += 1);
+    let mut cluster = shared.lock().unwrap();
+    cluster.subscribed.send_modify(|seen| *seen += 1);
     if let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     {
-        kv.tokens.push(token.to_owned());
+        cluster.tokens.push(token.to_owned());
     }
-    if !kv.subscriptions {
+    if !cluster.subscriptions {
         return Err(StatusCode::NOT_FOUND);
     }
-    let (receiver, columns, containers) = match statement.query.as_str() {
-        "SELECT id, machine_id, container FROM containers" => (
-            kv.container_changes.subscribe(),
-            "{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-            true,
-        ),
-        "SELECT id, info FROM machines" => (
-            kv.machine_changes.subscribe(),
-            "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-            false,
-        ),
-        "SELECT hostname, body FROM certificates" => (
-            kv.certificate_changes.subscribe(),
-            "{\"columns\":[\"hostname\",\"body\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-            false,
-        ),
-        query => panic!("unexpected subscription {query}"),
-    };
-    drop(kv);
-    let snapshot =
-        stream::once(async move { Ok::<_, Infallible>(Bytes::from_static(columns.as_bytes())) });
-    let changes = stream::unfold(receiver, move |mut receiver| {
-        let kv = Arc::clone(&shared);
-        async move {
-            loop {
-                match receiver.recv().await {
-                    Ok(()) => {
-                        let feed = if containers {
-                            kv.lock().unwrap().container_feed
-                        } else {
-                            ContainerFeed::Changes
-                        };
-                        let event: &'static [u8] = match feed {
-                            ContainerFeed::Changes => b"{\"change\":{}}\n",
-                            ContainerFeed::Silent => continue,
-                            ContainerFeed::StalledSnapshot => {
-                                b"{\"columns\":[\"id\",\"machine_id\",\"container\"]}\n"
-                            }
-                        };
-                        return Some((Ok::<_, Infallible>(Bytes::from_static(event)), receiver));
+    let tables = cluster.reads(&statement.query);
+    let containers = tables.contains(CONTAINERS);
+    let feeds: Vec<_> = tables
+        .iter()
+        .map(|table| {
+            stream::unfold(
+                cluster.changes(table).subscribe(),
+                |mut receiver| async move {
+                    loop {
+                        match receiver.recv().await {
+                            Ok(()) => return Some(((), receiver)),
+                            Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(broadcast::error::RecvError::Closed) => return None,
+                        }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return None,
-                }
-            }
-        }
+                },
+            )
+            .boxed()
+        })
+        .collect();
+    let columns = Bytes::from(query_columns(&cluster.db, &statement.query));
+    drop(cluster);
+    let mut header = columns.to_vec();
+    header.extend(b"{\"eoq\":{\"time\":0.0}}\n");
+    let snapshot = stream::once(async move { Ok::<_, Infallible>(Bytes::from(header)) });
+    let changes = stream::select_all(feeds).filter_map(move |()| {
+        let feed = if containers {
+            shared.lock().unwrap().container_feed
+        } else {
+            ContainerFeed::Changes
+        };
+        let event = match feed {
+            ContainerFeed::Changes => Some(Bytes::from_static(b"{\"change\":{}}\n")),
+            ContainerFeed::Silent => None,
+            ContainerFeed::StalledSnapshot => Some(columns.clone()),
+        };
+        std::future::ready(event.map(Ok::<_, Infallible>))
     });
     Ok(Body::from_stream(snapshot.chain(changes)))
 }
 
-fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCode> {
-    let kv = kv.lock().unwrap();
-    Ok(match statement.query.as_str() {
-        "SELECT id, machine_id, container FROM containers ORDER BY id" => {
-            if kv.snapshots_fail {
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-            events(
-                &["id", "machine_id", "container"],
-                kv.containers.iter().map(|(id, (owner, container))| {
-                    vec![json!(id), json!(owner), json!(container)]
-                }),
-            )
-        }
-        "SELECT id, info FROM machines ORDER BY name" => events(
-            &["id", "info"],
-            kv.machines
-                .iter()
-                .map(|(id, info)| vec![json!(id), json!(info)]),
-        ),
-        "SELECT info FROM machines WHERE id = ?" => {
-            let id = text_param(&statement.params, 0);
-            events(&["info"], kv.machines.get(id).map(|info| vec![json!(info)]))
-        }
-        "SELECT machine_id, container FROM containers WHERE id = ?" => {
-            let id = text_param(&statement.params, 0);
-            events(
-                &["machine_id", "container"],
-                kv.containers
-                    .get(id)
-                    .map(|(owner, container)| vec![json!(owner), json!(container)]),
-            )
-        }
-        "SELECT id, container FROM containers WHERE machine_id = ? ORDER BY id" => {
-            let machine_id = text_param(&statement.params, 0);
-            events(
-                &["id", "container"],
-                kv.containers
-                    .iter()
-                    .filter(|(_, (owner, _))| owner == machine_id)
-                    .map(|(id, (_, container))| vec![json!(id), json!(container)]),
-            )
-        }
-        "SELECT name, volume FROM volumes WHERE machine_id = ? ORDER BY name" => {
-            let machine_id = text_param(&statement.params, 0);
-            events(
-                &["name", "volume"],
-                kv.volumes
-                    .iter()
-                    .filter(|((owner, _), _)| owner == machine_id)
-                    .map(|((_, name), volume)| vec![json!(name), json!(volume)]),
-            )
-        }
-        "SELECT container FROM containers WHERE id = ?" => {
-            let id = text_param(&statement.params, 0);
-            events(
-                &["container"],
-                kv.containers
-                    .get(id)
-                    .map(|(_, container)| vec![json!(container)]),
-            )
-        }
-        "SELECT machine_id, name, volume FROM volumes ORDER BY machine_id, name" => events(
-            &["machine_id", "name", "volume"],
-            kv.volumes.iter().map(|((machine_id, name), volume)| {
-                vec![json!(machine_id), json!(name), json!(volume)]
-            }),
-        ),
-        "SELECT volume FROM volumes WHERE machine_id = ? AND name = ?" => {
-            let key = (
-                text_param(&statement.params, 0).to_owned(),
-                text_param(&statement.params, 1).to_owned(),
-            );
-            events(
-                &["volume"],
-                kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
-            )
-        }
-        "SELECT value FROM cluster WHERE key = ?" => {
-            let value = match text_param(&statement.params, 0) {
-                "sealing_public_key" => kv.sealing_public_key.borrow().clone(),
-                "sealing_awaits_recovery" => kv.sealing_awaits_recovery.clone(),
-                _ => None,
-            };
-            events(&["value"], value.map(|value| vec![json!(value)]))
-        }
-        super::store::CLUSTER_SEALING_QUERY => events(
-            &["published", "awaits"],
-            [vec![
-                json!(kv.sealing_public_key.borrow().clone()),
-                json!(kv.sealing_awaits_recovery.clone()),
-            ]],
-        ),
-        "SELECT value FROM cluster WHERE key = 'name'" => {
-            events(&["value"], kv.name.iter().map(|name| vec![json!(name)]))
-        }
-        "SELECT value FROM cluster WHERE key = 'doors'" => {
-            events(&["value"], kv.doors.iter().map(|doors| vec![json!(doors)]))
-        }
-        "SELECT value FROM cluster WHERE key = 'network'" => events(
-            &["value"],
-            kv.network.iter().map(|network| vec![json!(network)]),
-        ),
-        "SELECT machine_id, service_id, containers FROM ingress_routes" => events(
-            &["machine_id", "service_id", "containers"],
-            kv.ingress_routes
-                .iter()
-                .map(|((machine_id, service_id), containers)| {
-                    vec![json!(machine_id), json!(service_id), json!(containers)]
-                }),
-        ),
-        "SELECT machine_id, service_id, containers FROM ingress_routes WHERE service_id = ?" => {
-            let service_id = text_param(&statement.params, 0);
-            events(
-                &["machine_id", "service_id", "containers"],
-                kv.ingress_routes
-                    .iter()
-                    .filter(|((_, routed), _)| routed == service_id)
-                    .map(|((machine_id, service_id), containers)| {
-                        vec![json!(machine_id), json!(service_id), json!(containers)]
-                    }),
-            )
-        }
-        "SELECT hostname, body FROM certificates ORDER BY hostname" => {
-            events(&["hostname", "body"], Vec::new())
-        }
-        "SELECT body FROM certificates WHERE hostname = ?" => events(&["body"], None::<Vec<Value>>),
-        super::store::crsql::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
-        query if query.starts_with("SELECT id FROM machines__crsql_pks WHERE id IN (") => events(
-            &["id"],
-            statement
-                .params
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|id| kv.deleted_machines.contains(*id))
-                .map(|id| vec![json!(id)]),
-        ),
-        query => panic!("unexpected query {query}"),
-    })
+/// The `columns` event that opens an answer to `query`.
+fn query_columns(db: &rusqlite::Connection, query: &str) -> Vec<u8> {
+    let statement = db.prepare(query).unwrap();
+    let mut columns = serde_json::to_vec(&json!({"columns": statement.column_names()})).unwrap();
+    columns.push(b'\n');
+    columns
 }
 
-fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
-    let mut kv = kv.lock().unwrap();
-    for statement in &statements {
-        match statement.query.as_str() {
-            query if query.starts_with("INSERT INTO machines (id, info)") => {
-                let id = text_param(&statement.params, 0);
-                // A Register's insert, like the real one, never writes over a deleted row.
-                if query.contains("machines__crsql_pks")
-                    && !kv.machines.contains_key(id)
-                    && kv.deleted_machines.contains(id)
-                {
-                    continue;
-                }
-                kv.deleted_machines.remove(id);
-                kv.machines.insert(
-                    text_param(&statement.params, 0).to_owned(),
-                    text_param(&statement.params, 1).to_owned(),
-                );
-                let _ = kv.machine_changes.send(());
-            }
-            query
-                if query.starts_with("INSERT INTO cluster (key, value) VALUES ('network', ?)") =>
-            {
-                kv.network = Some(text_param(&statement.params, 0).to_owned());
-                let awaited = kv.sealing_awaits_recovery.clone();
-                kv.network_written.send_replace(Some(awaited));
-            }
-            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('name', ?)") => {
-                kv.name = Some(text_param(&statement.params, 0).to_owned());
-            }
-            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('doors', ?)") => {
-                kv.doors = Some(text_param(&statement.params, 0).to_owned());
-            }
-            query
-                if query.starts_with(
-                    "INSERT INTO cluster (key, value) VALUES ('sealing_public_key', ?)",
-                ) =>
-            {
-                if kv.sealing_public_key.borrow().is_none() {
-                    kv.sealing_public_key
-                        .send_replace(Some(text_param(&statement.params, 0).to_owned()));
-                }
-            }
-            query
-                if query.starts_with(
-                    "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', ?)",
-                ) =>
-            {
-                if kv.sealing_awaits_recovery.is_none() {
-                    kv.sealing_awaits_recovery = Some(text_param(&statement.params, 0).to_owned());
-                }
-            }
-            // The fake keeps no tombstones; a forget here only removes the rows below.
-            query if Tombstone::is_forget(query) => {}
-            query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
-                kv.volumes.insert(
-                    (
-                        text_param(&statement.params, 0).to_owned(),
-                        text_param(&statement.params, 1).to_owned(),
-                    ),
-                    text_param(&statement.params, 2).to_owned(),
-                );
-            }
-            query if query.starts_with("INSERT INTO containers (id, container,") => {
-                kv.containers.insert(
-                    text_param(&statement.params, 0).to_owned(),
-                    (
-                        text_param(&statement.params, 2).to_owned(),
-                        text_param(&statement.params, 1).to_owned(),
-                    ),
-                );
-                let _ = kv.container_changes.send(());
-            }
-            query if query.starts_with("INSERT INTO ingress_routes (machine_id, service_id,") => {
-                kv.ingress_routes.insert(
-                    (
-                        text_param(&statement.params, 0).to_owned(),
-                        text_param(&statement.params, 1).to_owned(),
-                    ),
-                    text_param(&statement.params, 2).to_owned(),
-                );
-            }
-            "DELETE FROM ingress_routes WHERE machine_id = ?" => {
-                let machine_id = text_param(&statement.params, 0);
-                kv.ingress_routes
-                    .retain(|(owner, _), _| owner != machine_id);
-            }
-            query if query.starts_with("DELETE FROM ingress_routes") => {
-                kv.ingress_routes.remove(&(
-                    text_param(&statement.params, 0).to_owned(),
-                    text_param(&statement.params, 1).to_owned(),
-                ));
-            }
-            "DELETE FROM containers WHERE id = ? AND machine_id = ?" => {
-                let id = text_param(&statement.params, 0);
-                if kv
-                    .containers
-                    .get(id)
-                    .is_some_and(|(owner, _)| owner == text_param(&statement.params, 1))
-                {
-                    kv.containers.remove(id);
-                    let _ = kv.container_changes.send(());
-                }
-            }
-            "DELETE FROM volumes WHERE machine_id = ? AND name = ?" => {
-                kv.volumes.remove(&(
-                    text_param(&statement.params, 0).to_owned(),
-                    text_param(&statement.params, 1).to_owned(),
-                ));
-            }
-            query
-                if query.starts_with(
-                    "UPDATE machines SET info = json_set(info, '$.runtime.leaving'",
-                ) =>
-            {
-                set_leaving(&mut kv, text_param(&statement.params, 0), true);
-            }
-            query
-                if query.starts_with(
-                    "UPDATE machines SET info = json_remove(info, '$.runtime.leaving')",
-                ) =>
-            {
-                set_leaving(&mut kv, text_param(&statement.params, 0), false);
-            }
-            "DELETE FROM volumes WHERE machine_id = ?" => {
-                let machine_id = text_param(&statement.params, 0);
-                kv.volumes.retain(|(owner, _), _| owner != machine_id);
-            }
-            "DELETE FROM containers WHERE machine_id = ?" => {
-                let machine_id = text_param(&statement.params, 0);
-                kv.containers.retain(|_, (owner, _)| owner != machine_id);
-                let _ = kv.container_changes.send(());
-            }
-            "DELETE FROM certificates WHERE hostname = ?" => {}
-            "DELETE FROM machines WHERE id = ?" => {
-                let id = text_param(&statement.params, 0);
-                if kv.machines.remove(id).is_some() {
-                    kv.deleted_machines.insert(id.to_owned());
-                    let _ = kv.machine_changes.send(());
-                }
-            }
-            query => panic!("unexpected statement {query}"),
+fn sql_param(value: &Value) -> rusqlite::types::Value {
+    match value {
+        Value::String(value) => value.clone().into(),
+        Value::Number(value) => value.as_i64().unwrap().into(),
+        Value::Array(bytes) => bytes
+            .iter()
+            .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
+            .collect::<Vec<_>>()
+            .into(),
+        Value::Null => rusqlite::types::Value::Null,
+        value @ (Value::Bool(_) | Value::Object(_)) => {
+            panic!("unsupported test parameter: {value}")
         }
     }
-    serde_json::to_vec(&json!({
-        "results": vec![json!({"rows_affected": 1, "time": 0.0}); statements.len()],
-        "time": 0.0,
-    }))
-    .unwrap()
-    .into()
-}
-
-fn text_param(params: &[Value], index: usize) -> &str {
-    params
-        .get(index)
-        .and_then(Value::as_str)
-        .expect("statement parameter")
 }
 
 pub(crate) fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>>) -> Bytes {
@@ -712,23 +640,4 @@ pub(crate) fn events(columns: &[&str], rows: impl IntoIterator<Item = Vec<Value>
     }
     body.extend(br#"{"eoq":{"time":0.0}}"#);
     body.into()
-}
-
-/// `json_set`/`json_remove` of `$.runtime.leaving` on `machine_id`'s row, if it has one.
-fn set_leaving(kv: &mut ClusterKv, machine_id: &str, leaving: bool) {
-    let Some(info) = kv.machines.get_mut(machine_id) else {
-        return;
-    };
-    let mut row: serde_json::Value = serde_json::from_str(info).unwrap();
-    let runtime = row
-        .get_mut("runtime")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("a Machine row has a runtime object");
-    if leaving {
-        runtime.insert("leaving".to_owned(), json!(true));
-    } else {
-        runtime.remove("leaving");
-    }
-    *info = row.to_string();
-    let _ = kv.machine_changes.send(());
 }

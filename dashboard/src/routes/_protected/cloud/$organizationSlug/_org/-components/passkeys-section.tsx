@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Skeleton } from "#/components/ui/skeleton";
+import { isPublicError } from "#/lib/error-message";
 import { beginPasskeyServerFn, finishPasskeyServerFn } from "#/modules/passkeys/passkeys.functions";
 import { passkeysQueryOptions, type PasskeyRow, type PasskeysView, type ServerTrust, trustedEverywhere } from "#/modules/passkeys/passkeys.queries";
 import { RelativeTime } from "#/components/relative-time";
@@ -36,7 +37,7 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
       return finishPasskeyServerFn({ data: { organizationSlug, response: JSON.stringify(response) } });
     },
     onMutate: () => setFailure(null),
-    onError: (error) => setFailure(error instanceof Error && error.name === "PasskeyRefused" ? error.message : "browser"),
+    onError: (error) => setFailure(isPublicError(error) && error.code === "CONFLICT" ? error.message : "browser"),
     // A read still out was asked before this passkey existed, so drop it and read again; also after a failure, since
     // Cloud may have filed the passkey and lost only its answer.
     onSettled: () => {

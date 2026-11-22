@@ -5,10 +5,10 @@ use ployz_core::RpcError;
 use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
 
 use crate::Actor;
-use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::revision_param;
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// One Saved revision.
 pub(crate) struct Saved {
@@ -30,7 +30,7 @@ pub(crate) struct Insert<'a> {
 }
 
 fn accepted_json(accepted: &[crate::VolumeLoss]) -> Option<String> {
-    (!accepted.is_empty()).then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"))
+    (!accepted.is_empty()).then(|| json_text(accepted))
 }
 
 pub(crate) fn latest_saved(
@@ -49,12 +49,9 @@ pub(crate) fn latest_saved(
     // The revision keeps the size it asked for as history; read as the latest
     // Saved State, it says the size the Servers hold, as Head does.
     crate::volume::size::held(tx, environment, &mut intent.volumes)?;
-    let accepted = match row.optional_text(2)? {
-        Some(json) => {
-            serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
-        }
-        None => Vec::new(),
-    };
+    let accepted = row
+        .optional_json(2, "accepted Volume losses")?
+        .unwrap_or_default();
     Ok(Some(Saved {
         revision: Revision(row.number(0, "revision")?),
         intent,
@@ -101,8 +98,7 @@ pub(crate) fn insert(
     environment: &EnvironmentId,
     revision: &Insert<'_>,
 ) -> Result<(), RpcError> {
-    let changed = (!revision.changed.is_empty())
-        .then(|| serde_json::to_string(revision.changed).expect("value changes are JSON"));
+    let changed = (!revision.changed.is_empty()).then(|| json_text(revision.changed));
     tx.execute(
         "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses, value_changes) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -110,8 +106,7 @@ pub(crate) fn insert(
             environment.as_str().into(),
             revision_param(revision.revision)?.into(),
             who.organization.as_str().into(),
-            serde_json::to_string(revision.intent)
-                .expect("Saved State is JSON")
+            json_text(revision.intent)
                 .as_str()
                 .into(),
             revision
@@ -158,10 +153,7 @@ pub(crate) fn rewrite_intent(
         &[
             environment.as_str().into(),
             revision_param(revision)?.into(),
-            serde_json::to_string(intent)
-                .expect("Saved State is JSON")
-                .as_str()
-                .into(),
+            json_text(intent).as_str().into(),
         ],
     )?;
     Ok(())

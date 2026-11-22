@@ -31,7 +31,8 @@ pub(crate) use status::{
 };
 pub(crate) use token_file::{FleetToken, ensure_readable as ensure_token_readable, loop_token};
 pub(crate) use wire::{
-    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, StopReason, ZfsPrep,
+    Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, EnrollStorage, Issue, Prep,
+    StopReason, ZfsPrep,
 };
 
 #[cfg(all(test, target_os = "linux"))]

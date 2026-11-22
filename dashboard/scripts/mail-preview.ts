@@ -5,13 +5,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import type { DeploymentView, GitSource } from "@ployz/sdk";
 import { Effect, Redacted } from "effect";
 import { asTestDouble } from "#/lib/test-double";
+import { unsubscribeLink } from "#/modules/mail/cloud-link";
 import { type MailContent, renderMail } from "#/modules/mail/layout";
 import { makePostShibaMailer } from "#/modules/mail/mailer.server";
 import { sampleMail } from "#/modules/mail/sample";
-import { deployFailedMail, deployWaitingMail } from "#/modules/mail/templates/deploys/deploy-failed";
-import { inviteSamples } from "#/modules/mail/templates/organizations/invite";
-import { crashSamples } from "#/modules/mail/templates/servers/crash";
-import { upgradeFailedSamples } from "#/modules/mail/templates/servers/upgrade-failed";
+import { deployFailedMail, deployWaitingMail } from "#/modules/config-store/deploy-failed-mail";
+import { inviteSamples } from "#/modules/organization/invite-mail";
+import { crashSamples } from "#/modules/observe-ingest/crash-mail";
+import { upgradeFailedSamples } from "#/modules/server-upgrade/upgrade-failed-mail";
 import { NOTIFICATION_TYPES } from "#/modules/notifications/notification-types";
 import { uptimeAlertSamples } from "#/modules/uptime/alert-mail";
 
@@ -32,7 +33,7 @@ const deployFailedSample = (origin: string): MailContent => ({
     }),
     sources: [asTestDouble<GitSource>()({ service: "api", repository: "acme/shop", branch: "main", commit: "8a7ed6e9f0c1d2b3a4f5" })],
   }),
-  unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` },
+  unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: unsubscribeLink(origin, "sample") },
 });
 
 const deployWaitingSample = (origin: string): MailContent => ({
@@ -53,7 +54,7 @@ const deployWaitingSample = (origin: string): MailContent => ({
     }),
     sources: [asTestDouble<GitSource>()({ service: "api", repository: "acme/shop", branch: "main", commit: "8a7ed6e9f0c1d2b3a4f5" })],
   }),
-  unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` },
+  unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: unsubscribeLink(origin, "sample") },
 });
 
 const required = (name: string) => {
@@ -64,7 +65,7 @@ const required = (name: string) => {
 
 export async function run() {
   const origin = new URL(process.env["APP_URL"] ?? "http://localhost:3000").origin;
-  const unsubscribe = { label: NOTIFICATION_TYPES.uptime.unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` };
+  const unsubscribe = { label: NOTIFICATION_TYPES.uptime.unsubscribe, url: unsubscribeLink(origin, "sample") };
   const samples: Record<string, MailContent> = {
     sample: sampleMail(origin),
     ...Object.fromEntries(Object.entries(uptimeAlertSamples(origin)).map(([name, content]) => [name, { ...content, unsubscribe }])),

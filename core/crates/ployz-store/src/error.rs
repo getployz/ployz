@@ -106,6 +106,18 @@ fn distance(a: &[char], b: &[char]) -> usize {
     previous.last().copied().unwrap_or_default()
 }
 
+/// Whether work that failed with `error` is skipped, leaving the rest to go on: it
+/// can't succeed until someone changes something, so trying again changes nothing.
+pub(crate) fn skippable(error: &RpcError) -> bool {
+    matches!(
+        error.code,
+        RpcErrorCode::InvalidArgument
+            | RpcErrorCode::Unsupported
+            | RpcErrorCode::NotFound
+            | RpcErrorCode::Conflict
+    )
+}
+
 /// Stored data the Store cannot read back: a bug, a hand edit or a newer Cloud's
 /// write, never user input. Cloud names the Environment by this message's prefix.
 pub(crate) fn corrupt(what: &str) -> RpcError {

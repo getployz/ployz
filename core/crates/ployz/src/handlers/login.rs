@@ -5,10 +5,11 @@ use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{switch, value};
-use crate::cloud_login::{
-    self, Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
+use crate::cloud;
+use crate::cloud::login::{
+    Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
 };
-use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD, NotWebUrl};
+use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD, NotWebUrl};
 use crate::env;
 
 pub(super) fn login_command(command: Command) -> Command {
@@ -81,7 +82,7 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
     }
     let wait = matches.get_flag("wait") || !crate::ui::json();
     runtime()?.block_on(async {
-        let (pending, resumed) = match cloud_login::start(&store, &cloud).await? {
+        let (pending, resumed) = match cloud::login::start(&store, &cloud).await? {
             Start::SignedIn(signed_in) => return report(&signed_in),
             Start::Pending { pending, resumed } => (pending, resumed),
         };
@@ -95,7 +96,7 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
             });
         }
         announce(&pending, resumed);
-        let signed_in = cloud_login::wait(&store, pending).await?;
+        let signed_in = cloud::login::wait(&store, pending).await?;
         report(&signed_in)
     })
 }
@@ -124,7 +125,7 @@ fn report(signed_in: &SignedIn) -> Result<(), Error> {
 pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
     readable_cloud(&store, "Forgetting it.")?;
-    let out = runtime()?.block_on(cloud_login::logout(&store))?;
+    let out = runtime()?.block_on(cloud::login::logout(&store))?;
     if let Some(error) = out.as_ref().and_then(|out| out.unrevoked.as_ref()) {
         let why = if matches!(error, LoginError::NotMember(_)) {
             format!("Cloud refused to sign this device out: {error}.")
@@ -174,7 +175,7 @@ struct LogoutReport<'a> {
     signed_out: bool,
     cloud: Option<&'a str>,
     device: Option<&'a str>,
-    servers: Option<&'a crate::cloud_account::ServerClears>,
+    servers: Option<&'a crate::cloud::account::ServerClears>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<&'a str>,
 }

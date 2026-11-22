@@ -20,7 +20,6 @@ use thiserror::Error;
 use crate::{
     cluster::{Call, Wait},
     connect::Client,
-    context::{ConnectionSource, Transport},
     failure::Failure,
 };
 
@@ -126,16 +125,10 @@ impl Pins {
             path: self.path.clone(),
             source,
         };
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir).map_err(write)?;
-        let mut temporary = tempfile::NamedTempFile::new_in(dir).map_err(write)?;
-        serde_json::to_writer_pretty(&mut temporary, file)
-            .map_err(|error| write(io::Error::other(error)))?;
-        temporary.as_file().sync_all().map_err(write)?;
-        temporary
-            .persist(&self.path)
-            .map_err(|error| write(error.error))?;
-        Ok(())
+        let contents =
+            serde_json::to_vec_pretty(file).map_err(|error| write(io::Error::other(error)))?;
+        crate::atomic_file::replace(&self.path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| write(error.into()))
     }
 }
 
@@ -172,7 +165,9 @@ impl SealTo {
     /// A connection from Cloud's Server Access is Cloud's choice whatever its transport,
     /// and plain TCP authenticates no one.
     pub(crate) fn direct(client: &Client) -> bool {
-        trusts(client.connection_source(), client.connection().transport())
+        client
+            .connection_source()
+            .own_full_access(client.connection().transport())
     }
 
     /// The key to seal to through `client`. `relayed` is the key the Cluster's rows
@@ -201,11 +196,6 @@ impl SealTo {
             }
         }
     }
-}
-
-fn trusts(source: &ConnectionSource, transport: &Transport) -> bool {
-    !matches!(source, ConnectionSource::Cloud)
-        && matches!(transport, Transport::Ssh { .. } | Transport::Unix(_))
 }
 
 /// `relayed`, a key Cloud passed on, when it is the one this computer pinned.

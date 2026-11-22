@@ -5,9 +5,9 @@ use std::time::{Duration, SystemTime};
 
 use ployz_core::{
     ContainerAddress, ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRun,
-    DeploymentLogId, HealthObservation, Machine, MachineFailure, MachineSuccess,
-    MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName, labels,
-    service_containers,
+    ContainerRuntimeObservation, DeploymentLogId, HealthObservation, Machine, MachineFailure,
+    MachineSuccess, MembershipEvidence, PartialResult, RpcErrorCode, ServiceMode, ServiceName,
+    labels, service_containers,
 };
 use serde_json::json;
 

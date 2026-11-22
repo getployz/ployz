@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import {
   allocateUnique,
@@ -20,28 +20,19 @@ describe("slugifySegment", () => {
 });
 
 describe("getSlugWithSuffix", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("returns the base slug on the first attempt", () => {
     expect(getSlugWithSuffix("api", 0)).toBe("api");
   });
 
-  it("appends eight characters from a random UUID on later attempts", () => {
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      "1b2d1234-zzzz-yyyy-xxxx-000000000000",
-    );
+  it("suffixes the base slug on later attempts", () => {
+    const slug = getSlugWithSuffix("api", 1);
 
-    expect(getSlugWithSuffix("api", 1)).toBe("api-1b2d1234");
+    expect(slug).toMatch(/^api-[a-z0-9]+$/);
+    expect(slugifySegment(slug)).toBe(slug);
   });
 });
 
 describe("allocateUnique", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("returns the first successful insert using the base slug", async () => {
     const slugs: string[] = [];
 
@@ -63,9 +54,6 @@ describe("allocateUnique", () => {
   });
 
   it("retries with a suffix when the first insert collides", async () => {
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      "1b2d1234-zzzz-yyyy-xxxx-000000000000",
-    );
     const slugs: string[] = [];
     const results = [null, { id: "project-2" }];
 
@@ -82,7 +70,8 @@ describe("allocateUnique", () => {
       ),
     ).resolves.toEqual({ id: "project-2" });
 
-    expect(slugs).toEqual(["api", "api-1b2d1234"]);
+    expect(slugs[0]).toBe("api");
+    expect(slugs[1]).toMatch(/^api-[a-z0-9]+$/);
   });
 
   it("fails when every attempt collides", async () => {
@@ -91,7 +80,6 @@ describe("allocateUnique", () => {
         allocateUnique({
           tryAttempt: () => Effect.succeed(null),
           exhausted: new Error("Failed to create a unique project slug"),
-          maxAttempts: 3,
         }),
       ),
     ).rejects.toThrow("Failed to create a unique project slug");

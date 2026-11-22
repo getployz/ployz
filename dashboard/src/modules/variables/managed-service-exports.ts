@@ -4,33 +4,15 @@ export const PLATFORM_HTTP_PORT = 8080;
 
 type ServiceExportContext = {
   id: string;
-  lineageId: string;
-  name: string;
-  slug: string;
   environmentId: string;
   environmentSlug: string;
   privateDns: string;
 };
 
-export interface ManagedServiceExportRecord {
-  readonly serviceId: string;
-  // Stable cross-environment identity of the owning service, used to build
-  // rename-safe `${{ }}` references in the autocomplete.
-  readonly serviceLineageId: string;
-  readonly serviceName: string;
-  readonly serviceSlug: string;
-  readonly key: string;
-  readonly description: string;
-  readonly value: string;
-  readonly exported: true;
-  readonly managed: true;
-}
+type ManagedServiceExport = { readonly key: string; readonly description: string; readonly value: string };
 
-export function getManagedServiceExports(service: ServiceExportContext): ManagedServiceExportRecord[] {
-  const definitions: Array<Pick<
-    ManagedServiceExportRecord,
-    "key" | "description" | "value"
-  >> = [
+export function getManagedServiceExports(service: ServiceExportContext): ManagedServiceExport[] {
+  return [
     {
       key: "PLOYZ_PRIVATE_DOMAIN",
       description: "The private DNS name of the service.",
@@ -62,14 +44,4 @@ export function getManagedServiceExports(service: ServiceExportContext): Managed
       value: service.id,
     },
   ];
-
-  return definitions.map((definition) => ({
-    serviceId: service.id,
-    serviceLineageId: service.lineageId,
-    serviceName: service.name,
-    serviceSlug: service.slug,
-    exported: true,
-    managed: true,
-    ...definition,
-  }));
 }

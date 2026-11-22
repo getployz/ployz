@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { CrumbTrigger, SwitcherLoading } from "#/components/environment-breadcrumbs";
-import { ServerStatusLabel } from "#/components/server-status-label";
+import { CrumbTrigger, SwitcherLoading } from "#/components/shell/environment-breadcrumbs";
+import { ServerStatusLabel } from "./server-status-label";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "#/components/ui/command";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { useServerList } from "#/modules/machines/use-servers";

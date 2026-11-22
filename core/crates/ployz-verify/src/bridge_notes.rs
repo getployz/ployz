@@ -1,13 +1,12 @@
 //! The ployz bridge's member notes across daemon starts: `bridge-stopped-members.json`, the
 //! members a start stopped so it could move them (`Stopped`,
-//! core/crates/ployzd/src/network/linux/stopped.rs), and `bridge-member-addresses.json`, the
-//! address each member held before a detach (`Pins`, core/crates/ployzd/src/network/linux/pins.rs).
-//! A bare `:n` is a line of core/crates/ployzd/src/network/linux/docker_network.rs.
+//! core/crates/ployzd/src/network/linux/bridge/stopped.rs), and `bridge-member-addresses.json`, the
+//! address each member held before a detach (`Pins`, core/crates/ployzd/src/network/linux/bridge/pins.rs).
 //!
 //! What hosts each step. One `ployzd` process runs on the Machine. Each daemon start runs
 //! `NetworkPlane::start` (called from `start_planes` in core/crates/ployzd/src/daemon.rs), whose `ensure_docker_network`
-//! (:516-554) loads both notes (:541-542), readdresses the bridge when its IPv6 shape is wrong
-//! (:572-579), pins its members (:546) and starts the members written down (:547). The Machine
+//! loads both notes, readdresses the bridge when its IPv6 shape is wrong
+//! (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`), pins its members and starts the members written down. The Machine
 //! API is built and served only after `NetworkPlane::start` returns
 //! (`MachineApi::builder` and the `machine_api` serve arm in `start_planes`, core/crates/ployzd/src/daemon.rs), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
@@ -18,16 +17,14 @@
 //! calls `replace_file` in core/crates/ployz-core/src/private_fs.rs).
 //!
 //! The first finding: a member Docker refused to start stays in `bridge-stopped-members.json`
-//! (stopped.rs:64-73). The operator stops it between daemon starts, and nothing touches the note
+//! (`ployzd::network::linux::stopped::Stopped::start`). The operator stops it between daemon starts, and nothing touches the note
 //! (`Lifecycle::stop`, core/crates/ployzd/src/docker/lifecycle.rs). The next daemon
-//! start's `Stopped::start` starts it again (:547, stopped.rs:60-79). A failed rewrite of the
-//! note after a start that Docker accepted keeps the member written down the same way
-//! (stopped.rs:80-93).
+//! start's `Stopped::start` starts it again. A failed rewrite of the
+//! note after a start that Docker accepted keeps the member written down the same way.
 //!
-//! The second finding: `Stopped::start` (:547) starts every member written down, whether or not
+//! The second finding: `Stopped::start` starts every member written down, whether or not
 //! `pin_members` rejoined it. `pin_members` returns before rejoining anything when its listing
-//! fails (:753-761), and records a member whose `rejoin_with` failed only in `unjoined`
-//! (:819-821), so a member still detached from the bridge is started.
+//! fails, and records a member whose `rejoin_with` failed only in `unjoined`, so a member still detached from the bridge is started.
 //!
 //! The fix variant (`BridgeNotes::fix`) reads each member's `MemberDebt` from the two notes, with
 //! their formats unchanged. Its `Stopped::start` pays a Start debt only once Docker shows the
@@ -42,7 +39,7 @@ use ployz_core::RestartPolicy;
 use ployz_decide::bridge::{self, Settle};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
 /// core/crates/ployzd/src/docker/mod.rs).
@@ -80,7 +77,7 @@ const STARTS: u8 = 2;
 const CRASHES: u8 = 1;
 /// Starts Docker refuses, with a 500 or the netless 404.
 const REFUSED_STARTS: u8 = 1;
-/// Container listings that fail, in the readdress (:649) or the pin pass (:753).
+/// Container listings that fail, in the readdress (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`) or the pin pass (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
 const FAILED_LISTINGS: u8 = 1;
 /// Pinned connects Docker refuses, whose `connect(None)` fallback it then accepts or refuses.
 const REFUSED_CONNECTS: u8 = 1;
@@ -97,8 +94,7 @@ const OPERATOR_STOPS: u8 = 1;
 /// its start was refused or deferred.
 const RETRIES: u8 = 1;
 
-/// A bridge member: a Container on the ployz bridge, or created for it (`BridgeMember`,
-/// :100-108). The model's members are Service Containers; `M0` is the one the findings follow.
+/// A bridge member: a Container on the ployz bridge, or created for it (`BridgeMember`). The model's members are Service Containers; `M0` is the one the findings follow.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum Member {
     M0,
@@ -212,7 +208,7 @@ impl Addrs {
     }
 }
 
-/// `bridge_address::next` (core/crates/ployzd/src/docker/bridge_address.rs:80-102): the first
+/// `ployzd::network::linux::bridge::address::next`: the first
 /// free host after `after`, wrapping, and without `after` past the highest taken address.
 fn next(hosts: &[Addr], taken: Addrs, after: Option<Addr>) -> Option<Addr> {
     let after = after.or_else(|| taken.last());
@@ -248,7 +244,7 @@ enum Run {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Endpoint {
     Detached,
-    /// Attached with no `ipam_config.ipv4_address` (`pinned` false, :138-140).
+    /// Attached with no `ipam_config.ipv4_address` (`pinned` false, `ployzd::network::linux::bridge::bridge_members`).
     Dynamic(Addr),
     /// Attached with its address pinned.
     Pinned(Addr),
@@ -278,15 +274,15 @@ struct Container {
 /// The ployz bridge.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Bridge {
-    /// It fits but its IPv6 shape is not the one the start wants (:572-579).
+    /// It fits but its IPv6 shape is not the one the start wants (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`).
     Old,
     /// It fits.
     New,
-    /// No bridge stands: `inspect_network` answers 404 (:616).
+    /// No bridge stands: `inspect_network` answers 404 (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`).
     None,
 }
 
-/// `BridgeMember` as a listing reads it (`bridge_members`, :117-151), after `Pins::restore`.
+/// `BridgeMember` as a listing reads it (`bridge_members`), after `Pins::restore`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Seen {
     ipv4: Option<Addr>,
@@ -304,14 +300,14 @@ impl Seen {
 /// Why a member is in `bridge-stopped-members.json`, a ghost for the rows and the story.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 enum Why {
-    /// `stop` wrote it down before stopping it (:881-886).
+    /// `stop` wrote it down before stopping it (`ployzd::network::linux::bridge::NetworkPlane::stop`).
     #[default]
     Noted,
-    /// Docker refused its start with something other than a 404 (stopped.rs:67-73).
+    /// Docker refused its start with something other than a 404 (`ployzd::network::linux::stopped::Stopped::start`).
     Refused,
     /// Docker answered 404 for its missing network (`ployz_decide::bridge::gone`).
     Netless,
-    /// Docker started it, and the note's update failed (stopped.rs:80-93).
+    /// Docker started it, and the note's update failed (`ployzd::network::linux::stopped::Stopped::start`).
     Unupdated,
     /// The fix deferred its start: Docker showed it detached.
     Deferred,
@@ -320,26 +316,26 @@ enum Why {
 /// Which pass a step belongs to.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Phase {
-    /// `readdress_docker_network` (:640-689).
+    /// `readdress_docker_network`.
     Readdress,
-    /// `pin_members` (:752-824).
+    /// `pin_members`.
     Pin,
 }
 
 /// One statement of `detach`, `stop` or `rejoin_with`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Step {
-    /// The first disconnect (:842), or the pinned connect (:915-918).
+    /// The first disconnect (`ployzd::network::linux::bridge::NetworkPlane::detach`), or the pinned connect (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`).
     First,
-    /// `stop`'s inspect (:860-868) and `ployz_decide::bridge::settle`.
+    /// `stop`'s inspect (`ployzd::network::linux::bridge::NetworkPlane::stop`) and `ployz_decide::bridge::settle`.
     Inspect,
-    /// `stopped.note` (:882-885).
+    /// `stopped.note` (`ployzd::network::linux::bridge::NetworkPlane::stop`).
     Note,
-    /// `stop_container` (:888-893), after `settle` answered `settle`.
+    /// `stop_container` (`ployzd::network::linux::bridge::NetworkPlane::stop`), after `settle` answered `settle`.
     Stop(Settle),
-    /// The disconnect again (:845), or the pinned connect again (:921-924).
+    /// The disconnect again (`ployzd::network::linux::bridge::NetworkPlane::detach`), or the pinned connect again (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`).
     Again,
-    /// `connect(None)` (:926-931); `either`: Docker may refuse it too, after it refused the
+    /// `connect(None)` (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`); `either`: Docker may refuse it too, after it refused the
     /// pinned connect.
     Fallback { either: bool },
 }
@@ -347,27 +343,27 @@ enum Step {
 /// The statement a daemon start runs next.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum At {
-    /// `Stopped::load` and `Pins::load` (:541-542).
+    /// `Stopped::load` and `Pins::load` (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network`).
     Load,
-    /// `inspect_network` (:569).
+    /// `inspect_network` (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`).
     Shape,
-    /// `bridge_members` (:649), or `bridge_containers` (:753).
+    /// `bridge_members` (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`), or `bridge_containers` (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     List(Phase),
-    /// `pins.record` (:657, :770-778).
+    /// `pins.record` (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`, `ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     Record(Phase),
-    /// `detach` of the member at `i` in the pass's order (:665, :806).
+    /// `detach` of the member at `i` in the pass's order (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`, `ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     Detach { phase: Phase, i: u8, step: Step },
-    /// `replace_docker_network`'s `remove_network` (:700).
+    /// `replace_docker_network`'s `remove_network`.
     Remove,
-    /// `create_bridge` (:619, :705).
+    /// `create_bridge` (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`, `ployzd::network::linux::bridge::NetworkPlane::replace_docker_network`).
     Create(Phase),
-    /// `rejoin_with` of the member at `i` (:686, :819).
+    /// `rejoin_with` of the member at `i` (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`, `ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     Rejoin { phase: Phase, i: u8, step: Step },
-    /// `pins.finish` (:823).
+    /// `pins.finish` (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     Finish,
-    /// `Stopped::start`'s `start_container` of `member` (stopped.rs:64).
+    /// `Stopped::start`'s `start_container` of `member` (`ployzd::network::linux::stopped::Stopped::start`).
     Start(Member),
-    /// `Stopped::start`'s removal or rewrite of the note (stopped.rs:80-93).
+    /// `Stopped::start`'s removal or rewrite of the note (`ployzd::network::linux::stopped::Stopped::start`).
     Update,
 }
 
@@ -411,18 +407,18 @@ struct Pass {
     pins: Pair<Option<Addr>>,
     /// The listing, after `Pins::restore`.
     seen: Pair<Option<Seen>>,
-    /// The loop's order: every listed member in the readdress, sorted by address (:661), and
-    /// the members that need a pin in the pin pass, by id (:779, :149).
+    /// The loop's order: every listed member in the readdress, sorted by address (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`), and
+    /// the members that need a pin in the pin pass, by id (`ployzd::network::linux::bridge::NetworkPlane::pin_members`, `ployzd::network::linux::bridge::bridge_members`).
     order: Order,
-    /// The members this readdress detached (:662-666).
+    /// The members this readdress detached (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`).
     detached: Set,
-    /// The address each member rejoins at (`addresses`, :29-48).
+    /// The address each member rejoins at (`ployzd::network::linux::bridge::addresses`).
     assigned: Pair<Option<Addr>>,
-    /// `recorded` (:770-778).
+    /// `recorded` (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     recorded: bool,
-    /// `unjoined` (:780, :819-821).
+    /// `unjoined` (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     unjoined: Set,
-    /// The ids `Stopped::start` keeps (stopped.rs:62-79), and why.
+    /// The ids `Stopped::start` keeps (`ployzd::network::linux::stopped::Stopped::start`), and why.
     kept: Set,
     kept_why: Pair<Why>,
     /// Under `Retry`, the starts each kept id has been given again.
@@ -462,7 +458,7 @@ enum Disconnect {
     /// The member is detached. `address_noted`: `bridge-member-addresses.json` names the address
     /// it held.
     Detached { address_noted: bool },
-    /// 404: the member is gone (:849).
+    /// 404: the member is gone (`ployzd::network::linux::bridge::NetworkPlane::detach`).
     Gone,
     /// `ployz_decide::bridge::between_restarts`.
     BetweenRestarts,
@@ -496,7 +492,7 @@ enum Started {
     AlreadyRunning,
     /// 404 "No such container" (`ployz_decide::bridge::gone`).
     Gone,
-    /// 500, kept (stopped.rs:67-73).
+    /// 500, kept (`ployzd::network::linux::stopped::Stopped::start`).
     Refused,
     /// The netless 404, kept (`ployz_decide::bridge::gone`).
     Netless,
@@ -547,7 +543,7 @@ enum Branch {
         phase: Phase,
         member: Member,
     },
-    /// The pin pass skips an attached member: `recorded` is false (:784-786).
+    /// The pin pass skips an attached member: `recorded` is false (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     Unrecorded {
         member: Member,
     },
@@ -627,7 +623,7 @@ struct State {
     /// Why each member the note names is there.
     why: Pair<Why>,
     /// Under `Retry`, how many later starts the note has given each member. The note's
-    /// `BTreeSet<String>` cannot hold it (stopped.rs:18-21): the policy changes its format.
+    /// `BTreeSet<String>` cannot hold it (`ployzd::network::linux::stopped::Stopped`): the policy changes its format.
     retries: Pair<u8>,
     /// `bridge-member-addresses.json`.
     pins: Pair<Option<Addr>>,
@@ -695,15 +691,15 @@ enum OnRefusal {
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// `stop` stops the member before `Stopped::note`, not after it succeeded (:881-886).
+    /// `stop` stops the member before `Stopped::note`, not after it succeeded (`ployzd::network::linux::bridge::NetworkPlane::stop`).
     stop_before_note: bool,
-    /// A failed `Pins::record` neither abandons the readdress (:657-660) nor skips an attached
-    /// member in the pin pass (:784-786).
+    /// A failed `Pins::record` neither abandons the readdress (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`) nor skips an attached
+    /// member in the pin pass (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     detach_unrecorded: bool,
-    /// The readdress replaces the bridge after a failed detach too (:674-680).
+    /// The readdress replaces the bridge after a failed detach too (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`).
     replace_after_failed_detach: bool,
     /// `Pins::restore` gives a detached member its noted address though another member holds
-    /// it (pins.rs:54-55).
+    /// it (`ployzd::network::linux::pins::Pins::restore`).
     restore_held: bool,
     /// `gone` reads the netless 404 as gone, as `is_not_found` did before 74391f71f9
     /// (`ployz_decide::bridge::gone`).
@@ -715,7 +711,7 @@ struct Broken {
 }
 
 /// What the fix reads a member owes, from the two note files with their formats unchanged
-/// (stopped.rs:18-21, pins.rs:17-20).
+/// (`ployzd::network::linux::stopped::Stopped`, `ployzd::network::linux::pins::Pins`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemberDebt {
     /// `bridge-member-addresses.json` owes it an address.
@@ -775,7 +771,7 @@ impl BridgeNotes {
         })
     }
 
-    /// `bridge_members` (:117-151) and `Pins::restore` (pins.rs:46-60).
+    /// `bridge_members` and `ployzd::network::linux::pins::Pins::restore`.
     fn list(&self, state: &mut State) {
         let mut seen = Pair::default();
         for member in self.members() {
@@ -790,7 +786,7 @@ impl BridgeNotes {
             });
         }
         // Pins::restore: a detached member takes the address written down for it, unless
-        // another member holds that address now (pins.rs:49-59).
+        // another member holds that address now (`ployzd::network::linux::pins::Pins::restore`).
         let mut held = Addrs::default();
         for member in self.members() {
             held.extend(seen.get(member).and_then(|seen| seen.ipv4));
@@ -809,7 +805,7 @@ impl BridgeNotes {
         state.pass.seen = seen;
     }
 
-    /// `Pins::record` (pins.rs:62-78): the new addresses, or `None` when nothing changes.
+    /// `ployzd::network::linux::pins::Pins::record`: the new addresses, or `None` when nothing changes.
     fn recorded(&self, state: &State) -> Option<Pair<Option<Addr>>> {
         let mut after = state.pass.pins;
         for member in self.members() {
@@ -820,7 +816,7 @@ impl BridgeNotes {
         (after != state.pass.pins).then_some(after)
     }
 
-    /// `addresses` (:29-48) for `order`, from `taken`.
+    /// `ployzd::network::linux::bridge::addresses` for `order`, from `taken`.
     fn assign(&self, state: &mut State, order: Order, mut taken: Addrs) {
         let mut last = None;
         let mut assigned = Pair::default();
@@ -841,7 +837,7 @@ impl BridgeNotes {
         state.pass.assigned = assigned;
     }
 
-    /// The listed members' addresses, after `Pins::restore` (:684, :766).
+    /// The listed members' addresses, after `Pins::restore` (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`, `ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     fn taken(&self, state: &State) -> Addrs {
         let mut taken = Addrs::default();
         for member in self.members() {
@@ -850,7 +846,7 @@ impl BridgeNotes {
         taken
     }
 
-    /// The readdress's next attached member from `i` on (:664), or the step after the loop.
+    /// The readdress's next attached member from `i` on (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`), or the step after the loop.
     fn next_detach(&self, state: &State, i: u8) -> At {
         let order = state.pass.order;
         for i in i..2 {
@@ -871,7 +867,7 @@ impl BridgeNotes {
         At::Remove
     }
 
-    /// The readdress's rejoin loop over the members it detached (:684-687).
+    /// The readdress's rejoin loop over the members it detached (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`).
     fn start_rejoins(&self, state: &mut State) -> At {
         let detached = state.pass.detached;
         let order = Order::of(
@@ -902,7 +898,7 @@ impl BridgeNotes {
         }
     }
 
-    /// The pin pass's member at `i` (:781-821), or `pins.finish`.
+    /// The pin pass's member at `i` (`ployzd::network::linux::bridge::NetworkPlane::pin_members`), or `pins.finish`.
     fn next_pin(state: &State, i: u8) -> At {
         let Some(member) = state.pass.order.nth(i) else {
             return At::Finish;
@@ -927,7 +923,7 @@ impl BridgeNotes {
         }
     }
 
-    /// `Stopped::start`'s next id after `after` (stopped.rs:62-79), or its update.
+    /// `Stopped::start`'s next id after `after` (`ployzd::network::linux::stopped::Stopped::start`), or its update.
     /// The fix's start predicate: it pays a member's Start debt only once Docker shows the
     /// member attached. It does not check that the member sits at the address an
     /// `AddressThenStart` debt owes: no property here needs that check.
@@ -975,7 +971,7 @@ impl BridgeNotes {
         }
     }
 
-    /// One step of `stop` (:859-894) for `member`, from `step`; returns the step after it.
+    /// One step of `ployzd::network::linux::bridge::NetworkPlane::stop` for `member`, from `step`; returns the step after it.
     fn stop(&self, state: &mut State, member: Member, step: Step, pick: Pick) -> Step {
         match step {
             Step::Inspect => {
@@ -1007,7 +1003,7 @@ impl BridgeNotes {
                 }
             }
             Step::Note => {
-                // Stopped::note (stopped.rs:48-56): insert, then write the whole set.
+                // Stopped::note (`ployzd::network::linux::stopped::Stopped::note`): insert, then write the whole set.
                 let write = if state.pass.stopped.has(member) {
                     Write::Unchanged
                 } else {
@@ -1058,7 +1054,7 @@ impl BridgeNotes {
         }
     }
 
-    /// Docker's disconnect of `member` (:833-841).
+    /// Docker's disconnect of `member` (`ployzd::network::linux::bridge::NetworkPlane::detach`).
     fn disconnect(state: &mut State, member: Member) -> Disconnect {
         let container = state.docker.get_mut(member);
         match (container.run, container.endpoint) {
@@ -1135,9 +1131,9 @@ impl BridgeNotes {
                     state.used.failed_listings += 1;
                     state.took = Some(Branch::Listed { phase, ok: false });
                     match phase {
-                        // :651-654: report, and `Ok(())`, so the shape step returns.
+                        // `ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`: report, and `Ok(())`, so the shape step returns.
                         Phase::Readdress => At::List(Phase::Pin),
-                        // :755-760: return before `finish`.
+                        // `ployzd::network::linux::bridge::NetworkPlane::pin_members`: return before `finish`.
                         Phase::Pin => Self::next_start(state, None),
                     }
                 } else {
@@ -1173,7 +1169,7 @@ impl BridgeNotes {
                                 state.pass.pins = after;
                                 state.pins = after;
                             }
-                            // `inspect_err` rolls the memory back (pins.rs:75-77).
+                            // `inspect_err` rolls the memory back (`ployzd::network::linux::pins::Pins::record`).
                             Write::FailedAfterRename => state.pins = after,
                             Write::Failed | Write::Unchanged => {}
                         }
@@ -1187,7 +1183,7 @@ impl BridgeNotes {
                         At::List(Phase::Pin)
                     }
                     Phase::Readdress => {
-                        // :661: sort by (no address, address), stably over the id order.
+                        // `ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`: sort by (no address, address), stably over the id order.
                         let mut listed = self
                             .members()
                             .filter_map(|member| {
@@ -1213,14 +1209,14 @@ impl BridgeNotes {
                             && !state.pass.recorded
                             && !self.broken.detach_unrecorded
                         {
-                            // :784-786.
+                            // `ployzd::network::linux::bridge::NetworkPlane::pin_members`.
                             state.took = Some(Branch::Unrecorded { member });
                             Self::next_pin(state, i + 1)
                         } else if phase == Phase::Pin
                             && step == Step::First
                             && state.docker.get(member).run == Run::Gone
                         {
-                            // `inspect_container` fails (:797-804).
+                            // `inspect_container` fails (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
                             state.took = Some(Branch::Inspected {
                                 member,
                                 settle: None,
@@ -1243,15 +1239,15 @@ impl BridgeNotes {
                                 (Disconnect::BetweenRestarts | Disconnect::Refused, _) => {
                                     state.took = Some(Branch::DetachFailed { phase, member });
                                     match phase {
-                                        // :668-671: `break`, and with `disconnected` an Err
-                                        // the bridge is not replaced (:674-680).
+                                        // `ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`: `break`, and with `disconnected` an Err
+                                        // the bridge is not replaced.
                                         Phase::Readdress
                                             if self.broken.replace_after_failed_detach =>
                                         {
                                             At::Remove
                                         }
                                         Phase::Readdress => self.start_rejoins(state),
-                                        // :809-815: `continue`.
+                                        // `ployzd::network::linux::bridge::NetworkPlane::pin_members`: `continue`.
                                         Phase::Pin => Self::next_pin(state, i + 1),
                                     }
                                 }
@@ -1385,7 +1381,7 @@ impl BridgeNotes {
                 }
             }
             At::Finish => {
-                // Pins::finish (pins.rs:82-100): keep only `unjoined`, then remove or rewrite.
+                // Pins::finish (`ployzd::network::linux::pins::Pins::finish`): keep only `unjoined`, then remove or rewrite.
                 let mut kept = Pair::default();
                 for member in state.pass.unjoined.members() {
                     *kept.get_mut(member) = *state.pass.pins.get(member);
@@ -1503,7 +1499,7 @@ impl BridgeNotes {
                         }
                     }
                     Write::Failed => {
-                        // The old file stays, with every id it held (stopped.rs:88-93).
+                        // The old file stays, with every id it held (`ployzd::network::linux::stopped::Stopped::start`).
                         for member in state.stopped.members() {
                             *state.why.get_mut(member) = if kept.has(member) {
                                 *state.pass.kept_why.get(member)
@@ -1524,7 +1520,7 @@ impl BridgeNotes {
         state.process = Process::Starting(next);
     }
 
-    /// The pin pass's loop over the members that need a pin, in id order (:779-781).
+    /// The pin pass's loop over the members that need a pin, in id order (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
     fn start_pins(&self, state: &mut State) -> At {
         let seen = state.pass.seen;
         let order = Order::of(
@@ -1533,7 +1529,7 @@ impl BridgeNotes {
         );
         state.pass.order = order;
         let mut taken = self.taken(state);
-        // `bridge_address::taken` (core/crates/ployzd/src/docker/bridge_address.rs:58-78): the
+        // `ployzd::network::linux::bridge::address::taken`: the
         // addresses every attached endpoint holds.
         for member in self.members() {
             taken.extend(state.docker.get(member).endpoint.address());
@@ -1610,7 +1606,7 @@ impl BridgeNotes {
                 }
             }
             // No `AfterRename` for `finish` or `Stopped::start`'s update: each returns nothing and
-            // only prints on Err (pins.rs:94-99, stopped.rs:88-93), so an Err after its rename
+            // only prints on Err (`ployzd::network::linux::pins::Pins::finish`, `ployzd::network::linux::stopped::Stopped::start`), so an Err after its rename
             // leaves the files and the run a success leaves.
             At::Finish => {
                 let unchanged = state.pins == Pair::default()
@@ -1699,7 +1695,7 @@ impl Model for BridgeNotes {
     /// Daemon start 1 is about to load the notes. Each member is a Service Container, pinned on
     /// a bridge whose IPv6 shape the start wants changed, and Docker holds `M0` between
     /// restarts. One start state per restart policy `settle` tells apart: the default
-    /// (`RestartPolicy::default()`, core/crates/ployz-core/src/host_config.rs:13-14) and `no`.
+    /// (`RestartPolicy::default()`, `ployz_core::host_config::RestartPolicy::UnlessStopped`) and `no`.
     fn init_states(&self) -> Vec<State> {
         [RestartPolicy::default(), RestartPolicy::No]
             .into_iter()
@@ -1893,7 +1889,7 @@ impl Model for BridgeNotes {
 }
 
 /// `ployz_decide::bridge::Settle::StopAndNote`'s doc comment, `settle`'s, `Stopped::start`'s
-/// (stopped.rs:58-59) and the module doc (stopped.rs:1-3) say whom the note starts: a member
+/// (`ployzd::network::linux::stopped::Stopped::start`) and the module doc (`ployzd::network::linux::stopped`) say whom the note starts: a member
 /// Docker would run again, stopped so the start could move it. The property narrows that to
 /// what the code can know: the start runs only a member Ployz stopped, and that nobody stopped
 /// after Ployz did.
@@ -1901,20 +1897,16 @@ const STARTS_ONLY_OWED: &str =
     "Stopped::start starts only a container Ployz stopped and nobody stopped since";
 const STARTS_ONLY_ON_BRIDGE: &str =
     "Stopped::start starts a member only while Docker shows it on the bridge";
-/// `Stopped::note`'s doc comment (stopped.rs:47): "Writes `id` down. Stop it only once this
-/// succeeds." `stop` (:881-886) and its doc (:857-858) say the same.
+/// `Stopped::note`'s doc comment (`ployzd::network::linux::stopped::Stopped::note`): "Writes `id` down. Stop it only once this
+/// succeeds." `ployzd::network::linux::bridge::NetworkPlane::stop` and its doc say the same.
 const NOTED_BEFORE_STOP: &str =
     "the start stops a member it must start again only once the stopped note names it";
-/// `Pins::record`'s doc comment (pins.rs:62-63): "Detach a member only once this succeeds."
-/// The readdress's doc (:633-635) says the same.
+/// `Pins::record`'s doc comment (`ployzd::network::linux::pins::Pins::record`): "Detach a member only once this succeeds."
+/// The readdress's doc (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`) says the same.
 const ADDRESS_NOTED_BEFORE_DETACH: &str =
     "the start detaches a member only while the address note names an address for it";
 
 type Coverage = harness::Coverage<BridgeNotes>;
-
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
 
 /// A member is attached on a dynamic address while `bridge-member-addresses.json` owes it
 /// another: the model section's risk 3.
@@ -1937,33 +1929,33 @@ fn ran_loaded(state: &State, why: Why) -> bool {
 /// Each branch the bounds reach. `current_code_breaks_both_properties_and_reaches_every_row`
 /// expects every row on the code as it is, and the two policy tests every row their policy keeps.
 const COVERAGE: &[Coverage] = &[
-    // ensure_docker_network_shape (:556-623).
+    // ensure_docker_network_shape.
     Coverage {
         name: "the start finds the bridge's IPv6 shape wrong and readdresses it",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Shape(Bridge::Old)),
+        reached: |_, state| took(state.took, Branch::Shape(Bridge::Old)),
     },
     Coverage {
         name: "the start finds the bridge fitting",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Shape(Bridge::New)),
+        reached: |_, state| took(state.took, Branch::Shape(Bridge::New)),
     },
     Coverage {
         name: "the start finds no bridge and creates one",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Created { readdress: false }),
+        reached: |_, state| took(state.took, Branch::Created { readdress: false }),
     },
-    // readdress_docker_network (:640-689).
+    // readdress_docker_network.
     Coverage {
         name: "the readdress's listing fails, and it returns Ok",
         on: everywhere,
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Listed {
                     phase: Phase::Readdress,
                     ok: false,
@@ -1977,7 +1969,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::Written,
@@ -1991,7 +1983,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::Failed,
@@ -2005,7 +1997,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::FailedAfterRename,
@@ -2167,7 +2159,7 @@ const COVERAGE: &[Coverage] = &[
         name: "the readdress replaces the bridge",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Created { readdress: true }),
+        reached: |_, state| took(state.took, Branch::Created { readdress: true }),
     },
     Coverage {
         name: "a readdress rejoin pins the member at its address",
@@ -2213,14 +2205,14 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
-    // pin_members (:752-824).
+    // pin_members.
     Coverage {
         name: "the pin pass's listing fails, and it returns before finish",
         on: everywhere,
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Listed {
                     phase: Phase::Pin,
                     ok: false,
@@ -2234,7 +2226,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Pin,
                     write: Write::Written,
@@ -2301,7 +2293,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Finished {
                     kept: false,
                     write: Write::Written,
@@ -2315,7 +2307,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Finished {
                     kept: true,
                     write: Write::Written,
@@ -2337,7 +2329,7 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
-    // Stopped::start (stopped.rs:58-94).
+    // Stopped::start (`ployzd::network::linux::stopped::Stopped::start`).
     Coverage {
         name: "Stopped::start starts a member this start stopped",
         on: everywhere,
@@ -2420,7 +2412,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Updated {
                     kept: false,
                     write: Write::Written,
@@ -2434,7 +2426,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Updated {
                     kept: true,
                     write: Write::Written,
@@ -2550,7 +2542,7 @@ const COVERAGE: &[Coverage] = &[
         name: "a daemon start dies",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Crashed),
+        reached: |_, state| took(state.took, Branch::Crashed),
     },
     Coverage {
         name: "Docker's restart policy runs a held member again",
@@ -2843,7 +2835,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
     };
     let what = match branch {
         Branch::Loaded { stopped, pins } => format!(
-            "daemon start {}: Stopped::load and Pins::load read {} and {} (:541-542)",
+            "daemon start {}: Stopped::load and Pins::load read {} and {} (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network`)",
             after.starts,
             if stopped {
                 "the stopped note"
@@ -2856,13 +2848,13 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                 "no address note"
             }
         ),
-        Branch::Shape(Bridge::Old) => "inspect_network: the bridge fits but its IPv6 shape differs, so readdress_docker_network runs (:569-579)".to_owned(),
-        Branch::Shape(Bridge::New) => "inspect_network: the bridge fits (:569-579)".to_owned(),
-        Branch::Shape(Bridge::None) => "inspect_network answers 404, so create_bridge runs (:616, :619)".to_owned(),
-        Branch::Listed { phase: Phase::Readdress, ok: true } => "readdress: bridge_members lists the members, and Pins::restore gives each detached one its noted address (:649, :656)".to_owned(),
-        Branch::Listed { phase: Phase::Readdress, ok: false } => "readdress: the listing fails, so it reports and returns Ok (:649-655)".to_owned(),
-        Branch::Listed { phase: Phase::Pin, ok: true } => "pin pass: bridge_containers lists the members, and Pins::restore gives each detached one its noted address (:753, :763-766)".to_owned(),
-        Branch::Listed { phase: Phase::Pin, ok: false } => "pin pass: the listing fails, so pin_members returns before rejoining anything or calling finish (:753-761)".to_owned(),
+        Branch::Shape(Bridge::Old) => "inspect_network: the bridge fits but its IPv6 shape differs, so readdress_docker_network runs (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`)".to_owned(),
+        Branch::Shape(Bridge::New) => "inspect_network: the bridge fits (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`)".to_owned(),
+        Branch::Shape(Bridge::None) => "inspect_network answers 404, so create_bridge runs (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network_shape`)".to_owned(),
+        Branch::Listed { phase: Phase::Readdress, ok: true } => "readdress: bridge_members lists the members, and Pins::restore gives each detached one its noted address (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned(),
+        Branch::Listed { phase: Phase::Readdress, ok: false } => "readdress: the listing fails, so it reports and returns Ok (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned(),
+        Branch::Listed { phase: Phase::Pin, ok: true } => "pin pass: bridge_containers lists the members, and Pins::restore gives each detached one its noted address (`ployzd::network::linux::bridge::NetworkPlane::pin_members`)".to_owned(),
+        Branch::Listed { phase: Phase::Pin, ok: false } => "pin pass: the listing fails, so pin_members returns before rejoining anything or calling finish".to_owned(),
         Branch::Recorded { phase, write } => format!(
             "{}: {}{}",
             phase_name(phase),
@@ -2873,10 +2865,10 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                     if phase == Phase::Readdress { ":657" } else { ":770-778" }
                 ),
                 (Phase::Readdress, Write::Failed | Write::FailedAfterRename) => {
-                    "; the memory rolls back (pins.rs:75-77), and the readdress returns Ok (:657-660)".to_owned()
+                    "; the memory rolls back (`ployzd::network::linux::pins::Pins::record`), and the readdress returns Ok (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned()
                 }
                 (Phase::Pin, Write::Failed | Write::FailedAfterRename) => {
-                    "; the memory rolls back (pins.rs:75-77), and attached members keep their addresses (:770-778, :784-786)".to_owned()
+                    "; the memory rolls back (`ployzd::network::linux::pins::Pins::record`), and attached members keep their addresses (`ployzd::network::linux::bridge::NetworkPlane::pin_members`)".to_owned()
                 }
             }
         ),
@@ -2886,10 +2878,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             again,
             answer,
         } => format!(
-            "{}: {}disconnect {member:?} (:{}): {}",
+            "{}: {}disconnect {member:?}: {}",
             phase_name(phase),
             if again { "again, " } else { "" },
-            if again { "844" } else { "841" },
             match answer {
                 Disconnect::Detached { address_noted } => format!(
                     "detached{}",
@@ -2899,21 +2890,21 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                         ", though the address note does not name its address"
                     }
                 ),
-                Disconnect::Gone => "404, so detach returns Ok(false) (:849)".to_owned(),
-                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (:843, `ployz_decide::bridge::between_restarts`)".to_owned(),
+                Disconnect::Gone => "404, so detach returns Ok(false) (`ployzd::network::linux::bridge::NetworkPlane::detach`)".to_owned(),
+                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (`ployzd::network::linux::bridge::NetworkPlane::detach`, `ployz_decide::bridge::between_restarts`)".to_owned(),
                 Disconnect::Refused => "Docker refuses it, and detach returns the error".to_owned(),
             }
         ),
         Branch::DetachFailed { phase, member } => format!(
-            "{}: disconnect {member:?} again (:845): Docker refuses it again, so detach returns Err (:850){}",
+            "{}: disconnect {member:?} again (`ployzd::network::linux::bridge::NetworkPlane::detach`): Docker refuses it again, so detach returns Err{}",
             phase_name(phase),
             match phase {
-                Phase::Readdress => "; the loop breaks, and the bridge is not replaced (:668-680)",
-                Phase::Pin => "; pin_members reports and moves on (:809-815)",
+                Phase::Readdress => "; the loop breaks, and the bridge is not replaced (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)",
+                Phase::Pin => "; pin_members reports and moves on",
             }
         ),
         Branch::Unrecorded { member } => format!(
-            "pin pass: {member:?} is attached and recorded is false, so it is skipped (:783-786)"
+            "pin pass: {member:?} is attached and recorded is false, so it is skipped (`ployzd::network::linux::bridge::NetworkPlane::pin_members`)"
         ),
         Branch::Inspected {
             member,
@@ -2923,7 +2914,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             member,
             settle: Some(answer),
         } => format!(
-            "stop {member:?}: inspect, and settle answers {answer:?} (:860-878, `ployz_decide::bridge::settle`){}",
+            "stop {member:?}: inspect, and settle answers {answer:?} (`ployzd::network::linux::bridge::NetworkPlane::stop`, `ployz_decide::bridge::settle`){}",
             match answer {
                 Settle::Leave => "; the refused operation is retried",
                 Settle::Stop => "; it is stopped without a note",
@@ -2937,9 +2928,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             "stop {member:?}: Stopped::note: {}{}",
             write_words(write, "the stopped note"),
             match write {
-                Write::Unchanged | Write::Written => " (:882, stopped.rs:48-56)",
+                Write::Unchanged | Write::Written => " (`ployzd::network::linux::bridge::NetworkPlane::stop`, `ployzd::network::linux::stopped::Stopped::note`)",
                 Write::Failed | Write::FailedAfterRename => {
-                    "; note takes the id back out (stopped.rs:49-53), and stop reports and leaves it alone (:882-885)"
+                    "; note takes the id back out (`ployzd::network::linux::stopped::Stopped::note`), and stop reports and leaves it alone (`ployzd::network::linux::bridge::NetworkPlane::stop`)"
                 }
             }
         ),
@@ -2948,19 +2939,19 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             settle,
             noted,
         } => format!(
-            "stop {member:?}: stop_container (:888-893){}",
+            "stop {member:?}: stop_container (`ployzd::network::linux::bridge::NetworkPlane::stop`){}",
             match (settle, noted) {
                 (Settle::StopAndNote, true) => ", which the stopped note names",
                 (Settle::StopAndNote, false) => ", which the stopped note does not name",
                 (Settle::Stop | Settle::Leave, _) => ", for good",
             }
         ),
-        Branch::Removed { attached: true } => "readdress: replace_docker_network removes the old bridge, a member still on it, and in this answer Docker detaches the member (:674-680, :700)".to_owned(),
-        Branch::Removed { attached: false } => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (:674-680, :700)".to_owned(),
-        Branch::RemoveRefused => "readdress: Docker refuses to remove the old bridge, a member still on it, so replace_docker_network returns Ok(Some) (:700-703), and the rejoins run (:684-687)".to_owned(),
+        Branch::Removed { attached: true } => "readdress: replace_docker_network removes the old bridge, a member still on it, and in this answer Docker detaches the member (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned(),
+        Branch::Removed { attached: false } => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned(),
+        Branch::RemoveRefused => "readdress: Docker refuses to remove the old bridge, a member still on it, so replace_docker_network returns Ok(Some), and the rejoins run (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`)".to_owned(),
         Branch::Created { readdress } => format!(
             "create_bridge creates the bridge in its new shape ({})",
-            if readdress { ":705, :710-729" } else { ":619, :710-729" }
+            if readdress { ":705, `ployzd::network::linux::bridge::NetworkPlane::create_bridge`" } else { ":619" }
         ),
         Branch::Connected {
             phase,
@@ -2969,39 +2960,38 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             answer,
         } => {
             let call = match (phase, step) {
-                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None) (:926-931)".to_owned(),
-                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None) (:926-931)".to_owned(),
-                (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned (:921-924)", phase_name(phase)),
+                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None)".to_owned(),
+                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None)".to_owned(),
+                (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned", phase_name(phase)),
                 (_, Step::First | Step::Inspect | Step::Note | Step::Stop(_)) => format!(
-                    "{}: rejoin_with connects {member:?} pinned at {:?} (:{}, :915-918)",
+                    "{}: rejoin_with connects {member:?} pinned at {:?}",
                     phase_name(phase),
                     assigned(after, member),
-                    if phase == Phase::Readdress { "897" } else { "818" }
                 ),
             };
             let answered = match answer {
                 Connect::Pinned(address) => format!("it rejoins pinned at {address:?}"),
                 Connect::Dynamic(address) => format!("Docker attaches it on {address:?}, a dynamic address"),
-                Connect::BetweenRestarts => "Docker refuses it as between restarts (:919)".to_owned(),
+                Connect::BetweenRestarts => "Docker refuses it as between restarts (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`)".to_owned(),
                 Connect::InUse => "Docker refuses it: another endpoint holds that address".to_owned(),
                 Connect::Refused => "Docker refuses it".to_owned(),
             };
             format!("{call}: {answered}")
         }
         Branch::Unjoined { phase, member } => format!(
-            "{}: connect(None) is refused too, so rejoin_with reports and returns false (:926-939){}",
+            "{}: connect(None) is refused too, so rejoin_with reports and returns false{}",
             phase_name(phase),
             match phase {
-                Phase::Readdress => format!(", which rejoin discards (:896-899); {member:?} stays detached"),
-                Phase::Pin => format!(", and {member:?} goes into unjoined (:819-821)"),
+                Phase::Readdress => format!(", which rejoin discards; {member:?} stays detached"),
+                Phase::Pin => format!(", and {member:?} goes into unjoined (`ployzd::network::linux::bridge::NetworkPlane::pin_members`)"),
             }
         ),
         Branch::Finished {
             kept: false,
             write: Write::Unchanged,
-        } => "pin pass: Pins::finish keeps nothing, and no address note stands to remove (pins.rs:82-88)".to_owned(),
+        } => "pin pass: Pins::finish keeps nothing, and no address note stands to remove (`ployzd::network::linux::pins::Pins::finish`)".to_owned(),
         Branch::Finished { kept, write } => format!(
-            "pin pass: Pins::finish keeps {} (pins.rs:82-100): {}",
+            "pin pass: Pins::finish keeps {} (`ployzd::network::linux::pins::Pins::finish`): {}",
             if kept { "only unjoined" } else { "nothing" },
             write_words(write, if kept { "the rewrite" } else { "the removal" })
         ),
@@ -3031,24 +3021,24 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                     attached: Some(address),
                 } => format!("Docker runs it, though it had no ployz endpoint, and attaches it on {address:?}"),
                 Started::AlreadyRunning => "it already runs: bollard reads Docker's 304 as Ok".to_owned(),
-                Started::Gone => "404 No such container, so it is dropped (stopped.rs:66, `ployz_decide::bridge::gone`)".to_owned(),
-                Started::Refused if model.fix.is_shipped() => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
+                Started::Gone => "404 No such container, so it is dropped (`ployzd::network::linux::stopped::Stopped::start`, `ployz_decide::bridge::gone`)".to_owned(),
+                Started::Refused if model.fix.is_shipped() => "Docker refuses it (500), so it is kept and reported (`ployzd::network::linux::stopped::Stopped::start`)".to_owned(),
                 Started::Netless if model.broken.netless_gone => "Docker answers 404 for its missing network, and gone reads every 404 as gone, so it is dropped".to_owned(),
-                Started::Netless if model.fix.is_shipped() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, `ployz_decide::bridge::gone`)".to_owned(),
+                Started::Netless if model.fix.is_shipped() => "Docker answers 404 for its missing network, so it is kept (`ployzd::network::linux::stopped::Stopped::start`, `ployz_decide::bridge::gone`)".to_owned(),
                 Started::Refused | Started::Netless | Started::Deferred => format!(
                     "{}, and the fix {}",
                     match answer {
-                        Started::Netless => "Docker answers 404 for its missing network (stopped.rs:67-73, `ployz_decide::bridge::gone`)",
+                        Started::Netless => "Docker answers 404 for its missing network (`ployzd::network::linux::stopped::Stopped::start`, `ployz_decide::bridge::gone`)",
                         Started::Deferred => "Docker shows it with no ployz endpoint",
                         Started::Refused | Started::Ran { .. } | Started::AlreadyRunning | Started::Gone => {
-                            "Docker refuses it (500) (stopped.rs:67-73)"
+                            "Docker refuses it (500) (`ployzd::network::linux::stopped::Stopped::start`)"
                         }
                     },
                     if kept { "keeps it for a later daemon start" } else { "drops it" }
                 ),
             };
             format!(
-                "Stopped::start {} {member:?} ({loaded}{}) (:547, stopped.rs:64): {answered}",
+                "Stopped::start {} {member:?} ({loaded}{}) (`ployzd::network::linux::bridge::NetworkPlane::ensure_docker_network`, `ployzd::network::linux::stopped::Stopped::start`): {answered}",
                 if answer == Started::Deferred {
                     "defers its start of"
                 } else {
@@ -3064,9 +3054,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
         Branch::Updated {
             kept: false,
             write: Write::Unchanged,
-        } => "Stopped::start keeps nothing, and no stopped note stands to remove (stopped.rs:80-84); ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)".to_owned(),
+        } => "Stopped::start keeps nothing, and no stopped note stands to remove (`ployzd::network::linux::stopped::Stopped::start`); ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)".to_owned(),
         Branch::Updated { kept, write } => format!(
-            "Stopped::start {} the stopped note (stopped.rs:80-93): {}; ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)",
+            "Stopped::start {} the stopped note (`ployzd::network::linux::stopped::Stopped::start`): {}; ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)",
             if kept { "rewrites" } else { "removes" },
             write_words(write, if kept { "the rewrite" } else { "the removal" })
         ),
@@ -3284,7 +3274,7 @@ mod tests {
     }
 
     /// The first property's second route: no start is refused. Docker runs M0, and only the
-    /// note's update fails, so the old note keeps M0 (stopped.rs:80-93).
+    /// note's update fails, so the old note keeps M0 (`ployzd::network::linux::stopped::Stopped::start`).
     #[test]
     fn current_code_starts_a_member_whose_note_update_failed_after_the_operator_stopped_it() {
         let path = follow(as_is(), &the_failed_update());
@@ -3535,7 +3525,7 @@ mod tests {
         assert!(!holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
     }
 
-    /// `Pins::record` skips a member with no address (pins.rs:69), so none is noted.
+    /// `Pins::record` skips a member with no address (`ployzd::network::linux::pins::Pins::record`), so none is noted.
     #[test]
     fn second_property_fails_for_a_detached_member_with_no_address_noted() {
         let after = step(

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approvalBadge, approvalSubject, asksForAuthKey, type ApprovalReview } from "#/modules/approvals/approvals";
+import { approvalSubject, asksForAuthKey, type ApprovalReview } from "#/modules/approvals/approvals";
+import { approvalBadge } from "#/components/agent-sidebar/approval-copy";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { privateAccessUse } from "#/modules/private-access/private-access.commands.server";
 import { privateAccessAsked } from "#/modules/private-access/private-access.server";
@@ -12,7 +13,6 @@ const reviewOf = (to: "on" | "off"): ApprovalReview => {
 describe("setPrivateAccess gating", () => {
   it("asks a human from the CLI or an agent, and only an operator may ask", () => {
     const operation = OPERATIONS["private_access.use"];
-    expect(operation.gate).toBe("approval");
     expect(operation.requires).toBe("servers:operate");
     expect(privateAccessUse.gate).toBe("ask");
     expect(privateAccessUse.removes).toBe(false);

@@ -10,8 +10,8 @@
 
 use crate::id::{BranchName, RepositoryId, RepositoryName};
 use ployz_core::config::{
-    AuthoredServiceConfig, BRANCH_MAX, BuildMethod, COMMAND_MAX, DOCKERFILE_PATH_MAX,
-    REPOSITORY_MAX, SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
+    AuthoredServiceConfig, BRANCH_MAX, BuildMethod, DOCKERFILE_PATH_MAX, REPOSITORY_MAX,
+    SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource, Setting,
     parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
@@ -23,7 +23,7 @@ use crate::error;
 use crate::followup::FollowUp;
 use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
-use crate::settings::ServiceSetting;
+use crate::settings::{Apply, Needs, ServiceSetting, Spec, command};
 use crate::storage::Tx;
 use crate::{Actor, ServiceStaged, Trusted};
 
@@ -86,16 +86,7 @@ pub(crate) fn create_git_service(
     if !found.has_branch(branch.as_str()) {
         return Err(no_branch(found.repository.as_str(), create.name.as_str()));
     }
-    let source = ServiceSource::Git {
-        version: 2,
-        repository: found.repository.to_string(),
-        repository_id: found.repository_id.get(),
-        access: found.access.clone(),
-        root_dir: "/".into(),
-        branch: ServiceGitBranch::Connected {
-            name: branch.to_string(),
-        },
-    };
+    let source = connected(found, branch, "/".to_owned());
     crate::service::insert_service(
         tx,
         who,
@@ -119,99 +110,86 @@ pub(crate) enum GitSetting {
 }
 
 impl GitSetting {
-    pub(crate) const fn name(self) -> &'static str {
+    pub(crate) const fn spec(self) -> Spec {
         match self {
-            Self::Repository => "repository",
-            Self::Branch => "branch",
-            Self::RootDir => "rootDir",
-            Self::BuildMethod => "buildMethod",
-            Self::DockerfilePath => "dockerfilePath",
-            Self::BuildCommand => "buildCommand",
-        }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Repository => "Repository",
-            Self::Branch => "Branch",
-            Self::RootDir => "Root directory",
-            Self::BuildMethod => "Build method",
-            Self::DockerfilePath => "Dockerfile path",
-            Self::BuildCommand => "Build command",
-        }
-    }
-
-    pub(crate) const fn description(self) -> &'static str {
-        match self {
-            Self::Repository => {
-                "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch."
-            }
-            Self::Branch => "The branch the Service builds. Ployz checks it exists.",
-            Self::RootDir => {
-                "The repository directory the build starts in. Unset means the repository root."
-            }
-            Self::BuildMethod => "How the image is built: Railpack detects it, or a Dockerfile.",
-            Self::DockerfilePath => {
-                "The Dockerfile to build, relative to the root directory. Unset means Dockerfile."
-            }
-            Self::BuildCommand => {
-                "Overrides Railpack's build command. Unset keeps detection; Dockerfiles ignore it."
-            }
-        }
-    }
-
-    /// The core config field, as change rows name it.
-    pub(crate) const fn field(self) -> &'static str {
-        match self {
-            Self::Repository => "source.repository",
-            Self::Branch => "source.branch",
-            Self::RootDir => "source.rootDir",
-            Self::BuildMethod => "build.buildMethod",
-            Self::DockerfilePath => "build.dockerfilePath",
-            Self::BuildCommand => "build.command",
-        }
-    }
-
-    pub(crate) fn default(self) -> Value {
-        match self {
-            Self::BuildMethod => json!("railpack"),
-            Self::Repository
-            | Self::Branch
-            | Self::RootDir
-            | Self::DockerfilePath
-            | Self::BuildCommand => Value::Null,
-        }
-    }
-
-    pub(crate) fn expected(self) -> Value {
-        match self {
-            Self::Repository => json!({
-                "type": "string",
-                "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
-                "maxLength": REPOSITORY_MAX,
-            }),
-            Self::Branch => {
-                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": BRANCH_MAX })
-            }
-            Self::RootDir => json!({ "type": "string", "pattern": "^/[A-Za-z0-9/._-]*$" }),
-            Self::BuildMethod => json!({ "type": "string", "enum": ["dockerfile", "railpack"] }),
-            Self::DockerfilePath => {
-                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": DOCKERFILE_PATH_MAX })
-            }
-            Self::BuildCommand => {
-                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
-            }
-        }
-    }
-
-    pub(crate) fn examples(self) -> Value {
-        match self {
-            Self::Repository => json!(["acme/web"]),
-            Self::Branch => json!(["main"]),
-            Self::RootDir => json!(["/apps/web"]),
-            Self::BuildMethod => json!(["dockerfile"]),
-            Self::DockerfilePath => json!(["docker/web.Dockerfile"]),
-            Self::BuildCommand => json!(["npm run build"]),
+            Self::Repository => Spec {
+                name: "repository",
+                label: "Repository",
+                description: "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch.",
+                field: "source.repository",
+                core: None,
+                apply: Apply::Staged,
+                needs: Needs::Git,
+                default: |_| Value::Null,
+                expected: || {
+                    json!({
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
+                        "maxLength": REPOSITORY_MAX,
+                    })
+                },
+                examples: || json!(["acme/web"]),
+            },
+            Self::Branch => Spec {
+                name: "branch",
+                label: "Branch",
+                description: "The branch the Service builds. Ployz checks it exists.",
+                field: "source.branch",
+                core: Some(Setting::Branch),
+                apply: Apply::Staged,
+                needs: Needs::Git,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": BRANCH_MAX }),
+                examples: || json!(["main"]),
+            },
+            Self::RootDir => Spec {
+                name: "rootDir",
+                label: "Root directory",
+                description: "The repository directory the build starts in. Unset means the repository root.",
+                field: "source.rootDir",
+                core: None,
+                apply: Apply::Staged,
+                needs: Needs::Git,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "pattern": "^/[A-Za-z0-9/._-]*$" }),
+                examples: || json!(["/apps/web"]),
+            },
+            Self::BuildMethod => Spec {
+                name: "buildMethod",
+                label: "Build method",
+                description: "How the image is built: Railpack detects it, or a Dockerfile.",
+                field: "build.buildMethod",
+                core: Some(Setting::BuildMethod),
+                apply: Apply::Staged,
+                needs: Needs::Built,
+                default: |_| json!("railpack"),
+                expected: || json!({ "type": "string", "enum": ["dockerfile", "railpack"] }),
+                examples: || json!(["dockerfile"]),
+            },
+            Self::DockerfilePath => Spec {
+                name: "dockerfilePath",
+                label: "Dockerfile path",
+                description: "The Dockerfile to build, relative to the root directory. Unset means Dockerfile.",
+                field: "build.dockerfilePath",
+                core: Some(Setting::DockerfilePath),
+                apply: Apply::Staged,
+                needs: Needs::Built,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": DOCKERFILE_PATH_MAX }),
+                examples: || json!(["docker/web.Dockerfile"]),
+            },
+            Self::BuildCommand => Spec {
+                name: "buildCommand",
+                label: "Build command",
+                description: "Overrides Railpack's build command. Unset keeps detection; Dockerfiles ignore it.",
+                field: "build.command",
+                core: Some(Setting::BuildCommand),
+                apply: Apply::Staged,
+                needs: Needs::Built,
+                default: |_| Value::Null,
+                expected: command,
+                examples: || json!(["npm run build"]),
+            },
         }
     }
 
@@ -219,10 +197,7 @@ impl GitSetting {
         let build = &config.build;
         match (self, &config.source) {
             (Self::Repository, ServiceSource::Git { repository, .. }) => json!(repository),
-            (Self::Branch, ServiceSource::Git { branch, .. }) => match branch {
-                ServiceGitBranch::Connected { name } => json!(name),
-                ServiceGitBranch::Disconnected { .. } => Value::Null,
-            },
+            (Self::Branch, ServiceSource::Git { branch, .. }) => json!(branch_name(branch)),
             (Self::RootDir, ServiceSource::Git { root_dir, .. }) if root_dir != "/" => {
                 json!(root_dir)
             }
@@ -285,11 +260,13 @@ impl GitSetting {
                     // An empty or image Service starts building the repository's default branch.
                     ServiceSource::Empty { root_dir, .. } => {
                         let root_dir = root_dir.clone();
-                        config.source = connected(authorized(trusted, &text)?, root_dir);
+                        let found = authorized(trusted, &text)?;
+                        config.source = connected(found, &found.default_branch, root_dir);
                         return Ok(());
                     }
                     ServiceSource::Image { .. } => {
-                        config.source = connected(authorized(trusted, &text)?, "/".to_owned());
+                        let found = authorized(trusted, &text)?;
+                        config.source = connected(found, &found.default_branch, "/".to_owned());
                         return Ok(());
                     }
                 };
@@ -379,11 +356,30 @@ pub(crate) fn tracks(
     repository_id: RepositoryId,
     branch: &BranchName,
 ) -> bool {
-    matches!(
-        &service.config.source,
-        ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
-            if *at == repository_id.get() && name == branch.as_str()
-    )
+    built_from(&service.config.source).is_some_and(|(at, built)| {
+        at == repository_id.get() && branch_name(built) == Some(branch.as_str())
+    })
+}
+
+/// The repository and branch `source` builds, if it builds one. Two sources that
+/// answer the same build the same commits.
+pub(crate) fn built_from(source: &ServiceSource) -> Option<(u64, &ServiceGitBranch)> {
+    match source {
+        ServiceSource::Git {
+            repository_id,
+            branch,
+            ..
+        } => Some((*repository_id, branch)),
+        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
+    }
+}
+
+/// The branch `branch` names while it is connected.
+pub(crate) fn branch_name(branch: &ServiceGitBranch) -> Option<&str> {
+    match branch {
+        ServiceGitBranch::Connected { name } => Some(name),
+        ServiceGitBranch::Disconnected { .. } => None,
+    }
 }
 
 /// Refuse any Git source in `after` whose repository, access or branch changed from
@@ -467,8 +463,8 @@ fn authorized<'a>(
     })
 }
 
-/// A source building `found`'s default branch from `root_dir`.
-fn connected(found: &AuthorizedRepository, root_dir: String) -> ServiceSource {
+/// A source building `found`'s `branch` from `root_dir`.
+fn connected(found: &AuthorizedRepository, branch: &BranchName, root_dir: String) -> ServiceSource {
     ServiceSource::Git {
         version: 2,
         repository: found.repository.to_string(),
@@ -476,7 +472,7 @@ fn connected(found: &AuthorizedRepository, root_dir: String) -> ServiceSource {
         access: found.access.clone(),
         root_dir,
         branch: ServiceGitBranch::Connected {
-            name: found.default_branch.to_string(),
+            name: branch.to_string(),
         },
     }
 }

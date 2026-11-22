@@ -3,8 +3,8 @@ import { Effect, Schema } from "effect";
 import { APPROVAL_STATUSES, approvalTarget, destroyedLines } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import type { ApprovalView } from "#/modules/approvals/approvals.server";
-import { defineCommand, type Ran } from "#/modules/commands/command.server";
-import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
+import { defineCommand, type Ran } from "#/modules/commands/define";
+import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/approvals/approvals.fresh.server";
 
 const ApprovalId = Schema.String.annotate({ description: "The Approval's ID, from a list of Approvals or from the call that had to ask" });
 

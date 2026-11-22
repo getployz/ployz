@@ -67,15 +67,8 @@ impl Fixture {
 
 /// A new, empty database.
 fn fresh(dir: &tempfile::TempDir, name: &str) -> String {
-    let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
-        return format!("sqlite:{}", dir.path().join(format!("{name}.db")).display());
-    };
-    let database = format!("convert_{}", uuid::Uuid::new_v4().simple());
-    postgres::Client::connect(&server, postgres::NoTls)
-        .unwrap()
-        .batch_execute(&format!("CREATE DATABASE {database}"))
-        .unwrap();
-    format!("{server}/{database}")
+    crate::storage::fresh_postgres("convert")
+        .unwrap_or_else(|| format!("sqlite:{}", dir.path().join(format!("{name}.db")).display()))
 }
 
 fn postgres() -> bool {

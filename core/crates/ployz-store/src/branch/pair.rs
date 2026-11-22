@@ -11,6 +11,7 @@ use super::*;
 use crate::Trusted;
 use crate::digest::short_digest;
 use crate::settings::{SecretCell, ServiceSetting};
+use crate::storage::json_text;
 
 /// What a write checks the receiver against before anything lands. Only the Store
 /// builds one: a client always sends the version it reviewed.
@@ -424,10 +425,6 @@ pub(crate) fn whole(rows: &[PlannedRow], mut picks: BTreeSet<RowId>) -> BTreeSet
     picks
 }
 
-pub(crate) fn json_of(cell: &impl Serialize) -> String {
-    serde_json::to_string(cell).expect("a cell is JSON")
-}
-
 /// The row a table keys by `lineage` and `at`.
 pub(crate) fn row_id(lineage: &str, at: &str) -> Result<RowId, RpcError> {
     format!("{lineage}:{at}")
@@ -571,7 +568,7 @@ pub(crate) fn share(
          SELECT id, ?2, organization_id, ?3 FROM config_environment WHERE id = ?1 \
          AND EXISTS (SELECT 1 FROM config_environment WHERE id = ?2) \
          ON CONFLICT (environment_id, other_id) DO UPDATE SET base = excluded.base",
-        &[a.into(), b.into(), document(base).as_str().into()],
+        &[a.into(), b.into(), json_text(base).as_str().into()],
     )?;
     Ok(())
 }
@@ -791,7 +788,7 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
     tx.execute(
         "UPDATE config_sync_arrival SET was = ?2 \
          WHERE environment_id = ?1 AND sync_id IS NULL AND was IS NOT NULL AND was <> ?2",
-        &[receiver.into(), json_of(&UNKEPT).as_str().into()],
+        &[receiver.into(), json_text(&UNKEPT).as_str().into()],
     )?;
     Ok(())
 }
@@ -842,8 +839,8 @@ pub(super) mod ledger {
                     };
                     Self {
                         state: "pending",
-                        prior: Some(json_of(prior)),
-                        was: Some(json_of(was)),
+                        prior: Some(json_text(prior)),
+                        was: Some(json_text(was)),
                         sync,
                         proposal,
                     }
@@ -1018,7 +1015,7 @@ pub(super) mod ledger {
         let to = Columns::of(&arrived.arrival);
         let at = arrived.row.at().to_string();
         let how = storage::name_of(arrived.how);
-        let (value, source) = (json_of(&arrived.value), json_of(&arrived.from));
+        let (value, source) = (json_text(&arrived.value), json_text(&arrived.from));
         let mut params: Vec<Param<'_>> = vec![
             receiver.as_str().into(),
             arrived.other.as_str().into(),
@@ -1081,7 +1078,7 @@ pub(super) mod ledger {
         sync: &SyncId,
         delivered: &Cell,
     ) -> Result<(), RpcError> {
-        let (at, source) = (key.row.at().to_string(), json_of(delivered));
+        let (at, source) = (key.row.at().to_string(), json_text(delivered));
         let changed = tx.execute(
             "UPDATE config_sync_arrival SET source = ?5 \
              WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
@@ -1377,10 +1374,9 @@ pub(super) fn arrived(
             let value: Cell = row.json(5, "Sync")?;
             // A row with no source offers what landed: the release or end of its
             // proposal cleared it, and no Use hint has delivered a cell there since.
-            let from = match row.optional_text(10)? {
-                Some(from) => serde_json::from_str(from).map_err(|_| error::corrupt("Sync"))?,
-                None => value.clone(),
-            };
+            let from = row
+                .optional_json(10, "Sync")?
+                .unwrap_or_else(|| value.clone());
             Ok(Arrived {
                 other: row.parse(0, "Sync")?,
                 row: row_id(row.text(1)?, row.text(2)?)?,
@@ -1652,10 +1648,7 @@ pub(crate) fn land(
         if old == Some(service) {
             continue;
         }
-        staged.push(NodeName::Service(
-            ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?,
-        ));
+        staged.push(NodeName::Service(crate::scope::service_name(service)?));
         if old.is_some() {
             continue;
         }
@@ -1714,10 +1707,7 @@ pub(crate) fn land(
     // back by ID.
     for service in &before.services {
         if !branch.working.services.iter().any(|s| s.id == service.id) {
-            staged.push(NodeName::Service(
-                ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
-            ));
+            staged.push(NodeName::Service(crate::scope::service_name(service)?));
         }
     }
     for config in &before.configs {
@@ -1942,17 +1932,8 @@ mod tests {
     /// A Store with one Project and its Environment, the receiver; on a fresh
     /// Postgres database when `PLOYZ_STORE_TEST_POSTGRES` names a server.
     fn shop() -> (crate::ConfigStore, Actor, EnvironmentId) {
-        let url = match std::env::var("PLOYZ_STORE_TEST_POSTGRES") {
-            Ok(server) => {
-                let database = format!("ledger_{}", uuid::Uuid::new_v4().simple());
-                postgres::Client::connect(&server, postgres::NoTls)
-                    .unwrap()
-                    .batch_execute(&format!("CREATE DATABASE {database}"))
-                    .unwrap();
-                format!("{server}/{database}")
-            }
-            Err(_) => "sqlite::memory:".to_owned(),
-        };
+        let url = crate::storage::fresh_postgres("ledger")
+            .unwrap_or_else(|| "sqlite::memory:".to_owned());
         let store = crate::ConfigStore::open(&url, SealingKey::new(b"test").unwrap()).unwrap();
         let who = Actor::system(OrganizationId::parse(ORGANIZATION).unwrap());
         let receiver = EnvironmentId::parse(uuid(2)).unwrap();
@@ -1983,9 +1964,9 @@ mod tests {
                 row.lineage().into(),
                 row.at().to_string().as_str().into(),
                 ORGANIZATION.into(),
-                json_of(&cell("2")).as_str().into(),
-                json_of(&cell("secret")).as_str().into(),
-                json_of(&sealed("secret")).as_str().into(),
+                json_text(&cell("2")).as_str().into(),
+                json_text(&cell("secret")).as_str().into(),
+                json_text(&sealed("secret")).as_str().into(),
                 sync(1).as_str().into(),
             ],
         )
@@ -2011,8 +1992,8 @@ mod tests {
                     .unwrap();
                 // The scrub's compare-and-set writes (`empty_in_bases`).
                 for (column, scrubbed, plain) in [
-                    ("prior", json_of(&cell("")), json_of(&cell("secret"))),
-                    ("was", json_of(&sealed("")), json_of(&sealed("secret"))),
+                    ("prior", json_text(&cell("")), json_text(&cell("secret"))),
+                    ("was", json_text(&sealed("")), json_text(&sealed("secret"))),
                 ] {
                     tx.execute(
                         &format!(
@@ -2045,7 +2026,7 @@ mod tests {
                 Ok((row.text(0)?.to_owned(), row.text(1)?.to_owned()))
             })
             .unwrap();
-        assert_eq!((prior, was), (json_of(&cell("")), json_of(&sealed(""))));
+        assert_eq!((prior, was), (json_text(&cell("")), json_text(&sealed(""))));
     }
 
     /// An edge that meets a row other than the one its caller read fails corrupt,

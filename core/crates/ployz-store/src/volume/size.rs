@@ -18,6 +18,7 @@ use crate::error;
 use crate::id::{EnvironmentId, VolumeId};
 use crate::scope;
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// A deployed Managed Volume's size moved, in either direction, as Cloud's resize
 /// run reports it.
@@ -152,7 +153,7 @@ pub(crate) fn record(
     {
         return Err(deploying(&name, volume, &running));
     }
-    let storage = serde_json::to_string(&to).expect("storage is JSON");
+    let storage = json_text(&to);
     tx.execute(
         "UPDATE config_volume_storage SET storage = ?3 \
          WHERE environment_id = ?1 AND volume_id = ?2",

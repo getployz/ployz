@@ -8,9 +8,10 @@ use ployz_core::{Hint, Machine, RpcErrorCode, op};
 use serde_json::json;
 
 use super::Error;
+use crate::cloud;
 use crate::{
-    cloud_account::{self, Credential, StoreCallError},
-    cloud_login::{CredentialStore, LoginError},
+    cloud::account::{Credential, StoreCallError},
+    cloud::login::{CredentialStore, LoginError},
     cluster::{Call, FullRoutes},
     connect::{Client, ConnectError, Connector, SystemConnector},
     context::{Connection, ConnectionSource, ContextError, SelectedConnections},
@@ -82,7 +83,7 @@ pub(super) async fn connect_full(
     if let Ok(client) = local {
         return Ok(client);
     }
-    let mut access = cloud_account::server_access(&credential).await?;
+    let mut access = cloud::account::server_access(&credential).await?;
     access.connections = as_device(access.connections, &key)?;
     let connections = access.connections.clone();
     dial(matches, access)
@@ -182,7 +183,7 @@ enum Login {
 
 async fn login(matches: &ArgMatches) -> Result<Login, Error> {
     let store = CredentialStore::beside(&super::config_path(matches)?);
-    Ok(match cloud_account::from_env(&store).await {
+    Ok(match cloud::account::from_env(&store).await {
         Ok(credential) => Login::SignedIn(credential),
         Err(LoginError::SignedOut) => Login::SignedOut,
         Err(error) => Login::Broken(error),
@@ -237,7 +238,7 @@ async fn connect_or_none_held(
 ) -> Result<Option<(Client, Option<Vec<Connection>>)>, Error> {
     match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             Ok(dial_held(matches, access)
                 .await?
                 .map(|(client, held)| (client, Some(held))))
@@ -399,7 +400,7 @@ pub(super) fn signed_in(
 /// Whether [`signed_in`] would find something to act with, read from `PLOYZ_TOKEN` and the
 /// stored sign-in alone: it never asks Cloud or writes, so a pending code counts as signed out.
 pub(super) fn signed_in_locally(matches: &ArgMatches) -> bool {
-    crate::cloud_account::env_token().is_some()
+    crate::cloud::account::env_token().is_some()
         || super::config_path(matches).is_ok_and(|config| {
             matches!(CredentialStore::beside(&config).organization(), Ok(Some(_)))
         })
@@ -451,7 +452,7 @@ pub(super) async fn reach_or_silent(
     let config = super::config_path(matches)?;
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = match cloud_account::server_access(&credential).await {
+            let access = match cloud::account::server_access(&credential).await {
                 Ok(access) => access,
                 Err(StoreCallError::Refused(error))
                     if error.code.as_str() == ployz_core::FORBIDDEN_CODE =>
@@ -509,7 +510,7 @@ pub(super) async fn connect_or_unanswered(
 ) -> Result<Reached, Error> {
     match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             Ok(match answering(matches, access).await? {
                 Some(client) => Reached::Client(client),
                 None => Reached::Unanswered(credential),
@@ -524,7 +525,7 @@ pub(super) async fn connect_or_unanswered(
 /// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
 async fn answering(
     matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
+    mut access: cloud::account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     if access.connections.is_empty() {
         return match (access.unreachable.is_empty(), access.refused.is_empty()) {
@@ -555,7 +556,7 @@ pub(super) async fn entries(
     let direct = matches.get_one::<String>("connect").map(String::as_str);
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             if access.connections.is_empty() {
                 return Err(
                     if access.unreachable.is_empty() && access.refused.is_empty() {
@@ -584,7 +585,7 @@ pub(super) async fn entries(
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
-    access: cloud_account::ServerAccess,
+    access: cloud::account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     Ok(dial_held(matches, access).await?.map(|(client, _)| client))
 }
@@ -592,7 +593,7 @@ async fn dial(
 /// [`dial`], with the connections Cloud handed over, so a later dial needs no second ask.
 async fn dial_held(
     matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
+    mut access: cloud::account::ServerAccess,
 ) -> Result<Option<(Client, Vec<Connection>)>, Error> {
     if access.connections.is_empty() {
         if access.unreachable.is_empty() && access.refused.is_empty() {
@@ -668,7 +669,7 @@ pub(super) fn has_no_servers(error: &Error) -> bool {
 /// connection to and those Cloud couldn't reach didn't answer, and Cloud says why each
 /// refused one couldn't. Only with no refusal does it read as [`no_reachable_server`].
 fn no_server_access(
-    access: cloud_account::ServerAccess,
+    access: cloud::account::ServerAccess,
     mut unanswered: Vec<ployz_core::MachineId>,
     cause: Option<ConnectError>,
 ) -> Error {
@@ -913,7 +914,7 @@ mod tests {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
-        let access = |unreachable| cloud_account::ServerAccess {
+        let access = |unreachable| cloud::account::ServerAccess {
             connections: Vec::new(),
             unreachable,
             refused: Vec::new(),
@@ -948,7 +949,7 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
         let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = cloud_account::ServerAccess {
+        let access = cloud::account::ServerAccess {
             connections: serde_json::from_value(json!([
                 { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
             ]))
@@ -985,7 +986,7 @@ mod tests {
             .try_get_matches_from(["ployz", "status"])
             .unwrap();
         let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
+        let access = |unreachable: Vec<&String>| -> cloud::account::ServerAccess {
             serde_json::from_value(json!({
                 "connections": [
                     { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
@@ -1038,7 +1039,7 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "forget", "web-1"])
             .unwrap();
         let matches = leaf_matches(&matches);
-        let unprovisioned = cloud_account::ServerAccess {
+        let unprovisioned = cloud::account::ServerAccess {
             connections: Vec::new(),
             unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
             refused: Vec::new(),
@@ -1050,7 +1051,7 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap();
-        let held: cloud_account::ServerAccess = serde_json::from_value(json!({
+        let held: cloud::account::ServerAccess = serde_json::from_value(json!({
             "connections": [{ "machine_id": "a".repeat(32), "tcp": closed.to_string() }],
             "unreachable": [],
         }))
@@ -1065,7 +1066,7 @@ mod tests {
             .unwrap();
         let matches = leaf_matches(&matches);
         let (refusing, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: &[&String]| -> cloud_account::ServerAccess {
+        let access = |unreachable: &[&String]| -> cloud::account::ServerAccess {
             serde_json::from_value(json!({
                 "connections": [],
                 "unreachable": unreachable,

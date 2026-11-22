@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
+import { approvalUuid, askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -22,9 +22,9 @@ import { environmentProtected } from "#/modules/config-store/store-lookup.server
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
+import { admitRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.rows.server";
+import { planVolumeRun } from "#/modules/volume-run/volume-run.cluster.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
-import { uuidFrom } from "#/server/uuid-from";
 
 export type OperationCall = {
   readonly key: string | null;
@@ -144,14 +144,9 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   })));
 
-/** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
-export const removeServer = (
-  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall, serverName?: MachineName,
-) => removal(caller, machineId, confirmed, call, serverName);
-
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
 export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
-  removal(caller, machineId, null, call, serverName);
+  removeServer(caller, machineId, null, call, serverName);
 
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
 export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
@@ -164,9 +159,13 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
     return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
   });
 
-/** Its run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from. */
-const removal = (
-  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName: MachineName | undefined,
+/**
+ * Takes Server `machineId` out of the Cluster: a reset deleting exactly the Data Loss the caller `confirmed`, or, with
+ * `null`, a Forget with no reset. Null when no Server has `machineId`. Its run keeps `serverName`, the name the caller
+ * showed, else the Server's name in the frame it planned from.
+ */
+export const removeServer = (
+  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName?: MachineName,
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
@@ -318,7 +317,6 @@ export const actService = (
     readonly verb: ServiceVerb;
     readonly only: ServerRef | null;
     readonly digest: string;
-    /** The proposal this run is a step of. */
     readonly proposal?: { readonly id: string; readonly step: number };
   },
   call: OperationCall,
@@ -338,7 +336,7 @@ export const actService = (
       if (!gated.ok) return refused(gated.refusal);
       if (gated.approvalId === null) return run;
       // One approval runs one stop or restart: its run takes an id the approval names, so a later call asks again.
-      const approved = uuidFrom(`ployz.approval:${caller.organization.id}:${gated.approvalId}`);
+      const approved = approvalUuid(`ployz.approval:${caller.organization.id}`, gated.approvalId);
       if (yield* serviceActExists(caller.organization.id, approved)) return refused(yield* askAgain(caller, asked));
       return () => run(approved);
     }),

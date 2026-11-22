@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{ConfigName, Region, RpcError, ServiceName};
+use ployz_core::{ConfigName, Region, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -136,8 +136,7 @@ pub(crate) fn environment(
         settings.push(SettingRow::region(environment.working.region.as_ref()));
     }
     for service in services {
-        let name = ServiceName::parse(service.slug.as_str())
-            .map_err(|_| crate::error::corrupt("Service name"))?;
+        let name = crate::scope::service_name(service)?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
                 let (row, note) = match &target {

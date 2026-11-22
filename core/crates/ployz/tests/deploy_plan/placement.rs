@@ -3402,7 +3402,7 @@ fn removed_first(plan: &ployz::deploy::DeployPlan) -> Vec<ContainerId> {
     let operations = &plan.preview().operations;
     plan.groups()
         .iter()
-        .filter(|group| group.service.is_none() && group.dependencies.is_empty())
+        .filter(|group| group.role == ployz::deploy::GroupRole::Prelude)
         .flat_map(|group| &group.steps)
         .flat_map(|step| match step {
             ployz::deploy::Stage::Serial(index) => vec![*index],

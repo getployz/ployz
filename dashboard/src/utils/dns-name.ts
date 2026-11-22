@@ -1,6 +1,6 @@
 import { slugifySegment } from "#/utils/slug";
 
-const DNS_LABEL_MAX = 63;
+export const DNS_LABEL_MAX = 63;
 
 /**
  * What a typed Service, Volume or Config name is saved as. These names are DNS labels, so any input is converted;

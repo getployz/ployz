@@ -13,14 +13,15 @@ import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { settingName } from "#/modules/config-store/store-branches";
 import { onMergeCount, onMergeLists, onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
-import { branchQuery, fetchStoreView, servicesQuery, useCachedStoreView, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { branchQuery, receivingEnvironment, servicesQuery, useCachedStoreView, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useSealing } from "#/modules/variables/sealing";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { useStoreMergeRowsPending } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { isEnvSetting } from "#/modules/config-store/setting-paths";
 
 /**
  * A PR Environment's On merge button, while its pull request is open: how many changes the merge lands, and the list
@@ -141,10 +142,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
     if (!secret || value === undefined) return writer.commit(command(value));
     // A secret's Edit shows with no value and goes sealed in its turn in the queue.
     return writer.commit(command(undefined), [], async () => {
-      const [sent] = await receivingValues(sealing, [{ row: row.row, value }], async () => {
-        const services = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));
-        return { environment: services.environment.id, services: services.services };
-      }, "refuse");
+      const [sent] = await receivingValues(sealing, [{ row: row.row, value }], () => receivingEnvironment(organizationSlug, scope, destination), "refuse");
       return command(sent?.value);
     });
   };
@@ -169,7 +167,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
             <EllipsisIcon />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {!excluded && row.preview !== null && row.name?.startsWith("env.") ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
+            {!excluded && row.preview !== null && row.name !== null && isEnvSetting(row.name) ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
             {edited ? <DropdownMenuItem onClick={() => void land()}>Reset</DropdownMenuItem> : null}
             <DropdownMenuItem onClick={() => exclude(excluded)}>{excluded ? "Include" : "Exclude"}</DropdownMenuItem>
           </DropdownMenuContent>

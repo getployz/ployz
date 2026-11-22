@@ -63,10 +63,7 @@ pub(in super::super) fn usable(placed: &impl Placed) -> bool {
 }
 
 fn running(placed: &impl Placed) -> bool {
-    matches!(
-        placed.runtime(),
-        ContainerRuntimeObservation::Running { .. }
-    )
+    placed.runtime().is_running()
 }
 
 /// A running Container before one at rest, then the latest created.

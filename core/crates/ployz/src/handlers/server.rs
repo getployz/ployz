@@ -19,7 +19,7 @@ use ployz_core::{
     UpdateMachineRequest, op,
 };
 
-use ployz_store::{REGION_LABEL, RegionKey};
+use ployz_store::region_key;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -54,12 +54,10 @@ mod waiting;
 
 use add::add;
 pub(super) use asked_policy::AskedPolicy;
-#[cfg(test)]
-pub(crate) use enroll::engine_view;
 pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
 pub(crate) use enroll_plan::{EnrollPlan, Shaping};
 pub(super) use helpers::{
-    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct, enroll,
+    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct_within, enroll,
     enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned,
 };
 use init::init;
@@ -758,8 +756,8 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let mut label_changes = std::collections::BTreeMap::new();
     for (key, value) in parse_label_add(matches)? {
-        let value = if key.as_str() == REGION_LABEL {
-            RegionKey::parse(value.as_str())?.as_str().parse()?
+        let value = if key.as_str() == ployz_core::Region::LABEL {
+            region_key(value.as_str())?.as_str().parse()?
         } else {
             value
         };

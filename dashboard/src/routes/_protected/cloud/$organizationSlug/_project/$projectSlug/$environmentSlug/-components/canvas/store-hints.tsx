@@ -9,7 +9,7 @@ import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import type { ChangeOrigin } from "./EnvironmentChangesReview";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 /**
  * Details' notes over the Config Store:

@@ -6,6 +6,7 @@ use ployz_core::config::SavedEnvironmentIntent;
 
 use super::Setup;
 use crate::id::EnvironmentId;
+use crate::storage::json_text;
 use crate::storage::{self, Tx};
 
 /// A Branch's row.
@@ -62,8 +63,7 @@ pub(super) fn insert(
             parent.as_str().into(),
             i64::from(kept).into(),
             made_with.into(),
-            serde_json::to_string(setup)
-                .expect("Setup Commands are JSON")
+            json_text(setup)
                 .as_str()
                 .into(),
         ],
@@ -86,13 +86,7 @@ pub(super) fn set_setup(
 ) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_environment_branch SET setup = ?1 WHERE environment_id = ?2",
-        &[
-            serde_json::to_string(setup)
-                .expect("Setup Commands are JSON")
-                .as_str()
-                .into(),
-            id.as_str().into(),
-        ],
+        &[json_text(setup).as_str().into(), id.as_str().into()],
     )?;
     Ok(())
 }
@@ -124,7 +118,7 @@ impl MadeWith {
              WHERE environment_id = ?1 AND made_with = ?3",
             &[
                 self.environment.as_str().into(),
-                super::document(new).as_str().into(),
+                json_text(new).as_str().into(),
                 self.text.as_str().into(),
             ],
         )?;

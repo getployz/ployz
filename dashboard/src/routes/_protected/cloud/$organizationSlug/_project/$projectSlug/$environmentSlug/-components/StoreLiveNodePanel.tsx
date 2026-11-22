@@ -10,7 +10,7 @@ import { branchQuery, requireView, servicesQuery, useStoreViews } from "#/module
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 
 /**
  * A Live Node's panel over the Config Store, by its name: whose it is, which Services here read it, a way to open where

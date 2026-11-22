@@ -87,9 +87,7 @@ pub(crate) fn stored(
         &[environment.as_str().into()],
     )?;
     rows.first()
-        .map(|row| {
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Automatic deploy rule"))
-        })
+        .map(|row| row.json(0, "Automatic deploy rule"))
         .transpose()
 }
 
@@ -253,10 +251,7 @@ pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
                 service: service.config.private_dns.clone(),
                 repository: repository.clone(),
                 repository_id: *repository_id,
-                branch: match branch {
-                    ployz_core::config::ServiceGitBranch::Connected { name } => Some(name.clone()),
-                    ployz_core::config::ServiceGitBranch::Disconnected { .. } => None,
-                },
+                branch: crate::git::branch_name(branch).map(str::to_owned),
                 root_dir: root_dir.clone(),
                 build: service.config.build.clone(),
             }),

@@ -24,9 +24,9 @@ use crate::{
 };
 
 use super::{
-    DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, PlanError, exec::execute_operation_sequence, plan_deploy,
-    planning,
+    Approvals, Approved, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
+    DeploySnapshot, DeployWarning, ExecutionError, PlanError, exec::execute_operation_sequence,
+    plan_deploy, planning,
 };
 
 /// Snapshot or planning failure before a Deploy executes.
@@ -196,17 +196,9 @@ impl Client {
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        let mut client = self.clone();
-        client
-            .deploy
-            .registry_auth
-            .clone_from(preview.registry_auth());
-        let run = client.deploy.id.clone().unwrap_or_else(|| {
-            DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
-                .expect("a simple uuid is a deployment log id")
-        });
-        client.deploy.id = Some(run.clone());
-        execute_operation_sequence(preview, &run, &client, cancellation, progress).await
+        Approved::new(self.clone(), Approvals::default())
+            .confirm(preview, None, cancellation, progress)
+            .await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.
@@ -223,6 +215,21 @@ impl Client {
     ) -> Result<DeployOutcome<ExecutionError>, DeployError> {
         let preview = self.preview(intent).await?;
         Ok(self.confirm(&preview, cancellation, progress).await)
+    }
+}
+
+impl Approved {
+    /// [`Client::confirm`], logged under `run` when it names one, and handing every
+    /// Server these approvals with each Container change.
+    pub(crate) async fn confirm(
+        &self,
+        preview: &DeployPlan,
+        run: Option<DeploymentLogId>,
+        cancellation: &CancellationToken,
+        progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+    ) -> DeployOutcome<ExecutionError> {
+        let run = run.unwrap_or_else(super::cleanup::fresh_run);
+        execute_operation_sequence(preview, &run, self, cancellation, progress).await
     }
 }
 
@@ -420,9 +427,7 @@ async fn gather_deploy_snapshot(
                 let result = client
                     .call::<ployz_core::op::InspectStorage>(
                         ployz_core::InspectStorageRequest {},
-                        Call::read()
-                            .to(&ployz_core::MachineTarget::from(&id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&ployz_core::MachineTarget::from(&id)),
                     )
                     .await
                     .map_err(crate::connect::rpc_error);

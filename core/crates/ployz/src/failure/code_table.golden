@@ -132,22 +132,22 @@ login/status-422 | invalid_argument | null
 login/status-502 | unavailable | null
 login/reply | internal | null
 login/store | internal | null
-login/corrupt | internal | null
-login/token-cloud-unreadable | internal | null
-login/other-cloud | conflict | null
-login/signed-out | unauthenticated | null
-login/expired | unauthenticated | null
-login/denied | unauthenticated | null
-login/ended | unauthenticated | null
-login/awaiting-approval | unauthenticated | null
-login/token-refused | unauthenticated | null
-login/agent-token-refused | unauthenticated | null
+login/corrupt | internal | {"next":"ployz logout"}
+login/token-cloud-unreadable | internal | {"next":"ployz logout"}
+login/other-cloud | conflict | {"next":"ployz logout"}
+login/signed-out | unauthenticated | {"next":"ployz login"}
+login/expired | unauthenticated | {"next":"ployz login"}
+login/denied | unauthenticated | {"next":"ployz login"}
+login/ended | unauthenticated | {"next":"ployz login"}
+login/awaiting-approval | unauthenticated | {"next":"ployz login --wait"}
+login/token-refused | unauthenticated | {"next":"unset PLOYZ_TOKEN && ployz login"}
+login/agent-token-refused | unauthenticated | {"next":"ployz mcp login"}
 login/token-malformed | unauthenticated | null
-login/not-member | unauthenticated | null
+login/not-member | unauthenticated | {"next":"ployz logout"}
 login/token-bound | invalid_argument | null
-login/unknown-organization | not_found | null
-login/unknown-credential | not_found | null
-login/ambiguous-credential | ambiguous | null
+login/unknown-organization | not_found | {"next":"ployz org ls"}
+login/unknown-credential | not_found | {"next":"ployz token ls"}
+login/ambiguous-credential | ambiguous | {"next":"ployz token ls"}
 enroll/json | internal | null
 enroll/status-403 | unauthenticated | null
 enroll/status-500 | unavailable | null

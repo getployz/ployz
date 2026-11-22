@@ -85,7 +85,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     machine
                         .labels
                         .iter()
-                        .find(|(key, _)| key.as_str() == ployz_store::REGION_LABEL)
+                        .find(|(key, _)| key.as_str() == ployz_core::Region::LABEL)
                         .map_or("-", |(_, region)| region.as_str())
                         .to_owned(),
                 ),

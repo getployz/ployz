@@ -29,4 +29,4 @@ agent-browser --session $S click @eM                  # syncs, closes fix-api, l
 - Seeded state: fix-api copies api and web, with 2 changes (api `LOG_LEVEL`, web start command). Production moved on after the branch was made. staging (kept, api and worker) and search (a Branch of staging, synced into it then changed again) are also seeded.
 - Region order in the Sync dialog changes between runs; match on the service name.
 - **Sync N changes** with "Close fix-api after syncing" on deletes fix-api; reseed (`up.sh`) to get it back.
-- Code: `ENV/-components/sync/` (SyncButton, SyncDialog, branch-close), `ENV/_canvas/new-branch.tsx`, `ENV/-components/new-branch/StoreNewBranchPanel.tsx`, `dashboard/src/components/environment-breadcrumbs.tsx`.
+- Code: `ENV/-components/sync/` (SyncButton, SyncDialog, branch-close), `ENV/_canvas/new-branch.tsx`, `ENV/-components/new-branch/StoreNewBranchPanel.tsx`, `dashboard/src/components/shell/environment-breadcrumbs.tsx`.

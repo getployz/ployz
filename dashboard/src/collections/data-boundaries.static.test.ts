@@ -18,17 +18,21 @@ import {
   isStringLiteral,
   isVariableDeclaration,
 } from "typescript/unstable/ast/is";
-import { dataSources } from "./data-sources";
 
 const root = process.cwd();
 const SRC = join(root, "src");
-const DATA_FILE = /^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
+const DATA_FILE =/^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
 const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
+// The first line of a data file: /** @data-source <kind>: <freshness> */
+const DATA_SOURCE_HEADER = /^\/\*\* @data-source (\S+?): (.+) \*\/$/;
+const DATA_SOURCE_KINDS = ["org-store", "runtime", "remote"];
+const ROUTE_DATA_FILE = /(^|[./])route-data\.ts$/;
+const ROUTE_DATA_MODULE = /(^|[./])route-data$/;
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule's passkey prompt and its save in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
@@ -44,17 +48,17 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/EnvironmentChangesReview.tsx": "a Save or Deploy waiting on the Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/OnMerge.tsx": "an On merge choice waiting on the Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncButton.tsx": "a Sync waiting on the Store",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/-components/new-organization-dialog.tsx": "create in flight",
-  "components/service-create-command.tsx": "create in flight",
-  "components/service-source-selector.tsx": "sync and submit in flight",
+  "components/shell/create-environment-dialog.tsx": "create in flight",
+  "components/shell/new-organization-dialog.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "components/settings/settings-list.tsx": "a settings form's Save in flight",
-  "components/stageable/confirmable-input.tsx": "a confirm row's save in flight",
-  "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "removal in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
+  "components/store-write/confirmable-input.tsx": "a confirm row's save in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-teardown-section.tsx": "removal in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "a switch running on the Servers; Find zones and Set up in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
@@ -64,8 +68,8 @@ const SPINNER_FILES = {
   "routes/invite/$token.tsx": "joining in flight",
   "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
+  "modules/machines/waiting/ui/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "the tunnel setting up on the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
@@ -78,8 +82,8 @@ const READ_SERVER_FN = /\b(get|load|list|preview|search|resolve|read)[A-Z]\w*Ser
 const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 /** Reads that are one step of a user command (preview, evidence, wait for completion), not page state. */
 const COMMAND_READ_FILES = {
-  "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "try every Server and list what goes before the user confirms forgetting them",
@@ -98,6 +102,7 @@ const NETWORK_FILES = {
 const ON_DEMAND_READS = {
   logHistoryStatusQueryOptions: "the Logs view reads it once mounted and polls it, and a log line never waits on it",
   logHistoryServicesQueryOptions: "the Logs view reads it once the Environment's history is on, and the picker shows the loaded Services until it lands",
+  machineRemoveAttemptQueryOptions: "named by the attempt the user's confirmed Remove or Forget just queued, known only once the Servers take it",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
@@ -134,10 +139,10 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
-  "components/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
-  "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
-  "components/stageable/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
-  "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/logs/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
+  "components/store-write/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout and the billing portal involve money",
   "modules/billing/use-embedded-checkout.ts": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/-components/github-settings.tsx": "linking a GitHub account checks the signed offer against GitHub, and a disconnect answers with the account's uninstall link",
@@ -149,19 +154,22 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/connect.tsx": "the answer sends the browser to the agent's callback, a URL only the server builds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
+  "components/shell/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
+  "modules/machines/waiting/ui/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
+  "modules/ingress/cloudflare-setup.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
-  "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then shows what the Store still has to take off",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then shows what the Store still has to take off",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, and a Deploy or Save only that deletes Volume data asks the user first (Save only itself shows at once), and Discard all discards staged Volume placements only after the Store discard lands",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useConfigCreator.ts": "creates the canvas node at once, then opens its files once the Store can serve the new Config",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeSize.tsx": "a grow is a Volume Run on the Servers, not a Store write; the row shows the Run's progress once Cloud admits it, and its refusal if it doesn't",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer.tsx": "saves optimistically and retains submitted file drafts through queued refreshes until their own save succeeds",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreVolumeSize.tsx": "a grow is a Volume Run on the Servers, not a Store write; the row shows the Run's progress once Cloud admits it, and its refusal if it doesn't",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/MountEditor.tsx": "the mount form stays open until the Store accepts the mount, and shows its refusal under the field",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreMounts.tsx": "an unmount shows Saving unmount until the Store answers, and a refused one shows why",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreConfigDrawer.tsx": "saves optimistically and retains submitted file drafts through queued refreshes until their own save succeeds",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/useRemoveStoreService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/branch-close.tsx": "closing a Branch is destructive: its removal may ask before deleting Volume data",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "the page opens the receiver once it holds the synced changes, and a stale review keeps the dialog open with the fresh rows",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/OnMerge.tsx": "an On merge Edit shows at once; the row watches its answer only to reopen a refused Edit on what was typed",
@@ -184,9 +192,14 @@ function filesMatching(pattern: RegExp) {
 }
 
 describe("data boundaries", () => {
-  it("creates every data source in a registered data file", () => {
-    expect(filesMatching(CREATES_SOURCE), "Register the source in collections/data-sources.ts").toEqual(Object.keys(dataSources).sort());
-    expect(Object.keys(dataSources).filter((path) => !DATA_FILE.test(path)), "Name data files *.collection.ts, *.queries.ts, or *.stream.ts").toEqual([]);
+  it("creates every data source in a data file that declares its kind", () => {
+    const declared = sources.flatMap(({ path, text }) => {
+      const header = DATA_SOURCE_HEADER.exec(text.split("\n", 1)[0] ?? "");
+      return header ? [{ path, kind: header[1] ?? "", freshness: header[2] ?? "" }] : [];
+    });
+    expect(filesMatching(CREATES_SOURCE), "Start the file with `/** @data-source <kind>: <freshness> */`").toEqual(declared.map(({ path }) => path).sort());
+    expect(declared.filter(({ kind }) => !DATA_SOURCE_KINDS.includes(kind)).map(({ path }) => path), `The kind is one of ${DATA_SOURCE_KINDS.join(", ")}`).toEqual([]);
+    expect(declared.filter(({ path }) => !DATA_FILE.test(path)).map(({ path }) => path), "Name data files *.collection.ts, *.queries.ts, or *.stream.ts").toEqual([]);
   });
 
   it("derives views in live queries, never as collections", () => {
@@ -195,7 +208,7 @@ describe("data boundaries", () => {
 
   it("renders one shell, gated once on the Org Store", () => {
     expect(filesMatching(/<DashboardShell\b/)).toEqual(["routes/_protected/cloud/$organizationSlug/route.tsx"]);
-    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);
+    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/shell/dashboard-shell.tsx"]);
   });
 
   it("writes to the Config Store only through its writer", () => {
@@ -215,9 +228,9 @@ describe("data boundaries", () => {
   });
 
   it("prefetches every Remote Read in a loader unless it is read on demand", () => {
-    const remoteFiles = Object.entries(dataSources).filter(([path, source]) => source.kind === "remote" && path.endsWith(".queries.ts")).map(([path]) => path);
-    const factories = remoteFiles.flatMap((path) => [...readFileSync(join(SRC, path), "utf8").matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
-    const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
+    const remoteFiles = sources.filter(({ path, text }) => path.endsWith(".queries.ts") && text.startsWith("/** @data-source remote:"));
+    const factories = remoteFiles.flatMap(({ text }) => [...text.matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
+    const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || ROUTE_DATA_FILE.test(path)).map(({ text }) => text).join("\n");
     // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
     const unprefetched = factories.filter((name) => !new RegExp(`((prefetchRemote\\w*|streamRemote\\w*)\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
     expect(unprefetched.sort(), "Prefetch it with prefetchRemote or streamRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
@@ -271,7 +284,7 @@ describe("data boundaries", () => {
           // Command hooks elsewhere are UI too: components wait through them. Data files only read.
           const path = relative(SRC, file);
           const isHookFile = /\bexport (function|const) use[A-Z]/.test(source.text) && !DATA_FILE.test(path) && !(path in HOOK_FILES_NOT_COMMANDS);
-          const isUi = isRoute || file.startsWith(`${SRC}/components/`) || isHookFile;
+          const isUi = isRoute || file.endsWith(".tsx") || isHookFile;
           const serverCalls = new Set<string>();
           const importedFrom = new Map<string, string>();
           for (const statement of source.statements) {
@@ -288,9 +301,9 @@ describe("data boundaries", () => {
                 const name = calleeName(inner.expression);
                 const from = name ? importedFrom.get(name) : undefined;
                 // The session read is isomorphic: the client reads it from memory.
-                const allowed = (name && /^(require|prefetch)[A-Z]/.test(name) && from?.endsWith("collections/route-data"))
+                const allowed = (name && /^(require|prefetch)[A-Z]/.test(name) && from !== undefined && ROUTE_DATA_MODULE.test(from))
                   || (name === "getAuthSession" && from?.endsWith("auth/auth"));
-                if (!allowed) at(source, inner, "loaders may await only require*/prefetch* helpers from #/collections/route-data");
+                if (!allowed) at(source, inner, "loaders may await only require*/prefetch* helpers from a *.route-data.ts file");
               }
               const name = calleeName(inner);
               if (name && (/ServerFn$/.test(name) || ["ensureQueryData", "prefetchQuery", "fetchQuery", "preload", "preloadCollection"].includes(name))) {

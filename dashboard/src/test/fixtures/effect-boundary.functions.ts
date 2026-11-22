@@ -1,8 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Data, Effect, Schema } from "effect";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
@@ -18,7 +17,7 @@ class DatabaseFailure extends Data.TaggedError("DatabaseFailure")<{
 }> {}
 
 export const effectBoundaryServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(BoundaryInput))
   .handler(({ context, data }) => {
     if (data.action === "actor") {

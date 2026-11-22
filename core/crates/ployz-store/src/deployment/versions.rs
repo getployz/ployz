@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, ImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion, Signed,
-    SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
+    Births, BuiltImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion,
+    Signed, SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -499,7 +499,7 @@ pub struct VersionsQuery {
     /// stand in for a signed version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    pub image: Option<ImageDigest>,
+    pub image: Option<BuiltImageDigest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

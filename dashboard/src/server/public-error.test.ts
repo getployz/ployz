@@ -2,7 +2,7 @@ import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import { Cause, Data } from "effect";
 import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { describe, expect, it, vi } from "vitest";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import {
   Conflict,
   encodePublicBoundaryError,

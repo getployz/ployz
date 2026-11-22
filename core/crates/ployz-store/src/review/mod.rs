@@ -21,23 +21,21 @@ use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, Place, ReviewComparisonRole,
     ReviewLifecycleKind, ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId,
     SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting,
-    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
+    ServiceSettingChange, ServiceSource, Setting, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use ployz_core::{Region, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use approval::{DestructiveEffect, DestructiveKind, LostAfter};
+pub use approval::{DestructiveEffect, DestructiveKind};
 pub(crate) use approval::{
     Gate, Moving, Pruning, TakingOff, approve, approve_move, approve_retry, move_asks,
 };
-pub use required::{
-    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, OperationVerb,
-};
+pub use required::{ApprovalOperation, ApprovalRequired, ApprovalSubject, OperationVerb};
 pub(crate) use saved::{Saved, latest_saved};
-pub use version::{MalformedReviewVersion, ReviewVersion};
+pub use version::ReviewVersion;
 
 use crate::Actor;
 use crate::error;
@@ -754,7 +752,7 @@ pub fn introduced_source(
                 Setting::Source,
                 json!(repository),
             )];
-            if let ServiceGitBranch::Connected { name } = branch {
+            if let Some(name) = crate::git::branch_name(branch) {
                 parts.push((
                     ServiceSetting::Git(GitSetting::Branch),
                     Setting::Branch,
@@ -949,10 +947,7 @@ fn restarts(
                 .any(|mount| mount.config_resource_id == node.id)
                 && deployed.services.iter().any(|old| old.id == service.id)
         })
-        .map(|service| {
-            ployz_core::ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))
-        })
+        .map(crate::scope::service_name)
         .collect()
 }
 
@@ -1083,8 +1078,11 @@ pub(crate) fn touches_source(
         .iter()
         .filter(
             |service| match before.iter().find(|old| old.id == service.id) {
-                Some(old) => git_source(old) != git_source(service),
-                None => git_source(service).is_some(),
+                Some(old) => {
+                    crate::git::built_from(&old.config.source)
+                        != crate::git::built_from(&service.config.source)
+                }
+                None => crate::git::built_from(&service.config.source).is_some(),
             },
         )
         .map(|service| service.slug.as_str())
@@ -1093,18 +1091,6 @@ pub(crate) fn touches_source(
         return Ok(None);
     }
     Ok(Some(json!({ "services": changed })))
-}
-
-/// The repository and deploy branch a GitHub merge ships `service` from, if any.
-fn git_source(service: &SavedServiceIntent) -> Option<(u64, &ServiceGitBranch)> {
-    match &service.config.source {
-        ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } => Some((*repository_id, branch)),
-        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
-    }
 }
 
 /// Replace the consent saved with `revision`, which an unchanged Save renews.

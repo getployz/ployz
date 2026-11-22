@@ -1,8 +1,10 @@
 import { DrizzleQueryError } from "drizzle-orm";
 import { formatWithOptions } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
+import { secretPagesOf } from "#/lib/secret-pages";
+import { getRouter } from "#/router";
 import { startInstance } from "#/start";
-import { unhandledRequestMiddleware, unhandledRequestResponse } from "#/server/unhandled-request";
+import { unhandledRequestResponse } from "#/server/unhandled-request";
 
 const FAKE_SESSION_TOKEN = "fake-session-token-0123456789abc";
 const FAKE_LINK_TOKEN = "fake-link-token-0123456789abc";
@@ -32,13 +34,21 @@ function logged() {
   return lines;
 }
 
+const opensSecretPage = secretPagesOf(getRouter());
+
+const firstMiddleware = async () => {
+  const [first] = (await startInstance.getOptions()).requestMiddleware ?? [];
+  if (first === undefined) throw new Error("start has no request middleware");
+  return first;
+};
+
 const failedQuery = () => new DrizzleQueryError('select "id" from "session" where "token" = $1', [FAKE_SESSION_TOKEN]);
 
 it("answers a page with a static page that shows its request id, and logs that id with the path once", async () => {
   const lines = logged();
   const request = new Request(`https://cloud.example.test/pricing?token=${FAKE_LINK_TOKEN}`, { headers: { accept: BROWSER } });
 
-  const response = unhandledRequestResponse(request, failedQuery(), true, REQUEST_ID);
+  const response = unhandledRequestResponse(request, failedQuery(), true, opensSecretPage, REQUEST_ID);
 
   expect(response.status).toBe(500);
   expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -60,7 +70,7 @@ it("leaves the path of a page whose URL is a secret out of the log", async () =>
   const lines = logged();
   const request = new Request(`https://cloud.example.test/invite/${FAKE_INVITE_TOKEN}`, { headers: { accept: BROWSER } });
 
-  unhandledRequestResponse(request, new Error("boom"), true, REQUEST_ID);
+  unhandledRequestResponse(request, new Error("boom"), true, opensSecretPage, REQUEST_ID);
 
   await vi.waitFor(() => expect(lines.join("\n")).toContain(REQUEST_ID));
   expect(lines.join("\n")).toContain("[secret page]");
@@ -78,7 +88,7 @@ it("answers an API route, a server function and a client that asks for JSON with
   ] as const;
 
   for (const [request, page] of requests) {
-    const response = unhandledRequestResponse(request, new Error("boom"), page, REQUEST_ID);
+    const response = unhandledRequestResponse(request, new Error("boom"), page, opensSecretPage, REQUEST_ID);
     expect(response.status).toBe(500);
     expect(response.headers.get("x-request-id")).toBe(REQUEST_ID);
     expect(await response.json()).toEqual({
@@ -92,7 +102,7 @@ it("answers an API route, a server function and a client that asks for JSON with
 
 it("turns a throw from a later middleware or handler into that answer, but not an aborted request's", async () => {
   logged();
-  const run = unhandledRequestMiddleware.options.server;
+  const run = (await firstMiddleware()).options.server;
   if (run === undefined) throw new Error("the middleware has no server function");
   const call = (cause: unknown, request = new Request("https://cloud.example.test/", { headers: { accept: BROWSER } })) =>
     Promise.resolve(run({ request, handlerType: "router", pathname: "/", context: undefined, next: () => Promise.reject(cause) }));
@@ -108,5 +118,10 @@ it("turns a throw from a later middleware or handler into that answer, but not a
 });
 
 it("runs first, so a throw from every later request middleware and route handler reaches it", async () => {
-  expect((await startInstance.getOptions()).requestMiddleware?.[0]).toBe(unhandledRequestMiddleware);
+  const run = (await firstMiddleware()).options.server;
+  const next = () => Promise.reject(new Error("boom"));
+  const request = new Request("https://cloud.example.test/", { headers: { accept: BROWSER } });
+  logged();
+  const answered: unknown = await run?.({ request, handlerType: "router", pathname: "/", context: undefined, next });
+  expect(answered instanceof Response && answered.status).toBe(500);
 });

@@ -5,7 +5,7 @@ import { Effect, Stream } from "effect";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /**

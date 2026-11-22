@@ -5,10 +5,11 @@ import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete
 import { renameReferences } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
-import type { SealItem, Sealing } from "#/modules/variables/sealing";
+import type { SealItem, Sealing } from "#/modules/sealing/use-sealing";
 import { SealError } from "#/modules/sealing/seal-error";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
+import { envPath, envSetting } from "./setting-paths";
 
 const VARIABLE = /^env\.([^.]+)$/u;
 const SERVICE_VARIABLE = /^([^.]+)\.env\.([^.]+)$/u;
@@ -58,7 +59,7 @@ const leavesValueless = Schema.is(Schema.Struct({ after: Schema.Struct({ secret:
  */
 export function notSetVariables(rows: ReadonlyMap<string, SettingRow>, changes: ReadonlyMap<string, unknown>) {
   return serviceVariables(rows, "", changes).flatMap((variable) => {
-    const change = changes.get(`env.${variable.key}`);
+    const change = changes.get(envSetting(variable.key));
     return variable.value.type === "sealed" && variable.value.notSet && (change === undefined || leavesValueless(change))
       ? [variable.key] : [];
   });
@@ -75,7 +76,7 @@ export function storeVariableWriter(
   /** How a Sealed value is sent, and the ids it is sealed for: this Environment's and this Service's own. */
   sealing: { readonly prepare: Sealing["prepare"]; readonly target: SealItem["target"] },
 ) {
-  const path = (key: string) => `${service}.env.${key}`;
+  const path = (key: string) => envPath(service, key);
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
   const secret = (key: string, value: SecretValue | typeof SEALING.secret): Change => ({ op: "set", path: path(key), value: { secret: value } });
   /** One edit; its Sealed values show as `SEALING` and are prepared together, all or none. */
@@ -132,7 +133,7 @@ export function storeVariableWriter(
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
     /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */
     neverSync: (key: string, marked: boolean) => {
-      const row = settings.get(`env.${key}`)?.row;
+      const row = settings.get(envSetting(key))?.row;
       if (!row) throw new Error("Variable is not loaded.");
       return writer.commit({ command: "never_sync", environment, rows: [row], off: !marked });
     },
@@ -156,7 +157,7 @@ export function variableReferrers(view: EnvironmentView, service: string, key: s
 /** Default built-in reference values; authored variables take precedence. */
 export function storeManagedExports(service: ServiceListing, environment: EnvironmentView["environment"]) {
   return getManagedServiceExports({
-    id: service.id, lineageId: service.id, name: service.name, slug: service.name, privateDns: service.private_dns,
+    id: service.id, privateDns: service.private_dns,
     environmentId: environment.id, environmentSlug: environment.name,
   });
 }

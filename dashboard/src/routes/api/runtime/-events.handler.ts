@@ -1,34 +1,18 @@
-import {
-  createRuntimeEventsResponse,
-  type RuntimeWatch,
-} from "#/modules/runtime/runtime-events.server";
-import { publicErrorResponse, Validation } from "#/server/public-error";
+import { Effect } from "effect";
+import { clusterDomainSyncTap } from "#/modules/cluster-domain/sync-request.server";
+import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
+import { openRuntimeWatch } from "#/modules/runtime/runtime-watch.server";
 
-export type RuntimeEventsHandlerDeps = {
-  openRuntimeWatch: (input: {
-    request: Request;
-    organizationSlug: string;
-  }) => Promise<RuntimeWatch>;
-};
-
-export async function handleRuntimeEventsRequest(
-  request: Request,
-  organizationSlug: string,
-  deps: RuntimeEventsHandlerDeps,
-) {
-  try {
-    const watch = await deps.openRuntimeWatch({
-      request,
-      organizationSlug,
-    });
-    return createRuntimeEventsResponse({ request, ...watch });
-  } catch (cause) {
-    return publicErrorResponse(cause);
-  }
-}
-
-export function runtimeEventsValidationError() {
-  return new Validation({
-    message: "A valid organization slug is required",
+/** The stream of one Organization's runtime watch. Closing the watch outlives this Effect, so it keeps this one's services. */
+export const handleRuntimeEventsRequest = Effect.fn("Runtime.events")(function* (request: Request, organizationSlug: string) {
+  const tap = yield* clusterDomainSyncTap();
+  const watch = yield* openRuntimeWatch({ request, organizationSlug, tap });
+  if (watch.status !== "connected") return createRuntimeEventsResponse({ request, ...watch });
+  const services = yield* Effect.context<never>();
+  return createRuntimeEventsResponse({
+    request,
+    status: "connected",
+    frames: watch.frames,
+    close: () => Effect.runPromiseWith(services)(watch.close),
   });
-}
+});

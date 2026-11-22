@@ -1,10 +1,11 @@
+/** @data-source remote: each Environment's checks with their open incidents, streamed by the canvas loader; one Service's summary and its response time for the shown range, streamed by the drawer on the Monitoring tab and prefetched on hover of the tab or a range. Never awaited, so a slow read never holds the page. Stale after 30s and polled every minute because the checker writes without a Cloud write to invalidate on. An Organization without Production reads a needs-Production answer, which stops the polling; the billing page invalidates these reads after a checkout */
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { isNeedsProduction, type NeedsProduction } from "#/modules/billing/billing";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { unreachableHost } from "./uptime";
-import type { UptimeRange } from "./uptime-range";
+import type { TimeRange } from "#/lib/time-range";
 import type { ServiceUptime } from "./uptime-status";
 import { readEnvironmentUptimeServerFn, readServiceUptimeServerFn, requestUptimeProbeServerFn } from "./uptime-status.functions";
 
@@ -16,10 +17,13 @@ export function useUptimeEnabled(organizationSlug: string) {
   return useQuery({ ...organizationStateQueryOptions(organizationSlug), staleTime: Infinity, select: (state) => state.uptimeEnabled }).data ?? false;
 }
 
+/** The prefix of every uptime read, for a screen that must refetch them all. */
+export const uptimeKeys = { all: ["uptime"] as const };
+
 /** Every check in the Environment, and when its open incident opened, or that the Organization needs Production to see them. */
 export function environmentUptimeQueryOptions(scope: UptimeScope) {
   return queryOptions({
-    queryKey: ["uptime", scope.environmentId, "checks"] as const,
+    queryKey: [...uptimeKeys.all, scope.environmentId, "checks"] as const,
     queryFn: () => readEnvironmentUptimeServerFn({ data: scope }),
     staleTime: 30_000,
     // The checker writes without a Cloud write to invalidate on.
@@ -28,9 +32,9 @@ export function environmentUptimeQueryOptions(scope: UptimeScope) {
 }
 
 /** One Service's status, uptime, response time and incidents over `range`, null without a check, or that the Organization needs Production to see it. */
-export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: UptimeRange) {
+export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: TimeRange) {
   return queryOptions({
-    queryKey: ["uptime", scope.environmentId, serviceId, range.from, range.to] as const,
+    queryKey: [...uptimeKeys.all, scope.environmentId, serviceId, range.from, range.to] as const,
     queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, from: range.from, to: range.to } }),
     staleTime: 30_000,
     // A requested probe answers within seconds, and its round can open or close an incident just after.
@@ -48,7 +52,7 @@ export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string,
  */
 export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
   const queryClient = useQueryClient();
-  const serviceKey = ["uptime", scope.environmentId, serviceId] as const;
+  const serviceKey = [...uptimeKeys.all, scope.environmentId, serviceId] as const;
   return useMutation({
     mutationFn: () => requestUptimeProbeServerFn({ data: { ...scope, serviceId } }),
     onMutate: async () => {
@@ -66,7 +70,7 @@ export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
       toast.error(toErrorMessage(error, "Could not check now"));
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["uptime", scope.environmentId] });
+      void queryClient.invalidateQueries({ queryKey: [...uptimeKeys.all, scope.environmentId] });
     },
   });
 }
@@ -78,7 +82,7 @@ export function useUnreachableHost(scope: UptimeScope, serviceId: string) {
   return enabled ? host ?? null : null;
 }
 
-export function useServiceUptime(scope: UptimeScope, serviceId: string, range: UptimeRange) {
+export function useServiceUptime(scope: UptimeScope, serviceId: string, range: TimeRange) {
   return useSuspenseQuery(serviceUptimeQueryOptions(scope, serviceId, range));
 }
 
@@ -86,5 +90,5 @@ export function useServiceUptime(scope: UptimeScope, serviceId: string, range: U
 export function usePrefetchServiceUptime(scope: UptimeScope, serviceId: string) {
   const queryClient = useQueryClient();
   const enabled = useUptimeEnabled(scope.organizationSlug);
-  return (range: UptimeRange) => { if (enabled) void queryClient.prefetchQuery(serviceUptimeQueryOptions(scope, serviceId, range)); };
+  return (range: TimeRange) => { if (enabled) void queryClient.prefetchQuery(serviceUptimeQueryOptions(scope, serviceId, range)); };
 }

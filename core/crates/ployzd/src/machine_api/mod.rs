@@ -8,7 +8,8 @@ mod routing;
 use std::{convert::Infallible, sync::Arc, task::Context};
 
 use ployz_core::{
-    MachineId, MachineRpcServer, ManagementScope, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, op,
+    MachineId, MachineRpcServer, ManagementScope, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RoutingRequest,
+    Rpc, op,
 };
 use tonic::{
     body::Body,
@@ -25,7 +26,7 @@ use crate::{
 };
 
 pub use ends_on_shutdown::EndsOnShutdown;
-pub use routing::{MachineProxy, ProxyRoute, RoutingRequest, TargetResolutionError, resolve_route};
+pub use routing::MachineProxy;
 
 #[cfg(test)]
 pub(crate) use local::MachineService;
@@ -140,8 +141,7 @@ fn wrap(service: local::MachineService) -> MachineApi {
     let port = service.machine_api_port();
     let replicated = local.replicated().ok().cloned();
     let proxy = MachineProxy::new(routes(service.clone()), machine_id, port, replicated)
-        .with_paths(service.paths.clone())
-        .for_machine(local);
+        .with_paths(service.paths.clone());
     MachineApi {
         proxy,
         machine_id,
@@ -212,11 +212,12 @@ fn refuse_local(request: &mut http::Request<Body>) -> Option<http::Response<Body
         .extensions()
         .get::<tonic::transport::server::UdsConnectInfo>()
         .is_some();
-    let provenance = if local && !Provenance::of_headers(request.headers()).operator() {
-        Provenance::new(ManagementScope::Full, false)
-    } else {
-        Provenance::new(ManagementScope::Operator, false)
-    };
+    let provenance =
+        if local && Provenance::of_headers(request.headers()).scope() == ManagementScope::Full {
+            Provenance::new(ManagementScope::Full, false)
+        } else {
+            Provenance::new(ManagementScope::Operator, false)
+        };
     if !local && request.uri().path() == op::SetManagementClient::PATH {
         return Some(
             ployz_core::rpc::hinted_status(
@@ -281,10 +282,7 @@ async fn refuse_remote(
         }
         // Forwarding drops the client key, and only a Machine's own `cloud` slot
         // governs its slots, so a slot change is never routed to another Machine.
-        let routing = ployz_core::routing_from_metadata(
-            &tonic::metadata::MetadataMap::from_headers(request.headers().clone()),
-        );
-        if !matches!(routing, Ok(RoutingRequest::Local)) {
+        if !matches!(routing::routing_of(request), Ok(RoutingRequest::Local)) {
             return Some(
                 tonic::Status::invalid_argument("slots change only on the Server that holds them")
                     .into_http(),

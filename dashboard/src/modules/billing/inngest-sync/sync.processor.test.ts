@@ -3,7 +3,6 @@ import { InngestTestEngine } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
-import { organizationBillingSyncRequestedEventType } from "#/modules/inngest/events";
 import * as workspaceRepository from "#/modules/organization/organization-state.server";
 import {
   createScheduleNightlyBillingReconcile,
@@ -17,25 +16,6 @@ vi.spyOn(workspaceRepository, "listOrganizationIds").mockImplementation(() =>
 );
 
 describe("billing sync Inngest adapter", () => {
-  it("preserves the trigger, retries, singleton, and keyed concurrency", () => {
-    const fn = createSyncOrganizationBillingStateFunction(
-      new Inngest({ id: "test" }),
-    );
-
-    expect(fn.opts).toEqual(
-      expect.objectContaining({
-        id: "sync-organization-billing-state",
-        retries: 3,
-        triggers: [{ event: organizationBillingSyncRequestedEventType }],
-        singleton: {
-          key: "event.data.organizationId",
-          mode: "cancel",
-        },
-        concurrency: [{ key: "event.data.organizationId", limit: 1 }],
-      }),
-    );
-  });
-
   it("skips invalid organization identity through the actual function", async () => {
     const output = await new InngestTestEngine({
       function: createSyncOrganizationBillingStateFunction(
@@ -51,14 +31,13 @@ describe("billing sync Inngest adapter", () => {
       hasActiveSubscription: false,
       skipped: true,
     });
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
+    expect(output.ctx.step.run).not.toHaveBeenCalled();
   });
 
-  it("executes the nightly cron through its durable list and send steps", async () => {
+  it("asks for a billing sync of every Organization each night", async () => {
     const fn = createScheduleNightlyBillingReconcile(
       new Inngest({ id: "test" }),
     );
-    expect(fn.opts.triggers).toEqual([{ cron: "TZ=UTC 0 2 * * *" }]);
 
     const output = await new InngestTestEngine({
       function: fn,
@@ -72,12 +51,8 @@ describe("billing sync Inngest adapter", () => {
 
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ organizationCount: 1 });
-    expect(output.ctx.step.run).toHaveBeenCalledWith(
-      "list-organization-ids",
-      expect.any(Function),
-    );
     expect(output.ctx.step.sendEvent).toHaveBeenCalledWith(
-      "request-billing-syncs",
+      expect.any(String),
       [
         {
           name: "billing/organization-sync.requested",

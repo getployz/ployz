@@ -5,8 +5,8 @@ import {
 import { attemptLifecycle, type RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import { inngestRunStatus, type PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import { configDeploymentAdmittedEventType, configDeploymentRetireRequestedEventType } from "#/modules/inngest/events";
-import type { runInngestEffect } from "#/server/run.server";
+import { configDeploymentAdmitted, configDeploymentRetireRequested } from "#/modules/config-store/config-store.events";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RETIRE_ATTEMPTS = 3;
 export const RETIRE_PAUSE = "1m";
@@ -47,11 +47,11 @@ const runEnds = {
 const lifecycle = attemptLifecycle({
   run: {
     id: "retire-old",
-    triggers: [{ event: configDeploymentRetireRequestedEventType }],
+    triggers: [{ event: configDeploymentRetireRequested.eventType }],
     concurrency: [{ key: "event.data.environmentId", limit: 1 }],
     // By queue number, not id: a late redispatch of an older Deployment must not take the cleanup over.
     cancelOn: [{
-      event: configDeploymentAdmittedEventType,
+      event: configDeploymentAdmitted.eventType,
       if: "async.data.environmentId == event.data.environmentId && async.data.number > event.data.number",
     }],
     handler: retireOld,

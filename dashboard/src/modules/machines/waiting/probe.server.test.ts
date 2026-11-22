@@ -297,7 +297,7 @@ describe("probePeers", () => {
 
   it("sends each host to the next three, never itself", () => {
     const hosts = [host("a", "1.0.0.1"), host("b", "1.0.0.2"), host("c", "1.0.0.3"), host("d", "1.0.0.4"), host("e", "1.0.0.5")];
-    const peers = probePeers(hosts);
+    const peers = probePeers(hosts, none);
     expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.2", "1.0.0.3", "1.0.0.4"]);
     expect(peers.get("e")?.map((peer) => peer.target)).toEqual(["1.0.0.1", "1.0.0.2", "1.0.0.3"]);
     for (const { id, observedIp } of hosts) {
@@ -309,13 +309,13 @@ describe("probePeers", () => {
   });
 
   it("gives a lone host no peers and skips shared and missing addresses", () => {
-    expect(probePeers([host("a", "1.0.0.1")]).get("a")).toEqual([]);
-    const peers = probePeers([host("a", "1.0.0.1"), host("b", "1.0.0.1"), host("c", ""), host("d", "1.0.0.4")]);
+    expect(probePeers([host("a", "1.0.0.1")], none).get("a")).toEqual([]);
+    const peers = probePeers([host("a", "1.0.0.1"), host("b", "1.0.0.1"), host("c", ""), host("d", "1.0.0.4")], none);
     expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.4"]);
   });
 
   it("never sends a host to a peer at a private or loopback address", () => {
-    const peers = probePeers([host("a", "1.0.0.1"), host("b", "10.0.0.2"), host("c", "127.0.0.1"), host("d", "1.0.0.4")]);
+    const peers = probePeers([host("a", "1.0.0.1"), host("b", "10.0.0.2"), host("c", "127.0.0.1"), host("d", "1.0.0.4")], none);
     expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.4"]);
     expect(peers.get("b")?.map((peer) => peer.target)).toEqual(["1.0.0.4", "1.0.0.1"]);
   });
@@ -324,11 +324,11 @@ describe("probePeers", () => {
     const checks = vi.spyOn(BlockList.prototype, "check");
     try {
       const shared = Array.from({ length: 1000 }, (_, i) => host(`s${i}`, "1.0.0.1"));
-      expect([...probePeers(shared).values()].every((send) => send.length === 0)).toBe(true);
+      expect([...probePeers(shared, none).values()].every((send) => send.length === 0)).toBe(true);
       expect(checks).toHaveBeenCalledTimes(1);
       checks.mockClear();
       const lan = Array.from({ length: 1000 }, (_, i) => host(`p${i}`, `10.0.${i >> 8}.${i & 255}`));
-      expect([...probePeers(lan).values()].every((send) => send.length === 0)).toBe(true);
+      expect([...probePeers(lan, none).values()].every((send) => send.length === 0)).toBe(true);
       expect(checks).toHaveBeenCalledTimes(1000);
     } finally {
       checks.mockRestore();

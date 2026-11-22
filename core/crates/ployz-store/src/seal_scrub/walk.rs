@@ -11,9 +11,10 @@ use ployz_core::config::{Cell, SavedEnvironmentIntent, SealedCell};
 use ployz_core::config::At;
 
 use super::{empty, ledger};
-use crate::branch::{document, json_of, row_id, rows};
+use crate::branch::{row_id, rows};
 use crate::error;
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// What a Sync's Undo puts back for the receiver's own value sealed since.
 const NOT_SET: SealedCell = SealedCell::Cell(Cell::SecretWithoutValue);
@@ -68,7 +69,7 @@ pub(crate) fn empty_in_bases(
                     row.text(1)?.into(),
                     lineage.into(),
                     at.into(),
-                    json_of(&prior).as_str().into(),
+                    json_text(&prior).as_str().into(),
                     row.text(4)?.into(),
                 ],
             )?;
@@ -89,10 +90,7 @@ pub(crate) fn empty_in_bases(
             continue;
         }
         let mut value: Cell = row.json(4, "Sync")?;
-        let mut source: Option<Cell> = row
-            .optional_text(5)?
-            .map(|source| serde_json::from_str(source).map_err(|_| error::corrupt("Sync")))
-            .transpose()?;
+        let mut source: Option<Cell> = row.optional_json(5, "Sync")?;
         let emptied_value = empty::empty_plain_cell(&mut value);
         let emptied_source = source.as_mut().is_some_and(empty::empty_plain_cell);
         if emptied_value || emptied_source {
@@ -105,8 +103,8 @@ pub(crate) fn empty_in_bases(
                     row.text(1)?.into(),
                     lineage.into(),
                     at.into(),
-                    json_of(&value).as_str().into(),
-                    source.as_ref().map(json_of).as_deref().into(),
+                    json_text(&value).as_str().into(),
+                    source.as_ref().map(json_text).as_deref().into(),
                     row.text(4)?.into(),
                     row.optional_text(5)?.into(),
                 ],
@@ -154,7 +152,7 @@ pub(crate) fn empty_in_bases(
                     row.text(0)?.into(),
                     lineage.into(),
                     at.into(),
-                    json_of(&NOT_SET).as_str().into(),
+                    json_text(&NOT_SET).as_str().into(),
                     row.text(3)?.into(),
                 ],
             )?;
@@ -174,7 +172,7 @@ pub(crate) fn empty_in_bases(
                 &[
                     row.text(0)?.into(),
                     row.text(1)?.into(),
-                    document(&base).as_str().into(),
+                    json_text(&base).as_str().into(),
                     row.text(2)?.into(),
                 ],
             )?;
@@ -333,9 +331,7 @@ fn empty_below(tx: &mut dyn Tx, below: &[String], held: &empty::Held) -> Result<
                 continue;
             };
             let cell = |index: usize| -> Result<Option<Cell>, RpcError> {
-                row.optional_text(index)?
-                    .map(|cell| serde_json::from_str(cell).map_err(|_| error::corrupt("Sync")))
-                    .transpose()
+                row.optional_json(index, "Sync")
             };
             let (mut value, mut source, mut prior) = (cell(4)?, cell(5)?, cell(6)?);
             let mut emptied = false;
@@ -353,9 +349,9 @@ fn empty_below(tx: &mut dyn Tx, below: &[String], held: &empty::Held) -> Result<
                         row.text(1)?.into(),
                         lineage.into(),
                         at.into(),
-                        value.as_ref().map(json_of).as_deref().into(),
-                        source.as_ref().map(json_of).as_deref().into(),
-                        prior.as_ref().map(json_of).as_deref().into(),
+                        value.as_ref().map(json_text).as_deref().into(),
+                        source.as_ref().map(json_text).as_deref().into(),
+                        prior.as_ref().map(json_text).as_deref().into(),
                         row.text(4)?.into(),
                         row.optional_text(5)?.into(),
                         row.optional_text(6)?.into(),
@@ -379,7 +375,7 @@ fn empty_below(tx: &mut dyn Tx, below: &[String], held: &empty::Held) -> Result<
                     &[
                         row.text(0)?.into(),
                         row.text(1)?.into(),
-                        document(&base).as_str().into(),
+                        json_text(&base).as_str().into(),
                         row.text(2)?.into(),
                     ],
                 )?;

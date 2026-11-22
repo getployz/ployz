@@ -1,8 +1,8 @@
 type EnvironmentParams = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
 import { linkOptions } from "@tanstack/react-router";
-import type { ServicePage } from "../services/$serviceId/-components/service-pages";
-import { ENVIRONMENT_SERVICE_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO } from "./environment-route-paths";
+import type { ServicePage } from "../_canvas/services/$serviceId/-components/service-pages";
+import { ENVIRONMENT_SERVICE_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO } from "#/lib/environment-routes";
 
 export type NavigationNode = {
   id: string;

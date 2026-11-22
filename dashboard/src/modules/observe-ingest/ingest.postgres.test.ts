@@ -6,7 +6,8 @@ import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { organizationMachine } from "#/modules/machines/tables";
-import { observePushMessage, verifyObservePush } from "#/modules/observe-ingest/ingest.server";
+import { observePushMessage } from "#/modules/observe-ingest/ingest.server";
+import { verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -48,10 +49,10 @@ it("the known-answer vector verifies, and not once its timestamp or body changes
   const body = Buffer.from('{"stream":"crash","seq":"1760000000123456789","dropped":0,"events":[]}');
   const signature = Buffer.from("rOUkHmKtJRTf53MNT4z0t9gV3yOkQnJ_yriYa5G7ebHo5-VrHUa0spxdC56PowBMo9JEMEy_JXT97yIG11RPAw", "base64url");
   const message = observePushMessage("a".repeat(32), 1_760_000_000n, body);
-  expect(verifyObservePush(PUBLIC_KEY, message, signature)).toBe(true);
+  expect(verifyManagementSignature(PUBLIC_KEY, message, signature)).toBe(true);
   expect(sign(null, message, privateKey(SEED)).equals(signature)).toBe(true);
-  expect(verifyObservePush(PUBLIC_KEY, observePushMessage("a".repeat(32), 1_760_000_001n, body), signature)).toBe(false);
-  expect(verifyObservePush(PUBLIC_KEY, observePushMessage("a".repeat(32), 1_760_000_000n, Buffer.concat([body, Buffer.from(" ")])), signature)).toBe(false);
+  expect(verifyManagementSignature(PUBLIC_KEY, observePushMessage("a".repeat(32), 1_760_000_001n, body), signature)).toBe(false);
+  expect(verifyManagementSignature(PUBLIC_KEY, observePushMessage("a".repeat(32), 1_760_000_000n, Buffer.concat([body, Buffer.from(" ")])), signature)).toBe(false);
 });
 
 const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {

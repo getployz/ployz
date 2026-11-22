@@ -17,7 +17,7 @@ use super::super::config::expected;
 use super::super::input::{self, Source};
 use super::super::store::{self, Store, mint, project, store};
 use super::super::{Error, leaf_matches, required};
-use crate::cloud_account::StoreCallError;
+use crate::cloud::account::StoreCallError;
 
 pub(crate) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);

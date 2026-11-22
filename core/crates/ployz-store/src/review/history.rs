@@ -170,10 +170,7 @@ pub(crate) fn history(
             let empty = crate::scope::empty(environment.summary.name.as_str());
             let baseline = previous.as_ref().map_or(&empty, |(_, baseline)| baseline);
             let changed: Vec<(String, String)> = row
-                .optional_text(5)?
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|_| error::corrupt("Saved value changes"))?
+                .optional_json(5, "Saved value changes")?
                 .unwrap_or_default();
             let recorded = recorded_changes(baseline, &environment.working, &changed);
             let changes = review::saved_comparison(&environment, baseline, &recorded)?;

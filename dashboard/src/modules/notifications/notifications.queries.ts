@@ -1,3 +1,4 @@
+/** @data-source remote: the signed-in user's email choices and whether this Cloud can send email, prefetched by the Account page; stale after a minute; only this user writes them, and each write shows at once and refetches */
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";

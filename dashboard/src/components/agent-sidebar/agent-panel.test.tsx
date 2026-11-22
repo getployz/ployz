@@ -7,11 +7,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import AgentPanel, { Turn } from "./agent-panel";
-import { approvalOptions, type ApprovalView } from "./approvals.queries";
+import { approvalOptions, type ApprovalView } from "#/modules/approvals/approvals.queries";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { FAILURES } from "#/modules/agent/provider-error";
-import { agentThreadsOptions, type ThreadSummary } from "./threads.queries";
-import { pendingProposalsOptions, proposalOptions, type ProposalView } from "./proposals.queries";
+import type { ThreadSummary } from "#/modules/agent/persistence.server";
+import { agentThreadsOptions } from "./threads.queries";
+import { pendingProposalsOptions, proposalOptions, type ProposalView } from "#/modules/proposals/proposals.queries";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 

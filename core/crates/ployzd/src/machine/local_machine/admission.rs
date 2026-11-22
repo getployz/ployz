@@ -9,8 +9,8 @@ use std::{io, sync::Arc};
 
 use ployz_core::{
     ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant,
-    DeviceCode, ManagementScope, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec,
-    RunTarget, Sealing, Start,
+    DeviceCode, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec, RunTarget, Sealing,
+    Start,
     authority::{
         Approver, AuthorityRefusal, Budget, Reach, RuleId, RuleProof, ServiceVersion, Signed,
         SigningPublicKey, Timestamp, TrustedKeys, ValueReach, VerifiedBuild, VersionFacts,
@@ -21,7 +21,7 @@ use ployz_decide::service_floor::{self, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{Caller, ConsumptionLog, Error, LocalMachine, RecordOwner};
+use super::{Caller, ConsumptionLog, Error, FullCaller, LocalMachine, RecordOwner, Scope};
 use crate::docker::ContainerRuntime;
 
 /// Who admitted a Container, and when, kept with it for as long as it exists.
@@ -337,25 +337,14 @@ impl AdmittedSpec {
     }
 }
 
-/// What a caller brought with a Container change.
-#[derive(Clone, Copy)]
-pub(crate) enum Presented<'a> {
-    /// A call at Full access: this Server's own socket, or a Device's own connection,
-    /// with the versions it carries. A version that admits the spec records its signers,
-    /// so removing them stops a later start, as for an Operator's creation.
-    FullAccess {
-        versions: &'a [Signed<ServiceVersion>],
-    },
-    /// An Operator's call, with the statements it carries.
-    Operator {
-        rule: Option<&'a RuleProof>,
-        versions: &'a [Signed<ServiceVersion>],
-    },
-}
-
 impl LocalMachine {
-    /// Decide whether `want` may make its Container. `None` is the answer for a want that
-    /// makes none. A hook that already exists is never started again for an Operator.
+    /// Decide whether `want` may make its Container, under the `versions` and the
+    /// Operator's `rule` the caller brought. `None` is the answer for a want that makes
+    /// none. A hook that already exists is never started again for an Operator.
+    ///
+    /// A version that admits the spec records its signers, so removing them stops a later
+    /// start. Short of one, a Full caller's creation is kept under who asked, and `rule`
+    /// is read only for an Operator.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] naming what the
@@ -365,15 +354,17 @@ impl LocalMachine {
     pub(crate) async fn admit_spec(
         &self,
         want: &ContainerWant,
-        presented: Presented<'_>,
+        rule: Option<&RuleProof>,
+        versions: &[Signed<ServiceVersion>],
     ) -> Result<Option<AdmittedSpec>, Error> {
         let ContainerWant::Running { container, .. } = want else {
             return Ok(None);
         };
+        let scope = self.scope();
         let new = match container {
             RunTarget::New(new) => new,
             RunTarget::Existing(locator) => {
-                if matches!(presented, Presented::Operator { .. }) {
+                if matches!(scope, Scope::Operator) {
                     self.refuse_hook_start(locator).await?;
                 }
                 return Ok(None);
@@ -396,10 +387,6 @@ impl LocalMachine {
                 verified,
             }))
         };
-        let (rule, versions) = match presented {
-            Presented::FullAccess { versions } => (None, versions),
-            Presented::Operator { rule, versions } => (rule, versions),
-        };
         // One budget for every signature this attempt opens, whichever proof carries it.
         let mut budget = Budget::default();
         let mut unapproved = None;
@@ -416,10 +403,10 @@ impl LocalMachine {
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
-        if matches!(presented, Presented::FullAccess { .. }) {
+        if let Scope::Full(full) = scope {
             let reach = Reach::of(new.slot.kind, &new.resolved_spec)
                 .map_err(|_| refused(AuthorityRefusal::Mismatch { field: "a payload" }))?;
-            return admitted(self.full_access(service, reach)?, None);
+            return admitted(self.full_access(full, service, reach)?, None);
         }
         if let Some(rule) = rule {
             let admitted_rule = self
@@ -525,7 +512,7 @@ impl LocalMachine {
         containers: &ContainerRuntime,
         id: &ContainerId,
     ) -> Result<(), Error> {
-        if self.scope == ManagementScope::Operator {
+        if let Scope::Operator = self.scope() {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
                 None => Some(AuthorityRefusal::Mismatch {
@@ -550,7 +537,12 @@ impl LocalMachine {
     /// Returns [`Error::NeedsFullScope`] when the connection's key is no longer a Device
     /// here: it was removed after the call arrived, and [`Error::ApprovalRecord`] when the
     /// floor cannot be read.
-    fn full_access(&self, service: QualifiedService, reach: Reach) -> Result<AdmittedBy, Error> {
+    fn full_access(
+        &self,
+        full: FullCaller,
+        service: QualifiedService,
+        reach: Reach,
+    ) -> Result<AdmittedBy, Error> {
         let record = self.record();
         let at = match self.cluster_key(record.phase()) {
             Some(cluster) => {
@@ -564,7 +556,7 @@ impl LocalMachine {
             }
             None => Timestamp::now(),
         };
-        let Caller::Management(remote) = self.caller else {
+        let Caller::Management(remote) = full.caller() else {
             return Ok(AdmittedBy::Local { service, at });
         };
         record
@@ -588,17 +580,16 @@ impl LocalMachine {
     pub(crate) async fn admit_volume_start(
         &self,
         start: &Start,
-        operator: bool,
     ) -> Result<Option<AdmittedSpec>, Error> {
-        match start {
-            Start::Kept { container_id } => {
-                if operator {
+        match (start, self.scope()) {
+            (Start::Kept { container_id }, scope) => {
+                if let Scope::Operator = scope {
                     self.refuse_hook_start(&ContainerLocator::Id(*container_id))
                         .await?;
                 }
                 Ok(None)
             }
-            Start::Create { resolved_spec, .. } if operator => {
+            (Start::Create { resolved_spec, .. }, Scope::Operator) => {
                 tracing::warn!(
                     "Volume start refused for {}: it creates a Container nothing signed",
                     resolved_spec.name,
@@ -607,11 +598,14 @@ impl LocalMachine {
                     field: "a Volume start",
                 }))
             }
-            Start::Create {
-                namespace,
-                resolved_spec,
-                ..
-            } => {
+            (
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    ..
+                },
+                Scope::Full(full),
+            ) => {
                 let spec =
                     AdmittedSpec::hash(namespace, resolved_spec).map_err(Error::DeployRefused)?;
                 let service = QualifiedService::new(namespace.clone(), resolved_spec.name.clone());
@@ -621,7 +615,7 @@ impl LocalMachine {
                     })?;
                 Ok(Some(AdmittedSpec {
                     spec,
-                    by: self.full_access(service, reach)?,
+                    by: self.full_access(full, service, reach)?,
                     standing: Some(self.standing()),
                     verified: None,
                 }))
@@ -656,9 +650,7 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
-        let admitted = self
-            .admit_spec(&want, Presented::FullAccess { versions: &[] })
-            .await?;
+        let admitted = self.admit_spec(&want, None, &[]).await?;
         self.ensure_container(want, admitted).await
     }
 }

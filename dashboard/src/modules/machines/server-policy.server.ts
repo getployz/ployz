@@ -2,14 +2,10 @@ import "@tanstack/react-start/server-only";
 
 import type { MachineId } from "@ployz/sdk";
 import { Data, Effect } from "effect";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createKeyedServerPolicyChangeRequestedEvent,
-  createServerPolicyChangeRequestedEvent,
-  type ServerPolicyChangeRequestedEventData,
-} from "#/modules/inngest/events";
+import { type ServerPolicyChangeRequestedEventData, createKeyedServerPolicyChangeRequestedEvent, serverPolicyChangeRequested } from "#/modules/machines/machines.events";
 import { drainActiveOn } from "#/modules/machines/server-drain.server";
 import {
   isEmptyPolicyChange,
@@ -17,7 +13,7 @@ import {
   type RequestServerPolicyChangeInput,
   type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -62,7 +58,7 @@ export const requestServerPolicyChange = Effect.fn(
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   yield* sendInngestEvent(
-    createServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
+    serverPolicyChangeRequested.create({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
   );
 });
 

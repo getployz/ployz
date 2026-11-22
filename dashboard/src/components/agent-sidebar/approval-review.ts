@@ -1,6 +1,7 @@
 import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import { changeGroups, homesOf, regionName, type Homes } from "#/modules/config-store/store-deployments";
+import { REGION_PATH } from "#/modules/config-store/setting-paths";
 
 /** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
 export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
@@ -30,7 +31,7 @@ function changeLines(changes: DiffView["changes"], homes: Homes, effects: Approv
 function regionLine(diff: DiffView): ChangeLine[] {
   if (!diff.region) return [];
   const { before, after } = diff.region;
-  return [{ key: "@environment.region", mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
+  return [{ key: REGION_PATH, mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
     values: `${regionName(before)} → ${regionName(after)}` }];
 }
 

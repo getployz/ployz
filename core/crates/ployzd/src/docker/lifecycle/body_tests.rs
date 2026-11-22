@@ -49,7 +49,7 @@ fn body_of(
         namespace,
         spec,
         network,
-        None,
+        &crate::sealed_env::SealingKeyStore::default(),
         &AdmittedSpec::test_signed(namespace, spec),
     )
     .unwrap();

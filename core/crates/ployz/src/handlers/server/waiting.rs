@@ -10,8 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::super::route::signed_in;
-use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::{Delivery, LoginError};
+use crate::cloud;
+use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::login::{Delivery, LoginError};
 use crate::handlers::{Error, runtime};
 use crate::ui::{self, Cell, Fields, Table, Tone, printable};
 use ployz_core::Hint;
@@ -149,7 +150,7 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
         waiting_servers: Vec<Value>,
     }
     let Reply { waiting_servers } =
-        cloud_account::refusable(credential, Method::GET, "waiting-servers", None).await?;
+        cloud::account::refusable(credential, Method::GET, "waiting-servers", None).await?;
     waiting_servers
         .into_iter()
         .map(|raw| {
@@ -183,7 +184,7 @@ pub(super) async fn enrolling(credential: &Credential) -> Result<Vec<Enrolling>,
         enrollments: Vec<Enrolling>,
     }
     let Reply { enrollments } =
-        cloud_account::refusable(credential, Method::GET, "enrollments", None).await?;
+        cloud::account::refusable(credential, Method::GET, "enrollments", None).await?;
     Ok(enrollments
         .into_iter()
         .filter(|attempt| !matches!(attempt.state.as_str(), "joined" | "failed" | "cancelled"))
@@ -195,7 +196,7 @@ pub(super) async fn detail(credential: &Credential, id: &str) -> Result<Detail, 
     struct Reply {
         waiting_server: Value,
     }
-    let Reply { waiting_server } = cloud_account::refusable(
+    let Reply { waiting_server } = cloud::account::refusable(
         credential,
         Method::GET,
         &format!("waiting-servers/{id}"),
@@ -242,7 +243,7 @@ pub(super) async fn reject<'a>(
     while !rest.is_empty() {
         let (batch, after) = rest.split_at(rest.len().min(REJECT_BATCH));
         let body = json!({ "ids": batch });
-        match cloud_account::refusable::<Reply>(
+        match cloud::account::refusable::<Reply>(
             credential,
             Method::POST,
             "reject-servers",
@@ -743,7 +744,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_waiting_list_call_may_have_acted_only_when_cloud_did_not_say_otherwise() {
-        for (name, error) in crate::cloud_account::testing::every_login_error(400) {
+        for (name, error) in crate::cloud::account::testing::every_login_error(400) {
             let acted = ["Unreachable", "Unanswered", "Reply"].contains(&name);
             assert_eq!(
                 may_have_acted(&StoreCallError::Cloud(error)),

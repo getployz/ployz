@@ -1,60 +1,25 @@
 import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import { inngestRunStatus, type PloyzInngest, type PloyzStepTools } from "#/modules/inngest/client";
+import { inngestRunStatus, type PloyzInngest, type PloyzStepTools, qualifiedFunctionId, type StepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import {
-  inngestFunctionFinishedEnvelopeSchema,
-  inngestFunctionFinishedEventType,
-  volumeRunRequestedEventType,
-  volumeRunTakenEventType,
-} from "#/modules/inngest/events";
+import { inngestFunctionFinishedEnvelopeSchema, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
+import { volumeRunRequested, volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patience";
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
-import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
-import {
-  claimVolumeRun,
-  cleanOrphans,
-  closeStaleVolumeRuns,
-  closeVolumeRun,
-  commitAndStart,
-  type CopyAnswer,
-  copyImage,
-  DRAIN_MS,
-  endRun,
-  failAndRelease,
-  failRun,
-  findHolder,
-  findKept,
-  inspectCopy,
-  laneTarget,
-  type MachineRef,
-  noteRun,
-  observeMembers,
-  observeReachable,
-  organizationsWithMachines,
-  refuseRun,
-  releaseChangedMessage,
-  removeContainer,
-  removeKept,
-  runDeploymentsSeen,
-  type RunContext,
-  sendSwitch,
-  setVolumeCopy,
-  SwitchAttemptError,
-  takeEpoch,
-} from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
+import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
+import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
+import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
-type EffectRunner = typeof runInngestEffect;
+import { eventData } from "#/modules/inngest/define-event";
 
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
 // A Volume written faster than it ships never converges, so the rounds are capped.
@@ -63,16 +28,9 @@ export const MAX_ROUNDS = 3;
 const BUSY_WAIT = "5s";
 const BUSY_CHECKS = 120;
 
-const VolumeRunRequestedData = Schema.Struct({
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-  volumeId: Schema.String.check(Schema.isNonEmpty()),
-  runId: Schema.String.check(Schema.isUUID()),
-  took: Schema.optional(Schema.String),
-});
-
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
 type RunSteps = {
-  readonly step: StepTools;
+  readonly step: StepTools<"run" | "sleep" | "sleepUntil">;
   readonly runEffect: EffectRunner;
   readonly run: RunContext;
   readonly runId: string;
@@ -80,14 +38,12 @@ type RunSteps = {
 };
 
 export async function runVolume(
-  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools; runId: string; attempt: number },
+  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools<"run" | "sleep" | "sleepUntil">; runId: string; attempt: number },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(VolumeRunRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(volumeRunRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const claim = await step.run("00-claim", () => runEffect(claimVolumeRun(request, runId)));
   if (claim.kind === "settled") return { runId: request.runId, settled: claim.state };
   const run: RunContext = claim.run;
@@ -369,7 +325,6 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   await finish(steps, "05-finish", withdrawnMessage(run.volumeName, phase.destroy.map((slot) => slot.machine.name), phase.forget?.machine.name, behind));
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
-
 
 const SIZING = { grow: "Growing", shrink: "Shrinking", settle: "Setting" } satisfies Record<SizeDirection, string>;
 
@@ -846,8 +801,8 @@ const isRunVolume = (functionId: string) =>
 const lifecycle = attemptLifecycle({
   run: {
     id: RUN_VOLUME_FUNCTION_ID,
-    triggers: [{ event: volumeRunRequestedEventType }],
-    cancelOn: [{ event: volumeRunTakenEventType, match: "data.runId" }],
+    triggers: [{ event: volumeRunRequested.eventType }],
+    cancelOn: [{ event: volumeRunTaken.eventType, match: "data.runId" }],
     handler: runVolume,
   },
   cancelId: "cancel-volume-run",
@@ -866,7 +821,7 @@ export const createCloseFinishedVolumeRun = (inngest: PloyzInngest, runEffect: E
       retries: 3,
       triggers: [{
         event: inngestFunctionFinishedEventType,
-        if: `event.data.function_id == '${RUN_VOLUME_FUNCTION_ID}' || event.data.function_id == 'ployz-cloud-${RUN_VOLUME_FUNCTION_ID}'`,
+        if: `event.data.function_id == '${RUN_VOLUME_FUNCTION_ID}' || event.data.function_id == '${qualifiedFunctionId(RUN_VOLUME_FUNCTION_ID)}'`,
       }],
     },
     async ({ event, step }) => {

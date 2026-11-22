@@ -8,15 +8,15 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { FormDevtoolsPanel } from "@tanstack/react-form-devtools";
 import { ReactQueryDevtoolsPanel } from "@tanstack/react-query-devtools";
-import { ThemeProvider } from "../components/theme-provider";
-import { Toaster } from "../components/ui/sonner";
-import { getAuthSession } from "../auth/auth";
+import { ThemeProvider } from "#/components/theme-provider";
+import { Toaster } from "#/components/ui/sonner";
+import { getAuthSession } from "#/auth/auth";
 import {
   getServerThemeClassName,
   getTheme,
-} from "../utils/theme";
-import { getTimeZone, writeTimeZone } from "../utils/time-zone";
-import appCss from "../styles.css?url";
+} from "#/utils/theme";
+import { getTimeZone, writeTimeZone } from "#/utils/time-zone";
+import appCss from "#/styles.css?url";
 import geistLatin from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
 import type { QueryClient } from "@tanstack/react-query";
 import type { DbClient } from "@tanstack/react-db";

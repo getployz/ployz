@@ -8,23 +8,27 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, ServiceName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
+use crate::coded::Coded;
+
+mod approvals;
 pub(crate) mod cleanup;
 mod exec;
-pub(crate) use exec::{
-    Answer, CopyLifecycle, MachineOperations, MoveEnd, MoveError, ProxyPlacement, RestartTolerant,
-    health_error, move_container, set_each,
+mod machine_calls;
+pub(crate) use approvals::{Approvals, KeptVersions, RuleProofs};
+pub(crate) use exec::{MoveEnd, MoveError, health_error, move_container};
+pub(crate) use machine_calls::{
+    Answer, Approved, CopyLifecycle, MachineOperations, ProxyPlacement, RestartTolerant, set_each,
 };
 #[cfg(test)]
-pub(crate) use exec::{RedialFailure, Session};
+pub(crate) use machine_calls::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
-mod report;
 mod schedule;
 
 pub use pipeline::DeployError;
@@ -40,10 +44,11 @@ pub use ployz_core::{
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
     ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
-pub use schedule::{ServiceGroup, Stage};
+pub use schedule::{GroupRole, ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
-pub(crate) use report::{Replica, service_row, starts, updates};
+#[cfg(test)]
+pub(crate) use schedule::depths;
 
 pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
@@ -1110,6 +1115,45 @@ pub enum PlanError {
     /// Services of a reserved Namespace are never retired by name.
     #[error("Services in Namespace {namespace} can't be removed by a Deploy")]
     RemovalInReservedNamespace { namespace: Namespace },
+}
+
+impl Coded for PlanError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            PlanError::Service { source, .. } => source.code(),
+            PlanError::ConflictingHostPublications { .. }
+            | PlanError::VolumeInSeveralRegions { .. }
+            | PlanError::ConflictingDockerVolumeDefinitions { .. }
+            | PlanError::DuplicateTargetService { .. }
+            | PlanError::MixedVolumeModes { .. }
+            | PlanError::DependencyCycle { .. }
+            | PlanError::RemovalInTarget { .. }
+            | PlanError::RemovalNotSelected { .. }
+            | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
+            PlanError::Storage { .. }
+            | PlanError::HostPortConflict { .. }
+            | PlanError::InsufficientCapacity
+            | PlanError::NoEligibleMachines { .. }
+            | PlanError::ServiceModeCannotChange
+            | PlanError::ProvisionedVolumeStorageRequired { .. }
+            | PlanError::ProvisionedVolumeStorageUnavailable
+            | PlanError::ExistingPlainVolume { .. }
+            | PlanError::ExistingProvisionedVolumeMismatch { .. }
+            | PlanError::NoWriter { .. }
+            | PlanError::VolumeServerTakesNoServices { .. }
+            | PlanError::FirstCopyUnfit { .. }
+            | PlanError::VolumeOriginsUnchecked { .. }
+            | PlanError::RegionUnmatched { .. }
+            | PlanError::VolumeOutsideRegion { .. }
+            | PlanError::VolumesApart { .. }
+            | PlanError::VolumeSharedAcrossRegions { .. }
+            | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
+            PlanError::CapacityUnknown
+            | PlanError::CopiesUnknown { .. }
+            | PlanError::VolumeHolderUnknown { .. }
+            | PlanError::ProvisionedVolumeStorageUnknown { .. } => RpcErrorCode::Unavailable,
+        }
+    }
 }
 
 /// Why a hostname another Service publishes can't be claimed in this Deploy.

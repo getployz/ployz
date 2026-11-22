@@ -2,22 +2,48 @@ import "@tanstack/react-start/server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
-import { member, organizationToken, session, user } from "#/modules/identity/tables";
+import { organizationToken, session, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createServerAccessRetireRequestedEvent } from "#/modules/inngest/events";
-import { refusalOf, type Role } from "#/modules/organization/access.server";
-import { can } from "#/modules/organization/permissions";
-import { organization } from "#/modules/organization/tables";
+import { serverAccessRetireRequested } from "#/modules/machines/machines.events";
+import { refusalOf } from "#/modules/organization/access.server";
+import { assignableRoles, can, type MemberRole } from "#/modules/organization/permissions";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
 export const OWN = "Only an owner can make or remove an owner.";
 export const OWNERLESS = "An Organization needs an owner. Make someone else an owner first.";
 
-const refusalFor = (members: ReadonlyArray<{ userId: string; role: Role }>, askedBy: string, touchesOwner: boolean) => {
+/** Whether `userId` is a member of the Organization. */
+export const isMember = Effect.fn("Organization.isMember")(function* (userId: string, organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ userId: member.userId }).from(member)
+    .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))
+    .limit(1);
+  return row !== undefined;
+});
+
+/** Sessions of `userId` acting in the Organization move to the user's next Organization, or none. */
+export const moveSessionsOutOf = Effect.fn("Organization.moveSessionsOutOf")(function* (organizationId: string, userId: string) {
+  const { drizzle } = yield* Database;
+  const [next] = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId))
+    .where(eq(member.userId, userId)).orderBy(asc(member.createdAt)).limit(1);
+  yield* drizzle.update(session)
+    .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: new Date() })
+    .where(and(eq(session.userId, userId), eq(session.activeOrganizationId, organizationId)));
+});
+
+/** Whether `userId` is an owner and the only one, so a change that takes their ownership would leave none. */
+export const isLastOwner = (members: ReadonlyArray<{ userId: string; role: MemberRole }>, userId: string) =>
+  members.some((row) => row.userId === userId && row.role === "owner")
+  && !members.some((row) => row.role === "owner" && row.userId !== userId);
+
+/** Why `askedBy` may not change a membership from or to the `touched` roles, or null when they may. */
+const refusalFor = (members: ReadonlyArray<{ userId: string; role: MemberRole }>, askedBy: string, touched: ReadonlyArray<MemberRole>) => {
   const role = members.find((row) => row.userId === askedBy)?.role;
   if (role === undefined || !can(role, "members:manage")) return new Conflict({ message: refusalOf("members:manage"), userFacing: true });
-  if (touchesOwner && role !== "owner") return new Conflict({ message: OWN, userFacing: true });
+  if (!touched.every((one) => assignableRoles(role).includes(one))) return new Conflict({ message: OWN, userFacing: true });
   return null;
 };
 
@@ -35,22 +61,17 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
       .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const leaving = members.find((row) => row.userId === userId);
     if (leaving === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
-    const refusal = askedBy === userId ? null : refusalFor(members, askedBy, leaving.role === "owner");
+    const refusal = askedBy === userId ? null : refusalFor(members, askedBy, [leaving.role]);
     if (refusal !== null) return yield* refusal;
-    if (leaving.role === "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
+    if (isLastOwner(members, userId)) {
       return yield* new Conflict({ message: OWNERLESS, userFacing: true });
     }
     yield* drizzle.delete(member).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));
     yield* drizzle.delete(organizationToken)
       .where(and(eq(organizationToken.organizationId, organizationId), eq(organizationToken.userId, userId)));
     yield* drizzle.delete(oauthConsent).where(and(eq(oauthConsent.referenceId, organizationId), eq(oauthConsent.userId, userId)));
-    const [next] = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(member)
-      .innerJoin(organization, eq(organization.id, member.organizationId))
-      .where(eq(member.userId, userId)).orderBy(asc(member.createdAt)).limit(1);
-    yield* drizzle.update(session)
-      .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: new Date() })
-      .where(and(eq(session.userId, userId), eq(session.activeOrganizationId, organizationId)));
-    yield* afterDatabaseCommit(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
+    yield* moveSessionsOutOf(organizationId, userId);
+    yield* afterDatabaseCommit(sendInngestEvent(serverAccessRetireRequested.create({})).pipe(
       Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
     ));
   }));
@@ -67,7 +88,7 @@ export const listMembers = Effect.fn("Organization.listMembers")(function* (orga
 export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
   organizationId: string,
   userId: string,
-  role: Role,
+  role: MemberRole,
   askedBy: string,
 ) {
   const database = yield* Database;
@@ -77,9 +98,9 @@ export const setMemberRole = Effect.fn("Organization.setMemberRole")(function* (
       .where(eq(member.organizationId, organizationId)).orderBy(asc(member.userId)).for("update");
     const target = members.find((row) => row.userId === userId);
     if (target === undefined) return yield* new NotFound({ message: "That user is not a member of this Organization." });
-    const refusal = refusalFor(members, askedBy, target.role === "owner" || role === "owner");
+    const refusal = refusalFor(members, askedBy, [target.role, role]);
     if (refusal !== null) return yield* refusal;
-    if (target.role === "owner" && role !== "owner" && !members.some((row) => row.role === "owner" && row.userId !== userId)) {
+    if (role !== "owner" && isLastOwner(members, userId)) {
       return yield* new Conflict({ message: OWNERLESS, userFacing: true });
     }
     yield* drizzle.update(member).set({ role }).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));

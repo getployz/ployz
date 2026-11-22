@@ -1,3 +1,4 @@
+/** @data-source remote: cached briefly; the subscription changes in Polar, not here, and a completed checkout syncs it at once. The Server count is read with it, and the units sync follows Servers joining and leaving */
 import { queryOptions } from "@tanstack/react-query";
 import { getBillingStateServerFn } from "#/modules/billing/billing.functions";
 

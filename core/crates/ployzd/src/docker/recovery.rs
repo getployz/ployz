@@ -15,7 +15,7 @@ use ployz_core::ContainerId;
 use super::{
     Error, Lifecycle,
     doors::{self, Door, DoorFacts},
-    lifecycle::{failed_start, idempotent_lifecycle_result, is_running},
+    lifecycle::idempotent_lifecycle_result,
 };
 
 /// Who may start which door, and who has asked for one to stay stopped.
@@ -145,7 +145,7 @@ async fn repair_door(runtime: &Lifecycle, repair: &Repair, creates: u64) -> Resu
         } => {
             let inspected = runtime.observation.ensure_managed(container_id).await?;
             // A newer door may be about to take the ports; the next scan decides.
-            if !failed_start(&inspected) || !runtime.docker.created_nothing_since(creates) {
+            if !inspected.failed_start() || !runtime.docker.created_nothing_since(creates) {
                 return Ok(false);
             }
             runtime.start_inspected(container_id, &inspected).await?;
@@ -156,8 +156,12 @@ async fn repair_door(runtime: &Lifecycle, repair: &Repair, creates: u64) -> Resu
             caddy,
         } => {
             let inspected = runtime.observation.ensure_managed(caddy).await?;
-            if !failed_start(&inspected)
-                || !is_running(&runtime.observation.ensure_managed(holder).await?)
+            if !inspected.failed_start()
+                || !runtime
+                    .observation
+                    .ensure_managed(holder)
+                    .await?
+                    .is_running()
                 || !runtime.docker.created_nothing_since(creates)
             {
                 return Ok(false);
@@ -283,13 +287,16 @@ fn proxy_recovery(doors: &[DoorFacts]) -> Option<Repair> {
             .failed_start
             .then_some(Repair::StartHolder(holder.id));
     }
-    let mut running = holders.iter().copied().filter(|facts| facts.running());
+    let mut running = holders
+        .iter()
+        .copied()
+        .filter(|facts| facts.runtime.is_running());
     let (Some(holder), None) = (running.next(), running.next()) else {
         return None;
     };
     if holders
         .iter()
-        .any(|facts| !facts.running() && !facts.at_rest())
+        .any(|facts| !facts.runtime.is_running() && !facts.at_rest())
     {
         return None;
     }
@@ -298,7 +305,7 @@ fn proxy_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .copied()
         .filter(|facts| facts.joined_to == Some(holder.id))
         .collect::<Vec<_>>();
-    if let Some(caddy) = joined.iter().find(|facts| facts.running()) {
+    if let Some(caddy) = joined.iter().find(|facts| facts.runtime.is_running()) {
         return match (holder.netns, caddy.netns) {
             (Some(holder_ns), Some(caddy_ns)) if holder_ns != caddy_ns => Some(Repair::Rejoin {
                 owner: holder.id,
@@ -328,13 +335,16 @@ fn tunnel_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .iter()
         .filter(|facts| facts.door == Door::TunnelOrigin)
         .collect::<Vec<_>>();
-    let mut running = origins.iter().copied().filter(|facts| facts.running());
+    let mut running = origins
+        .iter()
+        .copied()
+        .filter(|facts| facts.runtime.is_running());
     let (Some(origin), None) = (running.next(), running.next()) else {
         return None;
     };
     if origins
         .iter()
-        .any(|facts| !facts.running() && !facts.at_rest())
+        .any(|facts| !facts.runtime.is_running() && !facts.at_rest())
     {
         return None;
     }
@@ -343,7 +353,7 @@ fn tunnel_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .iter()
         .find(|facts| {
             facts.door == Door::Tunnel
-                && facts.running()
+                && facts.runtime.is_running()
                 && facts.joined_to == Some(origin.id)
                 && facts.netns.is_some_and(|ns| ns != origin_ns)
         })

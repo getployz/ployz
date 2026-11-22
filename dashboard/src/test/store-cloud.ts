@@ -10,12 +10,12 @@ import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/git
 import { GithubAuthority, type GithubAuthorityService } from "#/modules/github/github-authority.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
-import { ANONYMOUS_ORGANIZATION_NAME } from "#/modules/identity/anonymous-signup.server";
-import { hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { ANONYMOUS_ORGANIZATION_NAME } from "#/modules/sandbox/anonymous-signup.server";
+import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
-import { account, member, user } from "#/modules/identity/tables";
+import { account, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { InngestClient } from "#/modules/inngest/client";
-import { organization } from "#/modules/organization/tables";
 import { makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -26,7 +26,8 @@ import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
 import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { SecretEncryptionLive } from "#/server/secret-encryption.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** An Inngest client whose sends succeed and go nowhere. */
 export const sendsNowhere = () => {

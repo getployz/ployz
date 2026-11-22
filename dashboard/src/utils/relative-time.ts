@@ -32,3 +32,12 @@ export function formatDuration(seconds: number) {
   if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
   return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
 }
+
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+export const lossTime = (at: Date) => clock.format(at);
+
+const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+/** The time alone for a point from today, the date as well for an older one. */
+export const lossMoment = (at: Date, now = new Date()) => (at.toDateString() === now.toDateString() ? lossTime(at) : dated.format(at));

@@ -15,11 +15,12 @@ use crate::id::{BranchName, CommitSha, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::build::BuildStatus;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
@@ -28,9 +29,9 @@ use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::{Row, Tx, json_text, name_of};
 use crate::volume::size::VolumeResized;
-use crate::{Actor, Trusted, build, registry};
+use crate::{Actor, Trusted, build};
 
 /// An observation Cloud made, of GitHub or of the Cluster. Never caller testimony: only Cloud's worker
 /// passes one, in-process.
@@ -398,10 +399,7 @@ fn remember(
             who.organization.as_str().into(),
             repository_id.into(),
             branch.as_str().into(),
-            serde_json::to_string(&heads)
-                .expect("heads are JSON")
-                .as_str()
-                .into(),
+            json_text(&heads).as_str().into(),
         ],
     )?;
     Ok(())
@@ -439,36 +437,45 @@ fn deploy(
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    let skipped = match admit(tx, who, environment, push, select, trusted) {
+    let deployed = admit(tx, who, environment, push, select, trusted);
+    let ended = match deployed {
+        Ok(Some(Deploy::Idle)) => Some(IDLE.to_owned()),
+        deployed => record(environment, deployed, automated)?,
+    };
+    if let (Some(why), Select::Held(held)) = (ended, select) {
+        deployment::cancel_held(tx, held, why)?;
+    }
+    Ok(())
+}
+
+/// Record in `automated` what an automatic Deploy into `environment` came to; why it
+/// was skipped, if it was. One Environment that can't deploy never holds back the
+/// others.
+pub(crate) fn record(
+    environment: &EnvironmentId,
+    deployed: Result<Option<Deploy>, RpcError>,
+    automated: &mut Automated,
+) -> Result<Option<String>, RpcError> {
+    let reason = match deployed {
         Ok(Some(Deploy::Admitted(deployment))) => {
             automated.admitted.push(AutoDeployed {
-                environment: environment.clone(),
+                environment: deployment.environment_id.clone(),
                 deployment: *deployment,
             });
-            return Ok(());
+            return Ok(None);
         }
         Ok(Some(Deploy::NoServers)) => crate::trusted::NO_SERVERS.to_owned(),
         Ok(Some(Deploy::NeedsApproval)) => crate::pull_request::NEEDS_APPROVAL.to_owned(),
         Ok(Some(Deploy::Reapprove(changed))) => crate::auto_rule::reapprove(&changed),
-        Ok(Some(Deploy::Idle)) => {
-            if let Select::Held(held) = select {
-                deployment::cancel_held(tx, held, IDLE.to_owned())?;
-            }
-            return Ok(());
-        }
-        Ok(None) => return Ok(()),
-        // One Environment that can't deploy never holds back the others.
-        Err(error) if skippable(&error) => error.message,
+        Ok(Some(Deploy::Idle) | None) => return Ok(None),
+        Err(error) if crate::error::skippable(&error) => error.message,
         Err(error) => return Err(error),
     };
-    if let Select::Held(held) = select {
-        deployment::cancel_held(tx, held, skipped.clone())?;
-    }
     automated.skipped.push(Skipped {
         environment: environment.clone(),
-        reason: skipped,
+        reason: reason.clone(),
     });
-    Ok(())
+    Ok(Some(reason))
 }
 
 /// Why a Deployment waiting for CI that nothing it deploys follows any more ends.
@@ -484,16 +491,11 @@ pub(crate) fn deploy_head(
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    let push = GitPush {
-        repository_id: event.repository_id,
-        branch: event.head_branch.clone(),
-        head: event.head.clone(),
-    };
     deploy(
         tx,
         who,
         environment,
-        &push,
+        &event.head_push(),
         Select::Changed(None),
         trusted,
         automated,
@@ -526,8 +528,8 @@ pub(crate) fn deploy_landed(
         tx,
         who.organization.as_str(),
         landed,
-        &json_of(&pending.updates),
-        &json_of(&pending.removals),
+        &json_text(&pending.updates),
+        &json_text(&pending.removals),
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
@@ -570,10 +572,6 @@ fn merged_services(row: &Row) -> Result<MergedServices, RpcError> {
     })
 }
 
-fn json_of(ids: &BTreeSet<impl Serialize>) -> String {
-    serde_json::to_string(ids).expect("Service IDs are JSON")
-}
-
 /// What merges into the branch of `push` landed in `environment` that no Deployment
 /// took yet and `push` carries: their merge commits, and the Services they changed
 /// and removed. A head that is one of those commits carries it and the merges before
@@ -601,19 +599,8 @@ fn landed(
     Ok((commits, services))
 }
 
-/// Whether an automatic Deploy that failed with `error` is skipped, leaving the
-/// others to go on: the Environment can't deploy until someone changes it.
-pub(crate) fn skippable(error: &RpcError) -> bool {
-    matches!(
-        error.code,
-        RpcErrorCode::InvalidArgument
-            | RpcErrorCode::Unsupported
-            | RpcErrorCode::NotFound
-            | RpcErrorCode::Conflict
-    )
-}
-
-enum Deploy {
+/// What an automatic Deploy into one Environment came to.
+pub(crate) enum Deploy {
     Admitted(Box<DeploymentSummary>),
     /// Nothing it would deploy: no Service it selects follows the branch, and no
     /// merge landed.
@@ -858,7 +845,7 @@ fn admit(
             None => None,
         },
     };
-    let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let fresh = DeploymentId::fresh();
     let admission = match &held {
         Some(hold) => deployment::Admission::Promote(&hold.id),
         None => deployment::Admission::New {
@@ -929,8 +916,8 @@ pub(crate) fn shipped_landed(
             merge_deploy::replace(
                 tx,
                 landed,
-                &json_of(&pending.updates),
-                &json_of(&pending.removals),
+                &json_text(&pending.updates),
+                &json_text(&pending.removals),
             )?;
         }
     }
@@ -966,11 +953,14 @@ fn last_built(
     id: &EnvironmentId,
     service: &SavedServiceIntent,
 ) -> Result<Option<CommitSha>, RpcError> {
+    let (built, reused) = (name_of(BuildStatus::Built), name_of(BuildStatus::Reused));
     let rows = tx.query(
-        "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
+        &format!(
+            "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
          JOIN config_deployment d ON d.id = b.deployment_id \
          WHERE d.environment_id = ?1 AND d.nodes LIKE ?2 AND b.commit_sha IS NOT NULL \
-         AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
+         AND b.status IN ('{built}', '{reused}') ORDER BY d.admitted DESC"
+        ),
         &[
             id.as_str().into(),
             deployment::node_pattern(&service.id).as_str().into(),
@@ -993,7 +983,8 @@ fn last_built(
             .services
             .iter()
             .find(|then| then.id == service.id)
-            .is_some_and(|then| same_source(&then.config.source, &service.config.source));
+            .and_then(|then| crate::git::built_from(&then.config.source))
+            .is_some_and(|then| crate::git::built_from(&service.config.source) == Some(then));
         return if same {
             row.parse(0, "commit").map(Some)
         } else {
@@ -1001,17 +992,6 @@ fn last_built(
         };
     }
     Ok(None)
-}
-
-/// Whether `a` and `b` build the same branch of the same repository.
-fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
-    matches!(
-        (a, b),
-        (
-            ServiceSource::Git { repository_id, branch, .. },
-            ServiceSource::Git { repository_id: then, branch: then_branch, .. },
-        ) if repository_id == then && branch == then_branch
-    )
 }
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
@@ -1048,7 +1028,7 @@ pub(crate) fn auto_admit(
         true => deployment::dropped(tx, id, &saved.intent, &landing)?,
         false => Vec::new(),
     };
-    let mut frozen = deployment::freeze(
+    let frozen = deployment::freeze(
         id,
         &who.organization,
         &saved.intent,
@@ -1070,14 +1050,6 @@ pub(crate) fn auto_admit(
         namespace,
         cluster_domain,
     )?;
-    crate::deployment::admit::refuse_shared_writes(
-        environment,
-        (&saved.intent, |service: &SavedServiceIntent| {
-            frozen.hands(service)
-        }),
-        crate::deployment::admit::Shipping::Saved,
-    )?;
-    frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
     let pins: BTreeMap<ServiceName, CommitSha> = pins
         .iter()
         .filter(|(name, _)| {
@@ -1106,7 +1078,7 @@ pub(crate) fn auto_admit(
         tx,
         who,
         (admission, &targets, None, None),
-        id,
+        environment,
         saved.revision,
         &frozen,
     )?;

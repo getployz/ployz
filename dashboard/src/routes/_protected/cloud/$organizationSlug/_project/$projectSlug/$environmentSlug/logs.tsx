@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ContainerLogs } from "#/components/container-logs";
+import { ContainerLogs } from "./-components/logs/container-logs";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs",
 )({
+  staticData: { section: "logs" },
   component: RouteComponent,
 });
 

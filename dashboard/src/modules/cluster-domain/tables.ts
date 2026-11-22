@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
-import { createdAt, type EncryptedSecretValue, type MachineId, updatedAt } from "#/db/tables";
+import { createdAt, type EncryptedSecretValue, updatedAt } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { organization } from "#/modules/organization/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });

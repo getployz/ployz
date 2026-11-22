@@ -1,8 +1,6 @@
 import { useRef, useState } from "react";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { LinkIcon, MailIcon, UserIcon } from "lucide-react";
-import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
@@ -25,81 +23,28 @@ import { Spinner } from "#/components/ui/spinner";
 import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { distinctNames } from "#/lib/distinct-names";
 import { toErrorMessage } from "#/lib/error-message";
-import {
-  inviteMemberServerFn,
-  leaveOrganizationServerFn,
-  removeMemberServerFn,
-  revokeInviteServerFn,
-  setMemberRoleServerFn,
-} from "#/modules/organization/members.functions";
-import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { inviteMemberServerFn } from "#/modules/organization/members.functions";
+import { organizationMembersQueryOptions, useMemberWrites } from "#/modules/organization/members.queries";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
-import { can } from "#/modules/organization/permissions";
+import { assignableRoles, can, type InviteRole, type MemberRole } from "#/modules/organization/permissions";
 import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
-type Role = "owner" | "admin" | "member";
-type InviteRole = Exclude<Role, "owner">;
-
-const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
+const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<MemberRole, string>;
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
 
 export function MembersSettings({ organizationSlug }: { organizationSlug: string }) {
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
   const organizationName = useOrganizationName(organizationSlug);
   const timeZone = useTimeZone();
   const day = calendarDay(timeZone);
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
-  const queryKey = membersKey(organizationSlug);
-  const refresh = () => queryClient.invalidateQueries({ queryKey });
-  const failed = (fallback: string) => (cause: unknown) => toast.error(toErrorMessage(cause, fallback));
-  const optimistic = <Input,>(fallback: string, apply: (current: typeof data, input: Input) => typeof data) => ({
-    onMutate: async (input: Input) => {
-      await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<typeof data>(queryKey);
-      if (previous) queryClient.setQueryData(queryKey, apply(previous, input));
-      return { previous };
-    },
-    onError: (cause: unknown, _input: Input, context: { previous: typeof data | undefined } | undefined) => {
-      if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
-      failed(fallback)(cause);
-    },
-    onSettled: refresh,
-  });
-
-  const setRole = useMutation({
-    mutationFn: (input: { member: string; role: Role }) => setMemberRoleServerFn({ data: { organizationSlug, ...input } }),
-    ...optimistic<{ member: string; role: Role }>("Couldn't change the role.", (current, input) => ({
-      ...current,
-      members: current.members.map((row) => row.email === input.member ? { ...row, role: input.role } : row),
-    })),
-  });
-  const remove = useMutation({
-    mutationFn: (member: string) => removeMemberServerFn({ data: { organizationSlug, member } }),
-    ...optimistic<string>("Couldn't remove the member.", (current, member) => ({
-      ...current,
-      members: current.members.filter((row) => row.email !== member),
-    })),
-  });
-  const leave = useMutation({
-    mutationFn: () => leaveOrganizationServerFn({ data: { organizationSlug } }),
-    // The session acts in another Organization now, or none.
-    onSuccess: () => navigate({ to: "/cloud", replace: true, reloadDocument: true }),
-  });
-  const revoke = useMutation({
-    mutationFn: (invite: string) => revokeInviteServerFn({ data: { organizationSlug, invite } }),
-    ...optimistic<string>("Couldn't revoke the invite.", (current, invite) => ({
-      ...current,
-      invites: current.invites.filter((row) => row.id !== invite),
-    })),
-  });
+  const { setRole, remove, revokeInvite: revoke, leave, refresh } = useMemberWrites(organizationSlug);
 
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
   const manager = yourRole !== null && can(yourRole, "members:manage");
-  const roles: readonly Role[] = yourRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+  const roles = yourRole === null ? [] : assignableRoles(yourRole);
   const memberNames = distinctNames(data.members.map((row) => [row.name, row.email]));
 
   return (
@@ -107,7 +52,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
       <SettingsSection id="members" title="Members">
         <SettingsList label="Members">
           {data.members.map((row, index) => {
-            const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
+            const editable = manager && !row.you && roles.includes(row.role);
             const name = memberNames[index] ?? row.name;
             return (
               <SettingsListItem

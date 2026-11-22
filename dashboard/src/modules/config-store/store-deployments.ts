@@ -8,12 +8,12 @@ import { healthcheckOf } from "./healthcheck";
 import { replicaChange } from "./replica-rows";
 import { branchText, sourceChange } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
+import { configSettingOf, envKeyOf, isConfigMountSetting, isConfigSetting, isEnvSetting, isMountSetting, mountVolumeOf, nodePath, REGION_PATH, settingWithin } from "./setting-paths";
 
 /** A Config file in a change. `content` is missing where the reader may not see it: Ployz support, unless the Organization shows it. */
 const reviewFile = Schema.Struct({ content: Schema.optional(Schema.String), mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
 const decodeFile = Schema.decodeUnknownOption(reviewFile);
 
-/** One changed Setting in Details. */
 export type ChangeRow = {
   changeKey: string;
   label: string;
@@ -66,9 +66,9 @@ export type ChangeGroup = {
 function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (nodeType === "volume") return setting === "node" ? "Volume" : setting === "name" ? "Name" : setting;
   if (nodeType === "config") return setting === "name" ? "Name" : setting.startsWith("files.") ? setting.slice("files.".length) : setting;
-  if (setting.startsWith("env.")) return `Environment variable ${setting.slice(4)}`;
-  if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
-  if (setting.startsWith("configs.")) return `Config mount ${setting.slice(8)}`;
+  if (isEnvSetting(setting)) return `Environment variable ${envKeyOf(setting)}`;
+  if (isMountSetting(setting)) return `Volume mount ${mountVolumeOf(setting)}`;
+  if (isConfigSetting(setting)) return `Config mount ${configSettingOf(setting)}`;
   if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
   if (setting === "managedHostnames") return "Generated domain";
   if (setting === "source") return "Source";
@@ -90,7 +90,7 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
-    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.@${node.id}` : node.name,
+    discardPath: nodePath(node),
     row: node.row,
     lifecycle: node.lifecycle,
     changeCount: node.settings.length + (node.lifecycle === "update" ? 0 : 1),
@@ -98,13 +98,12 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
     canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
     rows: node.settings.map((row) => {
-      const prefix = node.type === "volume" ? `volumes.${node.name}.` : node.type === "config" ? `configs.@${node.id}.` : `${node.name}.`;
-      const setting = row.path.slice(prefix.length);
+      const setting = settingWithin(node, row.path);
       const title = settingTitle(setting);
       const label = row.configName ? `Config mount ${row.configName}`
-        : setting.startsWith("configs.@") ? "Config mount"
+        : isConfigMountSetting(setting) ? "Config mount"
         : setting === "name" ? "Name" : setting === "source.branch" ? "Branch" : title ?? untitledLabel(node.type, setting);
-      const variable = node.type === "service" && setting.startsWith("env.");
+      const variable = node.type === "service" && isEnvSetting(setting);
       const [before, after] = setting === "source" ? sourceChange(row.before, row.after)
         : setting === "source.branch" ? [branchText(row.before), branchText(row.after)]
         : setting === "memLimit" ? [memorySize(row.before), memorySize(row.after)]
@@ -120,7 +119,7 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
         row: row.row,
         kind: row.kind,
         label,
-        name: variable ? setting.slice("env.".length) : label,
+        name: variable ? envKeyOf(setting) : label,
         variable,
         currentValue: configFile ? configFile.before === null ? "" : "File" : before,
         newValue: configFile ? configFile.after === null ? "" : "File" : after,
@@ -132,10 +131,7 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
   }));
 }
 
-/** A region as people read it: its name, or `any region` for none. */
 export const regionName = (region: string | null) => region ?? "any region";
-
-const REGION_PATH = "@environment.region";
 
 /** The staged region, which no node holds: the Environment's one change, `Region any region → fsn`. */
 function regionGroups(diff: DiffView): ChangeGroup[] {
@@ -264,7 +260,6 @@ export const buildNodeId = (service: string) => `build:${service}`;
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
-/** Each status in the icons' vocabulary. */
 const deploymentStatusIcons = {
   waiting_for_ci: "queued", queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
   unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",
@@ -517,7 +512,10 @@ export function deployWarningNotices(deployment: Pick<DeploymentView, "nodes" | 
 }
 
 /** A Service's runtime name from the Engine's `namespace/name`. */
-const runtimeName = (qualified: string) => qualified.slice(qualified.indexOf("/") + 1);
+export const runtimeName = (qualified: string) => qualified.slice(qualified.indexOf("/") + 1);
+
+/** The Namespace in the Engine's `namespace/name`, or "" when it has none. */
+export const namespaceOf = (qualified: string) => qualified.slice(0, Math.max(qualified.indexOf("/"), 0));
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {

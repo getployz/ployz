@@ -1,17 +1,14 @@
 import { createMiddleware } from "@tanstack/react-start";
 import { Effect } from "effect";
-import { secretPagesOf } from "#/lib/secret-pages";
-import { getRouter } from "#/router";
 import { prefersHtmlOverJson } from "#/server/content-negotiation";
 import { runRedactedLog } from "#/server/log-redaction";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 
-let opensSecretPage: ((path: string) => boolean) | undefined;
+type OpensSecretPage = (pathname: string) => boolean;
 
 /** `pathname` for the log, unless it opens a page whose URL is a secret (an invite, a claim link, a device code). */
-function loggablePath(pathname: string) {
+function loggablePath(pathname: string, opensSecretPage: OpensSecretPage) {
   try {
-    opensSecretPage ??= secretPagesOf(getRouter());
     return opensSecretPage(pathname) ? "[secret page]" : pathname;
   } catch {
     return "[unmatched]";
@@ -57,11 +54,12 @@ export function unhandledRequestResponse(
   request: Request,
   cause: unknown,
   page: boolean,
+  opensSecretPage: OpensSecretPage,
   requestId: string = crypto.randomUUID(),
 ): Response {
   const { pathname } = new URL(request.url);
   runRedactedLog(Effect.logError("Unhandled request error.", cause).pipe(
-    Effect.annotateLogs({ requestId, method: request.method, path: loggablePath(pathname) }),
+    Effect.annotateLogs({ requestId, method: request.method, path: loggablePath(pathname, opensSecretPage) }),
   ));
   const error = encodePublicError(cause);
   const status = statusForPublicError(error);
@@ -73,12 +71,13 @@ export function unhandledRequestResponse(
 }
 
 /** The outermost request middleware, so a throw from any later middleware or route handler lands here. */
-export const unhandledRequestMiddleware = createMiddleware().server(async ({ request, next, handlerType }) => {
-  try {
-    return await next();
-  } catch (cause) {
-    // Start throws an aborted request's reason past whatever this answers.
-    if (request.signal.aborted) throw cause;
-    return unhandledRequestResponse(request, cause, handlerType === "router");
-  }
-});
+export const unhandledRequestMiddleware = (opensSecretPage: OpensSecretPage) =>
+  createMiddleware().server(async ({ request, next, handlerType }) => {
+    try {
+      return await next();
+    } catch (cause) {
+      // Start throws an aborted request's reason past whatever this answers.
+      if (request.signal.aborted) throw cause;
+      return unhandledRequestResponse(request, cause, handlerType === "router", opensSecretPage);
+    }
+  });

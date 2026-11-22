@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Context, Data, Effect, Layer, Result, Schema } from "effect";
 import type { GithubAccess, GithubDisconnected } from "#/modules/github/github-access";
+import type { GithubRepository } from "#/modules/github/github";
 import {
-  GITHUB_COMPARE_STATUSES,
   githubBranchNameSchema,
   githubChangedPathsSchema,
   githubCheckSuiteConclusionSchema,
@@ -10,37 +10,24 @@ import {
   githubCompareStatusSchema,
   githubExactShaSchema,
   githubIdSchema,
+  githubNonEmptyStringSchema,
   githubRepositoryFullNameSchema,
   githubResolvedRepositorySchema,
+  encodeGithubPath,
+  githubRepositoryPathSchema,
   githubSafeBranchRefSchema,
   githubTimestampSchema,
   isValidGithubBranchRef,
   isValidGithubExactSha,
   isValidGithubId,
-  type GithubBranchHeadObservation,
-  type GithubCheckSuiteConclusion,
-  type GithubCheckSuiteObservation,
-  type GithubCheckSuiteStatus,
-  type GithubCompareObservation,
-  type GithubCompareStatus,
   type GithubResolvedRepository,
 } from "#/modules/github/github-ingestion.contracts";
-import { GITHUB_API_VERSION, GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubTokens } from "#/modules/github/github-token.server";
 import { AppConfig } from "#/server/config.server";
 
-type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
-export { GITHUB_COMPARE_STATUSES };
-export type {
-  GithubBranchHeadObservation,
-  GithubCheckSuiteObservation,
-  GithubCompareObservation,
-  GithubCompareStatus,
-  GithubResolvedRepository,
-};
-export type GithubApiCheckSuiteStatus = GithubCheckSuiteStatus;
-export type GithubApiCheckSuiteConclusion = GithubCheckSuiteConclusion;
+export const GITHUB_API_VERSION = "2022-11-28";
 
+type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
 export type GithubObservationOperation =
   | "resolve_repository"
   | "list_push_runs"
@@ -176,15 +163,14 @@ const pullRequestResponseSchema = Schema.Struct({
   commits: Schema.Number,
   updated_at: Schema.optional(Schema.String),
 });
-const nonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const installationRepositoriesSchema = Schema.Struct({
   repositories: Schema.Array(Schema.Struct({
     id: githubIdSchema,
-    name: nonEmptyString,
-    full_name: nonEmptyString,
+    name: githubNonEmptyStringSchema,
+    full_name: githubNonEmptyStringSchema,
     private: Schema.Boolean,
-    default_branch: nonEmptyString,
-    html_url: nonEmptyString,
+    default_branch: githubNonEmptyStringSchema,
+    html_url: githubNonEmptyStringSchema,
     updated_at: Schema.DateFromString,
   })),
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
@@ -466,29 +452,133 @@ export const fetchInstallationPullRequest = Effect.fn(
   };
 });
 
-/** The permissions an installation of the GitHub App has granted, and where its owner manages them. */
-export const fetchAppInstallationPermissions = Effect.fn(
-  "Github.fetchAppInstallationPermissions",
-)(function* (installationId: number) {
-  return yield* (yield* GithubAuthority).installation(installationId);
+type GithubBranch = { name: string };
+type GithubInstallationReposPage = {
+  repositories: GithubRepository[];
+  page: number;
+  totalCount: number;
+  hasNextPage: boolean;
+};
+
+const GithubBranchesResponse = Schema.Array(
+  Schema.Struct({ name: githubNonEmptyStringSchema }),
+);
+const RepositoryFullName = Schema.String.check(
+  Schema.isPattern(/^[^/\s]+\/[^/\s]+$/),
+);
+
+export const listInstallationReposPage = Effect.fn(
+  "Github.listInstallationReposPage",
+)(function* (installationId: number, page: number) {
+  const api = yield* GithubApi;
+  const response = yield* api.installationRepositories({ installationId, page });
+  return {
+    repositories: response.repositories.map((repository) => ({
+      id: repository.id,
+      name: repository.name,
+      full_name: repository.full_name,
+      private: repository.private,
+      default_branch: repository.default_branch,
+      html_url: repository.html_url,
+      repo_updated_at: repository.updated_at.toISOString(),
+    })),
+    page,
+    totalCount: response.total_count,
+    hasNextPage:
+      page * GITHUB_REPOSITORIES_PAGE_SIZE < response.total_count,
+  } satisfies GithubInstallationReposPage;
 });
 
-/**
- * The installation's completed check run `name` on a commit for `externalId`: updated in place when the commit already
- * has that one, else created. Two checks of one name on one commit (two pull requests from one head) stay apart by
- * `externalId`. The caller serializes posts per check, so two never race to create.
- */
-export const postInstallationCheckRun = Effect.fn(
-  "Github.postInstallationCheckRun",
-)(function* (access: GithubAccess, repositoryId: number, input: {
-  headSha: string; name: string; externalId: string; conclusion: "success" | "neutral"; detailsUrl: string; title: string; summary: string;
-}) {
-  if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
-    return yield* githubObservationError({ code: "invalid_argument", operation: "create_check_run", retriable: false });
+export const listGithubRepositoryBranches = Effect.fn(
+  "Github.listGithubRepositoryBranches",
+)(function* (access: GithubAccess, repositoryFullName: string) {
+  const repository = yield* Schema.decodeUnknownEffect(RepositoryFullName)(
+    repositoryFullName,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new GithubObservationError({
+          code: "invalid_argument",
+          operation: "list_branches",
+          retriable: false,
+          message: "GitHub list branches failed.",
+        }),
+    ),
+  );
+  const api = yield* GithubApi;
+  const branches: GithubBranch[] = [];
+  let page = 1;
+  while (true) {
+    const pageBranches = yield* api.json({
+      access,
+      path: `/repos/${repository}/branches?per_page=100&page=${page}`,
+      operation: "list_branches",
+      schema: GithubBranchesResponse,
+    });
+    branches.push(...pageBranches);
+    if (pageBranches.length < 100) break;
+    page += 1;
   }
-  const installationId = yield* (yield* GithubApi).installationOf(access);
-  return yield* (yield* GithubAuthority).postCheck({ installationId, repositoryId, ...input });
+  return branches.sort((left, right) => left.name.localeCompare(right.name));
 });
+
+export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryFiles")(
+  function* (access: GithubAccess, repositoryFullName: string, ref: string) {
+    const api = yield* GithubApi;
+    const repositoryPath = encodeGithubPath(repositoryFullName);
+    const base: `/${string}` = `/repos/${repositoryPath}`;
+    const commit = yield* api.json({
+      access,
+      path: `${base}/commits/${encodeURIComponent(ref)}`,
+      operation: "resolve_file_ref",
+      schema: Schema.Struct({
+        commit: Schema.Struct({ tree: Schema.Struct({ sha: githubExactShaSchema }) }),
+      }),
+    });
+    const tree = yield* api.json({
+      access,
+      path: `${base}/git/trees/${commit.commit.tree.sha}?recursive=1`,
+      operation: "list_files",
+      schema: Schema.Struct({
+        truncated: Schema.Boolean,
+        tree: Schema.Array(Schema.Struct({
+          path: githubRepositoryPathSchema,
+          type: Schema.Literals(["blob", "tree", "commit"]),
+          mode: Schema.String,
+        })),
+      }),
+    });
+    // GitHub bounds recursive trees to 100,000 entries / 7 MB; report partial results.
+    return {
+      paths: tree.tree.filter((entry) => entry.type === "blob" && entry.mode !== "120000")
+        .map((entry) => entry.path),
+      truncated: tree.truncated,
+    };
+  },
+);
+
+/** What GitHub's contents API holds at `path`: a directory's entries, or one file, its base64 `content` absent past 1 MB. */
+export const readGithubRepositoryContents = Effect.fn("Github.readGithubRepositoryContents")(
+  function* (access: GithubAccess, repositoryFullName: string, path: string, ref: string) {
+    const api = yield* GithubApi;
+    const repositoryPath = encodeGithubPath(repositoryFullName);
+    const filePath = encodeGithubPath(path);
+    return yield* api.json({
+      access,
+      path: `/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,
+      operation: "fetch_contents",
+      schema: Schema.Union([
+        Schema.Array(Schema.Struct({ path: Schema.String })),
+        Schema.Struct({
+          type: Schema.String,
+          size: Schema.Number,
+          encoding: Schema.optional(Schema.String),
+          content: Schema.optional(Schema.String),
+        }),
+      ]),
+    });
+  },
+);
 
 export const GithubApiLive = Layer.effect(
   GithubApi,

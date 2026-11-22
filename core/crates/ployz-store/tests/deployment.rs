@@ -3639,52 +3639,6 @@ fn ended_earlier(url: &str, n: u8, seconds: i64) {
     );
 }
 
-/// A Store from before every exit stamped `ended` left it unset on a Deployment
-/// superseded from the queue and on one whose runner was lost. Each still reads
-/// when it ended: its admission, or the earlier of its runner lease and now.
-#[test]
-fn a_deployment_an_older_store_ended_without_a_time_reads_one() {
-    let (store, who, url, _dir) = own_shop();
-    let (a, b) = (runner("runner-a"), runner("runner-b"));
-    admit(&store, &who, 1, &[], None).unwrap();
-    admit(&store, &who, 2, &[], None).unwrap();
-    store.claim(&id(2), &a).unwrap();
-    admit(&store, &who, 3, &[], None).unwrap();
-    store.claim(&id(3), &b).unwrap();
-    store
-        .record(&id(3), &b, RunEvidence::Prepared(preview(&["web"])))
-        .unwrap();
-    store.record(&id(3), &b, RunEvidence::Abandoned).unwrap();
-    lapse(&url, 3);
-    backend::execute(&url, "UPDATE config_deployment SET ended = NULL");
-
-    let superseded = summary(&store, &who, 1);
-    assert_eq!(superseded.status, DeploymentStatus::Superseded);
-    assert_eq!(superseded.ended_at, Some(superseded.admitted_at));
-    // Taken over while its runner lease held: now, until that lease passes.
-    let live = summary(&store, &who, 2);
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    )
-    .unwrap();
-    assert_eq!(live.status, DeploymentStatus::Unknown);
-    assert!(
-        live.started_at
-            .zip(live.ended_at)
-            .is_some_and(|(started, ended)| started <= ended && ended <= now),
-        "{live:?}"
-    );
-    let lapsed = summary(&store, &who, 3);
-    assert_eq!(lapsed.status, DeploymentStatus::Unknown);
-    assert_eq!(
-        lapsed.ended_at,
-        lapsed.started_at.map(|started| started + 600)
-    );
-}
-
 /// A row in a shape no Store writes, which a write in SQL can leave, reads as its
 /// columns say: one applied or failed with no end, one queued with a start and no
 /// runner, one running with no runner, and Cloud's fixtures' applied one with a

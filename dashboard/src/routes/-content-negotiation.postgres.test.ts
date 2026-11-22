@@ -1,13 +1,9 @@
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
-import { afterAll, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { runAsSelfHostedCloud } from "#/test/config-environment";
 
-// Self-hosted (no Polar settings) keeps the remote-agent OAuth setup, which the test database lacks, out of the request.
-const POLAR = ["POLAR_ACCESS_TOKEN", "POLAR_SERVER", "POLAR_WEBHOOK_SECRET", "POLAR_PRODUCT_ID"];
-const saved = POLAR.map((name) => [name, process.env[name]] as const);
-for (const name of POLAR) delete process.env[name];
-afterAll(() => {
-  for (const [name, value] of saved) if (value !== undefined) process.env[name] = value;
-});
+// Self-hosted keeps the remote-agent OAuth setup, which the test database lacks, out of the request.
+runAsSelfHostedCloud();
 
 // Rendered HTML pages are out of reach here: SSR needs the client manifest, which only a vite build or dev server has.
 const app = createStartHandler(defaultStreamHandler);

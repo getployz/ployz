@@ -5,7 +5,6 @@ import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume" | "config";
 
-/** A Service as the Config Store lists it, with what its card shows. */
 export type StoreCanvasService = {
   service: ServiceListing;
   /** How many of its Settings the next Deploy changes. */
@@ -39,7 +38,6 @@ export type CanvasStoreServiceNode = Node<StoreCanvasService & {
   environmentId: string;
 }, "storeService">;
 
-/** A Config Store Volume on the canvas, as the Store lists it. */
 export type CanvasStoreVolumeNode = Node<{
   volume: VolumeListing;
   hang: readonly VolumeCopies[];

@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { findService, serviceVolumes } from "#/modules/config-store/store-lookup.server";
+import { findService } from "#/modules/config-store/store-lookup.server";
 import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { resolveRange } from "#/modules/uptime/uptime-range";
+import { AppConfig } from "#/server/config.server";
+import { resolveRange } from "#/lib/time-range";
 import { hostHistory, markersOnlyHistory, serviceHistory, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
 import { silentSince, stepFor } from "./metrics-series";
-import { latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows, type StoreRange } from "./metrics-store.server";
+import { readCrashEvents, readHostReadings, readServiceReadings, type StoreRange } from "./metrics-store.server";
 import type { HostHistory, MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput, ServiceHistory } from "./metrics";
 
 /** Runs `reading` against this Cloud's ClickHouse, or answers that metrics aren't enabled. */
@@ -28,7 +29,7 @@ const readService = Effect.fn("Metrics.readService")(function* (organizationId: 
     };
   };
   // The verify dashboard has no ClickHouse; production builds drop this branch and the fixture with it.
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.metrics) {
     const { verifyServiceData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, crashes } = verifyServiceData(service, range);
@@ -37,12 +38,8 @@ const readService = Effect.fn("Metrics.readService")(function* (organizationId: 
   return yield* readStore(window, at, (range) => Effect.gen(function* () {
     const crashes = yield* readCrashEvents(organizationId, range, { namespace, service });
     if (markersOnly) return asRead(range, [], crashes, null);
-    const [rows, volumes, latest] = yield* Effect.all([
-      readServiceRows(organizationId, range, namespace, service),
-      serviceVolumes(organizationId, namespace, service).pipe(Effect.flatMap((names) => readVolumeRows(organizationId, range, names))),
-      latestReading(organizationId, { namespace, service }, window.from),
-    ]);
-    return asRead(range, [...rows, ...volumes], crashes, latest);
+    const { rows, latest } = yield* readServiceReadings(organizationId, range, namespace, service);
+    return asRead(range, rows, crashes, latest);
   }));
 });
 
@@ -74,18 +71,14 @@ export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (acto
     if (rows.length === 0 && disk.length === 0 && (latest === null || silent !== undefined)) return { type: "not_reporting", window, at };
     return { type: "history", window, at, history: hostHistory(rows, disk, { ...range, at }), ...(silent !== undefined && { silentSince: silent }) };
   };
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.metrics) {
     const { verifyServerData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, disk, reporting } = verifyServerData(input.machineId, range);
     return asRead(range, rows, disk, reporting ? at : null);
   }
   return yield* readStore(window, at, (range) => Effect.gen(function* () {
-    const [rows, disk, latest] = yield* Effect.all([
-      readHostRows(organization.id, range, input.machineId),
-      readDiskRows(organization.id, range, input.machineId),
-      latestReading(organization.id, { machine: input.machineId }, Math.min(window.from, at - 60_000)),
-    ]);
+    const { rows, disk, latest } = yield* readHostReadings(organization.id, range, input.machineId, at);
     return asRead(range, rows, disk, latest);
   }));
 });

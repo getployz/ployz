@@ -1,9 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull, or } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { renderMail, type MailContent } from "#/modules/mail/layout";
-import { queueMail } from "#/modules/mail/mail.inngest";
+import { unsubscribeLink } from "#/modules/mail/cloud-link";
+import { queueMail } from "#/modules/mail/mail.server";
 import { NOTIFICATION_TYPES, type NotificationType } from "#/modules/notifications/notification-types";
 import { notificationPreference } from "#/modules/notifications/tables";
 import { signUnsubscribeToken } from "#/modules/notifications/unsubscribe-token.server";
@@ -40,7 +42,7 @@ export const queueOrganizationMail = Effect.fn("Notifications.queueOrganizationM
   yield* Effect.forEach(recipients, (recipient) =>
     Effect.gen(function* () {
       const token = signUnsubscribeToken(Redacted.value(config.encryptionSecret), { userId: recipient.userId, type: mail.type });
-      const url = `${origin}/api/mail/unsubscribe?token=${token}`;
+      const url = unsubscribeLink(origin, token);
       const unsubscribe = { label: NOTIFICATION_TYPES[mail.type].unsubscribe, url };
       const rendered = yield* Effect.promise(() => renderMail({ ...mail.content, unsubscribe }, origin));
       const headers = { "List-Unsubscribe": `<${url}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" };

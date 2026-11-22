@@ -1,10 +1,11 @@
 import type { Change, ConfigCommand, DiffView, EnvironmentRef, EnvironmentView, ServiceListing, VolumeListing, VolumeKind } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingText } from "./store-services";
+import { mountPath } from "./setting-paths";
 
 /** Mounts `volume` on `service` at `path`, or detaches it (`null`), which keeps the Volume and its data. */
 export function mountChange(service: string, volume: string, path: string | null): Change {
-  const at = `${service}.mounts.${volume}`;
+  const at = mountPath(service, volume);
   return path === null ? { op: "unset", path: at } : { op: "set", path: at, value: path };
 }
 
@@ -12,7 +13,7 @@ export function mountChange(service: string, volume: string, path: string | null
 export function effectiveVolumes(volumes: readonly VolumeListing[], services: readonly ServiceListing[], view: EnvironmentView): VolumeListing[] {
   return volumes.map((volume) => ({ ...volume, mounts: services.flatMap((service) => {
     if (service.change === "delete" || volume.change === "delete") return [];
-    const row = view.settings.find((setting) => setting.path === `${service.name}.mounts.${volume.name}`);
+    const row = view.settings.find((setting) => setting.path === mountPath(service.name, volume.name));
     const path = row ? settingText(row.value ?? row.default) : volume.mounts.find((mount) => mount.service === service.name)?.path;
     return path ? [{ service: service.name, path }] : [];
   }) }));
@@ -21,7 +22,7 @@ export function effectiveVolumes(volumes: readonly VolumeListing[], services: re
 /** Mounts of `volume` that the next Deploy removes, by Service and deployed path: detached, their data kept. */
 export function detachedMounts(diff: DiffView, volume: string) {
   return diff.changes.flatMap((node) => node.type !== "service" ? [] : node.settings.flatMap((row) =>
-    row.path === `${node.name}.mounts.${volume}` && row.after === null && row.before !== null
+    row.path === mountPath(node.name, volume) && row.after === null && row.before !== null
       ? [{ service: node.name, path: settingText(row.before) }]
       : []));
 }
@@ -37,7 +38,7 @@ export function createVolumeCommand(id: string, environment: EnvironmentRef, nam
   return { command: "create_volume", id, environment, name, storage, mounts: [] };
 }
 
-const GB = 1_000_000_000;
+export const GB = 1_000_000_000;
 
 /** A new Volume's managed limit in GB, as the Store defaults one (`VolumeKind::provisioned_default`). */
 export const DEFAULT_VOLUME_GB = "5";

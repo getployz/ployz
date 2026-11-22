@@ -1,9 +1,17 @@
+/** @data-source remote: each Server's latest Upgrade attempt and when the latest success ended, latest-ofs over history computed on the server; the change stream refetches it when an attempt changes. The stable Release Channel pointer is cached five minutes here and in Cloud: releases are rare */
 import { queryOptions, skipToken, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import type { ChannelPointer } from "./server-upgrade";
 import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn } from "./server-upgrade.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** Each Server's latest attempts; the change stream's `server_upgrade` invalidates this root. */
 export const serverUpgradeKeys = { all: ["server-upgrade"] as const };
+
+export const serverUpgradeChange = defineChange({
+  name: "server_upgrade",
+  sources: ["server_upgrade_attempt"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: serverUpgradeKeys.all }),
+});
 /** The Release Channel pointers: their own root, so an attempt changing doesn't refetch them. */
 const channelReleaseKeys = { all: ["channel-release"] as const };
 

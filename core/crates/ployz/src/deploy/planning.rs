@@ -14,7 +14,7 @@ use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
     EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions, RegionAway,
     ReplacementOperation,
-    schedule::{ServiceGroup, Stage, TaskKind, creates_container},
+    schedule::{GroupRole, ServiceGroup, Stage, TaskKind, creates_container},
 };
 
 mod candidates;
@@ -97,20 +97,26 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    facts: Facts,
+}
+
+/// What the executor reads of the plan's snapshot and removals, never in the preview.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Facts {
     /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
-    machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
+    pub(super) machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
     /// The Services this Deploy takes out wherever they run: each named removal the
     /// snapshot observed, and each Service it prunes.
-    retiring: BTreeSet<QualifiedService>,
+    pub(super) retiring: BTreeSet<QualifiedService>,
     /// Machines whose Containers the plan's snapshot did not list.
-    unobserved_containers: BTreeSet<MachineId>,
+    pub(super) unobserved_containers: BTreeSet<MachineId>,
     /// Machines whose Container listing went unanswered while the entry's path probes
     /// found large packets to them dropped, so a notice can give that cause.
-    dropped_large_packets: BTreeSet<MachineId>,
+    pub(super) dropped_large_packets: BTreeSet<MachineId>,
     /// The removals of copies ended runs left Pending, by operation, with each copy's
     /// Service. Each removes its copy only while it is still Pending or Out, and one
     /// that fails fails nothing else.
-    strays: BTreeMap<usize, ServiceName>,
+    pub(super) strays: BTreeMap<usize, ServiceName>,
 }
 
 impl DeployPlan {
@@ -137,23 +143,11 @@ impl DeployPlan {
     }
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
-        &self.machine_names
+        &self.facts.machine_names
     }
 
-    pub(super) const fn unobserved_containers(&self) -> &BTreeSet<MachineId> {
-        &self.unobserved_containers
-    }
-
-    pub(super) const fn dropped_large_packets(&self) -> &BTreeSet<MachineId> {
-        &self.dropped_large_packets
-    }
-
-    pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
-        &self.retiring
-    }
-
-    pub(super) const fn strays(&self) -> &BTreeMap<usize, ServiceName> {
-        &self.strays
+    pub(super) const fn facts(&self) -> &Facts {
+        &self.facts
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -198,11 +192,7 @@ impl DeployPlan {
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
-            machine_names: BTreeMap::new(),
-            retiring: BTreeSet::new(),
-            unobserved_containers: BTreeSet::new(),
-            dropped_large_packets: BTreeSet::new(),
-            strays: BTreeMap::new(),
+            facts: Facts::default(),
         }
     }
 
@@ -216,20 +206,20 @@ impl DeployPlan {
     /// This Deploy removes `services`, by name or by pruning.
     #[cfg(test)]
     pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {
-        self.retiring = services.iter().cloned().collect();
+        self.facts.retiring = services.iter().cloned().collect();
         self
     }
 
     /// The entry's path probes found large packets to `machines` dropped.
     #[cfg(test)]
     pub(super) fn with_dropped_large_packets(mut self, machines: &[MachineId]) -> Self {
-        self.dropped_large_packets = machines.iter().copied().collect();
+        self.facts.dropped_large_packets = machines.iter().copied().collect();
         self
     }
 
     #[cfg(test)]
     pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
-        self.machine_names = machines
+        self.facts.machine_names = machines
             .iter()
             .map(|id| {
                 let hex = id.to_string().chars().next().expect("a machine id");
@@ -243,7 +233,7 @@ impl DeployPlan {
     /// The plan's snapshot listed no Containers on `machines`, as for a Down Machine.
     #[cfg(test)]
     pub(super) fn with_unobserved(mut self, machines: &[MachineId]) -> Self {
-        self.unobserved_containers.extend(machines);
+        self.facts.unobserved_containers.extend(machines);
         self
     }
 }
@@ -271,35 +261,82 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
             _ => ranges.push((service, prelude, index..index + 1)),
         }
     }
-    let mut previous = None;
+    let mut previous: Option<ServiceName> = None;
     for (service, prelude, range) in ranges {
-        let dependencies = match (&service, prelude) {
-            (None, true) => Vec::new(),
-            (None, false) => groups
-                .iter()
-                .filter_map(|group| group.service.clone())
-                .collect(),
-            (Some(_), _) => previous.iter().cloned().collect(),
-        };
-        groups.extend(service_group(
-            operations,
-            service.clone(),
-            dependencies,
-            range,
-        ));
-        if service.is_some() {
-            previous = service;
+        match (service, prelude) {
+            (None, true) => groups.push(unowned_group(operations, GroupRole::Prelude, range)),
+            (None, false) => {
+                let every_service = groups.iter().filter_map(ServiceGroup::service).cloned();
+                let tail = GroupRole::Tail(every_service.collect());
+                groups.push(unowned_group(operations, tail, range));
+            }
+            (Some(service), _) => {
+                let dependencies = previous.iter().cloned().collect();
+                groups.extend(service_group(
+                    operations,
+                    service.clone(),
+                    dependencies,
+                    range,
+                ));
+                previous = Some(service);
+            }
         }
     }
     groups
 }
 
+/// A Service's group, and after it the group of its rollout's removals, which
+/// run once the Service is published.
 fn service_group(
     operations: &[DeployOperation],
-    service: Option<ServiceName>,
+    service: ServiceName,
     dependencies: Vec<ServiceName>,
     range: std::ops::Range<usize>,
 ) -> Vec<ServiceGroup> {
+    let publish = operations
+        .get(range.clone())
+        .expect("group ranges index this plan's operations")
+        .iter()
+        .any(|operation| creates_container(operation) || rollout_removal(operation));
+    let (steps, removals) = stages(operations, range, publish);
+    let mut groups = vec![ServiceGroup {
+        role: GroupRole::Service {
+            service: service.clone(),
+            dependencies,
+            publish,
+        },
+        steps,
+    }];
+    if !removals.is_empty() {
+        groups.push(ServiceGroup {
+            role: GroupRole::Removals(service),
+            steps: removals,
+        });
+    }
+    groups
+}
+
+/// A group of operations no Service owns, such as Volume work.
+fn unowned_group(
+    operations: &[DeployOperation],
+    role: GroupRole,
+    range: std::ops::Range<usize>,
+) -> ServiceGroup {
+    let (steps, _) = stages(operations, range, false);
+    ServiceGroup { role, steps }
+}
+
+fn rollout_removal(operation: &DeployOperation) -> bool {
+    TaskKind::of(operation) == TaskKind::Unroute
+}
+
+/// The steps of the operations in `range`, and apart from them, when
+/// `split_removals`, the rollout removals that wait for the Service's flip.
+fn stages(
+    operations: &[DeployOperation],
+    range: std::ops::Range<usize>,
+    split_removals: bool,
+) -> (Vec<Stage>, Vec<Stage>) {
     let indexed = || {
         operations
             .iter()
@@ -307,11 +344,6 @@ fn service_group(
             .take(range.end)
             .skip(range.start)
     };
-    let rollout_removal =
-        |operation: &DeployOperation| TaskKind::of(operation) == TaskKind::Unroute;
-    let publish = service.is_some()
-        && indexed()
-            .any(|(_, operation)| creates_container(operation) || rollout_removal(operation));
     let rolling = indexed().any(|(_, operation)| {
         operation
             .spec()
@@ -345,7 +377,7 @@ fn service_group(
     };
     let mut removals = Vec::new();
     for (index, operation) in indexed() {
-        if publish && rollout_removal(operation) {
+        if split_removals && rollout_removal(operation) {
             removals.push(Stage::Serial(index));
         } else if creates_container(operation) {
             starts.push(index);
@@ -355,21 +387,7 @@ fn service_group(
         }
     }
     flush(&mut steps, &mut starts);
-    let mut groups = vec![ServiceGroup {
-        service: service.clone(),
-        dependencies,
-        steps,
-        publish,
-    }];
-    if !removals.is_empty() {
-        groups.push(ServiceGroup {
-            service: None,
-            dependencies: service.into_iter().collect(),
-            steps: removals,
-            publish: false,
-        });
-    }
-    groups
+    (steps, removals)
 }
 
 impl std::ops::Deref for DeployPlan {
@@ -417,21 +435,25 @@ pub(super) fn prepare_namespace_removal(
         // Volume removal joins the tail so it runs after every stop, one at a time.
         let range = first..planned.operations.len();
         match planned.groups.last_mut() {
-            Some(tail) if tail.service.is_none() && !range.is_empty() => {
+            Some(
+                tail @ ServiceGroup {
+                    role: GroupRole::Tail(_),
+                    ..
+                },
+            ) if !range.is_empty() => {
                 tail.steps.extend(range.map(Stage::Serial));
             }
             _ if !range.is_empty() => {
                 let every_service = planned
                     .groups
                     .iter()
-                    .filter_map(|group| group.service.clone())
+                    .filter_map(ServiceGroup::service)
+                    .cloned()
                     .collect();
-                planned.groups.extend(service_group(
-                    &planned.operations,
-                    None,
-                    every_service,
-                    range,
-                ));
+                let tail = GroupRole::Tail(every_service);
+                planned
+                    .groups
+                    .push(unowned_group(&planned.operations, tail, range));
             }
             _ => {}
         }
@@ -615,7 +637,7 @@ fn placed_on(
     planned
         .groups
         .iter()
-        .filter_map(|group| group.service.as_ref())
+        .filter_map(ServiceGroup::service)
         .map(|service| {
             let kept = observed
                 .iter()
@@ -678,8 +700,8 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
-        depths: super::report::depths(&planned.groups),
-        dependencies: super::report::dependencies(&planned.groups),
+        depths: super::schedule::depths(&planned.groups),
+        dependencies: super::schedule::dependencies(&planned.groups),
         placed_on,
         blocked: planned.blocked,
         waiting: planned.waiting,
@@ -689,15 +711,17 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         groups: planned.groups,
         preview,
         registry_auth: std::collections::BTreeMap::new(),
-        machine_names: super::progress::machine_names(snapshot),
-        retiring: planned.retiring.into_iter().collect(),
-        unobserved_containers: snapshot.listing_gaps().map(|gap| gap.machine).collect(),
-        dropped_large_packets: snapshot
-            .listing_gaps()
-            .filter(|gap| gap.large_packets)
-            .map(|gap| gap.machine)
-            .collect(),
-        strays: planned.strays,
+        facts: Facts {
+            machine_names: super::progress::machine_names(snapshot),
+            retiring: planned.retiring.into_iter().collect(),
+            unobserved_containers: snapshot.listing_gaps().map(|gap| gap.machine).collect(),
+            dropped_large_packets: snapshot
+                .listing_gaps()
+                .filter(|gap| gap.large_packets)
+                .map(|gap| gap.machine)
+                .collect(),
+            strays: planned.strays,
+        },
     }
 }
 
@@ -733,10 +757,8 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
     planned.groups.insert(
         0,
         ServiceGroup {
-            service: None,
-            dependencies: Vec::new(),
+            role: GroupRole::Prelude,
             steps: vec![Stage::Parallel((first..planned.operations.len()).collect())],
-            publish: false,
         },
     );
     Ok(planned)
@@ -1255,7 +1277,7 @@ fn assemble_plan(
     operations.extend(removals);
     let mut groups = Vec::new();
     if prelude > 0 {
-        groups.extend(service_group(&operations, None, Vec::new(), 0..prelude));
+        groups.push(unowned_group(&operations, GroupRole::Prelude, 0..prelude));
     }
     let dependencies = intent.dependencies();
     for (name, range) in ranges {
@@ -1273,18 +1295,18 @@ fn assemble_plan(
                 dependencies.push(handover.to.clone());
             }
         }
-        groups.extend(service_group(&operations, Some(name), dependencies, range));
+        groups.extend(service_group(&operations, name, dependencies, range));
     }
     if !tail.is_empty() {
         groups.push(ServiceGroup {
-            service: None,
-            dependencies: requested
-                .iter()
-                .map(|spec| spec.name.clone())
-                .filter(|name| !blocked.iter().any(|entry| entry.service == *name))
-                .collect(),
+            role: GroupRole::Tail(
+                requested
+                    .iter()
+                    .map(|spec| spec.name.clone())
+                    .filter(|name| !blocked.iter().any(|entry| entry.service == *name))
+                    .collect(),
+            ),
             steps: tail,
-            publish: false,
         });
     }
     Ok(Planned {

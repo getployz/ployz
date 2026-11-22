@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { type EnrollCandidate, type EnrollPlan, planServerEnrollment } from "#/modules/machines/waiting/enroll.server";
-import { type EnrollInput, type EnrollStorage, isReadyFor } from "#/modules/machines/waiting/server-enrollment";
+import { type EnrollInput, isReadyFor } from "#/modules/machines/waiting/server-enrollment";
+import { type EnrollStorage } from "#/modules/machines/waiting/enrollment-states";
 
 const report: StoredReport = {
   hostname: "web-a",

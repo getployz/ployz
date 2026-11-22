@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { INSTALL_ORIGIN } from "#/modules/machines/installer";
 import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
@@ -7,8 +8,8 @@ import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { type ServerUpgradeRequestedEventData, createCliServerUpgradeRequestedEvent, serverUpgradeRequested } from "#/modules/server-upgrade/server-upgrade.events";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
@@ -20,7 +21,7 @@ import {
   type FinalOutcome,
   isBehind,
   type LatestUpgrade,
-  outlivedObservation,
+  attemptState,
   type ReleaseChannel,
   releaseFromPointer,
   releaseLine,
@@ -31,12 +32,10 @@ import {
   type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { SERVERS_UNANSWERED_MESSAGE, type StoreRefusal } from "#/lib/refusal";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
-/** The daemon reads its Release Channel pointers here by default (core `RELEASE_CHANNEL_URL`). */
-const CHANNEL_URL = "https://ployz.sh";
 const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
 const pointers = new Map<string, { readonly release: string | null; readonly readAt: number }>();
@@ -69,7 +68,7 @@ export const channelRelease = Effect.fn("ServerUpgrade.channelRelease")(function
   if (cached !== undefined && Date.now() - cached.readAt < POINTER_CACHE_MS) return cached.release;
   const release = yield* Effect.tryPromise({
     try: async (signal) => {
-      const response = await fetch(`${CHANNEL_URL}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+      const response = await fetch(`${INSTALL_ORIGIN}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return releaseFromPointer(await response.text());
@@ -159,7 +158,7 @@ export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function*
   input: RequestServerUpgradeInput,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
-  yield* sendInngestEvent(createServerUpgradeRequestedEvent({
+  yield* sendInngestEvent(serverUpgradeRequested.create({
     organizationId: organization.id,
     machineId: input.machineId,
     trigger: "manual",
@@ -348,7 +347,7 @@ export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (in
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
-  if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return { kind: "expired" } as const;
+  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, Date.now()) !== "running") return { kind: "expired" } as const;
   const attempt = yield* resendUpgradeOnServer(input);
   return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
@@ -530,7 +529,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   // The switch sends `automatic` only when it flips; an extra Rollout queues behind the Organization's one and finds
   // nothing behind, and without a founded Cluster `listServersBehind` returns [].
   if (settings.automatic === true) {
-    yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
+    yield* sendInngestEvent(serverUpgradeRequested.create({ organizationId, machineId: null, trigger: "automatic", userId: null }));
   }
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
   return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
@@ -559,7 +558,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     } as const satisfies { ok: false; refusal: StoreRefusal };
   }
   const { drizzle } = yield* Database;
-  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, startedAt: serverUpgradeAttempt.startedAt })
+  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt })
     .from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.organizationId, caller.organizationId),
@@ -568,13 +567,13 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     ))
     .orderBy(desc(serverUpgradeAttempt.startedAt))
     .limit(1);
-  if (running !== undefined && !outlivedObservation(running.startedAt, Date.now())) {
+  if (running !== undefined && attemptState(running, Date.now()) === "running") {
     return () => Effect.succeed({ ok: true, id: running.attemptId } as const);
   }
   const unavailable = (message: string) =>
     ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
   const observed = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
-  if (observed._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
+  if (observed._tag === "None") return unavailable(SERVERS_UNANSWERED_MESSAGE);
   if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
   const { version: from, name } = observed.value;
   return (attempt: string) => Effect.gen(function* () {
@@ -603,11 +602,11 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
       message: "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade.",
     } as const;
   }
-  const outlived = row.outcome === "running" && outlivedObservation(row.startedAt, Date.now());
-  if (row.outcome === "running" && !outlived) return { state: "running" } as const;
+  const outcome = attemptState(row, Date.now());
+  if (outcome === "running") return { state: "running" } as const;
   return {
     state: "finished",
-    outcome: outlived ? "unknown" : row.outcome,
+    outcome,
     from_version: row.fromVersion,
     target_version: row.targetVersion,
     message: row.error ?? row.stage,

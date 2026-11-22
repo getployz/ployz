@@ -18,11 +18,9 @@ use crate::domain;
 use crate::error;
 use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
-use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::trusted::Evidence;
 use crate::{Actor, Approval, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
@@ -476,29 +474,18 @@ fn deploy(
         ));
     }
     let prunes = admit.services.is_empty() && !admit.no_prune;
-    let review = review::review(tx, &environment)?;
     let shipping = review::Shipping::Deploy {
         services: &admit.services,
         upload: admit.upload.as_ref().map(|upload| &upload.digest),
     };
-    if let Err(stale) = review::check(&review, admit.version.as_deref()) {
-        let target = canonicalize_environment_intent(environment.working.clone());
-        let probe =
-            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
-                review::destructive(
-                    tx,
-                    who,
-                    &review,
-                    (&target, &namespace, shipping),
-                    (None, &[], review::consent(review.saved.as_ref())),
-                    trusted.volumes.as_ref(),
-                )
-            });
-        return Err(review::with_loss(stale, probe));
-    }
+    let (review, _) = review::publish::review_for_save(
+        tx,
+        who,
+        &environment,
+        (shipping, admit.version.as_deref()),
+        trusted,
+    )?;
     let id = &environment.summary.id;
-    // A manual Deploy ends the draft's proposals: what they brought is its own now.
-    crate::branch::end_included(tx, id, None)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(
@@ -535,25 +522,6 @@ fn deploy(
         }),
         Shipping::Working,
     )?;
-    let losses = review::destructive(
-        tx,
-        who,
-        &review,
-        (&saved_intent, &namespace, shipping),
-        (
-            admit.version.as_deref(),
-            &admit.accept_volume_loss,
-            review::consent(review.saved.as_ref()),
-        ),
-        trusted.volumes.as_ref(),
-    )?;
-    review::guard_saving(
-        tx,
-        Evidence::Caller(trusted),
-        id,
-        review.saved.as_ref(),
-        &saved_intent,
-    )?;
     let pruning = match prunes {
         // What this Store holds, deploying or dropping, isn't the prune's.
         true => review::Pruning::of(
@@ -567,19 +535,24 @@ fn deploy(
         ),
         false => review::Pruning::Off,
     };
-    pruning.admit(trusted, None)?;
-    let gate = review::Gate::new(tx, id, trusted)?;
-    review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
-    let (saved, _) = review::publish(
+    let (saved, _, losses) = review::publish::save(
         tx,
-        Evidence::Caller(trusted),
         who,
-        id,
-        environment.working.clone(),
-        review.saved.as_ref(),
-        (admit.message.as_deref(), &losses),
+        &review::publish::Save {
+            environment: &environment,
+            review: &review,
+            target: &saved_intent,
+            namespace: &namespace,
+            shipping,
+            pruning: &pruning,
+            version: admit.version.as_deref(),
+            accept_volume_loss: &admit.accept_volume_loss,
+            message: admit.message.as_deref(),
+            unchanged: review::publish::UnchangedSave::KeepsConsent,
+        },
+        trusted,
     )?;
-    let mut frozen = match narrowed {
+    let frozen = match narrowed {
         Some(frozen) => frozen,
         None => {
             let retire = deployment::dropped(tx, id, &saved_intent, &landing)?;
@@ -598,7 +571,6 @@ fn deploy(
             )?
         }
     };
-    frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
         uploader: who.principal.clone(),
@@ -616,7 +588,7 @@ fn deploy(
             upload,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         saved,
         &frozen,
     )?;
@@ -701,9 +673,7 @@ fn reapply(
     }
     let services = running
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
+        .map(|service| crate::scope::service_name(service))
         .collect::<Result<Vec<_>, _>>()?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let cluster_domain = trusted
@@ -711,7 +681,7 @@ fn reapply(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    let Some((revision, saved, mut frozen)) = unchanged(
+    let Some((revision, saved, frozen)) = unchanged(
         tx,
         who,
         (id, &running),
@@ -755,8 +725,6 @@ fn reapply(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    refuse_shared_writes(&environment, (&shipping, |_: &_| true), Shipping::Saved)?;
-    frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
     let summary = deployment::admit(
         tx,
         who,
@@ -766,7 +734,7 @@ fn reapply(
             None,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         revision,
         &frozen,
     )?;

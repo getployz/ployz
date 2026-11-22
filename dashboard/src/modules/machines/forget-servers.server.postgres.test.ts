@@ -9,10 +9,11 @@ import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { createDeployToFirstServer } from "#/modules/config-store/store-deployment.inngest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
-import { createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {
@@ -22,7 +23,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
@@ -178,7 +179,7 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
     const joined = yield* Effect.promise(() => new InngestTestEngine({
       function: createDeployToFirstServer(new Inngest({ id: "forget-servers-test" }), runner),
-      events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION, machineId: "1".repeat(32) })],
+      events: [configFirstServerJoined.create({ organizationId: ORGANIZATION, machineId: "1".repeat(32) })],
     }).execute());
     expect(joined.result).toEqual([{ environment: "shop/production", admitted: true }]);
   }).pipe(Effect.provide(services));

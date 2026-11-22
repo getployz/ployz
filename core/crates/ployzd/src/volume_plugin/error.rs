@@ -25,14 +25,14 @@ pub(super) enum PluginError {
     /// A Container that mounts the name expects other data, so no fresh root goes under it.
     #[error(
         "Volume {name} {}, so no new data is made under its name until that Container is removed",
-        ployzd::volume_copy::HELD_FOR_OTHER_DATA
+        crate::volume_copy::HELD_FOR_OTHER_DATA
     )]
     HeldForOtherData { name: String },
     /// Docker did not list the Containers that mount the name, so no fresh root goes under
     /// it yet.
     #[error(
         "{}, so no new data is made under Volume {name} until it does: {cause}",
-        ployzd::volume_copy::DOCKER_NOT_ANSWERING
+        crate::volume_copy::DOCKER_NOT_ANSWERING
     )]
     HoldersUnlisted { name: String, cause: String },
     /// A dataset carries an origin this Machine did not stamp, or one it cannot read.
@@ -50,8 +50,8 @@ impl From<String> for PluginError {
     }
 }
 
-impl From<ployzd::dataset_layout::InvalidVolumeName> for PluginError {
-    fn from(error: ployzd::dataset_layout::InvalidVolumeName) -> Self {
+impl From<crate::dataset_layout::InvalidVolumeName> for PluginError {
+    fn from(error: crate::dataset_layout::InvalidVolumeName) -> Self {
         Self::Message(error.to_string())
     }
 }
@@ -59,6 +59,22 @@ impl From<ployzd::dataset_layout::InvalidVolumeName> for PluginError {
 impl From<&str> for PluginError {
     fn from(message: &str) -> Self {
         Self::Message(message.to_owned())
+    }
+}
+
+/// A capacity refusal answers with its own code, and every other refusal as internal.
+impl From<PluginError> for ployz_core::RpcError {
+    fn from(error: PluginError) -> Self {
+        match error.into_capacity() {
+            Ok(error) => error.into_rpc_error(),
+            Err(error) => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<crate::dataset_layout::InvalidVolumeName> for ployz_core::RpcError {
+    fn from(error: crate::dataset_layout::InvalidVolumeName) -> Self {
+        PluginError::from(error).into()
     }
 }
 

@@ -1,17 +1,17 @@
 ---
 name: verify-sign-in-store
-description: Model-check this device's Cloud sign-in file, cloud.json, against two `ployz login` processes, another Cloud command's `signed_in`, `ployz logout` and the browser approving, denying or letting a code lapse, each stepping between any two of the others' reads and writes, with the Stateright model in core/crates/ployz-verify/src/sign_in_store.rs. Use when a change touches core/crates/ployz/src/cloud_login.rs (CredentialStore's load, replaceable, save, clear and set_organization; signed_in, start, wait, logout, request_code, poll_once, poll, finish, session, forget) or core/crates/ployz/src/cloud_login/wire.rs (DeviceTokenError), core/crates/ployz/src/handlers/login.rs (login and logout), the callers of signed_in in core/crates/ployz/src/cloud_account/credential.rs (credential) and core/crates/ployz/src/handlers/mcp.rs, or the device authorization wiring in dashboard/src/server/auth.server.ts.
+description: Model-check this device's Cloud sign-in file, cloud.json, against two `ployz login` processes, another Cloud command's `signed_in`, `ployz logout` and the browser approving, denying or letting a code lapse, each stepping between any two of the others' reads and writes, with the Stateright model in core/crates/ployz-verify/src/sign_in_store.rs. Use when a change touches core/crates/ployz/src/cloud/login.rs (CredentialStore's load, replaceable, save, clear and set_organization; signed_in, start, wait, logout, request_code, poll_once, poll, finish, session, forget) or core/crates/ployz/src/cloud/login/wire.rs (DeviceTokenError), core/crates/ployz/src/handlers/login.rs (login and logout), the callers of signed_in in core/crates/ployz/src/cloud/account/credential.rs (credential) and core/crates/ployz/src/handlers/mcp.rs, or the device authorization wiring in dashboard/src/modules/identity/auth.server.ts.
 ---
 
 # Verify the Cloud sign-in store
 
-The model in `core/crates/ployz-verify/src/sign_in_store.rs` explores every interleaving of the processes that read and write `cloud.json`, this device's Signed-in Device (`dashboard/CONTEXT.md:121-123`) or the code it waits on. A bare `:n` below is a line of the file named just before it in the same parentheses, and otherwise of `core/crates/ployz/src/cloud_login.rs`. Every other path is written in full from the repo root, except the better-auth paths, which are inside its npm package (Cloud's side).
+The model in `core/crates/ployz-verify/src/sign_in_store.rs` explores every interleaving of the processes that read and write `cloud.json`, this device's Signed-in Device (`dashboard/CONTEXT.md:121-123`) or the code it waits on. A bare `:n` below is a line of the file named just before it in the same parentheses, and otherwise of `core/crates/ployz/src/cloud/login.rs`. Every other path is written in full from the repo root, except the better-auth paths, which are inside its npm package (Cloud's side).
 
 ## What the model copies
 
 **The processes.** Each one is its own `ployz` process, so one can step between any two of another's file operations. No lock covers them.
 - **Two `ployz login` processes**, slots Login A and Login B. Without `--json`, `ployz login` waits (`core/crates/ployz/src/handlers/login.rs:82`). It runs `start` (`:360-397`), called at `core/crates/ployz/src/handlers/login.rs:84`, then `wait` (`:404-420`), called at `core/crates/ployz/src/handlers/login.rs:98`.
-- **One other Cloud command**, slot Command. With no pasted token, `credential` in `core/crates/ployz/src/cloud_account/credential.rs` calls `signed_in`; `decider` in `core/crates/ployz/src/handlers/mcp.rs` calls it too. `signed_in` (`:332-343`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:338`), which can finish or forget it.
+- **One other Cloud command**, slot Command. With no pasted token, `credential` in `core/crates/ployz/src/cloud/account/credential.rs` calls `signed_in`; `decider` in `core/crates/ployz/src/handlers/mcp.rs` calls it too. `signed_in` (`:332-343`) loads the file, returns a SignedIn, and polls a Pending once with `poll_once` (`:338`), which can finish or forget it.
 - **One `ployz logout`**, slot Logout (`:443-493`).
 - **The browser**, a signed-in member at `/device`, approves or denies a code. **The clock** lets a code lapse.
 
@@ -24,7 +24,7 @@ Each process runs once and ends. Running the same command again is a new process
 | `request_code`'s save of a Pending | `:527` | `start`'s fall-through (`:396`) and its resume branch on Denied or Expired (`:388-390`) | `Pc::Requesting`, one step with its POST |
 | `start`'s refresh of a stored SignedIn | `:377` | `start`, after get-session honours the token (`:370-379`) | `Pc::Refreshing` |
 | `finish`'s save of a SignedIn | `:598` | `wait` (`:413`), and `poll_once` (`:535-546`) from `start`'s resume branch (`:382`) and from `signed_in` (`:338`) | `Pc::Finishing` |
-| `set_organization`'s save of a SignedIn | `:304` | `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud_account/org.rs`) | left out (Bounds) |
+| `set_organization`'s save of a SignedIn | `:304` | `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud/account/org.rs`) | left out (Bounds) |
 | `logout`'s `clear` of no or an unreadable file | `:445-447` | `logout` | `Pc::Clearing(File::Absent)` and `Pc::Clearing(File::Unreadable)` |
 | `logout`'s `clear` after a Pending or a SignedIn | `:491` | `logout` | `Pc::Clearing` |
 | `forget`'s `clear` | `:632-635` | `wait` on Denied or Expired (`:416-417`), `poll_once` on either (`:543-544`) | `Pc::Forgetting` |
@@ -33,7 +33,7 @@ Each process runs once and ends. Running the same command again is a new process
 
 **The reads.** `load` (`:236-249`) returns `Ok(None)` for no file and `Corrupt` for a file that is not a `Stored`. `replaceable` (`:260-265`) reads Corrupt as none. `start` and `logout` read through `replaceable`, and `signed_in` through `load`, so a Command fails on an unreadable file (`:333`) where a login starts over. `stored_sign_in` (`:251-257`), `organization` (`:309-314`) and `cloud` (`:317-322`) read through `load` too, and never write or poll: `stored_sign_in` names the credential a `ployz mcp` call reports to Cloud (`credential` in `core/crates/ployz/src/agent_call/cli.rs`). The model leaves them out, since a read that writes nothing changes no file.
 
-**Cloud's side.** Cloud answers the device-code flow with better-auth's device authorization plugin. The dashboard wires it at `dashboard/src/server/auth.server.ts:301-311`, setting only `verificationUri` and `validateClient` (`dashboard/src/server/auth.server.ts:302-305`), so better-auth's defaults hold: a code expires in 30 minutes and the poll interval is 5 s. Beside it, `deviceGrantSigned` (`dashboard/src/server/auth.server.ts:285-297`) rewrites only a granted token reply, into the signed session token that `bearer({ requireSignature: true })` takes (`dashboard/src/server/auth.server.ts:309`). It passes every error answer through as better-auth sent it, so the answers below hold. The plugin is the npm package `better-auth@1.7.16`, pinned at `dashboard/pnpm-lock.yaml:4577`. To read its lines, fetch it into an empty directory and open `package/dist`:
+**Cloud's side.** Cloud answers the device-code flow with better-auth's device authorization plugin. The dashboard wires it at `dashboard/src/modules/identity/auth.server.ts:301-311`, setting only `verificationUri` and `validateClient` (`dashboard/src/modules/identity/auth.server.ts:302-305`), so better-auth's defaults hold: a code expires in 30 minutes and the poll interval is 5 s. Beside it, `deviceGrantSigned` (`dashboard/src/modules/identity/auth.server.ts:285-297`) rewrites only a granted token reply, into the signed session token that `bearer({ requireSignature: true })` takes (`dashboard/src/modules/identity/auth.server.ts:309`). It passes every error answer through as better-auth sent it, so the answers below hold. The plugin is the npm package `better-auth@1.7.16`, pinned at `dashboard/pnpm-lock.yaml:4577`. To read its lines, fetch it into an empty directory and open `package/dist`:
 
 ```
 mkdir /tmp/better-auth && cd /tmp/better-auth && npm pack better-auth@1.7.16 && tar xzf better-auth-1.7.16.tgz
@@ -49,9 +49,9 @@ Inside that package:
   - `:334-345` deletes a denied row and answers `access_denied`;
   - `:357` consumes an approved row (`consumeOne`), and `:371-372` answers `invalid_grant` if another request consumed it first;
   - `:456` opens a session for the token (`createSession`).
-- `better-auth@1.7.16/dist/db/internal-adapter.mjs:23` gives a session 604800 s, 7 days, unless `session.expiresIn` is set. The dashboard's `session` option sets only `additionalFields` (`dashboard/src/server/auth.server.ts:392-394`).
+- `better-auth@1.7.16/dist/db/internal-adapter.mjs:23` gives a session 604800 s, 7 days, unless `session.expiresIn` is set. The dashboard's `session` option sets only `additionalFields` (`dashboard/src/modules/identity/auth.server.ts:392-394`).
 
-So the first token request for an approved code spends it, and every later request finds no row and gets `invalid_grant`. `dashboard/src/server/auth.server.postgres.test.ts:266-267` pins that answer. `poll` reads `invalid_grant` and `expired_token` alike as Expired (`:570-579`): `DeviceTokenError::from_wire` maps both to `Expired` (`core/crates/ployz/src/cloud_login/wire.rs:42`, the comment at `core/crates/ployz/src/cloud_login/wire.rs:33`), and `poll` answers that `Poll::Expired` (`:575`).
+So the first token request for an approved code spends it, and every later request finds no row and gets `invalid_grant`. `dashboard/src/modules/identity/auth.server.postgres.test.ts:266-267` pins that answer. `poll` reads `invalid_grant` and `expired_token` alike as Expired (`:570-579`): `DeviceTokenError::from_wire` maps both to `Expired` (`core/crates/ployz/src/cloud/login/wire.rs:42`, the comment at `core/crates/ployz/src/cloud/login/wire.rs:33`), and `poll` answers that `Poll::Expired` (`:575`).
 
 The model keeps the cases apart in `Grant` and `Answer`:
 - **Spent** (`Grant::Spent`, `Answer::Spent`): the code was approved and another poll took its token. This is the finding's case.
@@ -77,7 +77,7 @@ The same broken state has four more routes, each with its own test:
 - **Terminal B** prints the same code with no browser opened, since it resumed (`core/crates/ployz/src/handlers/login.rs:109-110`). It then fails with "the sign-in code expired before it was approved" (`:69`), with `next: ployz login` (`impl From<LoginError> for Failure` in `core/crates/ployz/src/failure.rs`).
 - **The next Cloud command** with no `cloud.json` and no pasted token gets `SignedOut`, "Not signed in to Cloud." (`:67`, `:334`), with `next: ployz login` (`impl From<LoginError> for Failure` in `core/crates/ployz/src/failure.rs`).
 - **Cloud still holds the winner's session.** The token's `createSession` (`better-auth@1.7.16/dist/plugins/device-authorization/routes.mjs:456`) opened it, and no step ended it. The token was only in the file the loser removed. `ployz logout` then finds no file, clears nothing and prints "Not signed in." (`:444-447`, `core/crates/ployz/src/handlers/login.rs:155`), so it cannot revoke the session. The session ends in one of two ways:
-  - **It lapses 7 days after it opened**, since nobody holds the token to use it (`better-auth@1.7.16/dist/db/internal-adapter.mjs:23`, `dashboard/src/server/auth.server.ts:426-428`).
+  - **It lapses 7 days after it opened**, since nobody holds the token to use it (`better-auth@1.7.16/dist/db/internal-adapter.mjs:23`, `dashboard/src/modules/identity/auth.server.ts:426-428`).
   - **`ployz token rm <id>` from a new sign-in**, the same computer's included. `ployz token ls` lists the caller's unexpired device sessions (`dashboard/src/modules/identity/organization-token.server.ts:137-145`). Every device is named "ployz login <date>", so an orphan is told apart from the current device only by its expiry and the `current` mark.
 
   The web offers no way to end it. Account → Sessions lists it with a CLI badge but no Sign out (`dashboard/src/routes/_protected/cloud/$organizationSlug/_org/-components/account-sections.tsx:113`), under "CLI devices sign out with `ployz logout`" (`dashboard/src/routes/_protected/cloud/$organizationSlug/_org/-components/account-sections.tsx:99`), and `revokeAccountSession` skips CLI sessions (`dashboard/src/modules/account/account.server.ts:57`). Organization → Tokens renders only tokens, no devices (`dashboard/src/routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings.tsx:27`, `:38-46`).
@@ -156,7 +156,7 @@ These are the last two rows of `current_code_lets_a_losing_waiter_forget_an_appr
 
 The same test then prints a second story, rows 0 to 8, the start and eight steps: the checker's own first path to that end state, in which B requests c0 and A resumes it.
 
-Each row is one step, named for who takes it: Login A, Login B, Login C (with three logins), Command, Logout, Browser or Clock. A bare `:n` in a row is a line of `core/crates/ployz/src/cloud_login.rs`. The line under it is the state after the step:
+Each row is one step, named for who takes it: Login A, Login B, Login C (with three logins), Command, Logout, Browser or Clock. A bare `:n` in a row is a line of `core/crates/ployz/src/cloud/login.rs`. The line under it is the state after the step:
 - `cloud.json` is what the file holds: none, unreadable, `Pending(cN)` or `SignedIn(cN)`. A SignedIn's code names the token it was exchanged for.
 - `Cloud` lists each minted code and its `Grant`.
 - Each process's `Pc` is its next step. `Requesting { expect }` is the file the fix's save must still find, and `None` on the code as it is.
@@ -289,9 +289,9 @@ The other processes can step between any two of a process's file operations. Eac
 - **`logout`'s read and its POST to `/api/cli/logout`** (`:444`, `:456-461`) are one step, and its `clear` (`:491`) is another. The POST ends only the session of the token logout read, and every other process reads that session only through a get-session; a read between the two orders the same way before the logout's step.
 
 Left out:
-- **`set_organization`** (`:295-306`) saves the SignedIn its caller got from `signed_in` moments before, with a new Organization (`:304`), for `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud_account/org.rs`). It always leaves a SignedIn, so it cannot remove one. But it is a stale write: it can put an older SignedIn over a newer one, or over a Pending a login just saved, which the model does not explore.
+- **`set_organization`** (`:295-306`) saves the SignedIn its caller got from `signed_in` moments before, with a new Organization (`:304`), for `ployz org use` and `ployz org new` (`use_organization` and `new_organization` in `core/crates/ployz/src/cloud/account/org.rs`). It always leaves a SignedIn, so it cannot remove one. But it is a stale write: it can put an older SignedIn over a newer one, or over a Pending a login just saved, which the model does not explore.
 - `OtherCloud` (`:364-369`), and a Pending of another Cloud, which `start` treats as no file (`:394`). The model has one Cloud.
-- A pasted token, with which `credential` never reads the file (`credential` in `core/crates/ployz/src/cloud_account/credential.rs`).
+- A pasted token, with which `credential` never reads the file (`credential` in `core/crates/ployz/src/cloud/account/credential.rs`).
 - `ployz login --json` without `--wait`, which returns after `start` (`core/crates/ployz/src/handlers/login.rs:88-96`). It is a login that never takes its wait step, which the model reaches.
 - `logout`'s unreachable, 401 and 403 replies (`:462-477`). Each still clears the file (`:491`); the model's logout always ends a SignedIn's session.
 - Errors: `finish`'s get-session failing, or answering 401, which `finish` returns as Ended (`:589-591`, `:614-615`), Io from `save` or `clear`, and a reply `poll` cannot read (`:576-578`).
@@ -300,7 +300,7 @@ Left out:
 A green model says nothing about them. Cover the code ones with:
 
 ```
-cd core && cargo nextest run -p ployz cloud_login
+cd core && cargo nextest run -p ployz cloud::login
 ```
 
 Expected: `11 tests run: 11 passed`.
@@ -328,13 +328,13 @@ When a change alters how a process reads or writes `cloud.json`, or how Cloud an
 
 Each model step is a copy of code at the sync commit. Reread these when a diff touches them:
 
-- `core/crates/ployz/src/cloud_login.rs`: `CredentialStore`'s `load`, `stored_sign_in`, `replaceable`, `save`, `clear` and `set_organization`; `signed_in`, `start`, `wait`, `logout`, `request_code`, `poll_once`, `poll`, `finish`, `session` and `forget`; and `LoginError`'s messages.
+- `core/crates/ployz/src/cloud/login.rs`: `CredentialStore`'s `load`, `stored_sign_in`, `replaceable`, `save`, `clear` and `set_organization`; `signed_in`, `start`, `wait`, `logout`, `request_code`, `poll_once`, `poll`, `finish`, `session` and `forget`; and `LoginError`'s messages.
 - `core/crates/ployz/src/handlers/login.rs`: `login`, `announce`, `report` and `logout`.
-- `core/crates/ployz/src/cloud_account/credential.rs`: `credential`; and `core/crates/ployz/src/cloud_account/org.rs`: the `set_organization` callers, `use_organization` and `new_organization`.
+- `core/crates/ployz/src/cloud/account/credential.rs`: `credential`; and `core/crates/ployz/src/cloud/account/org.rs`: the `set_organization` callers, `use_organization` and `new_organization`.
 - `core/crates/ployz/src/handlers/mcp.rs`: its `signed_in` call.
 - `core/crates/ployz/src/failure.rs`: `impl From<LoginError> for Failure`, which sets the `next` for `SignedOut`, `Expired`, `Denied` and `Ended`.
-- `core/crates/ployz/src/cloud_login/wire.rs`: `DeviceTokenError::from_wire`, which names the token poll's answers.
-- `dashboard/src/server/auth.server.ts`: `cliSignInPlugins`, its `deviceAuthorization` options and `deviceGrantSigned`, and the `session` options.
+- `core/crates/ployz/src/cloud/login/wire.rs`: `DeviceTokenError::from_wire`, which names the token poll's answers.
+- `dashboard/src/modules/identity/auth.server.ts`: `cliSignInPlugins`, its `deviceAuthorization` options and `deviceGrantSigned`, and the `session` options.
 - `dashboard/pnpm-lock.yaml`: the `better-auth` version, and with it `redeemDeviceCode`'s answers and the session expiry.
 
 Sync commit: `48582970f957293b4e37d63c7620a5d620b4a24b`, the `main` this model was checked against, and every line cited above is at it. Code in the list above that changed after it has not been rechecked.

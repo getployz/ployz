@@ -83,7 +83,7 @@ async fn seeded(
 
 fn wrap(local: &LocalMachine, code: &RecoveryCode) -> ployz_core::SealingKeyWrapped {
     local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() })
         .unwrap()
 }
 
@@ -93,13 +93,10 @@ async fn recover(
     backup: Option<SealingKeyBackup>,
 ) -> Result<SealingPublicKey, LocalMachineError> {
     local
-        .recover_sealing_key(
-            RecoverSealingKeyRequest {
-                code: code.clone(),
-                backup,
-            },
-            false,
-        )
+        .recover_sealing_key(RecoverSealingKeyRequest {
+            code: code.clone(),
+            backup,
+        })
         .await
         .map(|recovered| recovered.public_key)
 }

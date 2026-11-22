@@ -1,9 +1,17 @@
+/** @data-source remote: the Cluster's Cloudflare setup and latest switch, prefetched by Settings › Network and refetched by the change stream when a row changes; what the Servers hold now is asked of them live once the section shows, polled every 4s while a switch runs or the tunnel is in use; a switch review is read when its dialog opens and kept no longer */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
-import type { DoorsWant } from "./doors";
+import type { DoorsWant } from "./doors.states";
 import { observeClusterIngressServerFn, readClusterIngressServerFn, reviewDoorsSwitchServerFn } from "./doors.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** The Cluster's ingress; the change stream's `cluster_ingress` invalidates this root. */
 export const clusterIngressKeys = { all: ["cluster-ingress"] as const };
+
+export const clusterIngressChange = defineChange({
+  name: "cluster_ingress",
+  sources: ["organization_cloudflare_ingress", "ingress_doors_attempt"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all }),
+});
 
 /**
  * Where the Cluster's names come from and the latest switch. The change stream refetches it when a row changes; a

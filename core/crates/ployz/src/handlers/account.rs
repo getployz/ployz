@@ -1,6 +1,7 @@
 //! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
+use crate::cloud;
 use crate::ui::Next;
 use clap::{ArgMatches, Command, builder::PossibleValuesParser};
 use serde::Serialize;
@@ -10,8 +11,8 @@ use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
 use crate::approval;
-use crate::cloud_account::{self, Credential, PresetKind, ServerClears, TokenKind, TokenPreset};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud::account::{Credential, PresetKind, ServerClears, TokenKind, TokenPreset};
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Table, Tone};
 use ployz_core::Hint;
 
@@ -138,7 +139,7 @@ pub(super) fn in_cloud<T>(
 ) -> Result<T, Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
     runtime()?.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
+        let credential = cloud::account::from_env(&store).await?;
         Ok(work(&store, &credential).await?)
     })
 }
@@ -156,7 +157,7 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
     let preset = TokenPreset::of(kind, matches.get_one::<String>("env").cloned())
         .ok_or_else(|| Error::usage("only --preset deploy takes --env"))?;
     let token = in_cloud(root, async |_, credential| {
-        cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await
+        cloud::account::new_token(credential, name, TokenKind::Cli, &preset, days).await
     })?;
     ui::finish(&serde_json::json!({ "token": token }), || {
         ui::note(format_args!(
@@ -172,7 +173,7 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
     let listed = in_cloud(root, async |_, credential| {
-        cloud_account::credentials(credential).await
+        cloud::account::credentials(credential).await
     })?;
     let mut table = Table::new(
         ["KIND", "ID", "NAME", "OWNER", "SCOPE", "EXPIRES", "STATE"],
@@ -244,8 +245,8 @@ pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("id")
         .expect("id is required");
     let (removed, servers) = in_cloud(root, async |_, credential| {
-        let id = cloud_account::credential_id(credential, target).await?;
-        cloud_account::remove_token(credential, &id).await
+        let id = cloud::account::credential_id(credential, target).await?;
+        cloud::account::remove_token(credential, &id).await
     })?;
     let next = retry_clears(&servers, &removed.id);
     let report = TokenRemoved {
@@ -255,10 +256,10 @@ pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
     };
     ui::finish(&report, || {
         match removed.kind {
-            cloud_account::CredentialKind::Device => {
+            cloud::account::CredentialKind::Device => {
                 ui::stream(format_args!("Signed out device {}.", removed.id));
             }
-            cloud_account::CredentialKind::Token => {
+            cloud::account::CredentialKind::Token => {
                 ui::stream(format_args!("Revoked token {}.", removed.id));
             }
         }
@@ -278,7 +279,7 @@ pub(super) fn unconfirmed(servers: &ServerClears) -> Result<(), Error> {
 
 #[derive(Serialize)]
 struct TokenRemoved<'a> {
-    removed: &'a cloud_account::Removed,
+    removed: &'a cloud::account::Removed,
     servers: &'a ServerClears,
     #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<&'a str>,
@@ -307,7 +308,7 @@ pub(super) fn say_clears(servers: &ServerClears, retry: Option<&str>) {
 
 pub(super) fn org_list(root: &ArgMatches) -> Result<(), Error> {
     let organizations = in_cloud(root, async |_, credential| {
-        cloud_account::organizations(credential).await
+        cloud::account::organizations(credential).await
     })?;
     let mut table = Table::new(["ORGANIZATION", "NAME", "CURRENT"], "No Organizations yet.");
     for organization in &organizations {
@@ -364,7 +365,8 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("organization")
         .expect("organization is required");
     let organization = in_cloud(root, async |store, credential| {
-        cloud_account::use_organization(store, credential, cloud_account::Target::Slug(slug)).await
+        cloud::account::use_organization(store, credential, cloud::account::Target::Slug(slug))
+            .await
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(
@@ -380,8 +382,8 @@ pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
     let slug = matches.get_one::<String>("slug").map(String::as_str);
     let store = CredentialStore::beside(&config_path(matches)?);
     let organization = runtime()?.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
-        cloud_account::new_organization(&store, &credential, name, slug)
+        let credential = cloud::account::from_env(&store).await?;
+        cloud::account::new_organization(&store, &credential, name, slug)
             .await
             .map_err(|error| {
                 // Connected, so the request may have landed and only the reply was lost
@@ -415,8 +417,8 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
-    let credential = runtime.block_on(cloud_account::from_env(&store))?;
-    let organization = runtime.block_on(cloud_account::acting_in(&credential))?;
+    let credential = runtime.block_on(cloud::account::from_env(&store))?;
+    let organization = runtime.block_on(cloud::account::acting_in(&credential))?;
     if !matches.get_flag("yes") {
         ui::confirm(
             &format!("Leave Organization {}?", organization.slug),
@@ -434,8 +436,8 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         )?;
     }
     let (acting, organization) = runtime.block_on(async {
-        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
-            Credential::Device(_) => cloud_account::organizations(&credential)
+        let others: Vec<cloud::account::OrganizationEntry> = match &credential {
+            Credential::Device(_) => cloud::account::organizations(&credential)
                 .await?
                 .into_iter()
                 .filter(|other| other.id != organization.id)
@@ -448,7 +450,7 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         let input = serde_json::json!({ "organization": organization.id });
         crate::published::run_on(
             &credential,
-            cloud_account::Via::Cli,
+            cloud::http::Via::Cli,
             "org_leave",
             input,
             None,
@@ -477,11 +479,11 @@ type Moved = Option<Result<String, (String, LoginError)>>;
 async fn move_to_first(
     store: &CredentialStore,
     credential: &Credential,
-    others: &[cloud_account::OrganizationEntry],
+    others: &[cloud::account::OrganizationEntry],
 ) -> Moved {
     let other = others.first()?;
     Some(
-        cloud_account::use_organization(store, credential, cloud_account::Target::Listed(other))
+        cloud::account::use_organization(store, credential, cloud::account::Target::Listed(other))
             .await
             .map(|organization| organization.slug)
             .map_err(|error| (other.slug.clone(), error)),
@@ -534,8 +536,8 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
     let (credential, removing, others) = runtime.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
-        let list = cloud_account::organizations(&credential).await?;
+        let credential = cloud::account::from_env(&store).await?;
+        let list = cloud::account::organizations(&credential).await?;
         let Some(removing) = list.iter().find(|organization| organization.current) else {
             return Err(match &credential {
                 Credential::Device(signed_in) => {
@@ -578,7 +580,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         |id| super::server::approved_rerun(matches, &again, id),
         async |approval| {
             approved = approval.map(str::to_owned);
-            cloud_account::remove_organization(&credential, &removing, approval).await
+            cloud::account::remove_organization(&credential, &removing, approval).await
         },
     )?;
     let acting = if removal.removed {

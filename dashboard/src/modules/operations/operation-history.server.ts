@@ -9,10 +9,11 @@ import { drainEndMessage } from "#/modules/machines/server-drain.server";
 import { machineEnrollmentToken, machineRemoveAttempt, namespaceCleanup, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
-import { outlivedObservation } from "#/modules/server-upgrade/server-upgrade";
+import { attemptState } from "#/modules/server-upgrade/server-upgrade";
 import { serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { Database } from "#/server/database.server";
+import { unixSeconds } from "#/lib/time-range";
 
 const RUN_STATES = {
   pending: "accepted",
@@ -31,7 +32,6 @@ const RUN_STATES = {
   interrupted: "unknown",
 } as const satisfies Record<string, RunState>;
 
-const seconds = (at: Date) => Math.floor(at.getTime() / 1000);
 
 /** Microseconds since the epoch, as Postgres keeps them. A `Date` holds only milliseconds, and an Operation only seconds. */
 const micros = (at: PgColumn) => sql<bigint>`(extract(epoch from ${at}) * 1000000)::bigint`.mapWith(BigInt);
@@ -51,8 +51,8 @@ const operation = (row: {
   run: row.run,
   state: RUN_STATES[row.state],
   end: row.end,
-  requested_at: seconds(row.requestedAt),
-  ended_at: row.endedAt === null ? null : seconds(row.endedAt),
+  requested_at: unixSeconds(row.requestedAt),
+  ended_at: row.endedAt === null ? null : unixSeconds(row.endedAt),
   reason: row.reason,
   servers: [],
   kept: [],
@@ -145,7 +145,7 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     ...upgrades.map(({ row, at }) => ({ at, operation: operation({
       attempt: dashedAttempt(row.attemptId),
       run: `upgrade ${name(row)}`,
-      state: row.outcome === "running" && outlivedObservation(row.startedAt, now) ? "unknown" : row.outcome,
+      state: attemptState(row, now),
       requestedAt: row.startedAt,
       endedAt: row.endedAt,
       reason: row.error,

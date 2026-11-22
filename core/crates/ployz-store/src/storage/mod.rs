@@ -497,6 +497,24 @@ pub(crate) fn attempt<T>(
 
 /// A unit enum variant as the Store stores it: its serde name, so SQL and JSON
 /// always agree.
+/// A new, empty Postgres database named from `prefix`, when `PLOYZ_STORE_TEST_POSTGRES`
+/// names a server; its URL.
+#[cfg(test)]
+pub(crate) fn fresh_postgres(prefix: &str) -> Option<String> {
+    let server = std::env::var("PLOYZ_STORE_TEST_POSTGRES").ok()?;
+    let database = format!("{prefix}_{}", uuid::Uuid::new_v4().simple());
+    postgres::Client::connect(&server, postgres::NoTls)
+        .unwrap()
+        .batch_execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    Some(format!("{server}/{database}"))
+}
+
+/// A value as the JSON text a document column stores.
+pub(crate) fn json_text(value: &(impl serde::Serialize + ?Sized)) -> String {
+    serde_json::to_string(value).expect("stored documents are JSON")
+}
+
 pub(crate) fn name_of(variant: impl serde::Serialize) -> String {
     serde_json::to_value(variant)
         .ok()
@@ -650,6 +668,18 @@ impl Row {
         what: &str,
     ) -> Result<T, RpcError> {
         serde_json::from_str(self.text(index)?).map_err(|_| error::corrupt(what))
+    }
+
+    /// A JSON document column that may be NULL, as `T`; one it can't be is `what`,
+    /// corrupt.
+    pub(crate) fn optional_json<T: serde::de::DeserializeOwned>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<Option<T>, RpcError> {
+        self.optional_text(index)?
+            .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
+            .transpose()
     }
 
     /// An Environment document column, validated whole; one that isn't is `what`,
@@ -964,15 +994,10 @@ mod lock_wait_tests {
     #[test]
     fn a_shorter_lock_wait_lasts_until_lifted_or_rolled_back() {
         // SQLite never waits for a row.
-        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+        let Some(url) = super::fresh_postgres("lock_wait") else {
             return;
         };
-        let database = format!("lock_wait_{}", uuid::Uuid::new_v4().simple());
-        postgres::Client::connect(&server, postgres::NoTls)
-            .unwrap()
-            .batch_execute(&format!("CREATE DATABASE {database}"))
-            .unwrap();
-        let (storage, _) = Storage::open(&format!("{server}/{database}")).unwrap();
+        let (storage, _) = Storage::open(&url).unwrap();
         storage
             .write(|tx| {
                 assert_eq!(lock_timeout(tx), "10s");

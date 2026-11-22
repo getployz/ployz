@@ -1,4 +1,5 @@
 import type { ServerRef, ServiceVerb } from "@ployz/sdk";
+import { destroyedLine } from "#/modules/approvals/approvals";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
@@ -36,6 +37,5 @@ export const stepTitle = (step: Pick<ProposalStep, "verb" | "service" | "runtime
 
 /** What a step takes away while it runs, as the card's Destroys list words it; null for a start. */
 export const stepLoss = (step: Pick<ProposalStep, "verb" | "service" | "runtime">) =>
-  step.verb === "stop" ? { verb: "Stops service", name: stepName(step), after: " until started again" }
-  : step.verb === "restart" ? { verb: "Restarts service", name: stepName(step), after: "" }
-  : null;
+  step.verb === "start" ? null
+  : destroyedLine({ kind: step.verb === "stop" ? "stops_service" : "restarts_service", name: stepName(step), node: "", path: "" });

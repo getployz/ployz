@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
-import { prefetchStoreViews, requireStoreEnvironment } from "#/collections/route-data";
+import { prefetchStoreViews, requireStoreEnvironment } from "#/modules/config-store/store.route-data";
 import { LeaveWhenClosed } from "./-components/sync/branch-close";
 import { branchQuery } from "#/modules/config-store/store-view.queries";
 

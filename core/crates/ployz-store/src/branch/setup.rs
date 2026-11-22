@@ -2,6 +2,7 @@
 //! there, and those an Environment hands each new Branch of it.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Set the Setup Commands a new Branch of an Environment runs when it names none:
 /// each runs if the Branch copies its Service. Empty clears them. Takes effect at once.
@@ -43,8 +44,7 @@ pub(crate) fn set_branch_setup(
         None,
         facts(&set.setup),
     )?;
-    let setup = (!set.setup.is_empty())
-        .then(|| serde_json::to_string(&set.setup).expect("Setup Commands are JSON"));
+    let setup = (!set.setup.is_empty()).then(|| json_text(&set.setup));
     tx.execute(
         "UPDATE config_environment SET branch_setup = ?1 WHERE id = ?2",
         &[
