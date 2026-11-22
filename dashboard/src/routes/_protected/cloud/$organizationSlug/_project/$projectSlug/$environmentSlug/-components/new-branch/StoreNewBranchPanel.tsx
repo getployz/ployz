@@ -1,7 +1,7 @@
 import { createContext, use, useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BranchPreset } from "@ployz/sdk";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";

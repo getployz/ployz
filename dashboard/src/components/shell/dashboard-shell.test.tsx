@@ -10,7 +10,7 @@ import { createMemoryHistory, createRoute, createRouter, Outlet, RouterProvider 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DashboardShell } from "./dashboard-shell";
 import type { DashboardScope } from "./dashboard-navigation-model";
-import { ThemeProvider } from "./theme-provider";
+import { ThemeProvider } from "../theme-provider";
 import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";

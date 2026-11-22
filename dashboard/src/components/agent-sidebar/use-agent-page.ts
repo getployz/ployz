@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useMatch, useParams } from "@tanstack/react-router";
-import type { DashboardScope } from "#/components/dashboard-navigation-model";
-import { useDashboardSection } from "#/components/use-dashboard-section";
+import type { DashboardScope } from "#/components/shell/dashboard-navigation-model";
+import { useDashboardSection } from "#/components/shell/use-dashboard-section";
 import type { PageContext } from "#/modules/agent/page-context";
 import { servicesQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
 

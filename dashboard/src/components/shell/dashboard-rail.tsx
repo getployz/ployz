@@ -1,9 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { useLayoutEffect, useRef, useState } from "react";
-import { PloyzMark } from "./icons/ployz-logo";
+import { PloyzMark } from "../icons/ployz-logo";
 import type { DashboardNavItem, DashboardNavSection } from "./dashboard-navigation-model";
-import { buttonVariants } from "./ui/button-variants";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import { buttonVariants } from "../ui/button-variants";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "#/lib/utils";
 
 /** The logo opens Projects. */

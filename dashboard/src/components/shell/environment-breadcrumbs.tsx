@@ -1,6 +1,6 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { CreateEnvironmentDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog";
+import { CreateEnvironmentDialog } from "#/components/shell/create-environment-dialog";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, LockIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import {
@@ -8,9 +8,9 @@ import {
   getDashboardSectionLabel,
   type DashboardDestination,
   type DashboardScope,
-} from "#/components/dashboard-navigation-model";
+} from "#/components/shell/dashboard-navigation-model";
 import { BranchIndent } from "#/components/environment-tree";
-import { useDashboardSection } from "#/components/use-dashboard-section";
+import { useDashboardSection } from "#/components/shell/use-dashboard-section";
 import { Badge } from "#/components/ui/badge";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
 import { Button } from "#/components/ui/button";

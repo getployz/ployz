@@ -3,18 +3,18 @@ import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { AgentDock } from "./agent-sidebar/agent-dock";
-import { AgentButton, AgentColumn } from "./agent-sidebar/agent-sidebar";
-import { useAgentPage } from "./agent-sidebar/use-agent-page";
+import { AgentDock } from "../agent-sidebar/agent-dock";
+import { AgentButton, AgentColumn } from "../agent-sidebar/agent-sidebar";
+import { useAgentPage } from "../agent-sidebar/use-agent-page";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
-import { NavigationProgress } from "./navigation-progress";
-import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
-import { RouteContentSkeleton } from "./route-content-skeleton";
-import { RouteErrorAlert } from "./route-error-alert";
+import { NavigationProgress } from "../navigation-progress";
+import { OrganizationCollectionRefreshNotice } from "../organization-collection-refresh-notice";
+import { RouteContentSkeleton } from "../route-content-skeleton";
+import { RouteErrorAlert } from "../route-error-alert";
 import { useCanvasShowing, useDashboardNavigation, useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
-import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
+import DashboardAccountMenu from "#/components/shell/DashboardAccountMenu";
 
 export function DashboardShell({
   scope,

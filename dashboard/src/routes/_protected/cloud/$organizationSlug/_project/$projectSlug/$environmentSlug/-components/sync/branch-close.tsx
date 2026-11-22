@@ -3,7 +3,7 @@ import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";

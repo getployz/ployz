@@ -4,7 +4,7 @@ import {
   createDashboardNavigation,
   getDashboardDestination,
   getDashboardSectionFromRouteId,
-} from "#/components/dashboard-navigation-model";
+} from "#/components/shell/dashboard-navigation-model";
 
 const environment = {
   kind: "environment",

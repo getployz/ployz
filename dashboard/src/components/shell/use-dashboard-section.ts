@@ -5,7 +5,7 @@ import {
   createDashboardNavigation,
   getDashboardSectionFromRouteId,
   type DashboardScope,
-} from "#/components/dashboard-navigation-model";
+} from "#/components/shell/dashboard-navigation-model";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 
 function useDeepestRouteId() {

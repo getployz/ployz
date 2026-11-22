@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
