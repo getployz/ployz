@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
-import type { CliRoutes } from "#/server/cli-call";
+import type { CliRoutes } from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse, NotFound } from "#/server/public-error";
 
 /** The GitHub connection the CLI reads, and the repositories it reaches. */

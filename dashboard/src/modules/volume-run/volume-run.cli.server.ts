@@ -5,7 +5,7 @@ import { OPERATIONS } from "#/modules/operations/operations";
 import { runVolume, unheld } from "#/modules/operations/operations.server";
 import { refreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.rows.server";
-import { approvalCarried, decodeBody, keyedCall, missingRefusal, refusedMissing, type CliRoutes } from "#/server/cli-call";
+import { approvalCarried, decodeBody, keyedCall, missingRefusal, refusedMissing, type CliRoutes } from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse } from "#/server/public-error";
 
 /** Running a command against a Volume, syncing its mirror, and reading the runs. */

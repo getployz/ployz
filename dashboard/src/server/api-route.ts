@@ -1,9 +1,8 @@
 import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
-import { ClientAddress } from "#/modules/identity/caller.server";
 import { AppConfig } from "#/server/config.server";
-import { observedIp } from "#/server/client-ip";
+import { ClientAddress, observedIp } from "#/server/client-ip";
 import { methodNotAllowedFor, publicErrorResponse, Validation } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";

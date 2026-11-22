@@ -5,7 +5,7 @@ import { listNames } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
-import { stagedSurface } from "#/modules/runtime/node-status";
+import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES, StagedBadge } from "./node-status-view";
 import { usePendingNode } from "./usePendingNode";
 import type { MountedVolume } from "./types";

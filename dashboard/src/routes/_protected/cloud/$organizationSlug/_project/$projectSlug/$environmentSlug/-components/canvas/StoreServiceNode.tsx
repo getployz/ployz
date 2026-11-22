@@ -13,7 +13,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { serviceIcon } from "./service-icon";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { chipWord, deployChip, deployEffect, issuesLabel, nodeIssues, nodeLabel, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface, statusWord } from "#/modules/runtime/node-status";
+import { chipWord, deployChip, deployEffect, issuesLabel, nodeIssues, nodeLabel, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface, statusWord } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { CopyHang } from "./MirrorNode";

@@ -11,7 +11,7 @@ import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { listWaitingServers, showWaitingServer, type WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { decodeBody, type CliRoutes } from "#/server/cli-call";
+import { decodeBody, type CliRoutes } from "#/modules/commands/cli-call.server";
 import { NotFound } from "#/server/public-error";
 
 const WaitingServerIds = Schema.Struct({ ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)) });

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { readPasskeyRequest } from "#/modules/passkeys/passkeys.server";
-import { missingRefusal, shellPersonOnly, type CliRoutes } from "#/server/cli-call";
+import { missingRefusal, shellPersonOnly, type CliRoutes } from "#/modules/commands/cli-call.server";
 
 /** A passkey request a Device waits on. */
 export const passkeysCliRoutes = {

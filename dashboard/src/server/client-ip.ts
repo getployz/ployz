@@ -1,4 +1,8 @@
 import { BlockList, isIP } from "node:net";
+import { Context } from "effect";
+
+/** The client address of the request being served, as the app trusts it behind its proxy; null outside an HTTP request. */
+export const ClientAddress = Context.Reference<string | null>("ployz/ClientAddress", { defaultValue: () => null });
 
 const proxyPeers = new BlockList();
 for (const [network, prefix] of [["127.0.0.0", 8], ["10.0.0.0", 8], ["172.16.0.0", 12], ["192.168.0.0", 16], ["169.254.0.0", 16]] as const) {
