@@ -1673,6 +1673,10 @@ fn finish(
 }
 
 fn store_error(error: StoreError) -> RpcError {
+    if let StoreError::GrantMoved(key) = &error {
+        let details = serde_json::json!({ ployz_core::authority::GRANT_MOVED: key });
+        return RpcError::caused(RpcErrorCode::Conflict, &error).with_details(details);
+    }
     let code = match error {
         StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::KeyRemoved(_)

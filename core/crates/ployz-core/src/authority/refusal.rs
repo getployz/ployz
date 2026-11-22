@@ -14,7 +14,7 @@ pub enum AuthorityRefusal {
     Unsigned { purpose: Purpose },
     #[error("the {purpose} approval is malformed: {problem}")]
     Malformed { purpose: Purpose, problem: String },
-    #[error("device {} is not approved on this Machine", .key.code())]
+    #[error("key {} is not trusted on this Machine", .key.code())]
     UnknownKey { key: SigningPublicKey },
     #[error("the signature by device {} does not verify", .key.code())]
     BadSignature { key: SigningPublicKey },

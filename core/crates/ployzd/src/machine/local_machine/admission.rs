@@ -767,8 +767,12 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::RetiredBuilder { .. } => {
             "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
         }
-        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
-            "This server doesn't trust the device that approved this deploy."
+        // A CI or agent key is a key too, and a removed one is unknown here by kind.
+        AuthorityRefusal::UnknownKey { .. } => {
+            "This server doesn't trust the key that approved this deploy."
+        }
+        AuthorityRefusal::UnknownPasskey => {
+            "This server doesn't trust the passkey that approved this deploy."
         }
         AuthorityRefusal::OutOfScope { code, kind, what } => {
             return format!(

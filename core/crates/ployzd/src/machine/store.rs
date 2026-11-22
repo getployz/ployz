@@ -1054,7 +1054,9 @@ impl LocalMachineStore {
             });
         }
         let issued_at = trusted.grant.issued_at;
-        let replays = held.is_some_and(|held| held.grant.issued_at == issued_at);
+        // Only the same grant again is a replay: another one issued in the same
+        // millisecond is a change this Machine never applied.
+        let replays = held.is_some_and(|held| held.grant == trusted.grant);
         let edits = match (held, prior) {
             (_, None | Some(Prior::Edit { .. })) if replays => return Ok(false),
             (None, None) => false,

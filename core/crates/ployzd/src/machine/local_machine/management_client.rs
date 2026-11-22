@@ -986,6 +986,18 @@ mod tests {
             ))
             .await
             .unwrap();
+        // The other edit, issued in the same millisecond, isn't the one this Server holds.
+        let same_moment = local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(ci, &["prod"]), Some(Prior::Edit { issued_at: read })),
+                at,
+            ))
+            .await;
+        assert!(matches!(
+            same_moment,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == ci.code()
+        ));
         let stale = local
             .key_step(trust_step_at(
                 &local,

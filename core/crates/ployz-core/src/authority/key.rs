@@ -77,6 +77,11 @@ pub enum KeyChange {
     Remove { key: KeyRef },
 }
 
+/// The `details` key a Machine's refusal of a Key step carries, naming the key, when the
+/// grant its `prior` names isn't the one held there: the signer read a grant that moved
+/// since, and may read again. Absent from any other refusal.
+pub const GRANT_MOVED: &str = "grant_moved";
+
 /// The grant a person read before signing a change to it. A Machine applies the change
 /// only while it holds that grant as read, under its record's lock, so a narrowing or
 /// rotation signed from a stale read is refused and its signer reads again.
