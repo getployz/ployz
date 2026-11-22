@@ -2,16 +2,15 @@
 //! holds its status. The runner (`run_deployment_expecting` and `Run`, ployz's
 //! sdk/store_runner.rs) dials the Servers under `connecting`, then
 //! plans or builds and prepares, executes, deletes the Volumes the Deploy removes and
-//! fills ingress, each piece of work under `renewing` (:653-665, :687-691, :708,
-//! :726-738). While it awaits that work, `connecting` and `renewing` call `standing()`
-//! every `CANCEL_POLL`, 2 s (:40, :1116-1132, :1136-1149), and the work can end before
-//! the next call (:1129, :1141). `execute` also calls it once after executing (:694) and
-//! once before `fill_ingress` (:712). `standing()` is `record(RunEvidence::Alive)` read
+//! fills ingress, each piece of work under `renewing` (`ployz::sdk::store_runner::Run::execute`). While it awaits that work, `connecting` and `renewing` call `standing()`
+//! every `CANCEL_POLL`, 2 s (`ployz::sdk::store_runner::Run::executing`), and the work can end before
+//! the next call (`ployz::sdk::store_runner::Run::record_warnings`). `execute` also calls it once after executing and
+//! once before `fill_ingress`. `standing()` is `record(RunEvidence::Alive)` read
 //! through `read_of` (store_runner.rs) and `ployz_decide::standing::Latch`, and every site
 //! matches the one `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
 //! deployment/lifecycle.rs `cancel`), a newer Deployment of the Environment is claimed and
 //! sets it Unknown (deployment/claim.rs `claim`), or forgetting the Cluster cancels it without
-//! waiting on the runner (deployment/lifecycle.rs `cancel_in_flight`, teardown.rs:460).
+//! waiting on the runner (deployment/lifecycle.rs `cancel_in_flight`, `ployz_store::teardown::forget_cluster`).
 //!
 //! The model found two problems in the code before `Standing` (#3839), and the code
 //! now keeps out all but one path of the first. Each fixed part has a `Broken` flag
@@ -38,7 +37,7 @@
 //! Deployment as Interrupted in the same transaction, and its projection shows the
 //! deletions of an Interrupted outcome, where the code reads them NotAttempted for any
 //! outcome but a Success (deployment/outcomes.rs `removed_volume`), and an Interrupted outcome projects
-//! to Failed (ployz-core config/runtime_outcome.rs:208-220). The code does not have it.
+//! to Failed (ployz-core `ployz_core::config::runtime_outcome::project_runtime_outcome`). The code does not have it.
 //!
 //! Each store call is one step, since `record`, `claim`, `cancel` and `cancel_in_flight`
 //! each take one transaction (deployment/record.rs `record`, deployment/claim.rs `claim`,
@@ -746,7 +745,7 @@ impl RunnerStanding {
     /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown
     /// (the `taken_over` branches); any other goes through `finish`. The store fix
     /// keeps a non-Interrupted one for an Unknown Deployment as Interrupted. The
-    /// projection shows the deletions for a Success (:2186-2190), and in the store fix
+    /// projection shows the deletions for a Success (`ployz_store::deployment::outcomes::node_outcomes`), and in the store fix
     /// for an Interrupted outcome too.
     fn executed(&self, state: &mut State, interrupted: bool) -> Answer {
         let broken = self.broken;
@@ -801,7 +800,7 @@ impl RunnerStanding {
     /// `record(RunEvidence::Abandoned)` (deployment/record.rs, the `Abandoned` arm): a no-op on an Unknown
     /// Deployment or one with an outcome, `running` otherwise, then
     /// Unknown after a preview. The model sends it only from executing, after
-    /// the preview, so the arm's `NotExecuted` for a run with no preview (:1909-1922) is out
+    /// the preview, so the arm's `NotExecuted` for a run with no preview (the `Abandoned` arm of `ployz_store::deployment::record::record`) is out
     /// of scope.
     fn abandoned(state: &mut State) {
         let store = &mut state.store;
@@ -1085,7 +1084,7 @@ const TAKEOVER_KEEPS_OUTCOME: &str =
 /// lists the deleted Volume under the fix, since a run that was taken over moves no Applied
 /// State (deployment/record.rs `record`, the `taken_over` branch). `cancel_in_flight` is exempt: `forget_cluster`, which
 /// runs it, lets go of the Organization's Applied State and Volumes' fixed storage
-/// (teardown.rs:444-447, :460-471).
+/// (`ployz_store::teardown::forget_cluster`).
 const DELETIONS_KEPT: &str = "once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless cancel_in_flight ended the Deployment";
 const NO_WORK_AFTER_END: &str = "once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes";
 const HEEDS_CANCEL: &str = "while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes";

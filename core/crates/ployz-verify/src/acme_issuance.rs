@@ -1,22 +1,20 @@
 //! ACME issuance scheduling for one Ingress Hostname with no Certificate Material: when each
 //! Machine's certificate loop pushes the hostname to `to_order`, against the backoff clock in
-//! the replicated row and each Machine's own Hostname Verdict. A bare `:n` is a line of
-//! `core/crates/ployzd/src/certificates.rs`; every other path is written in full from the repo
-//! root.
+//! the replicated row and each Machine's own Hostname Verdict.
 //!
 //! Each daemon runs one certificate loop, `run`, once it participates
 //! (the certificates arm of `start_planes` in core/crates/ployzd/src/daemon.rs, after `Participation::wait`). Each pass of `issue_wanted` reads the
-//! row, and `step` moves the loop-local `Issuance` it keeps for the hostname (core/crates/ployz-decide/src/issuance.rs:111-132, :181-212;
+//! row, and `step` moves the loop-local `Issuance` it keeps for the hostname (`ployz_decide::issuance::Issuance`, `ployz_decide::issuance::step`;
 //! `Host`, `run`'s `hosts` and `issue_wanted`'s `hosts.insert`). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
-//! (core/crates/ployz-core/src/domain/issuance.rs:66-98) and `issuance_action` says the
-//! Machine's rank delay has passed since `Waiting`'s `orderable_since` (core/crates/ployz-decide/src/issuance.rs:196-211). The rank is
+//! (`ployz_core::domain::issuance::issuance_gate`) and `issuance_action` says the
+//! Machine's rank delay has passed since `Waiting`'s `orderable_since`. The rank is
 //! the Machine's place among the `machines` rows whose Public Door is not closed
 //! (`read_pass`'s `machine_rank` call over `ordering_machines`).
 //!
 //! `orderable_since` is the Machine's first pass the gate let through since the gate last held
 //! or refused the hostname, or since a pass stopped before the gate: the policy refused, no
 //! directory, every Server on the Tunnel Door, or this Machine's Public Door closed
-//! (core/crates/ployz-decide/src/issuance.rs:196-211, and `issue_wanted`'s `hosts.clear()`). A read that returns Err keeps it. Only rank 0 records a
+//! (and `issue_wanted`'s `hosts.clear()`). A read that returns Err keeps it. Only rank 0 records a
 //! refusal (`issue_wanted`'s `Issuance::Refused` arm).
 //!
 //! The code before this change, `as_it_was` in the tests, kept the first pass's instant through
@@ -62,7 +60,7 @@ fn rank(state: &State, who: usize) -> usize {
     machine_rank(&who, &ordering)
 }
 
-/// The built-in Certificate Policy (core/crates/ployz-core/src/domain/certificate_policy.rs:93-103).
+/// The built-in Certificate Policy (`ployz_core::domain::certificate_policy::CertificatePolicy::built_in`).
 /// The model reads only its backoff and probe values; `Policy` stands in for its directory and
 /// for an operator's policy row.
 fn built_in() -> CertificatePolicy {
@@ -135,7 +133,7 @@ impl Verdict {
     }
 }
 
-/// `IssuanceFailure` (core/crates/ployz-core/src/domain/issuance.rs:7-12), for the model's one
+/// `ployz_core::domain::issuance::IssuanceFailure`, for the model's one
 /// refusal.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Failure {
@@ -165,7 +163,7 @@ impl Failure {
     }
 }
 
-/// `IssuanceClock` (core/crates/ployz-core/src/domain/issuance.rs:14-50), with its
+/// `ployz_core::domain::issuance::IssuanceClock`, with its
 /// `next_attempt_at` held as the ticks left until it. `IssuanceClock` derives no `Hash`, so the
 /// model keeps this and rebuilds the real clock at each call.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -195,7 +193,7 @@ impl Clock {
 
     /// The model's own reading of the rule the gate keeps: the clock has not passed, and the
     /// verdict leaves it standing, which only a different verdict after a refusal does not
-    /// (core/crates/ployz-core/src/domain/issuance.rs:77-84).
+    /// (`ployz_core::domain::issuance::issuance_gate`).
     fn holds(self, verdict: Verdict) -> bool {
         self.left > 0
             && !(self.last == Failure::DoesNotResolve && verdict != Verdict::DoesNotResolve)
@@ -218,14 +216,14 @@ enum Reason {
     Tunnel,
 }
 
-/// `RecordedRefusal` (core/crates/ployzd/src/corrosion/certificate.rs:214-219).
+/// `ployzd::corrosion::certificate::RecordedRefusal`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Recorded {
     reason: Reason,
     clock: Option<Clock>,
 }
 
-/// The hostname's `CertificateRow::Acme` (core/crates/ployzd/src/corrosion/certificate.rs:221-235),
+/// The hostname's `CertificateRow::Acme` (`ployzd::corrosion::certificate::CertificateRow`),
 /// one row that every Machine reads as soon as it is written. Its challenge is left out: no step
 /// reads it.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -235,29 +233,29 @@ struct Row {
 }
 
 impl Row {
-    /// `CertificateRow::clock` (core/crates/ployzd/src/corrosion/certificate.rs:326-330).
+    /// `ployzd::corrosion::certificate::CertificateRow::clock`.
     fn clock(self) -> Option<Clock> {
         self.refusal.and_then(|refusal| refusal.clock)
     }
 
-    /// `CertificateRow::last_error` (core/crates/ployzd/src/corrosion/certificate.rs:320-324).
+    /// `ployzd::corrosion::certificate::CertificateRow::last_error`.
     fn last_error(self) -> Option<Reason> {
         self.refusal.map(|refusal| refusal.reason)
     }
 }
 
 /// What `resolve_certificate_policy` makes of the Certificate Policy row
-/// (core/crates/ployz-core/src/domain/certificate_policy.rs:205). An operator stops issuance at
+/// (`ployz_core::domain::certificate_policy::resolve_certificate_policy`). An operator stops issuance at
 /// most once, and repairs it at most once.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Policy {
     /// The built-in values, with a directory.
     BuiltIn,
     /// A row `resolve_certificate_policy` refuses, such as a challenge kind other than http-01
-    /// (core/crates/ployz-core/src/domain/certificate_policy.rs:215-224).
+    /// (`ployz_core::domain::certificate_policy::resolve_certificate_policy`).
     Refused,
     /// A row whose `directory_url` is empty, which leaves the policy no directory
-    /// (core/crates/ployz-core/src/domain/certificate_policy.rs:226-228).
+    /// (`ployz_core::domain::certificate_policy::resolve_certificate_policy`).
     NoDirectory,
     /// The operator repaired the row: the built-in values again.
     Repaired,
@@ -268,7 +266,7 @@ enum Policy {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Order {
     /// The failures and last failure of the pass's snapshot clock (`issue_wanted`'s `issuance_failure_clock` call), which is all of it
-    /// `issuance_failure_clock` reads (core/crates/ployz-core/src/domain/issuance.rs:117-120).
+    /// `issuance_failure_clock` reads (`ployz_core::domain::issuance::issuance_failure_clock`).
     snapshot: Option<(u8, Failure)>,
     /// Ticks since its pass, whose `wall` the failure clock counts from (`wall` in `issue_wanted`), capped at
     /// `ago_cap`.
@@ -286,7 +284,7 @@ struct Machine {
     closed: bool,
     /// The age of its loop's `orderable_since` for the hostname, in ticks capped at `AGE_CAP`:
     /// `Some` while its `Issuance` is `Waiting`, or `Order`, which is past every rank delay
-    /// (core/crates/ployz-decide/src/issuance.rs:196-211). `None` while it is anything else or absent (`Host`, `hosts.clear` and `hosts.retain` in `issue_wanted`).
+    /// (`ployz_decide::issuance::step`). `None` while it is anything else or absent (`Host`, `hosts.clear` and `hosts.retain` in `issue_wanted`).
     orderable_since: Option<u8>,
     /// Its obtain in flight. The loop passes again only once it ends (`issue_wanted`'s `join_all`).
     obtaining: Option<Order>,
@@ -366,21 +364,21 @@ enum Branch {
     /// `Broken::error_clears_hosts`.
     Errored { who: usize, reset: bool },
     /// The row holds material whose renewal is not due: `Issued`, and the hostname skipped
-    /// (core/crates/ployz-decide/src/issuance.rs:134-151, and the `Some(issuance)` arm of `issued` in `issue_wanted`).
+    /// (`ployz_decide::issuance::issued`, and the `Some(issuance)` arm of `issued` in `issue_wanted`).
     HasMaterial { who: usize },
-    /// The gate answered Hold (core/crates/ployz-decide/src/issuance.rs:186). `due` says the rank delay had passed since the
+    /// The gate answered Hold (`ployz_decide::issuance::step`). `due` says the rank delay had passed since the
     /// `orderable_since` the pass found; `reset` says the pass dropped it.
     Held { who: usize, due: bool, reset: bool },
-    /// The gate answered Refuse (core/crates/ployz-decide/src/issuance.rs:187-189, and `issue_wanted`'s `Issuance::Refused` arm). `over_authority` says the record wrote
+    /// The gate answered Refuse (`ployz_decide::issuance::step`, and `issue_wanted`'s `Issuance::Refused` arm). `over_authority` says the record wrote
     /// over an Authority clock.
     Refused {
         who: usize,
         record: Record,
         over_authority: bool,
     },
-    /// The gate answered Order, and the rank delay has not passed (core/crates/ployz-decide/src/issuance.rs:204-207).
+    /// The gate answered Order, and the rank delay has not passed (`ployz_decide::issuance::step`).
     Waiting { who: usize, gate: Gate },
-    /// Pushed to `to_order` (core/crates/ployz-decide/src/issuance.rs:204-207, and `to_order.push` in `issue_wanted`). `early` says it came less than the Machine's rank
+    /// Pushed to `to_order` (`ployz_decide::issuance::step`, and `to_order.push` in `issue_wanted`). `early` says it came less than the Machine's rank
     /// delay after its first pass since its last blocked pass.
     Pushed { who: usize, gate: Gate, early: bool },
     /// `obtain`'s recheck found material and returned (`obtain`'s recheck).
@@ -952,15 +950,15 @@ const COVERAGE: &[Coverage] = &[
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// `IssuanceGate::Hold(clock) => return Issuance::Held(clock)` (core/crates/ployz-decide/src/issuance.rs:186) replaced by
+    /// `IssuanceGate::Hold(clock) => return Issuance::Held(clock)` (`ployz_decide::issuance::step`) replaced by
     /// ordering along `ClusterRoute::Direct`, the model's only route, as `IssuanceGate::Order`
     /// does.
     hold_orders: bool,
     /// A pass after a refused one keeps the `orderable_since` before the refusal, where `step`
-    /// starts it again (core/crates/ployz-decide/src/issuance.rs:197-203).
+    /// starts it again (`ployz_decide::issuance::step`).
     refusal_keeps_orderable_since: bool,
     /// A pass after a held one keeps the `orderable_since` before the hold, where `step` starts
-    /// it again (core/crates/ployz-decide/src/issuance.rs:197-203).
+    /// it again (`ployz_decide::issuance::step`).
     hold_keeps_orderable_since: bool,
     /// `hosts.clear()` in `issue_wanted` deleted, so a pass that stops before the gate keeps
     /// `orderable_since`: the policy refused, no directory, every Server on the Tunnel Door, or
@@ -1000,7 +998,7 @@ struct AcmeIssuance {
 /// `record_certificate_failure` with no material tried
 /// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`): `write_acme_row` reads the row; with
 /// material it writes nothing; otherwise it writes `with_backoff`, which keeps the material and
-/// replaces the refusal (core/crates/ployzd/src/corrosion/certificate.rs:281-293, :171-184).
+/// replaces the refusal (`ployzd::corrosion::certificate::CertificateRow::with_backoff`, `ployzd::corrosion::certificate::CertificateChallenge::parse`).
 /// `None` when the write would be lost but none would be made.
 fn record_failure(row: &mut Row, reason: Reason, clock: Clock, lost: bool) -> Option<Record> {
     if row.material {
@@ -1026,7 +1024,7 @@ fn block(machine: &mut Machine) {
 /// `record_certificate_error`): `write_acme_row` reads the row; when its `last_error` is
 /// already `reason` it writes nothing, and otherwise `with_error` keeps the material and
 /// replaces the refusal with the reason and no clock
-/// (core/crates/ployzd/src/corrosion/certificate.rs:356-379). Says what it did, and whether
+/// (`ployzd::corrosion::certificate::CertificateRow::with_error`). Says what it did, and whether
 /// it dropped a clock. Its Err goes out through `read_pass`'s `?`, which is `Action::Errs`.
 fn record_error(row: &mut Row, reason: Reason) -> (Record, bool) {
     if row.last_error() == Some(reason) {
@@ -1131,7 +1129,7 @@ impl AcmeIssuance {
             state.took = Some(Branch::HasMaterial { who });
             return Some(());
         }
-        // core/crates/ployz-decide/src/issuance.rs:196-211: the pass's `orderable_since` is the one it found, or this pass.
+        // `ployz_decide::issuance::step`: the pass's `orderable_since` is the one it found, or this pass.
         let found = machine.orderable_since;
         let age = found.unwrap_or(0);
         let elapsed = tick() * u32::from(age);
@@ -1167,7 +1165,7 @@ impl AcmeIssuance {
             },
         );
         match stepped.issuance {
-            // core/crates/ployz-decide/src/issuance.rs:186, and the next pass starts `orderable_since` again (core/crates/ployz-decide/src/issuance.rs:197-203).
+            // `ployz_decide::issuance::step`, and the next pass starts `orderable_since` again.
             Issuance::Held(_) => {
                 if lost {
                     return None;
@@ -1181,7 +1179,7 @@ impl AcmeIssuance {
                     reset: reset && found.is_some(),
                 });
             }
-            // core/crates/ployz-decide/src/issuance.rs:187-189, the next pass starts `orderable_since` again (core/crates/ployz-decide/src/issuance.rs:197-203), and the record
+            // `ployz_decide::issuance::step`, the next pass starts `orderable_since` again, and the record
             // (`issue_wanted`'s `Issuance::Refused` arm).
             Issuance::Refused { refusal, clock } => {
                 assert_eq!(refusal, Refusal::DoesNotResolve);
@@ -1208,7 +1206,7 @@ impl AcmeIssuance {
                     over_authority: over_authority && record == Record::Wrote,
                 });
             }
-            // core/crates/ployz-decide/src/issuance.rs:190, core/crates/ployz-decide/src/issuance.rs:204-207, and `to_order.push` in `issue_wanted`.
+            // `ployz_decide::issuance::step`, and `to_order.push` in `issue_wanted`.
             issuance @ (Issuance::Order(_) | Issuance::Waiting) => {
                 if lost {
                     return None;
@@ -1253,7 +1251,7 @@ impl AcmeIssuance {
             (true, Ends::Issued | Ends::Failed { .. }) | (false, Ends::Rechecked) => return None,
             // `obtain`'s `order_certificate` and `publish_certificate`: `publish_certificate` writes `CertificateRow::issued`, material with no
             // challenge and no refusal (core/crates/ployzd/src/corrosion/store.rs, `publish_certificate`,
-            // core/crates/ployzd/src/corrosion/certificate.rs:259-261).
+            // `ployzd::corrosion::certificate::CertificateRow::issued`).
             (false, Ends::Issued) => {
                 state.row = Row {
                     material: true,
@@ -1582,12 +1580,9 @@ fn found_words(before: Machine) -> String {
 /// The `orderable_since` a pass that the gate let through runs its rank delay from.
 fn runs_from_words(before: Machine) -> String {
     match before.orderable_since {
-        None => {
-            "the rank delay runs from this pass (core/crates/ployz-decide/src/issuance.rs:196-211)"
-                .to_owned()
-        }
+        None => "the rank delay runs from this pass (`ployz_decide::issuance::step`)".to_owned(),
         Some(ticks) => format!(
-            "the rank delay runs from orderable_since, {} old (core/crates/ployz-decide/src/issuance.rs:196-203)",
+            "the rank delay runs from orderable_since, {} old (`ployz_decide::issuance::step`)",
             age(ticks)
         ),
     }
@@ -1634,7 +1629,7 @@ fn reread_words(over_material: bool) -> &'static str {
 }
 
 /// How long Machine `who`'s loop sleeps after the pass or obtain from `before` to `after`,
-/// unless a container change wakes it first (run's changes.next()): `wake` (core/crates/ployz-decide/src/issuance.rs:226-259).
+/// unless a container change wakes it first (run's changes.next()): `ployz_decide::issuance::wake`.
 fn wait_words(who: usize, before: &State, after: &State) -> String {
     let policy = built_in();
     let elapsed = tick() * u32::from(after.machine(who).orderable_since.unwrap_or(0));
@@ -1661,11 +1656,11 @@ fn wait_words(who: usize, before: &State, after: &State) -> String {
     };
     let sleeps = wake(state, rank(after, who), elapsed, now(), &policy).as_secs();
     match state {
-        Issuance::Held(_) | Issuance::Refused { .. } => format!(
-            "wake answers {sleeps} s, when the clock passes or at the next probe (core/crates/ployz-decide/src/issuance.rs:246-256)"
-        ),
+        Issuance::Held(_) | Issuance::Refused { .. } => {
+            format!("wake answers {sleeps} s, when the clock passes or at the next probe")
+        }
         Issuance::Issued { .. } | Issuance::Waiting | Issuance::Order(_) | Issuance::Renew(_) => {
-            format!("wake answers {sleeps} s (core/crates/ployz-decide/src/issuance.rs:226-259)")
+            format!("wake answers {sleeps} s")
         }
     }
 }
@@ -1674,10 +1669,10 @@ fn wait_words(who: usize, before: &State, after: &State) -> String {
 fn error_record_words(record: Record, dropped: bool) -> &'static str {
     match record {
         Record::Wrote if dropped => {
-            "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)"
+            "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock"
         }
         Record::Wrote => {
-            "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)"
+            "with_error keeps the material and replaces the refusal with the reason and no clock"
         }
         Record::Same => {
             "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check)"
@@ -1719,8 +1714,8 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         }
         Action::Operator(policy) => {
             return match policy {
-                Policy::Refused => "Operator: sets a Certificate Policy that resolve_certificate_policy refuses, such as a challenge kind other than http-01 (core/crates/ployz-core/src/domain/certificate_policy.rs:215-224)".to_owned(),
-                Policy::NoDirectory => "Operator: sets a Certificate Policy whose directory_url is empty, so the policy has no directory (core/crates/ployz-core/src/domain/certificate_policy.rs:226-228)".to_owned(),
+                Policy::Refused => "Operator: sets a Certificate Policy that resolve_certificate_policy refuses, such as a challenge kind other than http-01".to_owned(),
+                Policy::NoDirectory => "Operator: sets a Certificate Policy whose directory_url is empty, so the policy has no directory (`ployz_core::domain::certificate_policy::resolve_certificate_policy`)".to_owned(),
                 Policy::Repaired => "Operator: repairs the Certificate Policy, which resolves to the built-in values again".to_owned(),
                 Policy::BuiltIn => unreachable!("no edit restores the start"),
             };
@@ -1767,9 +1762,9 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 " with hosts as it was (the ? on read_pass)"
             }
         ),
-        Some(Branch::HasMaterial { .. }) => "pass: the row holds material with no renewal due, so issued answers Issued and the hostname is skipped (core/crates/ployz-decide/src/issuance.rs:134-151, and the `Some(issuance)` arm of `issued` in `issue_wanted`)".to_owned(),
+        Some(Branch::HasMaterial { .. }) => "pass: the row holds material with no renewal due, so issued answers Issued and the hostname is skipped (`ployz_decide::issuance::issued`, and the `Some(issuance)` arm of `issued` in `issue_wanted`)".to_owned(),
         Some(Branch::Held { due, .. }) => format!(
-            "pass: {}{}; {}; issuance_gate answers Hold: {} (core/crates/ployz-core/src/domain/issuance.rs:77-84), so {}; {}",
+            "pass: {}{}; {}; issuance_gate answers Hold: {}, so {}; {}",
             found_words(machine),
             if due { ", past its rank delay" } else { "" },
             verdict_words(machine.verdict),
@@ -1777,12 +1772,12 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             if model.broken.hold_keeps_orderable_since {
                 "the hostname stays Waiting from that orderable_since (under Broken)"
             } else {
-                "the hostname is Held, and the next pass the gate lets through starts orderable_since again (core/crates/ployz-decide/src/issuance.rs:186, core/crates/ployz-decide/src/issuance.rs:197-203)"
+                "the hostname is Held, and the next pass the gate lets through starts orderable_since again (`ployz_decide::issuance::step`)"
             },
             wait()
         ),
         Some(Branch::Refused { record, .. }) => format!(
-            "pass: {}; {}; issuance_gate answers Refuse with {} (core/crates/ployz-core/src/domain/issuance.rs:85-97), so {}; {}; {}",
+            "pass: {}; {}; issuance_gate answers Refuse with {}, so {}; {}; {}",
             found_words(machine),
             verdict_words(machine.verdict),
             after
@@ -1793,7 +1788,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             if model.broken.refusal_keeps_orderable_since {
                 "the hostname stays Waiting from that orderable_since (under Broken)"
             } else {
-                "the hostname is Refused, and the next pass the gate lets through starts orderable_since again (core/crates/ployz-decide/src/issuance.rs:187-189, core/crates/ployz-decide/src/issuance.rs:197-203)"
+                "the hostname is Refused, and the next pass the gate lets through starts orderable_since again (`ployz_decide::issuance::step`)"
             },
             match record {
                 Record::Wrote if rank(after, who) > 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
@@ -1805,20 +1800,20 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             wait()
         ),
         Some(Branch::Waiting { gate, .. }) => format!(
-            "pass: {}; issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:77-86); {}, and issuance_action answers Nothing, as it has not passed (core/crates/ployz-decide/src/issuance.rs:204-207, core/crates/ployz-decide/src/issuance.rs:101-108), so the hostname is Waiting and not pushed; {}",
+            "pass: {}; issuance_gate answers Order, as {}; {}, and issuance_action answers Nothing, as it has not passed (`ployz_decide::issuance::step`), so the hostname is Waiting and not pushed; {}",
             verdict_words(machine.verdict),
             gate_words(gate),
             runs_from_words(machine),
             wait()
         ),
         Some(Branch::Pushed { gate, early, .. }) => format!(
-            "pass: {}; {}; {}, and issuance_action answers Order (core/crates/ployz-decide/src/issuance.rs:204-207); the hostname is pushed to to_order{}, and account and obtain are next",
+            "pass: {}; {}; {}, and issuance_action answers Order (`ployz_decide::issuance::step`); the hostname is pushed to to_order{}, and account and obtain are next",
             verdict_words(machine.verdict),
             if gate == Gate::Held {
                 "issuance_gate answers Hold, as the clock holds, but the pass orders along Direct as Order would (under Broken)".to_owned()
             } else {
                 format!(
-                    "issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:77-86)",
+                    "issuance_gate answers Order, as {}",
                     gate_words(gate)
                 )
             },
@@ -1831,7 +1826,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         ),
         Some(Branch::Rechecked { .. }) => "obtain: certificate_row re-reads the row, which holds material, and the recheck returns".to_owned(),
         Some(Branch::Issued { over_material, .. }) => format!(
-            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (obtain's order_certificate and publish_certificate, core/crates/ployzd/src/corrosion/store.rs, `publish_certificate`, core/crates/ployzd/src/corrosion/certificate.rs:259-261); the next pass skips the hostname",
+            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (obtain's order_certificate and publish_certificate, core/crates/ployzd/src/corrosion/store.rs, `publish_certificate`, `ployzd::corrosion::certificate::CertificateRow::issued`); the next pass skips the hostname",
             reread_words(over_material)
         ),
         Some(Branch::Failed {
@@ -1931,7 +1926,7 @@ mod tests {
     /// fails; the record writes an Authority clock, 60 s out. Rank 1's pass is held. At 30 s both
     /// are held, and at 60 s the clock has passed. Before this change rank 1's held passes kept
     /// their first pass's instant and `poll_wait`, a function `wake` replaced, woke it at 30 s and 60 s; now `wake` answers
-    /// when the clock passes (core/crates/ployz-decide/src/issuance.rs:246-256), and a container change can wake a loop at any time
+    /// when the clock passes (`ployz_decide::issuance::wake`), and a container change can wake a loop at any time
     /// (`changes.next()` in `run`).
     const THE_HOLD: [Action; 9] = [
         pass(R0),
@@ -1964,8 +1959,8 @@ mod tests {
     }
 
     /// Rank 0's order fails, and its record writes an Authority clock, 60 s out (`issue_wanted`'s failure record after `join_all`).
-    /// Rank 1's passes are held (core/crates/ployz-decide/src/issuance.rs:186). Once the clock passes, rank 0 pushes the hostname, and
-    /// rank 1's first pass the gate lets through starts its rank delay (core/crates/ployz-decide/src/issuance.rs:197-203), so it pushes a
+    /// Rank 1's passes are held (`ployz_decide::issuance::step`). Once the clock passes, rank 0 pushes the hostname, and
+    /// rank 1's first pass the gate lets through starts its rank delay, so it pushes a
     /// tick later. On the code as it was, rank 1's held passes kept `orderable_since`, and it
     /// pushed in the same tick as rank 0, with no rank delay since its last held pass.
     ///
@@ -2091,7 +2086,7 @@ mod tests {
     /// rank 0 refuses and records a DoesNotResolve clock, 60 s out, and rank 1's pass is held.
     /// DNS is fixed, and at 30 s both probes reach the Cluster, which differs from the clock's
     /// refusal, so the gate opens with 30 s still on the clock
-    /// (core/crates/ployz-core/src/domain/issuance.rs:77-84).
+    /// (`ployz_core::domain::issuance::issuance_gate`).
     const THE_VERDICT_CHANGE: [Action; 9] = [
         Action::Probe(R0),
         Action::Probe(R1),
@@ -2375,7 +2370,7 @@ mod tests {
         harness::assert_reached(COVERAGE, &model, &checker);
     }
 
-    /// The gate's hold (core/crates/ployz-decide/src/issuance.rs:186). With it read as an order along Direct, a pass orders while the
+    /// The gate's hold (`ployz_decide::issuance::step`). With it read as an order along Direct, a pass orders while the
     /// clock holds. A held DoesNotResolve verdict has no route to order along, so the break
     /// orders along Direct, the model's only route; the second path shows it.
     #[test]
@@ -2424,7 +2419,7 @@ mod tests {
         pass(R1),
     ];
 
-    /// The refusal's restart (core/crates/ployz-decide/src/issuance.rs:197-203). Without it, rank 1 refuses, the verdict changes, and rank
+    /// The refusal's restart (`ployz_decide::issuance::step`). Without it, rank 1 refuses, the verdict changes, and rank
     /// 1 is Order-due at once on the `orderable_since` its refused pass started. With it, rank 1
     /// waits out its rank delay.
     #[test]
@@ -2460,7 +2455,7 @@ mod tests {
         );
     }
 
-    /// The hold's restart (core/crates/ployz-decide/src/issuance.rs:197-203). Without it, the authority hold and the verdict change let
+    /// The hold's restart (`ployz_decide::issuance::step`). Without it, the authority hold and the verdict change let
     /// rank 1 push with rank 0.
     #[test]
     fn a_held_pass_restarts_the_rank_delay() {
