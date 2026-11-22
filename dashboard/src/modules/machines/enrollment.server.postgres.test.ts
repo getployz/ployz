@@ -25,6 +25,7 @@ import {
   completeMachineEnrollment,
   publishMachineEnrollment,
   enrollMachine,
+  JoinSlots,
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
   mintCliMachineEnrollment,
@@ -239,9 +240,9 @@ function enrollmentTestClient(
         return read;
       });
     }))),
-    enroll: (input: Parameters<typeof enrollMachine>[0]) =>
+    enroll: (input: Parameters<typeof enrollMachine>[0], joinSlots?: number) =>
       runtime.runPromise(
-        Effect.result(enrollMachine(input)),
+        Effect.result(joinSlots === undefined ? enrollMachine(input) : enrollMachine(input).pipe(Effect.provideService(JoinSlots, joinSlots))),
       ),
     completeFounding: (input: Parameters<typeof completeMachineEnrollment>[0]) =>
       runtime.runPromise(
@@ -505,7 +506,7 @@ describe("organization enrollment coordinator", () => {
 
     const waiterTokens = await Promise.all(Array.from({ length: 19 }, () => issueToken()));
     const waiters = await Promise.all(
-      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1), joinSlots: 20 })),
+      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1) }, 20)),
     );
     expect(
       waiters.every(
@@ -528,9 +529,7 @@ describe("organization enrollment coordinator", () => {
 
     const calls = fake.registerCalls();
     fake.connection.error = new Error("Candidate unreachable");
-    const indeterminate = await coordinator.enroll({
-      token: await issueToken(), identity: identity(31), joinSlots: 20,
-    });
+    const indeterminate = await coordinator.enroll({ token: await issueToken(), identity: identity(31) }, 20);
     expect(indeterminate).toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_UNREACHABLE } });
     expect(fake.registerCalls()).toBe(calls);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
@@ -2183,7 +2182,7 @@ describe("organization enrollment coordinator", () => {
 
   describe("join line behind the founder", () => {
     const enrollIn = (fake: ReturnType<typeof fakeSession>, token: string, index: number) =>
-      fake.coordinator.enroll({ token, identity: identity(index), joinSlots: 1 });
+      fake.coordinator.enroll({ token, identity: identity(index) }, 1);
     const queued = (ahead: number) => ({ success: { kind: "not_yet", retryAfter: 5, reason: "queued", ahead } });
 
     it("lets one join at a time and admits the line in order as joins complete", async () => {
