@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Semaphore } from "effect";
-import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
+import { StoreRefused, type StoreCall, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
@@ -24,6 +24,11 @@ import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
 type Row = typeof volumePlacement.$inferSelect;
+
+/** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
+export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
+  ? callStore(organizationId, null, call)
+  : callStore(organizationId, by.userId, call, { approval: "not_required", permissions: by.permissions, environments: by.environments });
 
 export type PlacementWrite = { readonly ok: true; readonly placement: PlacementRow } | { readonly ok: false; readonly refusal: StoreRefusal };
 type PlacementDiscard = { readonly ok: true; readonly placement: PlacementRow | null } | { readonly ok: false; readonly refusal: StoreRefusal };

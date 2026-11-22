@@ -234,13 +234,14 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
-/** Why step `index` can't go to the Servers now, checked before anything is sent; null when it can. */
-const stepRefusal = Effect.fn("Proposals.stepRefusal")(function* (row: ProposalRow, step: ProposalStep) {
+/** The Service step `index` acts on, or why it can't go to the Servers now, checked before anything is sent. */
+const stepService = Effect.fn("Proposals.stepService")(function* (row: ProposalRow, step: ProposalStep) {
   const beyond = beyondEnvironments(row.callerEnvironments ?? undefined, { environment: row.environment });
-  if (beyond !== null) return beyond;
+  if (beyond !== null) return { refusal: beyond };
   const found = yield* findService(row.organizationId, row.environmentId, step.service);
-  if (found === null) return "The service is gone.";
-  return found.namespace !== step.namespace || found.runtime !== step.runtime ? `${step.service} changed since it was approved.` : null;
+  if (found === null) return { refusal: "The service is gone." };
+  if (found.namespace !== step.namespace || found.runtime !== step.runtime) return { refusal: `${step.service} changed since it was approved.` };
+  return { found };
 });
 
 type StepStart = { readonly started: true } | { readonly later: true } | { readonly halt: ProposalHalt };
@@ -259,11 +260,10 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
   if (asker === null) return { halt: yield* halted(row, index, "Whoever asked is no longer in the Organization.") } satisfies StepStart;
   const halt = (reason: string) => Effect.map(halted(row, index, reason), (halt): StepStart => ({ halt }));
   return yield* Effect.gen(function* () {
-    const refusal = yield* stepRefusal(row, step);
-    if (refusal !== null) return yield* halt(refusal);
+    const checked = yield* stepService(row, step);
+    if (checked.found === undefined) return yield* halt(checked.refusal);
+    const { found } = checked;
     const access = yield* requireAccessById({ userId: asker }, row.organizationId, OPERATIONS[`service.${step.verb}`].requires);
-    const found = yield* findService(row.organizationId, row.environmentId, step.service);
-    if (found === null) return yield* halt("The service is gone.");
     const body = { environmentId: row.environmentId, service: step.service, only: step.only };
     const admission = yield* actService(
       askerCaller(access, row.credentialId),

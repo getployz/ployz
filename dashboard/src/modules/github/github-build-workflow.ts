@@ -74,6 +74,11 @@ export function githubBuildId(deploymentId: string, service: string) {
   return `${deploymentId}.${service}`;
 }
 
+/** The Deployment a build id (`githubBuildId`) belongs to. */
+export function deploymentOfBuild(buildId: string) {
+  return buildId.slice(0, buildId.indexOf("."));
+}
+
 /**
  * Readiness of one repository for GitHub builds, as Cloud last checked it. `outdated`: the default branch holds a
  * `ployz-build.yml` that is not one Ployz offers, such as one calling `getployz/build@v1`.

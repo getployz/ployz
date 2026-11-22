@@ -2,12 +2,12 @@ import { githubInstallationReceived, githubInstallationRepositoriesReceived, git
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { requiredEventData } from "#/modules/inngest/define-event";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
-import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
+import { stopGithubInstallationBuilds } from "#/modules/config-store/store-github-builds.server";
 import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
 } from "#/modules/github/github-installation.server";
+import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubInstallationWebhookStepTools = Pick<

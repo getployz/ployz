@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
-import { refusedPublicly } from "#/modules/config-store/config-store.server";
+import { refusedPublicly } from "#/modules/config-store/store-refusal";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, placementRefusal, stageOffServer, unlessOriginRefused, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
