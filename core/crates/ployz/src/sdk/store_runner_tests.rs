@@ -1751,3 +1751,201 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
         }
     }
 }
+
+// Catches a runner that drops its claim's recreate list once a build sends the Deploy
+// through preparation: a key rotation that carries `web` beside the Git-built `api` it
+// references, whose image a receipt reuses, must still replace `web`'s unchanged Container.
+#[tokio::test]
+async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lists() {
+    use crate::sdk::test_support as support;
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Admit, AuthorizedRepository, Change, CreateGitService, CreateProject, CreateService,
+        Deploy, Edit, EnvironmentRef, OrganizationId, ProjectId, ProjectName, SealingKey,
+        ServiceLineageId, SettingPath, Trusted,
+    };
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
+    let actor = Actor::system(OrganizationId::parse("test").unwrap());
+    store
+        .write(
+            &actor,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("test").unwrap(),
+                default_environment: environment(),
+                region: None,
+            },
+        )
+        .unwrap();
+    let (api, web) = (
+        ServiceName::parse("api").unwrap(),
+        ServiceName::parse("web").unwrap(),
+    );
+    let repository = ployz_store::RepositoryName::parse("acme/api").unwrap();
+    store
+        .write_trusted(
+            &actor,
+            &CreateGitService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: api.clone(),
+                repository: repository.clone(),
+                branch: None,
+            },
+            &Trusted {
+                repositories: vec![AuthorizedRepository {
+                    repository,
+                    repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+                    access: ServiceGitAccess::Public,
+                    default_branch: ployz_store::BranchName::parse("main").unwrap(),
+                    branches: Vec::new(),
+                }],
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &actor,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: web.clone(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &actor,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: [
+                    ("api.buildMethod", "dockerfile"),
+                    ("api.env.PORT", "80"),
+                    ("web.env.API_PORT", "${{ api.PORT }}"),
+                ]
+                .into_iter()
+                .map(|(path, value)| Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value: serde_json::json!(value),
+                })
+                .collect(),
+            },
+        )
+        .unwrap();
+    let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000003").unwrap();
+    store
+        .write_trusted(
+            &actor,
+            &Admit::Deploy(Deploy {
+                id: deployment.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                recreate: vec![web.clone()],
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let commit = "a".repeat(40);
+    store
+        .pin(
+            &deployment,
+            &[(api.clone(), CommitSha::parse(commit.as_str()).unwrap())].into(),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let run = Run {
+        store,
+        deployment,
+        runner: RunnerId::parse("owner").unwrap(),
+        over: Latch::new(),
+        reader: None,
+    };
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+
+    // A Machine that builds and one that runs `web`'s Container, unchanged since the
+    // Deploy that started it.
+    let root = std::env::temp_dir().join(format!("ployz-recreate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let mut builder = support::machine('a', "builder");
+    let mut runs = support::machine('b', "application");
+    builder.machine.accepts_services = false;
+    runs.machine.accepts_builds = false;
+    builder.machine.runtime.architecture = "x86_64".into();
+    runs.machine.runtime.architecture = "x86_64".into();
+    let mut service = support::DeployService::new(builder.clone())
+        .with_machines(vec![builder, runs.clone()])
+        .with_exec_exit(0);
+    service.builds = Some(Arc::new(support::BuildFixture::default()));
+    let spec = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name == web)
+        .unwrap();
+    let mut running =
+        support::running_container_in(&runs, spec, claimed.intent.namespace.as_str(), 'c');
+    running
+        .try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+        .unwrap();
+    service.listed_containers().lock().unwrap().push(running);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    // The image an earlier Deployment built for `api`, as its receipt names it.
+    let built = session
+        .prepare(PreparationInput {
+            deployment: claimed.input.clone(),
+            sources: BTreeMap::from([(api.clone(), root.clone())]),
+            source_commits: BTreeMap::from([(api.clone(), commit)]),
+            ..PreparationInput::default()
+        })
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipt = built.build_receipts().get(&api).unwrap().clone();
+    built.close();
+
+    let ran = pins(&claimed.ran);
+    let prepared = run
+        .prepare(
+            &session,
+            claimed,
+            Vec::new(),
+            (BTreeMap::from([(api.clone(), receipt)]), ran),
+        )
+        .await
+        .unwrap_or_else(|unprepared| panic!("{}", unprepared.error));
+    let replaced: Vec<_> = prepared
+        .preview()
+        .operations
+        .iter()
+        .filter_map(|row| match &row.operation {
+            DeployOperation::ReplaceContainer(replace) => Some(replace.spec.name.clone()),
+            _ => None,
+        })
+        .collect();
+    prepared.close();
+    session.close().await;
+    server.abort();
+    std::fs::remove_dir_all(root).unwrap();
+
+    assert_eq!(replaced, vec![web]);
+}
