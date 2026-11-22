@@ -12,9 +12,9 @@ use ployz_core::{
     DeviceCode, ManagementScope, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec,
     RunTarget, Sealing, Start,
     authority::{
-        Approver, AuthorityRefusal, Budget, RuleId, RuleProof, ServiceVersion, Signed,
-        SigningPublicKey, Timestamp, TrustedKeys, VerifiedBuild, VersionFacts, deploy::Creation,
-        needs_signature, refusal::field, version,
+        Approver, AuthorityRefusal, Budget, Reach, RuleId, RuleProof, ServiceVersion, Signed,
+        SigningPublicKey, Timestamp, TrustedKeys, ValueReach, VerifiedBuild, VersionFacts,
+        deploy::Creation, needs_signature, refusal::field, version,
     },
 };
 use ployz_decide::service_floor::{self, Refused, Signature};
@@ -30,10 +30,14 @@ use crate::docker::ContainerRuntime;
 pub(crate) enum AdmittedBy {
     /// The keys whose signature admitted it, never empty, each with the newest time it
     /// signed: the signers of its versions, or the Device whose own connection asked, at
-    /// the time it asked.
+    /// the time it asked. Each one covered all of `reach` alone.
     Keys {
         service: QualifiedService,
         keys: Vec<(KeptKey, Timestamp)>,
+        /// What the Container reaches, which a key must still cover alone at a start.
+        /// `None` for a Container kept before this was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reach: Option<Reach>,
     },
     /// An automatic deploy rule at one generation, signed by `signer`. It admits while
     /// that key is trusted and no newer generation of the rule has reached this Machine.
@@ -63,18 +67,20 @@ pub(crate) enum KeptKey {
 
 impl KeptKey {
     fn trusted(self, trusted: &TrustedKeys) -> bool {
-        match self {
-            Self::Device(key) => trusted.signing_keys().any(|trusted| trusted == key),
-            Self::Passkey(code) => trusted
-                .passkeys()
-                .any(|trusted| trusted.passkey.code() == code),
-        }
+        trusted.of(&self.approver()).is_some()
     }
 
     fn untrusted(self) -> AuthorityRefusal {
         match self {
             Self::Device(key) => AuthorityRefusal::UnknownKey { key },
             Self::Passkey(_) => AuthorityRefusal::UnknownPasskey,
+        }
+    }
+
+    const fn approver(self) -> Approver {
+        match self {
+            Self::Device(key) => Approver::Signing(key),
+            Self::Passkey(code) => Approver::Passkey(code),
         }
     }
 }
@@ -97,13 +103,14 @@ pub(crate) struct Standing {
 }
 
 impl Standing {
-    /// Whether `by` still admits here: one of its keys is trusted and signed at or after
+    /// Whether `by` still admits here: one of its keys still covers its Service and all
+    /// it reaches alone, as [`TrustedKeys::covers_kept`] decides, and signed at or after
     /// its Service's floor, and for a rule its signer is trusted, its generation is still
     /// the newest this Machine has seen and it was issued at or after the floor.
     ///
     /// # Errors
     /// The outer error is `unread`'s, when the record cannot be read. The inner one is the
-    /// refusal: the first key's when none is trusted, the floor when every trusted one is
+    /// refusal: the first key's when none covers, the floor when every covering one is
     /// below it, a generation for a rule a newer one replaced, an admission for a rule
     /// this Machine has no mark of, and no Cluster identity when the Sealing Key file can't
     /// be read on a Machine that keeps a floor.
@@ -140,17 +147,24 @@ impl Standing {
             _ => Ok(()),
         };
         Ok(match by {
-            AdmittedBy::Keys { service, keys } => {
+            AdmittedBy::Keys {
+                service,
+                keys,
+                reach,
+            } => {
                 let floor = floor(service)?;
-                let held = keys.iter().map(|(key, at)| (key.trusted(&trusted), *at));
+                let covers =
+                    |key: &KeptKey| trusted.covers_kept(&key.approver(), service, reach.as_ref());
+                let held = keys.iter().map(|(key, at)| (covers(key).is_ok(), *at));
                 match floor {
                     _ if service_floor::keys_stand(held, floor) => Ok(()),
-                    Some(floor) if keys.iter().any(|(key, _)| key.trusted(&trusted)) => {
+                    Some(floor) if keys.iter().any(|(key, _)| covers(key).is_ok()) => {
                         Err(AuthorityRefusal::Forgotten { floor })
                     }
                     _ => Err(keys
                         .first()
-                        .map_or(AuthorityRefusal::UnknownPasskey, |(key, _)| key.untrusted())),
+                        .and_then(|(key, _)| covers(key).err())
+                        .unwrap_or(AuthorityRefusal::UnknownPasskey)),
                 }
             }
             AdmittedBy::Rule {
@@ -250,6 +264,18 @@ impl AdmittedSpec {
         self.verified
     }
 
+    /// Whether the admission covers opening `value`: a version's signers covered the
+    /// Sealed parts it kept, and a rule's signer or Full access covers every one.
+    pub(crate) fn opens(&self, value: &ValueReach) -> bool {
+        match &self.by {
+            AdmittedBy::Keys { reach, .. } => reach
+                .as_ref()
+                .is_some_and(|reach| reach.values.contains(value)),
+            AdmittedBy::Rule { .. } | AdmittedBy::Local { .. } => true,
+            AdmittedBy::Free => false,
+        }
+    }
+
     /// Whether the admission still holds, checked again right before Docker creates the
     /// Container: a key that admitted it may have been removed, or a newer generation of
     /// its rule may have arrived, during the image pull.
@@ -274,6 +300,22 @@ impl AdmittedSpec {
     #[cfg(test)]
     pub(crate) fn test_signed(namespace: &Namespace, spec: &ResolvedServiceSpec) -> Self {
         Self::own(namespace, spec).unwrap()
+    }
+
+    /// A version's admission of no spec in particular that reaches `reach`, for a test
+    /// that opens values directly.
+    #[cfg(test)]
+    pub(crate) fn test_reaching(reach: Reach) -> Self {
+        Self {
+            spec: [0; 32],
+            by: AdmittedBy::Keys {
+                service: QualifiedService::parse("app/web").unwrap(),
+                keys: Vec::new(),
+                reach: Some(reach),
+            },
+            standing: None,
+            verified: None,
+        }
     }
 
     /// An admission of no spec in particular, for a test that opens values directly.
@@ -366,7 +408,7 @@ impl LocalMachine {
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget)? {
-                Ok(keys) => return admitted(AdmittedBy::Keys { service, keys }, None),
+                Ok(by) => return admitted(by, None),
                 // A creation at Full access would hide that the forget failed.
                 Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
                     return Err(refused(refusal));
@@ -375,7 +417,9 @@ impl LocalMachine {
             }
         }
         if matches!(presented, Presented::FullAccess { .. }) {
-            return admitted(self.full_access(service)?, None);
+            let reach = Reach::of(new.slot.kind, &new.resolved_spec)
+                .map_err(|_| refused(AuthorityRefusal::Mismatch { field: "a payload" }))?;
+            return admitted(self.full_access(service, reach)?, None);
         }
         if let Some(rule) = rule {
             let admitted_rule = self
@@ -392,9 +436,10 @@ impl LocalMachine {
         }
     }
 
-    /// Every key that signed one of `versions` for `new`'s spec, among those this Machine
-    /// trusts, with the newest time it signed one that `service`'s floor and this
-    /// Machine's clock admit. A version marked to forget raises the floor here first, in
+    /// The admission of `new`'s spec under `versions`: every key that signed one of them,
+    /// among those this Machine trusts, with the newest time it signed one that
+    /// `service`'s floor and this Machine's clock admit, and what the spec reaches, which
+    /// each covers alone. A version marked to forget raises the floor here first, in
     /// the transaction that reads it.
     ///
     /// # Errors
@@ -407,7 +452,7 @@ impl LocalMachine {
         service: &QualifiedService,
         versions: &[Signed<ServiceVersion>],
         budget: &mut Budget,
-    ) -> Result<Result<Vec<(KeptKey, Timestamp)>, AuthorityRefusal>, Error> {
+    ) -> Result<Result<AdmittedBy, AuthorityRefusal>, Error> {
         let record = self.record();
         let cluster = self.cluster_key(record.phase());
         let approved = match version::verify(
@@ -450,7 +495,11 @@ impl LocalMachine {
             keys,
             approved.digest.short(),
         );
-        Ok(Ok(keys))
+        Ok(Ok(AdmittedBy::Keys {
+            service: service.clone(),
+            keys,
+            reach: Some(approved.reach),
+        }))
     }
 
     /// What a kept admission is checked against when it is used.
@@ -500,7 +549,7 @@ impl LocalMachine {
     /// Returns [`Error::NeedsFullScope`] when the connection's key is no longer a Device
     /// here: it was removed after the call arrived, and [`Error::ApprovalRecord`] when the
     /// floor cannot be read.
-    fn full_access(&self, service: QualifiedService) -> Result<AdmittedBy, Error> {
+    fn full_access(&self, service: QualifiedService, reach: Reach) -> Result<AdmittedBy, Error> {
         let record = self.record();
         let at = match self.cluster_key(record.phase()) {
             Some(cluster) => {
@@ -523,6 +572,7 @@ impl LocalMachine {
             .map(|device| AdmittedBy::Keys {
                 service,
                 keys: vec![(KeptKey::Device(device.into()), at)],
+                reach: Some(reach),
             })
             .ok_or(Error::NeedsFullScope)
     }
@@ -564,9 +614,13 @@ impl LocalMachine {
                 let spec =
                     AdmittedSpec::hash(namespace, resolved_spec).map_err(Error::DeployRefused)?;
                 let service = QualifiedService::new(namespace.clone(), resolved_spec.name.clone());
+                let reach =
+                    Reach::of(ContainerKind::ServiceContainer, resolved_spec).map_err(|_| {
+                        Error::DeployRefused(AuthorityRefusal::Mismatch { field: "a payload" })
+                    })?;
                 Ok(Some(AdmittedSpec {
                     spec,
-                    by: self.full_access(service)?,
+                    by: self.full_access(service, reach)?,
                     standing: Some(self.standing()),
                     verified: None,
                 }))
@@ -705,6 +759,16 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
                 "The {kind} key {code} that approved this deploy may not approve {what} here."
             );
         }
+        AuthorityRefusal::VolumeNotGranted { code, kind, volume } => {
+            return format!(
+                "The {kind} key {code} that approved this deploy may not mount volume {volume}. A person adds the volume to the key's grant, or deploys this version themselves."
+            );
+        }
+        AuthorityRefusal::Mismatch {
+            field: field::KEPT_REACH,
+        } => {
+            "A CI or agent key approved this container before this server kept what it reaches, so the server no longer starts it. Deploy it again."
+        }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }
         | AuthorityRefusal::Mismatch { .. }
@@ -715,3 +779,7 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
     };
     text.to_owned()
 }
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod tests;

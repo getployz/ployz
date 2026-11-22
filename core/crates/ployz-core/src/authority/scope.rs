@@ -13,8 +13,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::{SigningPublicKey, canonical::Timestamp, trusted_key::PasskeyApprover};
-use crate::{DockerVolumeName, Namespace, ServiceName, VolumeOrigin};
+use super::{
+    SigningPublicKey,
+    canonical::{CanonicalError, Timestamp},
+    trusted_key::PasskeyApprover,
+};
+use crate::{
+    ContainerKind, DockerVolumeName, Namespace, ResolvedServiceSpec, SealedScope, ServiceName,
+    VolumeOrigin,
+};
 
 /// One thing a key may do.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -206,6 +213,9 @@ pub enum Ask<'a> {
         /// says. A signed body names only a digest, so only the verifier holding the
         /// spec sets this.
         reaches_host: bool,
+        /// The Sealed parts and persistent Volumes the spec reaches. Empty until the
+        /// verifier holds the spec.
+        reach: &'a Reach,
     },
     Rule,
     Key,
@@ -248,9 +258,9 @@ impl Ask<'_> {
 }
 
 impl KeyPlaces {
-    /// Whether these places hold what `ask` reaches: a version's Service, or the whole
-    /// Cluster for every other statement.
-    fn hold(&self, ask: Ask<'_>) -> bool {
+    /// Whether one of these places holds what `ask` reaches: a version's Service with
+    /// every one of `values`, or the whole Cluster for every other statement.
+    fn hold(&self, ask: Ask<'_>, values: &[ValueReach]) -> bool {
         match (self, ask) {
             (Self::Cluster, _) => true,
             (
@@ -258,29 +268,157 @@ impl KeyPlaces {
                 Ask::Version {
                     namespace, service, ..
                 },
-            ) => places.iter().any(|place| {
-                &place.namespace == namespace
-                    && place
-                        .service
-                        .as_ref()
-                        .is_none_or(|held| &held.name == service)
-            }),
+            ) => places
+                .iter()
+                .any(|place| place.holds(namespace, service, values)),
             (Self::Only(_), _) => false,
         }
     }
 }
 
-/// Whether a key of `kind` holding `scope` may approve `ask`.
-pub(super) fn allows(kind: KeyKind, scope: Option<&KeyScope>, ask: Ask<'_>) -> bool {
-    let (caps, places) = match scope {
-        Some(scope) => (scope.caps, &scope.places),
+impl KeyPlace {
+    /// Whether this one place holds a version of `service` in `namespace` that opens
+    /// `values`: each part sealed in this place's Environment, and under a Service place,
+    /// each sealed for that Service alone.
+    fn holds(&self, namespace: &Namespace, service: &ServiceName, values: &[ValueReach]) -> bool {
+        &self.namespace == namespace
+            && self
+                .service
+                .as_ref()
+                .is_none_or(|held| &held.name == service)
+            && values.iter().all(|value| {
+                value.environment == self.environment
+                    && self
+                        .service
+                        .as_ref()
+                        .is_none_or(|held| value.scope == SealedScope::Service(held.id))
+            })
+    }
+}
+
+/// Why [`allows`] refused.
+pub(super) enum Denied {
+    /// The key's kind, caps or places don't reach what the statement asks.
+    Out,
+    /// A place holds the version, but none holds it with every Sealed part it opens.
+    Values,
+    /// The key's grant names no entry for a Volume the spec mounts.
+    Volume(DockerVolumeName),
+}
+
+/// Whether a key of `kind` may approve `ask`. `grant` is its grant, `None` for a Device or
+/// passkey, which holds its kind's ceiling over the whole Cluster and every Volume.
+pub(super) fn allows(kind: KeyKind, grant: Option<&Grant>, ask: Ask<'_>) -> Result<(), Denied> {
+    let (caps, places) = match grant {
+        Some(grant) => (grant.scope.caps, &grant.scope.places),
         None => (CapSet::ALL, &KeyPlaces::Cluster),
     };
-    (kind.whole_cluster() || ask.scoped())
+    let reaches = (kind.whole_cluster() || ask.scoped())
         && ask.caps().within(caps)
         && ask.caps().within(kind.ceiling())
         && !(kind == KeyKind::Agent && *places == KeyPlaces::Cluster)
-        && places.hold(ask)
+        && places.hold(ask, &[]);
+    if !reaches {
+        return Err(Denied::Out);
+    }
+    let Ask::Version { reach, .. } = ask else {
+        return Ok(());
+    };
+    if !places.hold(ask, &reach.values) {
+        return Err(Denied::Values);
+    }
+    if let Some(grant) = grant
+        && let Some(missing) = reach
+            .volumes
+            .iter()
+            .find(|volume| !grant.volumes.contains(volume))
+    {
+        return Err(Denied::Volume(missing.name.clone()));
+    }
+    Ok(())
+}
+
+/// One Sealed part a Container opens: the Environment it was sealed in, and whether it
+/// was authored as Shared or for one Service, by that Service's authored ID.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValueReach {
+    pub environment: Uuid,
+    pub scope: SealedScope,
+}
+
+/// What a Container reaches that a CI or agent key's grant must hold: every Sealed part
+/// its values open, hook values included, and every persistent Volume it mounts. A
+/// Machine keeps it with the admission, so a later start checks the same reach against
+/// the key's scope then.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reach {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<ValueReach>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<GrantVolume>,
+}
+
+impl Reach {
+    /// Nothing, as a version asks before its verifier holds the spec.
+    #[must_use]
+    pub fn none() -> &'static Self {
+        static NONE: Reach = Reach {
+            values: Vec::new(),
+            volumes: Vec::new(),
+        };
+        &NONE
+    }
+
+    /// What a Container of `kind` made from `spec` reaches. A Sealed part counts under the
+    /// spec's Sealed identity: a spec with none opens no Sealed value. A mount counts for
+    /// an Ordinary or Provisioned Volume, by the origin it expects and its physical name.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when a Volume's birth has no canonical form.
+    pub fn of(kind: ContainerKind, spec: &ResolvedServiceSpec) -> Result<Self, CanonicalError> {
+        let mut reach = Self::default();
+        if let Some(identity) = &spec.container.sealed_identity {
+            let hook = match kind {
+                ContainerKind::PreDeployHook => spec.pre_deploy.as_ref(),
+                ContainerKind::ServiceContainer => None,
+            };
+            let values = spec
+                .container
+                .environment
+                .values()
+                .chain(hook.into_iter().flat_map(|hook| hook.environment.values()));
+            for part in values.flat_map(crate::EnvValue::sealed_parts) {
+                push_new(
+                    &mut reach.values,
+                    ValueReach {
+                        environment: identity.environment,
+                        scope: part.scope,
+                    },
+                );
+            }
+        }
+        for volume in spec.volume_graph().mounted_volumes() {
+            let Some(name) = volume.source.managed_docker_volume_name() else {
+                continue;
+            };
+            push_new(
+                &mut reach.volumes,
+                GrantVolume {
+                    origin: VolumeOrigin::expected(volume.source.birth(), name)?,
+                    name: name.clone(),
+                },
+            );
+        }
+        Ok(reach)
+    }
+}
+
+fn push_new<T: PartialEq>(list: &mut Vec<T>, item: T) {
+    if !list.contains(&item) {
+        list.push(item);
+    }
 }
 
 /// The kinds a grant holds.

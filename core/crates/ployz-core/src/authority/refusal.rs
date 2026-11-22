@@ -6,7 +6,7 @@ use super::admission::DataReach;
 use super::canonical::Timestamp;
 use super::keys::{Purpose, SigningPublicKey};
 use super::scope::KeyKind;
-use crate::DeviceCode;
+use crate::{DeviceCode, DockerVolumeName};
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AuthorityRefusal {
@@ -26,6 +26,13 @@ pub enum AuthorityRefusal {
         code: DeviceCode,
         kind: KeyKind,
         what: &'static str,
+    },
+    /// The key is a grant whose Volume list names no entry for a Volume the spec mounts.
+    #[error("the {kind} key {code} may not mount Volume {volume} here")]
+    VolumeNotGranted {
+        code: DeviceCode,
+        kind: KeyKind,
+        volume: DockerVolumeName,
     },
     #[error("the spec {reach}, and nothing signed it")]
     NeedsSignature { reach: DataReach },
@@ -69,4 +76,6 @@ pub mod field {
     pub const SYSTEM: &str = "the system Namespace";
     /// Signed more than ten minutes past this Machine's clock.
     pub const AHEAD: &str = "a signing time";
+    /// A Container a CI or agent key admitted before this Machine kept what it reaches.
+    pub const KEPT_REACH: &str = "a kept reach";
 }

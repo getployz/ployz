@@ -362,6 +362,7 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }
         | AuthorityRefusal::OutOfScope { .. }
+        | AuthorityRefusal::VolumeNotGranted { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::Unsigned { .. }
         | AuthorityRefusal::NeedsSignature { .. }
