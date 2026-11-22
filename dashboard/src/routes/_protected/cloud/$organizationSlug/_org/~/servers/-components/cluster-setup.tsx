@@ -11,7 +11,7 @@ import { Switch } from "#/components/ui/switch";
 import { toErrorMessage } from "#/lib/error-message";
 import { clusterNameProblem } from "#/modules/cluster-name/cluster-name";
 import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
-import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
+import { normalizeZone, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import { checkCloudflareServerFn, listCloudflareZonesServerFn } from "#/modules/ingress/doors.functions";
 import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { useRoleGate } from "#/modules/organization/members.queries";

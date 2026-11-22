@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { ClusterName, RenameClusterInput } from "#/modules/cluster-name/cluster-name";
-import { DOORS_WANTS, SwitchDoorsInput } from "#/modules/ingress/doors";
+import { SwitchDoorsInput } from "#/modules/ingress/doors";
+import { DOORS_WANTS } from "#/modules/ingress/doors.states";
 import { PRIVATE_ACCESS_WANTS, SetPrivateAccessInput } from "#/modules/private-access/private-access";
 import { EnqueueMachineRemoveInput, ForgetServerInput, ForgetServersInput } from "#/modules/machines/machine-removal";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";

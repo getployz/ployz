@@ -5,8 +5,8 @@ import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk"
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/cluster-domain/ingress-running";
-import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/ingress/door-frames";
+import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
 import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
@@ -18,8 +18,6 @@ import {
   type ClusterIngressView,
   DOORS_PENDING_LIMIT_MS,
   DOORS_RUNNING_LIMIT_MS,
-  type DoorsState,
-  type DoorsWant,
   type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
@@ -35,6 +33,7 @@ import {
   unknownHostnames,
   wantWords,
 } from "#/modules/ingress/doors";
+import type { DoorsState, DoorsWant } from "#/modules/ingress/doors.states";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";

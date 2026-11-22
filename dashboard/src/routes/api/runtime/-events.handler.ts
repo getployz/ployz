@@ -1,10 +1,12 @@
 import { Effect } from "effect";
+import { clusterDomainSyncTap } from "#/modules/cluster-domain/sync-request.server";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
 import { openRuntimeWatch } from "#/modules/runtime/runtime-watch.server";
 
 /** The stream of one Organization's runtime watch. Closing the watch outlives this Effect, so it keeps this one's services. */
 export const handleRuntimeEventsRequest = Effect.fn("Runtime.events")(function* (request: Request, organizationSlug: string) {
-  const watch = yield* openRuntimeWatch({ request, organizationSlug });
+  const tap = yield* clusterDomainSyncTap();
+  const watch = yield* openRuntimeWatch({ request, organizationSlug, tap });
   if (watch.status !== "connected") return createRuntimeEventsResponse({ request, ...watch });
   const services = yield* Effect.context<never>();
   return createRuntimeEventsResponse({

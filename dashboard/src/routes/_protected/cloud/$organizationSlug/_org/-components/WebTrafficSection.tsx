@@ -10,17 +10,17 @@ import { Input } from "#/components/ui/input";
 import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
-import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
+import { normalizeZone, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import {
   type CloudflareSetup,
   type ClusterIngressObservation,
-  type DoorsWant,
   doorWords,
   holdingCount,
   type LatestDoorsChange,
   switchProblem,
   switchProgress,
 } from "#/modules/ingress/doors";
+import type { DoorsWant } from "#/modules/ingress/doors.states";
 import { listCloudflareZonesServerFn, setUpCloudflareServerFn, switchDoorsServerFn } from "#/modules/ingress/doors.functions";
 import {
   clusterIngressKeys,

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { INGRESS } from "#/modules/cluster-domain/ingress-running";
+import { INGRESS } from "#/modules/ingress/door-frames";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeService, useRuntimeStatus } from "#/providers/runtime-provider";
 import type { WebTrafficWant } from "#/modules/machines/server-web-traffic-states";

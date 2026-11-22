@@ -1,8 +1,8 @@
 import { Effect, Redacted, type Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { checkEditPermissions, CloudflareError, CloudflareHttp, createRecord, createTunnel, deleteTunnel, listZones, refusalWords, tunnelToken } from "#/modules/cloudflare/api.server";
-import { isTunnelToken } from "#/modules/cloudflare/tunnel-token";
-import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
+import { checkEditPermissions, CloudflareError, CloudflareHttp, createRecord, createTunnel, deleteTunnel, listZones, refusalWords, tunnelToken } from "#/modules/ingress/cloudflare.api.server";
+import { isTunnelToken } from "#/modules/ingress/cloudflare.tunnel-token";
+import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 
 /** A token shaped as Cloudflare mints them: base64 JSON naming the account, the tunnel and the connector's secret. */
 const tunnelTokenOf = (claims: { readonly a?: string; readonly t?: string; readonly s?: string }) => Buffer.from(JSON.stringify(claims)).toString("base64");

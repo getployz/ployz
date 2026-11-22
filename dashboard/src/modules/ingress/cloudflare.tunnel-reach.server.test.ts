@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { expect, it } from "vitest";
-import { failedAnswer, isPublicAddress, reachesCluster } from "./tunnel-reach.server";
+import { failedAnswer, isPublicAddress, reachesCluster } from "./cloudflare.tunnel-reach.server";
 
 it("takes only addresses a visitor could reach, never Cloud's own network", () => {
   for (const address of ["104.16.0.1", "2606:4700::1111", "172.32.0.1", "100.63.255.255"]) expect(isPublicAddress(address), address).toBe(true);

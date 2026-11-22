@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Data, Effect, Redacted, Schema } from "effect";
-import { isTunnelToken } from "#/modules/cloudflare/tunnel-token";
-import { type CloudflareZone, PERMISSIONS, type PermissionKey } from "#/modules/cloudflare/zone";
+import { isTunnelToken } from "#/modules/ingress/cloudflare.tunnel-token";
+import { type CloudflareZone, PERMISSIONS, type PermissionKey } from "#/modules/ingress/cloudflare.zone";
 
 /**
  * Every call Cloud makes to Cloudflare lives in this file, made with a token the user pasted for one setup. The token

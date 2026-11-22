@@ -14,9 +14,9 @@ import {
   listZones,
   refusalWords,
   tunnelToken,
-} from "#/modules/cloudflare/api.server";
-import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
-import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
+} from "#/modules/ingress/cloudflare.api.server";
+import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
+import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
 import { closedFounding, requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";

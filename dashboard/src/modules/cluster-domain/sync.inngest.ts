@@ -1,5 +1,5 @@
 import { Effect, Option } from "effect";
-import { activeCloudflareZone } from "#/modules/cloudflare/source.server";
+import { activeCloudflareZone } from "#/modules/ingress/cloudflare.source.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import {
   ensureClusterDomainCertificate,
