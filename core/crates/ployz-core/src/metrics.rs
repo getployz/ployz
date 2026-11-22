@@ -67,13 +67,6 @@ impl MetricMarker {
     }
 }
 
-/// `since_nanos` is inclusive and `until_nanos` exclusive.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MetricRange {
-    pub since_nanos: i64,
-    pub until_nanos: i64,
-}
-
 /// Which containers a live reading covers on the answering Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

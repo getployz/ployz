@@ -5,11 +5,12 @@
 //! pure: `ployz_decide::issuance` and `issuance_gate` in `acme_issuance`,
 //! `ployz_decide::bridge` and `RestartPolicy` in `bridge_notes`, `ployz_decide::github_build` in
 //! `build_handoff`, `ployz_decide::caddy_load` in `caddy_load`, `ployz_decide::fate` in
-//! `mcp_login`, `ployz_decide::standing` in `runner_standing`, `plan` and
-//! `ployz_decide::volume_size` in `volume_runs`, `MachineUpgradeOutcome::is_terminal` in
-//! `upgrade_attempt`, the `ployz_decide::service_floor` decisions in `service_floor`, and the
+//! `mcp_login`, `ployz_decide::standing` in `runner_standing`, `ployz_decide::volume_root`
+//! and `volume_floor` in `volume_marks`, `plan`, `ployz_decide::volume_size` and
+//! `volume_floor` in `volume_runs`, `MachineUpgradeOutcome::is_terminal` in
+//! `upgrade_attempt`, the `ployz_decide::service_floor` decisions in `service_floor`, the
 //! Deploy planner itself (`ployz::deploy::preview_deploy`) in `region_placement` and
-//! `first_placement`. The other modules re-state their protocol's decisions by hand, and a
+//! `first_placement`, and `ployz_core::admit_plain_mount` in `first_placement`. The other modules re-state their protocol's decisions by hand, and a
 //! decision that moves into `ployz-decide` is called, never re-stated.
 
 #[cfg(test)]
