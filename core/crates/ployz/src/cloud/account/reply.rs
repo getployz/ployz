@@ -3,13 +3,12 @@
 
 use ployz_core::RpcError;
 use reqwest::StatusCode;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 
-use super::{
-    credential::{Credential, env_token},
-    http::{Effect, read_reply},
-};
-use crate::cloud_login::{self, LoginError};
+use super::credential::{Credential, env_token};
+use crate::cloud;
+use crate::cloud::http::{Effect, read_reply};
+use crate::cloud::login::LoginError;
 
 /// Why a Config Store call over HTTPS failed.
 #[derive(Debug)]
@@ -47,7 +46,7 @@ pub(crate) fn stored<T: DeserializeOwned>(
             return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-            && let Some(refused) = crate::cloud_reply::public_error(bytes)
+            && let Some(refused) = crate::cloud::reply::public_error(bytes)
         {
             return Err(StoreCallError::Refused(refused));
         }
@@ -60,43 +59,12 @@ pub(crate) fn stored<T: DeserializeOwned>(
 
 /// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
-    #[derive(Deserialize)]
-    struct Refusal {
-        error: Refused,
-    }
-    /// A Cloud command's refusal also names the input field, what fits there and
-    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
-    #[derive(Deserialize)]
-    struct Refused {
-        #[serde(flatten)]
-        error: RpcError,
-        field: Option<serde_json::Value>,
-        expected: Option<serde_json::Value>,
-        writes: Option<serde_json::Value>,
-    }
-    let Refused {
-        mut error,
-        field,
-        expected,
-        writes,
-    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
-    let told = [("field", field), ("expected", expected), ("writes", writes)]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
-    for (key, value) in told {
-        if !error.details.is_object() {
-            error.details = serde_json::json!({});
-        }
-        if let serde_json::Value::Object(details) = &mut error.details {
-            details.insert(key, value);
-        }
-    }
-    Some(past_token(error))
+    crate::cloud::reply::command_refusal(body).map(past_token)
 }
 
 /// What Cloud refused with: a command's refusal, else a route's `PublicError`.
 pub(crate) fn refusal_of(body: &[u8]) -> Option<RpcError> {
-    refusal(body).or_else(|| crate::cloud_reply::public_error(body))
+    refusal(body).or_else(|| crate::cloud::reply::public_error(body))
 }
 
 /// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
@@ -121,7 +89,7 @@ pub(crate) fn answer<T: DeserializeOwned>(
     body: &[u8],
 ) -> Result<T, LoginError> {
     match (status, credential) {
-        (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
+        (status, _) if status.is_success() => cloud::login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
         (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(credential.token_refused()),
         // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
@@ -129,17 +97,14 @@ pub(crate) fn answer<T: DeserializeOwned>(
         (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
             Err(LoginError::NotMember(signed_in.organization.slug.clone()))
         }
-        (status, _) => Err(LoginError::Status {
-            status: status.as_u16(),
-            body: String::from_utf8_lossy(body).into_owned(),
-        }),
+        (status, _) => Err(LoginError::status(status, body)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::{
+    use crate::cloud::account::{
         credential,
         testing::{signed_in_store, token},
     };

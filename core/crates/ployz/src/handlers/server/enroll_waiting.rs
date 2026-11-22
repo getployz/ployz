@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 
 use super::super::waiting::{self, Waiting};
 use crate::cli::{base, positional, switch, value};
-use crate::cloud_account::{self, Credential};
+use crate::cloud;
+use crate::cloud::account::Credential;
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
 use crate::ui::{self, Cell, Table, printable};
 
@@ -388,7 +389,7 @@ fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<()
 
 async fn attempts(credential: &Credential) -> Result<Vec<Value>, Error> {
     let reply: Attempts =
-        cloud_account::refusable(credential, Method::GET, "enrollments", None).await?;
+        cloud::account::refusable(credential, Method::GET, "enrollments", None).await?;
     Ok(reply.enrollments)
 }
 
@@ -548,7 +549,7 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
             .expect("enrollment request is an object")
             .remove("first");
     }
-    let mut plan: Plan = runtime.block_on(cloud_account::refusable(
+    let mut plan: Plan = runtime.block_on(cloud::account::refusable(
         &credential,
         Method::POST,
         "enrollments/plan",
@@ -593,7 +594,7 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
         skipped,
         spread,
     } = runtime
-        .block_on(cloud_account::refusable(
+        .block_on(cloud::account::refusable(
             &credential,
             Method::POST,
             "enrollments",

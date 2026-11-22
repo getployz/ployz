@@ -5,7 +5,7 @@
 //! code is stored too, so `ployz login --wait`, a repeated `ployz login`, or any
 //! other command can finish a sign-in a browser approved in the meantime.
 //!
-//! Every request goes out through [`crate::cloud_account::client`], whose User-Agent marks
+//! Every request goes out through [`crate::cloud::http::client`], whose User-Agent marks
 //! the sessions it starts as signed-in devices.
 
 use std::{
@@ -15,6 +15,9 @@ use std::{
 };
 
 use ployz_core::cloud_contract::CLIENT_ID;
+use ployz_core::{Hint, RpcErrorCode};
+
+use crate::coded::Coded;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -43,7 +46,7 @@ pub(crate) enum LoginError {
     },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("{}", answered("Cloud answered", *.status, .body))]
+    #[error("{}", crate::cloud::reply::answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -98,6 +101,70 @@ pub(crate) enum LoginError {
     AmbiguousCredential { name: String, ids: Vec<String> },
 }
 
+impl Coded for LoginError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Self::Unreachable { .. } | Self::Unanswered { .. } => RpcErrorCode::Unavailable,
+            Self::Unsupported(_) => RpcErrorCode::Unsupported,
+            Self::TokenBound => RpcErrorCode::InvalidArgument,
+            Self::Status { status, .. } => crate::cloud::reply::status_code(*status),
+            Self::Reply(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
+            Self::OtherCloud { .. } => RpcErrorCode::Conflict,
+            Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_) => RpcErrorCode::Unauthenticated,
+            Self::UnknownOrganization(_) | Self::UnknownCredential(_) => RpcErrorCode::NotFound,
+            Self::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
+        }
+    }
+
+    fn evidence(&self) -> Option<serde_json::Value> {
+        matches!(self, Self::Unanswered { .. }).then(|| serde_json::json!({ "writes": "unknown" }))
+    }
+
+    /// Sign-in failures name the command that fixes them.
+    fn hints(&self) -> Vec<Hint> {
+        let next = match self {
+            Self::Store { path, source } if source.kind() == io::ErrorKind::PermissionDenied => {
+                return vec![Hint::Next(format!(
+                    "chmod 600 {}",
+                    shell_words::quote(&path.to_string_lossy())
+                ))];
+            }
+            // Cloud binds every call to the acting Organization, `org ls` included: a
+            // sign-in left outside it can only start over.
+            Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::NotMember(_) => "ployz logout",
+            Self::SignedOut | Self::Expired | Self::Denied | Self::Ended => "ployz login",
+            Self::AwaitingApproval { .. } => "ployz login --wait",
+            Self::TokenRefused => crate::cloud::account::SIGN_IN_PAST_TOKEN,
+            Self::AgentTokenRefused => "ployz mcp login",
+            Self::UnknownOrganization(_) => "ployz org ls",
+            Self::UnknownCredential(_) | Self::AmbiguousCredential { .. } => "ployz token ls",
+            Self::Unreachable { .. }
+            | Self::Unanswered { .. }
+            | Self::Unsupported(_)
+            | Self::Status { .. }
+            | Self::Reply(_)
+            | Self::Store { .. }
+            | Self::TokenBound
+            | Self::TokenMalformed => return Vec::new(),
+        };
+        vec![Hint::Next(next.into())]
+    }
+}
+
 /// How far a failed Cloud call got, for a caller that must know whether Cloud may have acted.
 /// Each caller decides what to do with it: the answers differ on purpose.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +180,14 @@ pub(crate) enum Delivery {
 }
 
 impl LoginError {
+    /// Cloud answered `status` with `body`, which a refusal reader may still read.
+    pub(crate) fn status(status: reqwest::StatusCode, body: &[u8]) -> Self {
+        Self::Status {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(body).into_owned(),
+        }
+    }
+
     /// How far the call got; `None` for a failure that is not about a call to Cloud.
     pub(crate) fn delivery(&self) -> Option<Delivery> {
         match self {
@@ -329,7 +404,7 @@ pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, Login
         Some(Stored::SignedIn(signed_in)) => Ok(signed_in),
         Some(Stored::Pending(pending)) => {
             let url = pending.url.clone();
-            poll_once(store, &crate::cloud_account::client()?, pending)
+            poll_once(store, &crate::cloud::http::client()?, pending)
                 .await?
                 .ok_or(LoginError::AwaitingApproval { url })
         }
@@ -352,8 +427,8 @@ pub(crate) enum Start {
 ///
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
-    let cloud = crate::cloud_origin::CloudOrigin::new(cloud).into_string();
-    let http = crate::cloud_account::client()?;
+    let cloud = crate::cloud::origin::CloudOrigin::new(cloud).into_string();
+    let http = crate::cloud::http::client()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
@@ -399,7 +474,7 @@ pub(crate) async fn wait(
     store: &CredentialStore,
     pending: Pending,
 ) -> Result<SignedIn, LoginError> {
-    let http = crate::cloud_account::client()?;
+    let http = crate::cloud::http::client()?;
     let mut interval = Duration::from_secs(pending.interval_secs);
     loop {
         tokio::time::sleep(interval).await;
@@ -419,7 +494,7 @@ pub(crate) async fn wait(
 pub(crate) struct SignedOut {
     pub(crate) cloud: String,
     pub(crate) device: Option<String>,
-    pub(crate) servers: crate::cloud_account::ServerClears,
+    pub(crate) servers: crate::cloud::account::ServerClears,
     /// Why Cloud could not end the sign-in, which this device only forgot.
     pub(crate) unrevoked: Option<LoginError>,
 }
@@ -448,7 +523,7 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
         },
         Some(Stored::SignedIn(signed_in)) => {
             let url = format!("{}/api/cli/logout", signed_in.cloud);
-            let sent = crate::cloud_account::client()?
+            let sent = crate::cloud::http::client()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
                 .send()
@@ -631,34 +706,12 @@ fn forget<T>(store: &CredentialStore, error: LoginError) -> Result<T, LoginError
 async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginError> {
     let status = response.status();
     let cloud = response.url().origin().ascii_serialization();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| unreachable(&cloud, error))?;
+    let body =
+        crate::cloud::http::read_body(&cloud, response, crate::cloud::http::Effect::Read).await?;
     if status.is_success() {
-        Ok(body.to_vec())
+        Ok(body)
     } else {
-        Err(LoginError::Status {
-            status: status.as_u16(),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
-    }
-}
-
-/// Cloud's own sentence for a failed call, else its status and any readable body.
-pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
-    crate::cloud_reply::message(body.as_bytes())
-        .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
-}
-
-/// `body` as the tail of a status line: a short text or JSON answer is worth
-/// printing, a proxy's HTML error page is not.
-fn readable(body: &str) -> String {
-    let body = body.trim();
-    if body.is_empty() || body.starts_with('<') {
-        String::new()
-    } else {
-        format!(": {body}")
+        Err(LoginError::status(status, &body))
     }
 }
 
@@ -697,7 +750,7 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::cloud_account::testing::fake_cloud;
+    use crate::cloud::account::testing::fake_cloud;
 
     /// Cloud's device flow for one code, approved once `approved` is set.
     fn device_cloud(approved: Arc<Mutex<Option<&'static str>>>) -> String {

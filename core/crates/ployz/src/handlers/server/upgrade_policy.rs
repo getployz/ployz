@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::cli::value;
-use crate::cloud_account::Via;
+use crate::cloud::http::Via;
 
 pub(in crate::handlers) fn group(command: Command) -> Command {
     command.about("Show or change how your servers upgrade")

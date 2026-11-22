@@ -9,8 +9,9 @@ use serde::Serialize;
 
 use super::super::{Error, config_path, leaf_matches, recovery, route, runtime};
 use crate::cli::base;
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, Organization};
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::cloud::login::{CredentialStore, Organization};
 use crate::connect::Client;
 use crate::sealing_pin::{Pin, Pins, SealTo, entry_pin};
 use crate::ui::{self, Fields};
@@ -91,7 +92,7 @@ async fn pin_through(
         ));
     }
     let pin = entry_pin(client).await?;
-    let organization = cloud_account::acting_in(credential).await?;
+    let organization = cloud::account::acting_in(credential).await?;
     if let Some(row) = recovery::recovery_row(credential, &organization.id).await?
         && row.public_key != pin.public_key
     {
@@ -119,8 +120,8 @@ async fn pin_through(
 /// be read.
 pub(in crate::handlers) async fn seal_to(config: &Path, client: &Client) -> Result<SealTo, Error> {
     SealTo::of(client, async || {
-        let credential = cloud_account::from_env(&CredentialStore::beside(config)).await?;
-        let organization = cloud_account::acting_in(&credential).await?;
+        let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
+        let organization = cloud::account::acting_in(&credential).await?;
         Ok(Pins::beside(config).get(&organization.id)?)
     })
     .await

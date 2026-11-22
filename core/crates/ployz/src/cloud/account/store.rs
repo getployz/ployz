@@ -9,10 +9,10 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
     credential::Credential,
-    http::{self, Effect, Reply, Via},
     reply::{StoreCallError, refusal, store_answer, stored},
 };
-use crate::cloud_login::LoginError;
+use crate::cloud::http::{self, Effect, Reply, Via};
+use crate::cloud::login::LoginError;
 
 /// Call the Config Store's `operation` (`read` or `write`) in the credential's
 /// Organization. `body` is a Query or a Command; the reply is a View or Written.
@@ -48,7 +48,7 @@ pub(crate) async fn config_store_if_routed<T: DeserializeOwned>(
     let reply = config_exchange(credential, via, operation, body, None).await?;
     let unrouted = reply.status == StatusCode::NOT_FOUND
         && refusal(&reply.body).is_none()
-        && crate::cloud_reply::public_error(&reply.body)
+        && crate::cloud::reply::public_error(&reply.body)
             .is_some_and(|error| error.code == ployz_core::RpcErrorCode::NotFound);
     if unrouted {
         return Ok(None);
@@ -128,7 +128,7 @@ fn too_big(why: &str) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::testing::{fake_cloud, token};
+    use crate::cloud::account::testing::{fake_cloud, token};
 
     #[tokio::test]
     async fn an_archive_over_the_limit_is_refused_before_it_is_sent() {

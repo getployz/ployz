@@ -65,7 +65,7 @@ pub(super) struct SessionFields {
 #[derive(Deserialize)]
 pub(super) struct Reply {
     pub(super) signed_out: Device,
-    pub(super) servers: crate::cloud_account::ServerClears,
+    pub(super) servers: crate::cloud::account::ServerClears,
 }
 
 #[derive(Deserialize)]

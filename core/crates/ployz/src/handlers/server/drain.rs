@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 use super::target;
 use crate::approval;
-use crate::cloud_account::{self, Credential};
+use crate::cloud;
+use crate::cloud::account::Credential;
 use crate::cluster::KeptVersions;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
@@ -95,7 +96,7 @@ fn through_cloud(
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
-            cloud_account::start_run(
+            cloud::account::start_run(
                 credential,
                 Method::POST,
                 &format!("servers/{}/drain", machine.id),
@@ -109,7 +110,7 @@ fn through_cloud(
     struct Finished {
         report: DrainReport,
     }
-    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
+    let settled = runtime.block_on(cloud::account::follow_operation::<Finished>(
         credential,
         &format!("server-drains/{id}"),
         &format!("Draining Server {}", machine.name),

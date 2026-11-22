@@ -10,8 +10,8 @@ use ployz_core::{
 
 use super::classify;
 use crate::{
-    cloud_enroll,
-    cloud_login::LoginError,
+    cloud,
+    cloud::login::LoginError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionSource, ContextError},
     deploy::PlanError,
@@ -722,43 +722,43 @@ fn login_rows() -> Vec<Row> {
         ),
         row(
             "enroll/json",
-            cloud_enroll::Error::Json(serde_json::from_str::<u8>("x").unwrap_err()),
+            cloud::enroll::Error::Json(serde_json::from_str::<u8>("x").unwrap_err()),
         ),
         row(
             "enroll/status-403",
-            cloud_enroll::Error::Status {
+            cloud::enroll::Error::Status {
                 status: 403,
                 body: String::new(),
             },
         ),
         row(
             "enroll/status-500",
-            cloud_enroll::Error::Status {
+            cloud::enroll::Error::Status {
                 status: 500,
                 body: String::new(),
             },
         ),
         row(
             "enroll/coded-conflict",
-            cloud_enroll::Error::CodedConflict {
+            cloud::enroll::Error::CodedConflict {
                 body: String::new(),
             },
         ),
-        row("enroll/token-refused", cloud_enroll::Error::TokenRefused),
-        row("enroll/founder-wait", cloud_enroll::Error::FounderWait),
+        row("enroll/token-refused", cloud::enroll::Error::TokenRefused),
+        row("enroll/founder-wait", cloud::enroll::Error::FounderWait),
         row(
             "enroll/cloud-cant-reach",
-            cloud_enroll::Error::CloudCantReach,
+            cloud::enroll::Error::CloudCantReach,
         ),
         row(
             "enroll/timeout",
-            cloud_enroll::Error::Timeout(reqwest_error()),
+            cloud::enroll::Error::Timeout(reqwest_error()),
         ),
         row(
             "enroll/connect",
-            cloud_enroll::Error::Connect(reqwest_error()),
+            cloud::enroll::Error::Connect(reqwest_error()),
         ),
-        row("enroll/http", cloud_enroll::Error::Http(reqwest_error())),
+        row("enroll/http", cloud::enroll::Error::Http(reqwest_error())),
     ]
 }
 

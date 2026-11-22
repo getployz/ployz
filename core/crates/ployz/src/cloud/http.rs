@@ -6,11 +6,15 @@ use std::time::Duration;
 use ployz_core::cloud_contract::{self, AGENT_HEADER};
 use reqwest::{Method, StatusCode};
 
-use super::credential::Credential;
-use crate::cloud_login::{self, LoginError};
+use super::account::Credential;
+use crate::cloud;
+use crate::cloud::login::LoginError;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a best-effort report may take. Cloud answers at once; anything slower is dropped.
+pub(crate) const REPORT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long a call Cloud answers only after reading the Servers waits for that answer.
 /// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
@@ -37,11 +41,11 @@ pub(crate) enum Effect {
 impl Effect {
     /// Why a request that failed in flight failed: a read never reached Cloud's answer, so
     /// it is unreachable. A write that left this device may have applied though its answer
-    /// never came: [`cloud_login::lost`].
+    /// never came: [`cloud::login::lost`].
     pub(crate) fn failed(self, cloud: &str, error: reqwest::Error) -> LoginError {
         match self {
-            Self::Read => cloud_login::unreachable(cloud, error),
-            Self::Write => cloud_login::lost(cloud, error),
+            Self::Read => cloud::login::unreachable(cloud, error),
+            Self::Write => cloud::login::lost(cloud, error),
         }
     }
 }
@@ -212,7 +216,7 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::testing::token;
+    use crate::cloud::account::testing::token;
 
     #[test]
     fn a_clean_preview_waits_past_the_cluster_time_cloud_may_spend_on_it() {

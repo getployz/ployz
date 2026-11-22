@@ -41,6 +41,7 @@ use tokio::{
 };
 use tonic::transport::{Channel, Endpoint};
 
+use crate::coded::Coded;
 use crate::context::{
     Config, ConfigError, Connection, ConnectionError, ConnectionSource, ContextError,
     SelectedConnections, Transport, expand_home, select_connections,
@@ -1327,6 +1328,57 @@ pub enum ConnectError {
     Value(#[from] ployz_core::ValueError),
 }
 
+impl Coded for ConnectError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ConnectError::Remote(error) => error.code.clone(),
+            ConnectError::Rpc(error) => error.to_rpc_error().code,
+            ConnectError::ClientRefused
+            | ConnectError::ClientCleared
+            | ConnectError::TunnelNeedsFull => RpcErrorCode::Unauthenticated,
+            ConnectError::OlderMachine => RpcErrorCode::Unsupported,
+            ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
+                RpcErrorCode::Unsupported
+            }
+            ConnectError::Context(error) => error.code(),
+            ConnectError::Config(error) => error.code(),
+            ConnectError::Connection(_) | ConnectError::Value(_) => RpcErrorCode::InvalidArgument,
+            ConnectError::Codec(error) => error.code(),
+            // Every connection failed: `last` says why, a Server that needs an upgrade first.
+            ConnectError::AllFailed {
+                last: Some(last), ..
+            } => last.code(),
+            ConnectError::Join(_) => RpcErrorCode::Internal,
+            ConnectError::IdentityMismatch { .. }
+            | ConnectError::ClusterMismatch { .. }
+            | ConnectError::ClusterUnverified { .. }
+            | ConnectError::PredatesSealing { .. } => RpcErrorCode::Unauthenticated,
+            ConnectError::Attempt(_)
+            | ConnectError::Exhausted(_)
+            | ConnectError::EntryNotReady
+            | ConnectError::Io(_)
+            | ConnectError::Dial(_)
+            | ConnectError::MissingMachineDetails
+            | ConnectError::SshClientMissing
+            | ConnectError::SshProbe { .. }
+            | ConnectError::Routing(_)
+            | ConnectError::Path { .. }
+            | ConnectError::AllFailed { last: None, .. }
+            | ConnectError::Framing(_) => RpcErrorCode::Unavailable,
+        }
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        if let Self::Remote(error) = self {
+            return Some(error.details.clone());
+        }
+        if let Self::Rpc(error) = self {
+            return Some(error.to_rpc_error().details);
+        }
+        None
+    }
+}
+
 /// That a Server gave no answer, and what to check. Through Ployz Cloud's relay, the
 /// Server's network is as likely the cause as its daemon.
 fn isnt_answering(relayed: bool) -> &'static str {
@@ -1661,6 +1713,16 @@ pub struct TransportError {
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<ployz_core::error_chain::JoinedChain>,
+}
+
+impl Coded for TransportError {
+    fn code(&self) -> RpcErrorCode {
+        self.to_rpc_error().code
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        Some(self.to_rpc_error().details)
+    }
 }
 
 impl TransportError {

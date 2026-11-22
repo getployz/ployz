@@ -1449,7 +1449,9 @@ impl Session {
             let naming = client.image_naming(&dest.id);
             crate::image::copy_running_image(&client, &source, &dest, image, &image_id, naming)
                 .await
-                .map_err(crate::failure::push_rpc_error)
+                .map_err(|error| {
+                    RpcError::new(crate::coded::Coded::code(&error), error.to_string())
+                })
         })
         .await
     }

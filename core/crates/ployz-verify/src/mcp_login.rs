@@ -205,7 +205,7 @@ enum Why {
     /// `revoke`'s `DELETE` failed (`ployz::handlers::mcp::login::login`).
     DeleteFailed,
     /// `revoke`'s `DELETE` got a 404, which the CLI reads as `UnknownCredential`
-    /// (`remove_token` in core/crates/ployz/src/cloud_account/token.rs, `ployz::handlers::mcp::login::login`).
+    /// (`remove_token` in core/crates/ployz/src/cloud/account/token.rs, `ployz::handlers::mcp::login::login`).
     NotFound,
 }
 
@@ -1211,10 +1211,10 @@ fn left_why(why: Why) -> &'static str {
             "a crash may bring it back into mcp.json, which could not be flushed (<error>) (`ployz::handlers::mcp::login::fate`)"
         }
         Why::ListFailed | Why::DeleteFailed => {
-            "revoking it failed (Could not reach Cloud at <cloud>.) (`ployz::handlers::mcp::login::login`; `ployz::cloud_login::LoginError::Unreachable`)"
+            "revoking it failed (Could not reach Cloud at <cloud>.) (`ployz::handlers::mcp::login::login`; `ployz::cloud::login::LoginError::Unreachable`)"
         }
         Why::NotFound => {
-            "revoking it failed (no token or signed-in device <id> in this Organization) (`ployz::handlers::mcp::login::login`; `ployz::cloud_login::LoginError::UnknownCredential`)"
+            "revoking it failed (no token or signed-in device <id> in this Organization) (`ployz::handlers::mcp::login::login`; `ployz::cloud::login::LoginError::UnknownCredential`)"
         }
     }
 }
@@ -1242,7 +1242,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             "{locked}stored finds no mcp.json, so there is no token before (`ployz::handlers::mcp::login::login`, `ployz::handlers::mcp::login::stored`); in_cloud's credential load and new_token's POST are next"
         ),
         Branch::Read(File::Unreadable) => format!(
-            "{locked}stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (`ployz::handlers::mcp::login::login`, `ployz::handlers::mcp::login::stored`; `ployz::cloud_login::LoginError::Corrupt`); in_cloud's credential load and new_token's POST are next"
+            "{locked}stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (`ployz::handlers::mcp::login::login`, `ployz::handlers::mcp::login::stored`; `ployz::cloud::login::LoginError::Corrupt`); in_cloud's credential load and new_token's POST are next"
         ),
         Branch::Read(File::Holds(tok)) => format!(
             "{locked}stored reads mcp.json, which holds {tok}, its token before (`ployz::handlers::mcp::login::login`, `ployz::handlers::mcp::login::stored`); in_cloud's credential load and new_token's POST are next"
@@ -1275,10 +1275,10 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
         Branch::Unmade { why, revoked } => {
             let error = match why {
                 Unmake::Refused => {
-                    "\"Cloud sent an unexpected reply: it made a cli token where `ployz mcp` needs an agent token\" (`ployz::handlers::mcp::login::login`; `ployz::cloud_login::LoginError::Reply`)"
+                    "\"Cloud sent an unexpected reply: it made a cli token where `ployz mcp` needs an agent token\" (`ployz::handlers::mcp::login::login`; `ployz::cloud::login::LoginError::Reply`)"
                 }
                 Unmake::SaveFailed => {
-                    "\"Could not use the sign-in stored at <path>.\" (`ployz::cloud_login::LoginError::Store`)"
+                    "\"Could not use the sign-in stored at <path>.\" (`ployz::cloud::login::LoginError::Store`)"
                 }
             };
             if revoked {
@@ -1365,7 +1365,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             before.previous(who)
         ),
         Branch::DeleteNotFound => format!(
-            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (`dashboard/src/modules/identity/organization-token.server.ts::revokeCredential`; `dashboard/src/routes/api/cli/-cli.handler.ts::handleCliRequest`, `dashboard/src/routes/api/cli/-cli.handler.ts::pendingRevocation`), the CLI reads it as UnknownCredential (`remove_token` in core/crates/ployz/src/cloud_account/token.rs), and login leaves it to name as still live (`ployz::handlers::mcp::login::login`)",
+            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (`dashboard/src/modules/identity/organization-token.server.ts::revokeCredential`; `dashboard/src/routes/api/cli/-cli.handler.ts::handleCliRequest`, `dashboard/src/routes/api/cli/-cli.handler.ts::pendingRevocation`), the CLI reads it as UnknownCredential (`remove_token` in core/crates/ployz/src/cloud/account/token.rs), and login leaves it to name as still live (`ployz::handlers::mcp::login::login`)",
             before.previous(who)
         ),
         Branch::Noted { left, .. } => {

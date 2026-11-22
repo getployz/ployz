@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::{Streaming, transport::Channel};
 
 use crate::{
+    coded::Coded,
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
         TransportError, apply_timeout, rpc_error, target_request,
@@ -1636,6 +1637,17 @@ pub(crate) enum RoleWaitError {
     Cancelled,
     #[error(transparent)]
     Connect(#[from] ConnectError),
+}
+
+impl Coded for RoleWaitError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Self::Connect(error) => error.code(),
+            Self::NotObserved(_) | Self::ChangeNotObserved | Self::Cancelled => {
+                RpcErrorCode::Unavailable
+            }
+        }
+    }
 }
 
 /// Wait until this entry sees Machine `id` with `setting`, so what plans next plans from it.
