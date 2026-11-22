@@ -11,7 +11,7 @@
 //!     ─▶ build with the rule's policy ─▶ push ─▶ image token (image, A)
 
 use ployz_core::{
-    BuildGrantId, GithubToken, ServiceName, X25519Secret,
+    BuildGrantId, GithubToken, RpcErrorCode, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
         CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed, rule::PolicyCache,
@@ -299,21 +299,26 @@ impl Cloud {
             .json(body)
             .send()
             .await
-            .map_err(|_| {
-                Error::unavailable(format!("could not reach Ployz Cloud at {}", self.origin))
+            .map_err(|error| {
+                Error::caused(
+                    RpcErrorCode::Unavailable,
+                    format!("could not reach Ployz Cloud at {}", self.origin),
+                    error,
+                )
             })?;
         let status = response.status();
         if status.is_success() {
-            return response
-                .json()
-                .await
-                .map_err(|_| Error::unavailable("Ployz Cloud's answer is unreadable".to_owned()));
+            return response.json().await.map_err(|error| {
+                Error::caused(
+                    RpcErrorCode::Unavailable,
+                    "Ployz Cloud's answer is unreadable",
+                    error,
+                )
+            });
         }
-        let body: Value = response.json().await.unwrap_or_default();
-        let message = body
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| status.canonical_reason().unwrap_or("refused"));
+        let body = response.bytes().await.unwrap_or_default();
+        let message = crate::cloud::reply::message(&body)
+            .unwrap_or_else(|| status.canonical_reason().unwrap_or("refused").to_owned());
         Err(Error::unavailable(format!(
             "Ployz Cloud refused the build (HTTP {}): {message}",
             status.as_u16()
