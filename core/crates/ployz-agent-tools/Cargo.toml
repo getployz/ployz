@@ -20,8 +20,7 @@ ts-rs.workspace = true
 uuid = { version = "1.24.0", features = ["serde", "v4", "v5"] }
 
 [dev-dependencies]
-postgres = "0.19.14"
-rusqlite.workspace = true
+ployz-store = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"
 
 [lints]

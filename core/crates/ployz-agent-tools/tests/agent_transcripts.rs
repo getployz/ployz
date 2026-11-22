@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-#[path = "../../ployz-store/tests/backend/mod.rs"]
-mod backend;
+use ployz_store::testing::backend;
 
 use ployz_agent_tools::{
     Answer, Ask, Place, Step, StoreAt, Write, catalog, example, resume, start,

@@ -8,9 +8,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
-mod shop;
-use shop::*;
+use ployz_store::testing::shop::*;
 
 /// Run Deployment `id` to success, confirming each of `services`.
 fn apply(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {

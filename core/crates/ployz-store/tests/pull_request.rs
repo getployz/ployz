@@ -17,7 +17,7 @@ use ployz_store::{
 };
 use serde_json::json;
 
-mod backend;
+use ployz_store::testing::backend;
 
 /// A node by its name: `SERVICE`, or `volumes.VOLUME`.
 fn node(name: &str) -> ployz_store::NodeName {

@@ -15,7 +15,7 @@ use ployz_store::{
 };
 use serde_json::json;
 
-mod backend;
+use ployz_store::testing::backend;
 
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();

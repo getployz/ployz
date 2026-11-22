@@ -15,9 +15,8 @@ use ployz_store::{
 };
 use serde_json::json;
 
-mod backend;
-mod shop;
-use shop::*;
+use ployz_store::testing::backend;
+use ployz_store::testing::shop::*;
 
 /// `web` waits for CI, and the first push the Store sees, to `H2`, waits.
 fn waiting() -> (ConfigStore, Actor, DeploymentSummary) {
