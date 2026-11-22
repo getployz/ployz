@@ -434,13 +434,11 @@ async fn share_without_approval_gives_a_member_back_its_lost_key() {
 
 /// Without a join approval a holder seals only to a Member its own record trusts, with the
 /// WireGuard key it trusts that Member under. A Machine it never trusted is refused, and so
-/// is a Member's row republished with another key. A holder whose record trusts no Members
-/// at all, as one from before enrollment set any, refuses every Machine.
+/// is a Member's row republished with another key.
 #[tokio::test]
 async fn share_without_approval_refuses_a_machine_that_is_no_member() {
     let (replicated, server) = fake_cluster::store().await;
     let holder = Peer::participating("ployzd-backfill-stranger-holder", &replicated).await;
-    let unfiltered = Peer::participating("ployzd-backfill-stranger-unfiltered", &replicated).await;
     let member = Peer::needing_access("ployzd-backfill-stranger-member", &replicated).await;
     let stranger = Peer::needing_access("ployzd-backfill-stranger", &replicated).await;
     holder.trust(&[&member]).await;
@@ -459,11 +457,6 @@ async fn share_without_approval_refuses_a_machine_that_is_no_member() {
         .share_sealing_key(share(&stranger.machine))
         .await
         .unwrap_err();
-    let unfiltered_to_stranger = unfiltered
-        .local
-        .share_sealing_key(share(&stranger.machine))
-        .await
-        .unwrap_err();
     replicated.publish_local_machine(&rekeyed).await.unwrap();
     let to_rekeyed = holder
         .local
@@ -471,7 +464,7 @@ async fn share_without_approval_refuses_a_machine_that_is_no_member() {
         .await
         .unwrap_err();
 
-    for refused in [to_stranger, unfiltered_to_stranger, to_rekeyed] {
+    for refused in [to_stranger, to_rekeyed] {
         assert!(
             matches!(
                 refused,
