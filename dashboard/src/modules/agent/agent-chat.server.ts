@@ -19,7 +19,7 @@ import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
-import { type CallOrigin, sessionIdOf } from "#/modules/analytics/agent-calls.server";
+import { type CallOrigin, sessionIdOf } from "#/modules/agent/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
@@ -35,7 +35,7 @@ import {
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
 import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
-import type { CallError } from "#/modules/analytics/agent-calls.server";
+import type { CallError } from "#/modules/agent/agent-calls.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { findCommand } from "#/modules/commands/commands.server";

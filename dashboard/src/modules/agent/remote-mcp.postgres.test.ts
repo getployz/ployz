@@ -12,7 +12,7 @@ import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { ASKS, INTENT_REFUSAL } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { asTestDouble } from "#/lib/test-double";
-import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { McpAnalytics, type McpAnalyticsService, type McpCapture } from "#/modules/agent/agent-calls.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -470,14 +470,9 @@ it.live("a call refused before it runs is recorded once as a failed call under t
       },
       captureFeedback: (event: Named) => { recorded.push("feedback"); clients.push(event.properties?.["$mcp_client_name"]); },
     };
-    const sink: PostHogService = {
-      capture: () => Effect.void,
-      identify: () => Effect.void,
-      identifyOrganization: () => Effect.void,
-      mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
-    };
+    const sink: McpAnalyticsService = { record: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))) };
     const real = yield* hostedShop();
-    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(PostHog, sink))) };
+    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(McpAnalytics, sink))) };
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     const refused: ReadonlyArray<readonly [string, JsonObject]> = [
       ["deploy", { ...SHOP, approval: 42 }],

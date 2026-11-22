@@ -6,6 +6,7 @@ import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-record
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { PolarLive } from "#/modules/billing/polar-provider.server";
 import { PostHogLive } from "#/modules/analytics/posthog.server";
+import { McpAnalyticsLive } from "#/modules/agent/agent-calls.server";
 import { MailerLive } from "#/modules/mail/mailer.server";
 import { SupportStaffLive } from "#/modules/organization/access.server";
 import { GithubAuthorityLive } from "#/modules/github/github-authority.server";
@@ -25,6 +26,7 @@ const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
   PolarLive,
   PostHogLive,
+  McpAnalyticsLive,
   MailerLive,
   SupportStaffLive,
   InngestLive,
