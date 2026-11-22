@@ -10,7 +10,7 @@ import { CATALOG } from "#/modules/agent/agent-tools";
 import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
-import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
+import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
 import { claimUrlFor } from "#/modules/sandbox/claim-required.server";
 import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";

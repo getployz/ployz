@@ -3,8 +3,7 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { type AgentCaller, INTENT_REFUSAL, runAgentCall } from "#/modules/agent/agent-runner.server";
-import { type AgentCallReport, type AgentSurface, recordAgentCall, sessionIdOf } from "#/modules/analytics/agent-calls.server";
-import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { type AgentCallReport, type AgentSurface, McpAnalytics, type McpAnalyticsService, recordAgentCall, sessionIdOf } from "#/modules/agent/agent-calls.server";
 
 type Sent = { readonly event: string; readonly distinctId: string | undefined; readonly properties: Readonly<Record<string, string | number | boolean | null | ReadonlyArray<string>>> };
 
@@ -27,13 +26,8 @@ afterEach(async () => {
   await client.shutdown();
 });
 
-const posthog: PostHogService = {
-  capture: () => Effect.void,
-  identify: () => Effect.void,
-  identifyOrganization: () => Effect.void,
-  mcp: (send) => Effect.sync(() => send(client)),
-};
-const withPostHog = <A>(effect: Effect.Effect<A>) => Effect.runPromise(effect.pipe(Effect.provideService(PostHog, posthog)));
+const analytics: McpAnalyticsService = { record: (send) => Effect.sync(() => send(client)) };
+const withPostHog = <A>(effect: Effect.Effect<A>) => Effect.runPromise(effect.pipe(Effect.provideService(McpAnalytics, analytics)));
 
 const callReport = (surface: AgentSurface, rest: { tool?: string; intent?: string | null } = {}): AgentCallReport => ({
   kind: "call",

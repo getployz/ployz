@@ -25,7 +25,7 @@ import {
   Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle,
 } from "#/components/ui/trace";
 import { approvalInterrupt } from "#/modules/agent/agent";
-import { isPageContext, type PageContext } from "#/modules/agent/page-context";
+import { type PageContext, typedText } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
@@ -77,7 +77,7 @@ export default function AgentPanel({ organizationSlug, scope, page, threadId, on
 function titleOf(threads: readonly ThreadSummary[] | undefined, threadId: string, messages: readonly UIMessage[]) {
   const first = messages.find(({ role }) => role === "user");
   return threads?.find((thread) => thread.threadId === threadId)?.title
-    ?? chatTitle(first?.parts.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : []).join(" ") ?? "")
+    ?? chatTitle(typedText(first?.parts ?? [], " "))
     ?? "New chat";
 }
 
@@ -335,7 +335,7 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
   bound: readonly Bound[];
 }) {
   if (message.role === "user") {
-    const text = message.parts.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : []).join("\n");
+    const text = typedText(message.parts, "\n");
     return (
       <Message align="end">
         <MessageContent>

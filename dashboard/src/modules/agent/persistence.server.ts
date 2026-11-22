@@ -32,6 +32,10 @@ export class Superseded extends Error {
 const TERMINAL = ["running", "interrupted", "completed", "failed", "aborted"].filter(isRunStatus).filter(isTerminalRunStatus);
 
 const supersededError = { message: new Superseded().message, code: "superseded" } satisfies RunError;
+/** The rows `scope`'s member owns in an Organization. */
+const ownedBy = (table: typeof agentThreads | typeof agentRuns | typeof agentInterrupts, scope: AgentScope) =>
+  and(eq(table.organizationId, scope.organizationId), eq(table.userId, scope.userId));
+
 const displaced = and(eq(agentRuns.status, "failed"), sql`${agentRuns.record}->'error'->>'code' = ${supersededError.code}`);
 
 /** How long a resuming request holds its interrupts unrenewed before another may take them over: one that died mid-turn. */
@@ -45,9 +49,9 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
   const run = Effect.runPromiseWith(yield* Effect.context<Database>());
   const database = yield* Database;
   const { drizzle } = database;
-  const threadOwned = and(eq(agentThreads.organizationId, scope.organizationId), eq(agentThreads.userId, scope.userId));
-  const runOwned = and(eq(agentRuns.organizationId, scope.organizationId), eq(agentRuns.userId, scope.userId));
-  const interruptOwned = and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
+  const threadOwned = ownedBy(agentThreads, scope);
+  const runOwned = ownedBy(agentRuns, scope);
+  const interruptOwned = ownedBy(agentInterrupts, scope);
   const held = claim === undefined ? undefined : eq(agentInterrupts.claim, claim);
 
   /**
@@ -207,7 +211,7 @@ export const recentThreads = Effect.fn("Agent.recentThreads")(function* (scope: 
     first: sql<ModelMessage | null>`${agentThreads.messages}->0`,
     updatedAt: agentThreads.updatedAt,
   }).from(agentThreads)
-    .where(and(eq(agentThreads.organizationId, scope.organizationId), eq(agentThreads.userId, scope.userId)))
+    .where(ownedBy(agentThreads, scope))
     .orderBy(desc(agentThreads.updatedAt), desc(agentThreads.threadId)).limit(HISTORY_LIMIT);
   return rows.flatMap(({ threadId, first, updatedAt }): ThreadSummary[] => {
     const title = threadTitle(first);
@@ -223,7 +227,6 @@ export const threadAvailable = Effect.fn("Agent.threadAvailable")(function* (sco
   return row === undefined || (row.organizationId === scope.organizationId && row.userId === scope.userId);
 });
 
-const owned = (scope: AgentScope) => and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
 
 /**
  * Takes `runId` for a new turn in `threadId`: `started` when no run holds it yet, otherwise the status of the run that
@@ -238,8 +241,7 @@ export const startRun = Effect.fn("Agent.startRun")(function* (scope: AgentScope
     .onConflictDoNothing().returning({ runId: agentRuns.runId });
   if (taken !== undefined) return "started" as const;
   const [existing] = yield* drizzle.select({ status: agentRuns.status }).from(agentRuns).where(and(
-    eq(agentRuns.organizationId, scope.organizationId),
-    eq(agentRuns.userId, scope.userId),
+    ownedBy(agentRuns, scope),
     eq(agentRuns.threadId, threadId),
     eq(agentRuns.runId, runId),
   ));
@@ -257,16 +259,16 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
   return yield* database.transaction(Effect.gen(function* () {
     const ids = [...new Set(interruptIds)];
     const rows = yield* drizzle.select({ status: agentInterrupts.status, claim: agentInterrupts.claim, claimedAt: agentInterrupts.claimedAt })
-      .from(agentInterrupts).where(and(owned(scope), inArray(agentInterrupts.interruptId, ids))).for("update");
+      .from(agentInterrupts).where(and(ownedBy(agentInterrupts, scope), inArray(agentInterrupts.interruptId, ids))).for("update");
     if (rows.length < ids.length) return "unchecked" as const;
     if (rows.every((row) => row.status !== "pending")) return "settled" as const;
     const leased = new Date(Date.now() - CLAIM_LEASE_MS);
     if (rows.some((row) => row.claim !== null && row.claim !== claim && row.claimedAt !== null && row.claimedAt > leased)) return "busy" as const;
     yield* drizzle.update(agentInterrupts).set({ claim, claimedAt: new Date() })
-      .where(and(owned(scope), inArray(agentInterrupts.interruptId, ids), eq(agentInterrupts.status, "pending")));
+      .where(and(ownedBy(agentInterrupts, scope), inArray(agentInterrupts.interruptId, ids), eq(agentInterrupts.status, "pending")));
     const superseded = rows.flatMap((row) => row.status === "pending" && row.claim !== null && row.claim !== claim ? [row.claim] : []);
     if (superseded.length > 0) {
-      const moved = and(eq(agentRuns.organizationId, scope.organizationId), eq(agentRuns.userId, scope.userId), inArray(agentRuns.claim, superseded));
+      const moved = and(ownedBy(agentRuns, scope), inArray(agentRuns.claim, superseded));
       yield* drizzle.update(agentRuns).set({ claim, updatedAt: new Date() }).where(and(moved, displaced));
       yield* drizzle.update(agentRuns).set({
         claim,
@@ -282,11 +284,11 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
 /** Keeps `claim`'s hold on its interrupts fresh while its turn runs, so no one takes over a turn that is still alive. */
 export const renewResume = Effect.fn("Agent.renewResume")(function* (scope: AgentScope, claim: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(agentInterrupts).set({ claimedAt: new Date() }).where(and(owned(scope), eq(agentInterrupts.claim, claim)));
+  yield* drizzle.update(agentInterrupts).set({ claimedAt: new Date() }).where(and(ownedBy(agentInterrupts, scope), eq(agentInterrupts.claim, claim)));
 });
 
 /** Ends `claim`'s hold on the interrupts it resumed, answered or not. */
 export const releaseResume = Effect.fn("Agent.releaseResume")(function* (scope: AgentScope, claim: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(agentInterrupts).set({ claim: null, claimedAt: null }).where(and(owned(scope), eq(agentInterrupts.claim, claim)));
+  yield* drizzle.update(agentInterrupts).set({ claim: null, claimedAt: null }).where(and(ownedBy(agentInterrupts, scope), eq(agentInterrupts.claim, claim)));
 });

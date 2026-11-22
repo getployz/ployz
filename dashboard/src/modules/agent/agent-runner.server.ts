@@ -20,7 +20,7 @@ import { type Caller, callerEnvironments, callerPermissions } from "#/modules/id
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
-import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
+import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };

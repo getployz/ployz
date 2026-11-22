@@ -1,8 +1,41 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import { POSTHOG_MCP_ANALYTICS_SOURCE, PostHogMCPAnalyticsProperty } from "@posthog/mcp";
-import { Effect } from "effect";
-import { type McpCapture, PostHog } from "#/modules/analytics/posthog.server";
+import { POSTHOG_MCP_ANALYTICS_SOURCE, PostHogMCP, PostHogMCPAnalyticsProperty } from "@posthog/mcp";
+import { Context, Effect, Layer } from "effect";
+import { AppConfig } from "#/server/config.server";
+
+/** The part of MCP Analytics' client that records an agent's calls. */
+export type McpCapture = Pick<PostHogMCP, "capture" | "captureToolCall" | "captureInitialize" | "captureToolsList" | "captureFeedback">;
+
+export type McpAnalyticsService = {
+  /** Runs `send` against MCP Analytics' client, which redacts what it is given; only `recordAgentCall` calls it. */
+  readonly record: (send: (client: McpCapture) => void) => Effect.Effect<void>;
+};
+
+/** MCP Analytics for agent calls; a no-op on a Self-hosted Cloud and wherever no layer provides it (tests). */
+export const McpAnalytics = Context.Reference<McpAnalyticsService>("ployz/McpAnalytics", {
+  defaultValue: () => ({ record: () => Effect.void }),
+});
+
+export const McpAnalyticsLive = Layer.effect(
+  McpAnalytics,
+  Effect.gen(function* () {
+    const { posthog } = yield* AppConfig;
+    if (posthog === null) return { record: () => Effect.void } satisfies McpAnalyticsService;
+    const client = yield* Effect.acquireRelease(
+      // A failed agent call is no exception: its own `$mcp_is_error` says it failed.
+      Effect.sync(() => new PostHogMCP(posthog.key, { host: posthog.host, enableExceptionAutocapture: false })),
+      (client) => Effect.tryPromise(() => client.shutdown()).pipe(
+        Effect.catch((cause) => Effect.logWarning("MCP Analytics could not flush its queue on shutdown.", cause)),
+      ),
+    );
+    return {
+      record: (send) => Effect.try({ try: () => send(client), catch: (cause) => cause }).pipe(
+        Effect.catch((cause) => Effect.logWarning("PostHog mcp was dropped.", cause)),
+      ),
+    } satisfies McpAnalyticsService;
+  }),
+);
 
 /** Where an agent's call came from: hosted /mcp, the sidebar, `ployz mcp` on a person's machine, or the `ployz` CLI. */
 export const AGENT_SURFACES = ["cloud", "sidebar", "local", "cli"] as const;
@@ -214,6 +247,6 @@ const send = (client: McpCapture, report: AgentCallReport) => {
  * Analytics only queues, and whatever it throws is logged by the wrapper.
  */
 export const recordAgentCall = (report: AgentCallReport): Effect.Effect<void> =>
-  Effect.flatMap(PostHog, (posthog) => posthog.mcp((client) => send(client, report))).pipe(
+  Effect.flatMap(McpAnalytics, (analytics) => analytics.record((client) => send(client, report))).pipe(
     Effect.catchCause((cause) => Effect.logWarning("An agent call was not recorded.", cause)),
   );
