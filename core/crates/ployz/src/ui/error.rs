@@ -66,7 +66,6 @@ pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
     super::warn(format!("{what}: {}", ployz_core::error_chain::row(error)));
 }
 
-/// Prints a wait's notice on stderr.
 pub(crate) struct WaitNotices;
 
 impl crate::setup_retry::Observer for WaitNotices {

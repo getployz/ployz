@@ -28,7 +28,6 @@ thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Whether this command writes its result as JSON.
 #[must_use]
 pub fn json() -> bool {
     super::mode() == Mode::Json
