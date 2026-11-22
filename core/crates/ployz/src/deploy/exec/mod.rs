@@ -1361,22 +1361,16 @@ impl<'a> Rows<'a> {
     }
 
     fn not_confirmed(&self, unconfirmed: &cleanup::Unconfirmed) -> String {
-        // Every proxy in the read confirmed, but the read did not name every live Machine.
-        if unconfirmed.machines.is_empty() {
-            return "the route set did not name every live Machine".into();
-        }
-        let names: Vec<String> = unconfirmed
-            .machines
-            .iter()
-            .map(|id| self.machine_name(id))
-            .collect();
         let causes: String = unconfirmed
             .machines
             .iter()
             .filter(|id| self.dropped_large_packets.contains(id))
             .map(|id| crate::deploy::dropped_note(self.machine_name(id)))
             .collect();
-        format!("proxy on {} did not confirm{causes}", names.join(", "))
+        format!(
+            "{}{causes}",
+            unconfirmed.left_reason(|id| self.machine_name(id))
+        )
     }
 
     fn machine_name(&self, id: &MachineId) -> String {
@@ -1396,8 +1390,7 @@ impl<'a> Rows<'a> {
         container_id: ContainerId,
         error: RpcError,
     ) {
-        let unanswered = error.code == RpcErrorCode::Unavailable;
-        let (reason, _) = self.failed_on(machine_id, error, unanswered);
+        let (reason, _) = self.failed_on(machine_id, error);
         self.name_left(progress, service, machine_id, container_id, reason);
     }
 
@@ -1464,10 +1457,7 @@ impl<'a> Rows<'a> {
                 Vec::new(),
             ),
             Left::Refused(refusal) => (refusal.message, Vec::new()),
-            Left::Failed(error) => {
-                let unanswered = error.code == RpcErrorCode::Unavailable;
-                self.failed_on(copy.machine_id, error, unanswered)
-            }
+            Left::Failed(error) => self.failed_on(copy.machine_id, error),
             Left::NotRestored(left, why) => {
                 let (reason, away) = self.explain(copy, *left);
                 (
@@ -1488,19 +1478,10 @@ impl<'a> Rows<'a> {
     /// A call the client saw go unanswered names its target as away. So does an
     /// unavailable call to the copy's own owner, which covers this client's own
     /// deadline. Any other error says nothing about which Machine is cut off.
-    fn failed_on(
-        &self,
-        machine_id: MachineId,
-        error: RpcError,
-        unanswered: bool,
-    ) -> (String, Vec<MachineId>) {
-        if unanswered || error.target_unanswered() {
-            (
-                format!("{} did not answer", self.machine_name(&machine_id)),
-                vec![machine_id],
-            )
-        } else {
-            (error.message, Vec::new())
+    fn failed_on(&self, machine_id: MachineId, error: RpcError) -> (String, Vec<MachineId>) {
+        match cleanup::did_not_answer(&self.machine_name(&machine_id), &error) {
+            Some(reason) => (reason, vec![machine_id]),
+            None => (error.message, Vec::new()),
         }
     }
 }
