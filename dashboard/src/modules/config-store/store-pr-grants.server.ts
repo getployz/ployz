@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { fetchAppInstallationPermissions } from "#/modules/github/github-observation.api";
+import { fetchAppInstallationPermissions } from "#/modules/github/github-authority.server";
 import { callStoreAsMember } from "./config-store.server";
 
 /** An installation that hasn't accepted what PR Environments need: Pull requests: read and Checks: write. */

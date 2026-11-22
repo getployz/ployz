@@ -7,7 +7,8 @@ import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/c
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { installationAccess } from "#/modules/github/github-access";
-import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCheckRun } from "#/modules/github/github-observation.api";
+import { postInstallationCheckRun } from "#/modules/github/github-authority.server";
+import { fetchInstallationPullRequest, githubLacksPermission } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";

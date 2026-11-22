@@ -5,8 +5,11 @@ import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from 
 import {
   GITHUB_BUILD_WORKFLOW_FILE, GITHUB_WORKFLOW_TEMPLATES, type GithubWorkflowTemplate,
 } from "#/modules/github/github-build-workflow";
-import { githubIdSchema, githubTimestampSchema } from "#/modules/github/github-ingestion.contracts";
-import { GithubObservationError, githubResponseError, type GithubObservationOperation } from "#/modules/github/github-observation.api";
+import type { GithubAccess } from "#/modules/github/github-access";
+import { githubIdSchema, githubTimestampSchema, isValidGithubExactSha, isValidGithubId } from "#/modules/github/github-ingestion.contracts";
+import {
+  GITHUB_API_VERSION, GithubApi, GithubObservationError, githubResponseError, type GithubObservationOperation,
+} from "#/modules/github/github-observation.api";
 import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
 
 /**
@@ -16,7 +19,6 @@ import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
  * as a Self-hosted Cloud does. The minter layer asks the minter, which holds the key outside Cloud and grants Cloud
  * only read tokens and the narrow operations below.
  */
-export const GITHUB_API_VERSION = "2022-11-28";
 
 export type GithubReadPermission = "contents" | "metadata" | "pull_requests" | "checks";
 export type GithubReadPermissions = Partial<Record<GithubReadPermission, "read">>;
@@ -168,6 +170,30 @@ export interface GithubAuthorityService {
 }
 
 export class GithubAuthority extends Context.Service<GithubAuthority, GithubAuthorityService>()("ployz/GithubAuthority") {}
+
+/** The permissions an installation of the GitHub App has granted, and where its owner manages them. */
+export const fetchAppInstallationPermissions = Effect.fn(
+  "Github.fetchAppInstallationPermissions",
+)(function* (installationId: number) {
+  return yield* (yield* GithubAuthority).installation(installationId);
+});
+
+/**
+ * The installation's completed check run `name` on a commit for `externalId`: updated in place when the commit already
+ * has that one, else created. Two checks of one name on one commit (two pull requests from one head) stay apart by
+ * `externalId`. The caller serializes posts per check, so two never race to create.
+ */
+export const postInstallationCheckRun = Effect.fn(
+  "Github.postInstallationCheckRun",
+)(function* (access: GithubAccess, repositoryId: number, input: {
+  headSha: string; name: string; externalId: string; conclusion: "success" | "neutral"; detailsUrl: string; title: string; summary: string;
+}) {
+  if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
+    return yield* failure({ code: "invalid_argument", operation: "create_check_run", retriable: false });
+  }
+  const installationId = yield* (yield* GithubApi).installationOf(access);
+  return yield* (yield* GithubAuthority).postCheck({ installationId, repositoryId, ...input });
+});
 
 const failure = (args: {
   code: GithubObservationError["code"]; operation: GithubObservationOperation; status?: number; retryAfterSeconds?: number; retriable: boolean; reason?: string;

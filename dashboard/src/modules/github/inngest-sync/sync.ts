@@ -1,7 +1,6 @@
 import { Data, Effect, Schema } from "effect";
-import { listInstallationReposPage } from "#/modules/github/github.api";
 import type { GithubRepository } from "#/modules/github/github";
-import type { GithubApi } from "#/modules/github/github-observation.api";
+import { listInstallationReposPage, type GithubApi } from "#/modules/github/github-observation.api";
 import {
   lockGithubRepositoryCache,
   markGithubRepositoriesSynced,

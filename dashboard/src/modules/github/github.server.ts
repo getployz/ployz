@@ -8,7 +8,6 @@ import {
   type GithubInstallationWebhookEventData,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
   bumpGithubRepositoryCacheVersion,
   deleteCachedGithubRepositoriesById,
@@ -25,7 +24,7 @@ import {
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { accessFor, type GithubAccess } from "./github-access";
-import { GithubApi, resolveGithubRepository } from "./github-observation.api";
+import { GithubApi, listGithubRepositoryBranches, listGithubRepositoryFiles, resolveGithubRepository } from "./github-observation.api";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
 import { normalizePublicGithubRepository } from "./public-repository";
 import { repositoryOwnerId, resolveReadableRepository } from "./readable-repository.server";
