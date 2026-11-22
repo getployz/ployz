@@ -5,7 +5,7 @@ import { and, eq, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
-import type { ServerRelease } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";

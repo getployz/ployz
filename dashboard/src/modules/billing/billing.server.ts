@@ -11,7 +11,7 @@ import {
   type ManagedSubscriptionSnapshot,
 } from "#/modules/billing/billing";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import { countOrganizationMachines } from "#/modules/machines/connections.server";
+import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor } from "#/modules/identity/actor";

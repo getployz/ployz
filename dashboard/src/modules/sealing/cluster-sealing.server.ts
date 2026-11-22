@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { SealingPublicKey } from "@ployz/sdk";
 import { Effect } from "effect";
-import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
+import { currentFounder, currentGeneration } from "#/modules/runtime/connections.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import { recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";

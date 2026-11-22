@@ -2,16 +2,10 @@ import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Schedule } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { readStore } from "#/modules/config-store/config-store.server";
+import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { createNamespaceCleanupRequestedEvent, type NamespaceCleanupRequestedEventData } from "#/modules/inngest/events";
-import {
-  CLEANUP_END_CODES,
-  CLEANUP_PENDING_LIMIT_MS,
-  CLEANUP_RUNNING_LIMIT_MS,
-  type CleanupEndCode,
-  type CleanupEndCodeWithoutMessage,
-  type CleanupState,
-} from "#/modules/machines/namespace-cleanup";
+import { CLEANUP_PENDING_LIMIT_MS, CLEANUP_RUNNING_LIMIT_MS } from "#/modules/machines/namespace-cleanup";
+import { CLEANUP_END_CODES, type CleanupEndCode, type CleanupEndCodeWithoutMessage, type CleanupState } from "#/modules/machines/namespace-cleanup-states";
 import { namespaceCleanup } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -20,10 +14,6 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
-
-/** The Namespaces the Organization's Environments own, as the Store names them. A failed read fails: nothing reads as unowned. */
-export const ownedNamespaces = (organizationId: string) =>
-  readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces.map(({ namespace }) => namespace)));
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (

@@ -8,7 +8,7 @@ import type { Actor, SessionActor } from "#/modules/identity/actor";
 import { claimSecretFor, hashClaimSecret, tokenRuns } from "#/modules/identity/claim-required.server";
 import { takeClaimSignInOrganization } from "#/modules/identity/claim-sign-in.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
-import { countOrganizationMachines } from "#/modules/machines/connections.server";
+import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
 import { fleetToken, serverEnrollment } from "#/modules/machines/waiting/tables";
 import { openOrganizationInSession } from "#/modules/organization/organization-state.server";

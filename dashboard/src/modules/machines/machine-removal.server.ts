@@ -10,14 +10,8 @@ import {
 import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import type {
-  EnqueueMachineRemoveInput,
-  GetMachineRemoveAttemptInput,
-  LoadMachineDataLossInput,
-  MachineRemoveAttemptContext,
-  RemoveMachineOutcome,
-  ServerRelease,
-} from "#/modules/machines/machine-removal";
+import type { EnqueueMachineRemoveInput, GetMachineRemoveAttemptInput, LoadMachineDataLossInput, MachineRemoveAttemptContext, RemoveMachineOutcome } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { removalLack } from "#/modules/machines/machine-removal";
 import {
   claimMachineRemoveAttempt,
@@ -33,7 +27,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { nameLostVolumes, planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";

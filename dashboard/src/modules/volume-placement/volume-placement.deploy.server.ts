@@ -18,7 +18,8 @@ import {
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import {
   askCopy, commitment, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
 } from "#/modules/volume-run/volume-run.server";

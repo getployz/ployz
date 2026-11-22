@@ -31,7 +31,7 @@ import {
   createObservePushTargetRequestedEvent,
   createServerEnrollmentCompletedEvent,
 } from "#/modules/inngest/events";
-import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
@@ -39,7 +39,7 @@ import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.se
 import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, managementIdentity, SERVER_REACH_TIMEOUT_MS,
-} from "#/modules/machines/connections.server";
+} from "#/modules/runtime/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
 

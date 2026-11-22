@@ -13,7 +13,7 @@ import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
-import { logForeignServers } from "#/modules/machines/connections.server";
+import { logForeignServers } from "#/modules/runtime/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";

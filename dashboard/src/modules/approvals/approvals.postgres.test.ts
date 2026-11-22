@@ -27,7 +27,7 @@ import { serviceAct } from "#/modules/service-act/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
-import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { cleanPlan, drainPlan, freshApproval, freshOperationDigest, freshPendingApprovals, removePlan } from "#/modules/machines/server-operations.server";
 import { organizationRemovalAsked } from "#/modules/organization/organization-removal.server";

@@ -1,4 +1,4 @@
-import type { RemovalEndpoint } from "#/modules/machines/pairing-removal";
+import type { RemovalEndpoint } from "#/modules/runtime/removal-endpoints";
 import { createdAt, type EncryptedSecretValue, updatedAt } from "#/db/tables";
 import type { MachineId } from "@ployz/sdk";
 import { MACHINE_ID_SQL } from "#/lib/schema";

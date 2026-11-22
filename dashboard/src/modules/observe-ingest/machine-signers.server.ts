@@ -3,7 +3,7 @@ import { createPublicKey, verify } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "@ployz/sdk";
-import { decryptPairingSecret, managementIdentity } from "#/modules/machines/connections.server";
+import { decryptPairingSecret, managementIdentity } from "#/modules/runtime/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";

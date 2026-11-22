@@ -12,7 +12,7 @@ import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
 import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
 import type { Permission } from "#/modules/organization/permissions";
-import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run-states";
 
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [

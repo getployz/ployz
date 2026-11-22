@@ -5,7 +5,7 @@ import type { DialTiming, MachineId } from "@ployz/sdk";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
-import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";

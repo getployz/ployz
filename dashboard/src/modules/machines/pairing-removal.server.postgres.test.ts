@@ -1,4 +1,4 @@
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import type { Client, ConnectOptions } from "@ployz/sdk";
 import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

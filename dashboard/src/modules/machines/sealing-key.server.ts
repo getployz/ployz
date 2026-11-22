@@ -5,7 +5,7 @@ import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
-import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
+import { currentFounder, currentGeneration } from "#/modules/runtime/connections.server";
 import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import type {
   CliReadSealingRecoveryInput,

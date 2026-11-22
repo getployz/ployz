@@ -12,17 +12,8 @@ import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { foundingClusterName } from "#/modules/cluster-name/cluster-name.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
-import {
-  COMMITTED_STAGES,
-  ENROLL_MIN_CLI_VERSION,
-  INGRESS_CLOSED_OPTION,
-  type EnrollInput,
-  type EnrollInstruction,
-  type EnrollmentRole,
-  type EnrollmentState,
-  type EnrollStorage,
-  isReadyFor,
-} from "#/modules/machines/waiting/server-enrollment";
+import { COMMITTED_STAGES, ENROLL_MIN_CLI_VERSION, INGRESS_CLOSED_OPTION, type EnrollInput, isReadyFor } from "#/modules/machines/waiting/server-enrollment";
+import { type EnrollInstruction, type EnrollmentRole, type EnrollmentState, type EnrollStorage } from "#/modules/machines/waiting/enrollment-states";
 import { serversOffline } from "#/modules/machines/waiting/servers-offline";
 import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";

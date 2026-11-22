@@ -5,7 +5,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { INGRESS } from "#/modules/cluster-domain/ingress-running";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeService, useRuntimeStatus } from "#/providers/runtime-provider";
-import type { WebTrafficWant } from "./server-web-traffic";
+import type { WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 import { needsAttention, serverStatus, type ServerStatus } from "./server-status";
 import {
   ingressProxyOn,

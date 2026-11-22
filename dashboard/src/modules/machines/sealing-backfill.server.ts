@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { BackfillSealingKeyReport, BackfillSealingKeyRequest, MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import { decryptPairingSecret } from "#/modules/machines/connections.server";
+import { decryptPairingSecret } from "#/modules/runtime/connections.server";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import {
   chooseSealingKeyGenerator,

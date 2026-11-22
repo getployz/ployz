@@ -7,7 +7,7 @@ import { freshSwitchDigest } from "#/modules/ingress/doors.server";
 import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
-import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";

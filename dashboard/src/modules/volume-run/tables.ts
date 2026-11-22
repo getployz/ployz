@@ -16,16 +16,8 @@ import {
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import type { ServiceSpec } from "#/modules/volume-run/volume-run";
-import {
-  type AnyVolumeRunArgs,
-  VOLUME_RUN_KINDS,
-  VOLUME_RUN_PHASES,
-  VOLUME_RUN_STATES,
-  type VolumeRunKind,
-  type VolumeRunPhase,
-  type VolumeRunState,
-} from "#/modules/volume-run/volume-run";
+import type { AnyVolumeRunArgs, ServiceSpec } from "#/modules/volume-run/volume-run";
+import { VOLUME_RUN_KINDS, VOLUME_RUN_PHASES, VOLUME_RUN_STATES, type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 
 /**
  * Cloud's bookkeeping for Volume runs: one active row per Volume serializes Cloud's own runs. It is not runtime truth;

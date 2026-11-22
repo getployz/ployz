@@ -6,19 +6,10 @@ import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
-import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import {
-  DRAIN_END_CODES,
-  DRAIN_PENDING_LIMIT_MS,
-  DRAIN_RUNNING_LIMIT_MS,
-  type DrainEndCode,
-  type DrainEndCodeWithoutMessage,
-  type DrainState,
-  type LatestDrain,
-  type RequestedServerDrain,
-  type RequestServerDrainInput,
-} from "#/modules/machines/server-drain";
+import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS, type LatestDrain, type RequestedServerDrain, type RequestServerDrainInput } from "#/modules/machines/server-drain";
+import { DRAIN_END_CODES, type DrainEndCode, type DrainEndCodeWithoutMessage, type DrainState } from "#/modules/machines/server-drain-states";
 import { drainPlan, planDrain, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";

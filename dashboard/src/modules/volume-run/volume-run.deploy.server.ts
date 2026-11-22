@@ -6,7 +6,8 @@ import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { expectOf, observedEpoch, oldCopy, restoreLine, restoreSource } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
+import { type VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 import {
   admitRun,
   askCopy,

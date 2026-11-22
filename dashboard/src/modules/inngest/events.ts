@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import type { MailMessage } from "#/modules/mail/mailer.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import type { UpgradeTrigger } from "#/modules/server-upgrade/server-upgrade";
-import type { VolumeRunKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 import { eventType, staticSchema } from "inngest";
 import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";

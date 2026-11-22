@@ -4,22 +4,17 @@ import { createdAt, type EncryptedSecretValue, sqlStringLiterals, updatedAt } fr
 import { MACHINE_ID_SQL } from "#/lib/schema";
 import { user } from "#/modules/identity/tables";
 
-import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
+import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 
-import {
-  CLEANUP_END_CODES,
-  CLEANUP_STATES,
-  type CleanupEndCode,
-  type CleanupState,
-} from "#/modules/machines/namespace-cleanup";
-import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
-import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic";
+import { CLEANUP_END_CODES, CLEANUP_STATES, type CleanupEndCode, type CleanupState } from "#/modules/machines/namespace-cleanup-states";
+import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain-states";
+import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 
 import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
-import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 
 import { sql } from "drizzle-orm";
 

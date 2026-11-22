@@ -3,7 +3,7 @@ import type { Change, ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect } from "effect";
 import { asRecord } from "#/lib/json";
 import { MACHINE_ID_PATTERN } from "#/lib/schema";
-import { listOrganizationServers } from "#/modules/machines/connections.server";
+import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { StoreRefused } from "./store.contract";
 
 type Server = Effect.Success<ReturnType<typeof listOrganizationServers>>[number];

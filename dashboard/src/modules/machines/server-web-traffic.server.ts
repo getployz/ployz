@@ -3,16 +3,8 @@ import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerWebTrafficRequestedEvent, type ServerWebTrafficRequestedEventData } from "#/modules/inngest/events";
-import {
-  type LatestWebTraffic,
-  type RequestedServerWebTraffic,
-  type RequestServerWebTrafficInput,
-  startFailure,
-  WEB_TRAFFIC_PENDING_LIMIT_MS,
-  WEB_TRAFFIC_RUNNING_LIMIT_MS,
-  type WebTrafficState,
-  type WebTrafficWant,
-} from "#/modules/machines/server-web-traffic";
+import { type LatestWebTraffic, type RequestedServerWebTraffic, type RequestServerWebTrafficInput, startFailure, WEB_TRAFFIC_PENDING_LIMIT_MS, WEB_TRAFFIC_RUNNING_LIMIT_MS } from "#/modules/machines/server-web-traffic";
+import { type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 import { serverWebTrafficAttempt } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
