@@ -75,8 +75,6 @@ const idText = (label: string) => Schema.Trim.check(Schema.makeFilter<string>((i
 /** The Permissions dialog's three text fields, parsed into a file's access; encoding a file's access prefills them. */
 export const fileAccessDraftSchema = Schema.Struct({ mode: modeText, uid: idText("User ID"), gid: idText("Group ID") });
 
-export type FileAccessDraft = typeof fileAccessDraftSchema.Encoded;
-
 /** Bytes as the Size row says them: 812 B, 12.4 KB. */
 export function configBytesText(bytes: number) {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;

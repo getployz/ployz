@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -9,7 +9,7 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
+import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { usePendingMarks, showPending } from "./store-pending";
 
 /**
@@ -135,14 +135,6 @@ const isStoreQuery = Schema.is(StoreQuery);
 export function queryOf(query: Query): ConfigQuery | null {
   const [prefix, , , , config] = query.queryKey;
   return prefix === "store-view" && isStoreQuery(config) ? config : null;
-}
-
-const isAnswered = Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: StoreView }));
-
-/** The `kind` view a cached Store view query holds, if it answered with one. */
-export function cachedView<K extends ConfigQuery["query"]>(query: Query, kind: K) {
-  const result = query.state.data;
-  return isAnswered(result) ? viewOf(result.value, { query: kind }) : undefined;
 }
 
 /** Views with one more read queued behind the read in flight. */
@@ -295,16 +287,6 @@ export function namespaceQuery(environment: EnvironmentRef): { query: "namespace
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
 export function diffQuery(environment: EnvironmentRef): { query: "diff" } & DiffQuery {
   return { query: "diff", environment };
-}
-
-/** The plan a Deploy of the whole Environment ships, with each Service's spec as its runner will send it. */
-export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } & PlanQuery {
-  return { query: "plan", environment, services: [], target: true };
-}
-
-/** A redeploy of Deployment `deployment`, lowered as its runner will lower it, for this browser to approve. */
-export function redeployPlanQuery(environment: EnvironmentRef, deployment: string): { query: "plan" } & PlanQuery {
-  return { query: "plan", environment, services: [], target: true, deployment };
 }
 
 /** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
