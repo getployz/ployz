@@ -780,8 +780,13 @@ pub(crate) const SET: Verb = Verb::cloud("set", Never, config::set_command, conf
         ("--secret", Stdin::Only),
     ])
     .docs("services/settings.md");
-pub(crate) const STATUS: Verb =
-    Verb::cloud("status", Never, link::status_command, link::status).docs("cli/overview.md");
+pub(crate) const STATUS: Verb = Verb::cloud(
+    "status",
+    Never,
+    super::status::command,
+    super::status::status,
+)
+.docs("cli/overview.md");
 pub(crate) const TOKEN_LS: Verb = Verb::cloud(
     "token ls",
     Never,

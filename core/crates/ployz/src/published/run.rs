@@ -244,8 +244,9 @@ fn scope(
         return Ok(());
     }
     let given = |name| input.get(name).and_then(Value::as_str);
-    let at =
-        crate::handlers::link::scope_given(config, given("project"), given("environment"))?.at();
+    let at = crate::scope::Scope::given(given("project"), given("environment"))?
+        .linked_here(config)?
+        .at();
     if let Some(project) = at.project {
         input.insert("project".to_owned(), project.as_str().into());
     }
@@ -268,7 +269,7 @@ pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
             })
     };
-    crate::handlers::link::check_env(typed("--project"), typed("--env"))
+    crate::scope::check_env(typed("--project"), typed("--env"))
 }
 
 fn print(

@@ -1,5 +1,5 @@
 //! What `ployz status` says needs someone to act: an [`Attention`] and the [`Subject`] it is about.
-//! The Server check and the link handler build them; neither imports the other.
+//! The Server check and the status handler build them.
 
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerRun, ContainerRuntimeObservation, CopyRotation,
