@@ -6,7 +6,7 @@ import type { CachedStoreRead } from "#/modules/config-store/store-view.queries"
 import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
+import { containerServing } from "#/modules/runtime/services-online";
 
 /**
  * How a status line reads: its colour; `crashed`, red with the explosion; `idle`, a hollow dot for a Service with

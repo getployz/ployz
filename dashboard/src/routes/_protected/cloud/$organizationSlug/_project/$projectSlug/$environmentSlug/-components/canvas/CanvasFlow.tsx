@@ -35,7 +35,7 @@ import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-dep
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
-import { deploymentDestination } from "../deployments/run-search";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { useEnvironmentRenaming } from "../StoreRenameLock";
 import { CanvasFinder } from "./CanvasFinder";
@@ -49,7 +49,7 @@ import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import type { CanvasResourceNode, StoreCanvas } from "./types";
 
 // Every canvas edge is a Live Node's link, dashed by `buildStoreEdges`; each is a smooth step ending in an arrow.

@@ -195,7 +195,7 @@ describe("data boundaries", () => {
 
   it("renders one shell, gated once on the Org Store", () => {
     expect(filesMatching(/<DashboardShell\b/)).toEqual(["routes/_protected/cloud/$organizationSlug/route.tsx"]);
-    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);
+    expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/shell/dashboard-shell.tsx"]);
   });
 
   it("writes to the Config Store only through its writer", () => {

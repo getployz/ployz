@@ -10,6 +10,8 @@ import { StorePrPlanPanel } from "#/routes/_protected/cloud/$organizationSlug/_p
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId",
 )({
+  // Opened from Settings → Project, over the canvas.
+  staticData: { section: "settings" },
   // The start-from's Services, Volumes and Settings come with the Environment's own loader.
   loader: ({ params, context }) => prefetchRemoteWithStoreViews(context, params.organizationSlug,
     [prPlansQuery(params.projectSlug), environmentsQuery(params.projectSlug)],

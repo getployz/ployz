@@ -99,12 +99,12 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
   const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });
   const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug" });
-  const logs = createRoute({ getParentRoute: () => environment, path: "logs", component: () => <div>Log entries</div> });
-  const settings = createRoute({ getParentRoute: () => environment, path: "settings", component: () => <div>Environment preferences</div> });
+  const logs = createRoute({ getParentRoute: () => environment, path: "logs", staticData: { section: "logs" }, component: () => <div>Log entries</div> });
+  const settings = createRoute({ getParentRoute: () => environment, path: "settings", staticData: { section: "settings" }, component: () => <div>Environment preferences</div> });
   const canvasLayout = createRoute({ getParentRoute: () => environment, id: "_canvas", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => canvasLayout, path: "/", component: () => <div>Canvas nodes</div> });
   const orgLayout = createRoute({ getParentRoute: () => organization, id: "_org" });
-  const account = createRoute({ getParentRoute: () => orgLayout, path: "~/account", component: () => <div>Account sections</div> });
+  const account = createRoute({ getParentRoute: () => orgLayout, path: "~/account", staticData: { section: "account" }, component: () => <div>Account sections</div> });
   const router = createRouter({
     context: { queryClient: client, dbClient: getDbClient(client) },
     routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings, canvasLayout.addChildren([canvas])])])]), orgLayout.addChildren([account])])])])]),

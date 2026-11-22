@@ -47,10 +47,10 @@ async function renderAt(path: string) {
   const organizationRoute = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: () => <><TopBar /><Outlet /></> });
   const projectGroup = createRoute({ getParentRoute: () => organizationRoute, id: "_project" });
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug" });
-  const logs = createRoute({ getParentRoute: () => environment, path: "logs" });
-  const settings = createRoute({ getParentRoute: () => environment, path: "settings" });
+  const logs = createRoute({ getParentRoute: () => environment, path: "logs", staticData: { section: "logs" } });
+  const settings = createRoute({ getParentRoute: () => environment, path: "settings", staticData: { section: "settings" } });
   const organizationGroup = createRoute({ getParentRoute: () => organizationRoute, id: "_org" });
-  const organizationHome = createRoute({ getParentRoute: () => organizationGroup, path: "~" });
+  const organizationHome = createRoute({ getParentRoute: () => organizationGroup, path: "~", staticData: { section: "projects" } });
   const routeTree = root.addChildren([protectedRoute.addChildren([organizationRoute.addChildren([projectGroup.addChildren([environment.addChildren([logs, settings])]), organizationGroup.addChildren([organizationHome])])])]);
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);

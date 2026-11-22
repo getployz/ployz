@@ -34,10 +34,10 @@ import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/sett
 import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { RowWarning } from "#/components/settings/row-warning";
-import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
-import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
-import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
+import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
+import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { RegistryCredentialsField } from "./RegistryCredentialsField";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
@@ -54,8 +54,8 @@ import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
-import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
-import { originFrom } from "../../../-components/deployments/run-search";
+import { StoreDeploymentRows } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/DeploymentsList";
+import { originFrom } from "#/modules/config-store/deployments/run-search";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
@@ -101,7 +101,6 @@ const OPTION_LABELS = new Map([
 ]);
 
 const SERVICE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
-const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId";
 
 /** Whether another Service here is named or reached as `name`: Service names and Private DNS names share one space. */
 const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
@@ -136,7 +135,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const range = { from, to };
   const prefetchUptime = usePrefetchServiceUptime({ organizationSlug, environmentId }, params.serviceId);
   const uptimeEnabled = useUptimeEnabled(organizationSlug);
-  const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
+  const navigate = useNavigate({ from: ENVIRONMENT_SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   const asks = useProtectedAsk(organizationSlug, store);
   const { machines, volumeCopies } = useRuntimeLens(organizationSlug);

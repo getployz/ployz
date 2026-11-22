@@ -14,6 +14,7 @@ import { TokenRow } from "./-components/token-row";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/tokens",
 )({
+  staticData: { section: "servers" },
   loader: ({ params, context }) => prefetchRemote(context, fleetTokensQueryOptions(params.organizationSlug)),
   component: RouteComponent,
 });

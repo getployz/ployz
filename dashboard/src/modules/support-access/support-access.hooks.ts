@@ -1,5 +1,5 @@
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLoaderData } from "@tanstack/react-router";
+import { useOrganizationContext } from "#/collections/use-organization-context";
 import { toast } from "sonner";
 import { getSupportAccessCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -19,7 +19,7 @@ const saving = new Map<string, Promise<unknown>>();
 export function useSupportAccess(organizationSlug: string) {
   const collection = getSupportAccessCollection(organizationSlug, useCollectionScope());
   const { data: rows } = useLiveSuspenseQuery(collection);
-  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const { organizationId } = useOrganizationContext();
   const none: SupportAccessRow = { id: organizationId, allowed: false, ...SUPPORT_SHOWS_NONE };
   const row = rows[0] ?? none;
   const set = createOptimisticAction<SupportAccessChange>({

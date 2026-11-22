@@ -52,7 +52,7 @@ export const Route = createFileRoute(
       Schema.catchDecoding(() => Effect.succeed(Option.some(false))),
     )),
   })),
-  staticData: { crumb: ServerSwitcher },
+  staticData: { crumb: ServerSwitcher, section: "servers" },
   loader: ({ params, context }) => prefetchRemote(
     context,
     latestServerUpgradesQueryOptions(params.organizationSlug),

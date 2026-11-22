@@ -16,7 +16,7 @@ import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { useServerList } from "#/modules/machines/use-servers";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 
 /** How a removal that didn't apply ended, after "Deployment #N". */

@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
+import { ENVIRONMENT_DEPLOYMENTS_ROUTE_TO, ENVIRONMENT_INDEX_ROUTE_TO, VERSIONS_ROUTE_TO } from "#/lib/environment-routes";
 import {
   Building2Icon,
   ChartLineIcon,
@@ -25,6 +26,17 @@ interface Destination {
   path: RegisteredPath;
 }
 
+/** The pages of Organization settings, in order: the section strip, the `section` search key and the page's body all follow it. */
+export const ORGANIZATION_SETTINGS_SECTIONS = [
+  { id: "general", label: "General" },
+  { id: "network", label: "Network" },
+  { id: "members", label: "Members" },
+  { id: "tokens", label: "Tokens" },
+  { id: "github", label: "GitHub" },
+  { id: "builds", label: "Builds" },
+] as const;
+export type OrganizationSettingsSection = (typeof ORGANIZATION_SETTINGS_SECTIONS)[number]["id"];
+
 /** An Environment's five places, in rail order. Architecture is its canvas. */
 const environmentPlaceOrder = ["architecture", "deployments", "logs", "analytics", "settings"] as const;
 type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
@@ -32,12 +44,12 @@ const environmentPlaces = {
   architecture: {
     label: "Architecture",
     icon: WorkflowIcon,
-    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
+    path: ENVIRONMENT_INDEX_ROUTE_TO,
   },
   deployments: {
     label: "Deployments",
     icon: HistoryIcon,
-    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+    path: ENVIRONMENT_DEPLOYMENTS_ROUTE_TO,
   },
   logs: {
     label: "Logs",
@@ -72,6 +84,11 @@ const organizationDestinations = {
 
 export type DashboardSection = EnvironmentPlace | OrganizationDestination;
 
+/** The rail place a page lights up: Integrations and Billing sit under Organization. */
+function railPlaceOf(section: DashboardSection): DashboardSection {
+  return section === "integrations" || section === "billing" ? "organization-settings" : section;
+}
+
 function isEnvironmentPlace(section: DashboardSection): section is EnvironmentPlace {
   return environmentPlaceOrder.some((place) => place === section);
 }
@@ -104,7 +121,7 @@ export type DashboardNavSection = ReturnType<typeof placeSections>[number];
 /** The search keys that pick a Settings page's section. */
 export interface DashboardSectionSearch {
   scope?: "environment" | "project";
-  section?: "general" | "network" | "members" | "tokens" | "github" | "builds";
+  section?: OrganizationSettingsSection;
 }
 
 /** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
@@ -172,7 +189,7 @@ function placeSections(
     const params = { organizationSlug: scope.organizationSlug, projectSlug: scope.projectSlug, environmentSlug: scope.environmentSlug };
     return [
       { label: "Runs", current: open === "runs", ...linkOptions({ to: environmentPlaces.deployments.path, params, search: {} }) },
-      { label: "Versions", current: open === "versions", ...linkOptions({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions", params, search: {} }) },
+      { label: "Versions", current: open === "versions", ...linkOptions({ to: VERSIONS_ROUTE_TO, params, search: {} }) },
     ];
   }
   if (scope.kind === "environment" && place === "settings") {
@@ -187,12 +204,11 @@ function placeSections(
     const params = { organizationSlug: scope.organizationSlug };
     const to = organizationDestinations["organization-settings"].path;
     return [
-      { label: "General", current: open === "general", ...linkOptions({ to, params, search: {} }) },
-      { label: "Network", current: open === "network", ...linkOptions({ to, params, search: { section: "network" as const } }) },
-      { label: "Members", current: open === "members", ...linkOptions({ to, params, search: { section: "members" as const } }) },
-      { label: "Tokens", current: open === "tokens", ...linkOptions({ to, params, search: { section: "tokens" as const } }) },
-      { label: "GitHub", current: open === "github", ...linkOptions({ to, params, search: { section: "github" as const } }) },
-      { label: "Builds", current: open === "builds", ...linkOptions({ to, params, search: { section: "builds" as const } }) },
+      ...ORGANIZATION_SETTINGS_SECTIONS.map(({ id, label }) => ({
+        label,
+        current: open === id,
+        ...linkOptions({ to, params, search: id === "general" ? {} : { section: id } }),
+      })),
       { label: "Integrations", current: open === "integrations", ...linkOptions({ to: organizationDestinations.integrations.path, params, search: {} }) },
       ...billingEnabled
         ? [{ label: "Billing", current: open === "billing", ...linkOptions({ to: organizationDestinations.billing.path, params, search: {} }) }]
@@ -216,7 +232,7 @@ export function createDashboardNavigation(
   },
 ) {
   const open = openSection(section, search, routeId);
-  const currentPlace = section === "billing" || section === "integrations" ? "organization-settings" : section;
+  const currentPlace = railPlaceOf(section);
   const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
     section: key,
     label,
@@ -234,31 +250,9 @@ export function createDashboardNavigation(
   };
 }
 
-const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
-  ["/_protected/cloud/$organizationSlug/_org/~/", "projects"],
-  ["/_protected/cloud/$organizationSlug/_project/new", "projects"],
-  ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
-  ["/_protected/cloud/$organizationSlug/_org/~/integrations", "integrations"],
-  ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
-  ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
-  ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
-  ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
-  ["/_protected/cloud/$organizationSlug/_org/~/servers/tokens", "servers"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/", "deployments"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/$deploymentId", "deployments"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions", "deployments"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics", "analytics"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],
-  // Opened from Settings → Project, over the canvas.
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId", "settings"],
-]);
-
-/** The current place from the deepest route: the canvas and its panels are Architecture. */
-export function getDashboardSectionFromRouteId(
-  routeId?: RegisteredRouteId,
-): DashboardSection {
-  return (routeId && sectionByRouteId.get(routeId)) || "architecture";
+/** The current place from the deepest route's `staticData.section`: the canvas and its panels are Architecture. */
+export function getDashboardSectionFromStaticData(staticData?: { section?: DashboardSection }): DashboardSection {
+  return staticData?.section ?? "architecture";
 }
 
 /** The canvas's layout: Architecture and every panel over the canvas render inside it. */

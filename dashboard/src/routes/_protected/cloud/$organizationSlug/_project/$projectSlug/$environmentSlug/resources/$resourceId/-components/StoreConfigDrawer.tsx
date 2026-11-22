@@ -34,14 +34,14 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";
 import { SettingsDanger, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
-import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
-import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
-import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
-import { deploymentDestination } from "../../../-components/deployments/run-search";
+import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
+import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
+import { CanvasInspectorNotFound } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
+import { useStoreChangeActions } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
 import { useConfigFileEditor } from "./config-file-editor-loader";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 
 const SHOWN_REFUSALS = ["invalid", "conflict"] as const;

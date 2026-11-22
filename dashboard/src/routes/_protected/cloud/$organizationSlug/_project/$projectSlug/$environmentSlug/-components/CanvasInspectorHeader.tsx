@@ -4,7 +4,7 @@ import { Link, linkOptions } from "@tanstack/react-router";
 import { ArrowLeftIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 
 export const InspectorPresentation = createContext<{
   takeover: boolean;

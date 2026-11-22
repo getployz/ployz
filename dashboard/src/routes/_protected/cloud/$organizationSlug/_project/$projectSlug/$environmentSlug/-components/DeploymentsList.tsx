@@ -10,8 +10,8 @@ import { admission, deploymentLabel, deploymentLight, deploymentStatusLabel, dep
 import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { DashboardPage } from "#/components/dashboard-page";
-import { deploymentDestination, type RunOrigin } from "./deployments/run-search";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { deploymentDestination, type RunOrigin } from "#/modules/config-store/deployments/run-search";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 /** The Config Store's Deployments of the Environment, the CLI's and this dashboard's alike. */
 export function DeploymentsList({ service }: { service: string | null }) {

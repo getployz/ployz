@@ -5,7 +5,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { DEFAULT_RANGE, DEFAULT_WINDOW, isAnalyticsView, isRequestWindow } from "#/modules/web-analytics/ui/analytics-model";
 import { analyticsViewQueryOptions, apiViewQueryOptions, errorsViewQueryOptions } from "#/modules/web-analytics/ui/analytics.queries";
 import { type AnalyticsSearch, AnalyticsPage } from "#/modules/web-analytics/ui/analytics-view";
-import { ENVIRONMENT_ROUTE_FROM } from "./-components/environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 type RawSearch = { view?: string; range?: string; page?: string; window?: string; service?: string };
 
@@ -20,6 +20,7 @@ function parseSearch(raw: RawSearch): AnalyticsSearch {
 }
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics")({
+  staticData: { section: "analytics" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
     view: Schema.optional(Schema.String),
     range: Schema.optional(Schema.String),

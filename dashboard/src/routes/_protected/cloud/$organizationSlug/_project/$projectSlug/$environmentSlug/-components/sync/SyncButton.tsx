@@ -23,7 +23,7 @@ import {
 } from "#/modules/config-store/store-view.queries";
 import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
 

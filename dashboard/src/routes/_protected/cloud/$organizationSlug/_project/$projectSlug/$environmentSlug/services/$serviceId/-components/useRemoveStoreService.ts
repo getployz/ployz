@@ -7,7 +7,7 @@ import { requireView, storeViewOptions, volumesQuery } from "#/modules/config-st
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
-} from "../../../-components/environment-route-paths";
+} from "#/lib/environment-routes";
 
 function useCloseService() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });

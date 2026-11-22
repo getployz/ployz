@@ -9,7 +9,7 @@ import { useVolumeLossCheck } from "#/modules/config-store/use-volume-loss-check
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { branchQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { removeTarget, type RemovalConsent } from "#/modules/config-store/store-workspace";
-import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 
 /**
  * Once the Branch is gone (the Store deletes a closed one), any page on it opens the Parent it had. It sits on the

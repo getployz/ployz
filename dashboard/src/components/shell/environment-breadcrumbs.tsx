@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/lib/environment-routes";
 import { CreateEnvironmentDialog } from "#/components/shell/create-environment-dialog";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, LockIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";

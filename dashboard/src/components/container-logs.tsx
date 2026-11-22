@@ -17,7 +17,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { logHistoryServicesQueryOptions, logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history.queries";
 import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";

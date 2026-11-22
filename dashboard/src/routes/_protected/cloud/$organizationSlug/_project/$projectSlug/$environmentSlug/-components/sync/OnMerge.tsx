@@ -20,7 +20,7 @@ import { useSealing } from "#/modules/variables/sealing";
 import { useStoreMergeRowsPending } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 /**
  * A PR Environment's On merge button, while its pull request is open: how many changes the merge lands, and the list

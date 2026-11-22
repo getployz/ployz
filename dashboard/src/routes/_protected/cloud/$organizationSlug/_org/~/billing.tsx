@@ -25,6 +25,7 @@ import { prefetchRemote, requireBilling } from "#/collections/route-data";
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"
 )({
+  staticData: { section: "billing" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ checkout_id: Schema.optional(Schema.String) })),
   loader: async ({ params, context }) => {
     await requireBilling(context, params.organizationSlug);

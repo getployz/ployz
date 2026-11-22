@@ -14,6 +14,7 @@ const settingsSection = Schema.Literals(["environment", "project"]);
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
 )({
+  staticData: { section: "settings" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
     scope: Schema.optional(settingsSection.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
