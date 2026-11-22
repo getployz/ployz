@@ -2,9 +2,10 @@
 
 use std::future::Future;
 
+use ployz_core::labels::ServiceLabels;
 use ployz_core::{
-    ContainerId, ContainerPlacementUpdated, Machine, MachineStorageObservation, PlacementAdmission,
-    PlacementRefusal, ResolvedServiceSpec, admit_placement,
+    ContainerId, ContainerKind, ContainerPlacementUpdated, Machine, MachineStorageObservation,
+    PlacementAdmission, PlacementRefusal, ResolvedServiceSpec, admit_placement,
 };
 
 use super::{ContainerRuntime, Error, require_eligible};
@@ -31,7 +32,16 @@ impl ContainerRuntime {
         storage: impl Future<Output = Option<MachineStorageObservation>>,
     ) -> Result<ContainerPlacementUpdated, Error> {
         let mut config_operation = self.specs.config_operation().await;
-        let (inspected, labels, stored) = self.observation().managed_service(container_id).await?;
+        let inspected = self.observation().ensure_managed(container_id).await?;
+        let labels = ServiceLabels::parse(inspected.labels().ok_or(Error::NotManaged)?)?;
+        if labels.kind != ContainerKind::ServiceContainer {
+            return Err(Error::NotAServiceContainer(*container_id));
+        }
+        let stored = self
+            .specs
+            .get(container_id)
+            .await?
+            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         let refused = |refusal| Error::PlacementRefused {
             service: stored.name.clone(),
             container_id: *container_id,
