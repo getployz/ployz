@@ -12,7 +12,7 @@ use ployz_core::authority::{
 };
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
-use ployz_decide::github_build::{EndKind, Hold, Target, github_end_holds};
+use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -832,6 +832,14 @@ struct Started {
 }
 
 impl GithubHold {
+    const fn hold(&self) -> Hold {
+        match self {
+            Self::Dispatched { .. } => Hold::Dispatched,
+            Self::CheckedIn { .. } => Hold::CheckedIn,
+            Self::Reported { .. } => Hold::Reported,
+        }
+    }
+
     const fn run(&self) -> &GithubRun {
         match self {
             Self::Dispatched { run } | Self::CheckedIn { run, .. } | Self::Reported { run, .. } => {
@@ -1385,14 +1393,16 @@ pub(crate) fn github_check_in(
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    let Some(GithubHold::Dispatched { run }) = row.building_on(run_id) else {
+    let held = row.building_on(run_id);
+    let in_flight = stored.summary.status.in_flight();
+    let (Some(held), true) = (
+        held,
+        github_check_in_holds(held.map(GithubHold::hold), in_flight),
+    ) else {
         return Err(no_longer_wanted());
     };
-    if !stored.summary.status.in_flight() {
-        return Err(no_longer_wanted());
-    }
     let github = GithubHold::CheckedIn {
-        run: run.clone(),
+        run: held.run().clone(),
         started: Started {
             grant: grant.clone(),
             at: std::time::SystemTime::now()
@@ -1491,11 +1501,7 @@ pub(crate) fn github_end(
     };
     let target = match run_id {
         Some(run_id) => Target::Run {
-            building_on: row.building_on(run_id).map(|hold| match hold {
-                GithubHold::Dispatched { .. } => Hold::Dispatched,
-                GithubHold::CheckedIn { .. } => Hold::CheckedIn,
-                GithubHold::Reported { .. } => Hold::Reported,
-            }),
+            building_on: row.building_on(run_id).map(GithubHold::hold),
         },
         None => Target::BeforeGithub {
             waiting_unskipped: matches!(row.stage, Stage::Waiting) && row.github_skipped.is_none(),
