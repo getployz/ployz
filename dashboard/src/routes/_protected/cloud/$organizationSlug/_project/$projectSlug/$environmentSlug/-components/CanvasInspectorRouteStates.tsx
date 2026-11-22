@@ -4,7 +4,7 @@ import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Skeleton } from "#/components/ui/skeleton";
 import { useParams } from "@tanstack/react-router";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 export function CanvasInspectorPending() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });

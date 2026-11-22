@@ -87,10 +87,14 @@ pub(crate) fn stored(
         &[environment.as_str().into()],
     )?;
     rows.first()
-        .map(|row| {
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Automatic deploy rule"))
-        })
+        .map(|row| row.json(0, "Automatic deploy rule"))
         .transpose()
+}
+
+/// `rule`'s terms. A kept rule that won't open counts as no rule: nothing it would
+/// allow or hold back applies.
+pub(crate) fn opened(rule: &Signed<AutoDeployRule>) -> Option<AutoDeployRule> {
+    rule.open().ok()
 }
 
 /// Keep `c.rule` as its Environment's rule. A rule for another Namespace, or one that
@@ -102,7 +106,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         .rule
         .open()
         .map_err(|_| error::invalid("The rule isn't a signed automatic deploy rule", json!({})))?;
-    let namespace = crate::deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = crate::deployment::reserve_namespace(tx, who, &environment.summary)?;
     if rule.namespace != namespace {
         return Err(error::invalid(
             "The rule is for another environment's namespace",
@@ -118,7 +122,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         })?;
         crate::volume::birth::record(tx, (&id, &namespace), &saved.intent, &c.births)?;
     }
-    if let Some(kept) = stored(tx, &id)?.and_then(|kept| kept.open().ok())
+    if let Some(kept) = stored(tx, &id)?.as_ref().and_then(opened)
         && kept.rule == rule.rule
         && kept.generation >= rule.generation
     {
@@ -174,7 +178,7 @@ fn view_of(
 ) -> Result<RuleView, RpcError> {
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
-    let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
     let saved = crate::review::latest_saved(tx, id)?;
     let sources = saved
         .as_ref()
@@ -190,7 +194,7 @@ fn view_of(
         )?,
         _ => Vec::new(),
     };
-    let changed = match (rule.as_ref().and_then(|rule| rule.open().ok()), &saved) {
+    let changed = match (rule.as_ref().and_then(opened), &saved) {
         (Some(rule), Some(saved)) if !target.is_empty() => {
             let ships = following(tx, id, &saved.intent, &rule)?;
             changed(&rule, &namespace, &target, &sources, &ships)
@@ -253,10 +257,7 @@ pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
                 service: service.config.private_dns.clone(),
                 repository: repository.clone(),
                 repository_id: *repository_id,
-                branch: match branch {
-                    ployz_core::config::ServiceGitBranch::Connected { name } => Some(name.clone()),
-                    ployz_core::config::ServiceGitBranch::Disconnected { .. } => None,
-                },
+                branch: crate::git::branch_name(branch).map(str::to_owned),
                 root_dir: root_dir.clone(),
                 build: service.config.build.clone(),
             }),

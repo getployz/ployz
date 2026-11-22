@@ -1,6 +1,6 @@
-use super::machine_ops::MachineOperations;
 use super::start::{Attempt, FailedStart, Row, SlotRun, start};
-use super::{inspect, remove};
+use super::{inspect, remove_by_id};
+use crate::deploy::machine_calls::MachineOperations;
 use ployz_core::{
     AnswerWhen, ContainerId, ContainerLocator, ContainerRuntimeObservation, ContainerWant,
     DeploymentLogId, Drain, ExecutionError, Gen, HEALTH_POLL_INTERVAL, HookFailure, MachineId,
@@ -28,7 +28,7 @@ pub(super) async fn run_hook<C: MachineOperations>(
 ) -> Result<(), ExecutionError> {
     row.running(OperationPhase::RemovingContainer);
     for (old_machine_id, old_container_id) in old_hook_containers {
-        remove(client, old_machine_id, old_container_id, Drain::NONE).await?;
+        remove_by_id(client, old_machine_id, old_container_id, Drain::NONE).await?;
     }
 
     let attempt = Attempt {

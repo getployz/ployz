@@ -44,6 +44,13 @@ pub fn machine_rank<'id, T: Ord + 'id>(
     machines.into_iter().filter(|id| *id < this).count()
 }
 
+/// Whether a Machine of `rank` records a refusal on the hostname's row. Only the first
+/// rank does, so every Machine refused the same way writes the row once.
+#[must_use]
+pub fn records_refusal(rank: usize) -> bool {
+    rank == 0
+}
+
 /// How long a Machine of `rank` waits, a `step` per rank, before it orders.
 #[must_use]
 pub fn rank_delay(rank: usize, step: Duration) -> Duration {
@@ -94,18 +101,6 @@ pub fn action_due(
         }
         Held::Material { renew_at: None } => (IssuanceAction::Nothing, RETRY_INTERVAL),
     }
-}
-
-/// `action_due`'s action alone.
-#[must_use]
-pub fn issuance_action(
-    held: Held,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    policy: &CertificatePolicy,
-) -> IssuanceAction {
-    action_due(held, rank, elapsed, now, policy).0
 }
 
 /// This Machine's view of one wanted Ingress Hostname after a pass of its certificate loop.
@@ -201,7 +196,7 @@ pub fn step(prev: Option<Prev>, pass: Pass<'_>) -> Stepped {
         }) => (orderable_for, true),
         Some(_) | None => (Duration::ZERO, false),
     };
-    let issuance = match issuance_action(pass.held, pass.rank, elapsed, pass.wall, pass.policy) {
+    let issuance = match action_due(pass.held, pass.rank, elapsed, pass.wall, pass.policy).0 {
         IssuanceAction::Order | IssuanceAction::Renew => Issuance::Order(route),
         IssuanceAction::Nothing => Issuance::Waiting,
     };
@@ -313,7 +308,7 @@ mod tests {
     }
 
     fn action(held: Held, rank: usize, elapsed: Duration) -> IssuanceAction {
-        issuance_action(held, rank, elapsed, wall(), &policy())
+        action_due(held, rank, elapsed, wall(), &policy()).0
     }
 
     fn lifetime_renewal(renew_at: SystemTime) -> Held {
@@ -364,11 +359,11 @@ mod tests {
         assert_eq!(issuance_step(&policy()), RANK_STEP);
         assert_eq!(issuance_step(&long), seconds(120));
         assert_eq!(
-            issuance_action(Held::Nothing, 1, seconds(30), wall(), &long),
+            action_due(Held::Nothing, 1, seconds(30), wall(), &long).0,
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(Held::Nothing, 1, seconds(120), wall(), &long),
+            action_due(Held::Nothing, 1, seconds(120), wall(), &long).0,
             IssuanceAction::Order
         );
     }
@@ -391,7 +386,7 @@ mod tests {
     fn a_renewal_waits_its_rank_delay_after_the_machines_own_jitter() {
         let due = wall() + seconds(3600);
         let held = lifetime_renewal(due);
-        let renews = |rank, at| issuance_action(held, rank, Duration::ZERO, at, &policy());
+        let renews = |rank, at| action_due(held, rank, Duration::ZERO, at, &policy()).0;
         assert_eq!(renews(0, due - seconds(1)), IssuanceAction::Nothing);
         assert_eq!(renews(0, due), IssuanceAction::Renew);
         assert_eq!(renews(1, due), IssuanceAction::Nothing);

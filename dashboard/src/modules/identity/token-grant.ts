@@ -13,6 +13,22 @@ export type TokenPreset = { readonly preset: "read" | "full" } | { readonly pres
 /** The Store's Environment name: a DNS label. */
 export const EnvironmentName = Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/));
 
+/** The preset a token request names with its Environment, or why they don't go together. */
+export const presetOf = (
+  input: { readonly preset?: TokenPreset["preset"] | undefined; readonly environment?: string | undefined },
+): { readonly ok: true; readonly preset: TokenPreset } | { readonly ok: false; readonly message: string } => {
+  const preset = input.preset ?? "full";
+  if (preset === "deploy") {
+    // Any other name is looked up, so one that isn't a DNS label hears that no Environment has it.
+    return input.environment === undefined || input.environment === ""
+      ? { ok: false, message: "A Deploy token needs an Environment; pass `--env`." }
+      : { ok: true, preset: { preset, environment: input.environment } };
+  }
+  return input.environment === undefined
+    ? { ok: true, preset: { preset } }
+    : { ok: false, message: "Only a Deploy token takes an Environment." };
+};
+
 export const FULL_GRANT: TokenGrant = { permissions: null, environments: null };
 
 const READ_PERMISSIONS = PERMISSIONS.filter(reads);

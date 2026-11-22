@@ -3164,7 +3164,7 @@ mod tool_facts {
 
 #[test]
 fn only_a_call_that_reached_for_cloud_may_have_landed() {
-    for (name, error) in crate::cloud_account::testing::every_login_error(400) {
+    for (name, error) in crate::cloud::account::testing::every_login_error(400) {
         let landed = ["Unreachable", "Unanswered", "Status", "Reply"].contains(&name);
         assert_eq!(may_have_landed(&error), landed, "{name}");
     }

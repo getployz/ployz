@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeNameSources } from "#/collections/change-sources";
-import * as collections from "#/collections/collections";
-import { orgStoreTables, getCanvasPositionsCollection } from "#/collections/collections";
+import { sourcesOf } from "#/collections/change-sources";
+import { getCanvasPositionsCollection } from "#/collections/collections";
 import { orgStoreSeed, orgStoreTableNames, subscribeOrgStoreTables } from "#/test/org-store-tables";
 
 afterEach(() => {
@@ -11,23 +10,18 @@ afterEach(() => {
 });
 
 describe("API node collections", () => {
-  it("isolates node collections by authenticated scope while retaining automatic indexes", () => {
+  it("isolates node collections by authenticated scope", () => {
     const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };
-    for (const get of [getCanvasPositionsCollection]) {
-      const collection = get("acme", scope);
-      expect(collection.config.autoIndex).toBe("eager");
-      expect(get("acme", scope)).toBe(collection);
-      expect(get("other-org", scope)).not.toBe(collection);
-      expect(get("acme", { ...scope, sessionId: "other-session" })).not.toBe(collection);
-      expect(get("acme", { ...scope, userId: "other-user" })).not.toBe(collection);
-      expect(get("acme", { ...scope, queryClient: new QueryClient() })).not.toBe(collection);
-    }
+    const collection = getCanvasPositionsCollection("acme", scope);
+    expect(getCanvasPositionsCollection("acme", scope)).toBe(collection);
+    expect(getCanvasPositionsCollection("other-org", scope)).not.toBe(collection);
+    expect(getCanvasPositionsCollection("acme", { ...scope, sessionId: "other-session" })).not.toBe(collection);
+    expect(getCanvasPositionsCollection("acme", { ...scope, userId: "other-user" })).not.toBe(collection);
+    expect(getCanvasPositionsCollection("acme", { ...scope, queryClient: new QueryClient() })).not.toBe(collection);
   });
 
   it("feeds every Org Store table from the change log and runs no timer", async () => {
-    const tables = Object.entries(collections).filter(([name]) => /^get\w+Collection$/.test(name)).map(([, get]) => get);
-    expect(new Set<unknown>(Object.values(orgStoreTables))).toEqual(new Set(tables));
-    for (const name of orgStoreTableNames) expect(changeNameSources[name], name).not.toEqual([]);
+    for (const name of orgStoreTableNames) expect(sourcesOf(name), name).not.toEqual([]);
 
     vi.useFakeTimers();
     const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };

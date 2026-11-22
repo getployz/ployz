@@ -1,28 +1,30 @@
 import { useDeferredValue, useState } from "react";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
-import { ResourcePageControls } from "#/components/resource-page-controls";
+import { PlusIcon, SearchIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { prefetchStoreViews, requireStoreProjects } from "#/collections/route-data";
+import { prefetchStoreViews, requireStoreProjects } from "#/modules/config-store/store.route-data";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
   CardContent,
   CardHeader,
 } from "#/components/ui/card";
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "#/components/ui/input-group";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { namespaceQuery, projectsQuery, requireView, servicesQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
-import { useRuntimeServices } from "../../-components/services-online";
+import { useRuntimeServices } from "#/modules/runtime/services-online";
 import { Skeleton } from "#/components/ui/skeleton";
-import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
-import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 import { ProjectCard } from "../-components/project-card";
 
+const NEW_PROJECT_ROUTE_TO = "/cloud/$organizationSlug/new";
+
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
+  staticData: { section: "projects" },
   loader: async ({ params, context }) => {
     const projects = await requireStoreProjects(context, params.organizationSlug);
-    if (projects.length === 0) throw redirect({ to: NewProjectRoute.to, params: { organizationSlug: params.organizationSlug } });
+    if (projects.length === 0) throw redirect({ to: NEW_PROJECT_ROUTE_TO, params: { organizationSlug: params.organizationSlug } });
     // Each card draws its Default Environment's Services, and counts those online in its Namespace.
     await prefetchStoreViews(context, params.organizationSlug, ...projects.flatMap((project) => {
       const environment = { project: project.name, environment: project.default_environment };
@@ -79,7 +81,7 @@ function CreateProjectButton({
 }) {
   return (
     <Link
-      to={NewProjectRoute.to}
+      to={NEW_PROJECT_ROUTE_TO}
       params={{ organizationSlug }}
       className={buttonVariants({ variant: "ink" })}
     >
@@ -97,13 +99,21 @@ function RouteComponent() {
   return (
     <DashboardPage width="content" title="Projects" actions={<CreateProjectButton organizationSlug={organizationSlug} />}>
       <div className="w-full sm:max-w-xs">
-        <ResourcePageControls
-          controlsLabel="Projects controls"
-          searchAriaLabel="Search projects"
-          searchPlaceholder="Search projects"
-          searchValue={query}
-          onSearchValueChange={setQuery}
-        />
+        <section aria-label="Projects controls">
+          <InputGroup>
+            <InputGroupInput
+              aria-label="Search projects"
+              placeholder="Search projects"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <InputGroupAddon align="inline-start">
+              <InputGroupText>
+                <SearchIcon />
+              </InputGroupText>
+            </InputGroupAddon>
+          </InputGroup>
+        </section>
       </div>
       <StoreProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
     </DashboardPage>
@@ -119,7 +129,7 @@ function StoreProjectsGrid({ organizationSlug, query }: { organizationSlug: stri
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {filtered.map((project) => (
-        <Link key={project.id} to={EnvironmentOverviewRoute.to}
+        <Link key={project.id} to={ENVIRONMENT_INDEX_ROUTE_TO}
           params={{ organizationSlug, projectSlug: project.name, environmentSlug: project.default_environment }}
           className="group/project block min-w-0 rounded-xl outline-none focus-visible:ring-3 focus-visible:ring-ring">
           <StoreProjectCard organizationSlug={organizationSlug} project={project.name} environment={project.default_environment} />

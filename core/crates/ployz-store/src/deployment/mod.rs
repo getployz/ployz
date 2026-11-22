@@ -42,8 +42,8 @@ pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
 pub use versions::{
-    Parent, ParentQuery, ParentView, Pinned, PostedVersion, RanService, Running, RunningQuery,
-    RunningView, TagPin, VersionsQuery, VersionsView,
+    Parent, ParentQuery, ParentView, Pinned, PostedVersion, Running, RunningQuery, RunningView,
+    TagPin, VersionsQuery, VersionsView,
 };
 
 pub use ployz_core::deploy_progress::{
@@ -54,12 +54,12 @@ pub use ployz_core::deploy_progress::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, LowerDeploymentConfig,
-    LowerDeploymentConfigFile, LowerDeploymentInput, LowerDeploymentSnapshot,
-    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedConfigIntent, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, SealedFor, ServiceConfig, ServiceImageCredentials,
-    ServiceSource, ValuePartOwner, canonicalize_environment_intent, compile_environment_intent,
-    lower_deployment, parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
+    CompiledNodeConfig, EnvironmentNodeType, LowerDeploymentConfig, LowerDeploymentConfigFile,
+    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
+    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, SealedFor,
+    ServiceConfig, ServiceSource, ValuePartOwner, canonicalize_environment_intent,
+    compile_environment_intent, lower_deployment, parse_runtime_preview, project_runtime_outcome,
+    redacted_runtime_preview,
 };
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
@@ -83,7 +83,8 @@ use crate::registry;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::json_text;
+use crate::storage::{Row, Tx, name_of, now};
 use crate::variables;
 
 use self::loss::VolumeLoss;
@@ -218,9 +219,7 @@ pub struct DeploymentSummary {
     /// runner was lost reads Unknown, ended at the earlier of its runner lease and when
     /// that was found: a newer claim took it over, its runner claimed it again or gave
     /// up after preparing, or its runner lease lapsed. Its runner may still act until
-    /// that lease. An Interrupted outcome its runner records after moves it to then. A
-    /// row an older Store left without one reads its admission once superseded, and
-    /// the earlier of its runner lease and now once Unknown.
+    /// that lease. An Interrupted outcome its runner records after moves it to then.
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     /// What whoever admitted it said it ships.
@@ -328,6 +327,46 @@ pub enum DeploymentWarning {
     Deploy { warning: DeployWarning },
 }
 
+impl DeploymentWarning {
+    /// The Deploy's own warning, when it is one.
+    #[must_use]
+    pub fn as_deploy(&self) -> Option<&DeployWarning> {
+        match self {
+            Self::Deploy { warning } => Some(warning),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. } => None,
+        }
+    }
+
+    /// Why the Deploy couldn't check the Ingress Proxies, when that is what it warns of.
+    #[must_use]
+    pub fn ingress_unchecked(&self) -> Option<&str> {
+        match self {
+            Self::IngressUnchecked { cause } => Some(cause),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::Deploy { .. } => None,
+        }
+    }
+
+    /// Whether it holds only names the Config Store wrote, such as a variable a Deploy
+    /// left out, rather than text a Server reported.
+    #[must_use]
+    pub fn is_named(&self) -> bool {
+        match self {
+            Self::Fragile { .. } | Self::NotSet { .. } | Self::NotSetInFile { .. } => true,
+            Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. }
+            | Self::Deploy { .. } => false,
+        }
+    }
+}
+
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
 /// creates or starts one; it never replaces or removes what runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -370,6 +409,11 @@ impl IngressFailure {
 
 /// The most characters a Deployment message has.
 pub(crate) const MESSAGE_MAX: usize = 500;
+
+/// `text` cut to [`MESSAGE_MAX`] characters.
+pub(crate) fn clipped(text: &str) -> String {
+    text.chars().take(MESSAGE_MAX).collect()
+}
 
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
@@ -980,20 +1024,15 @@ impl DeployedNode {
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
     /// Whether it ships every Service: nodes alone can't say, since a full
-    /// Deployment tears down what Saved dropped too.
-    pub(crate) full: bool,
-    /// Whether it also removes every Service of the Namespace this Store never held.
-    pub(crate) prune: bool,
+    /// Deployment tears down what Saved dropped too. A named one holds, by runtime
+    /// name, every Service it hands the runner: the named ones and each they
+    /// reference, changed or not.
+    pub(crate) targeting: Targeting<BTreeSet<ServiceName>>,
     pub(crate) namespace: Namespace,
-    /// Sealed registry credentials by runtime Service, fixed at admission.
-    pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.
     pub(crate) sourceless: Vec<String>,
-    /// By runtime name, every Service a narrowed one hands the runner: the named
-    /// ones and each they reference, changed or not. Empty for a full one.
-    pub(crate) shipped: BTreeSet<ServiceName>,
 }
 
 impl Frozen {
@@ -1005,7 +1044,10 @@ impl Frozen {
     /// Whether this Deployment hands the runner `service`: every one for a full
     /// Deployment, else a named one, one of a Saved change it ships, or one they reference.
     pub(crate) fn hands(&self, service: &SavedServiceIntent) -> bool {
-        self.full || self.shipped.contains(&service.config.private_dns)
+        match &self.targeting {
+            Targeting::Full { .. } => true,
+            Targeting::Named(shipped) => shipped.contains(&service.config.private_dns),
+        }
     }
 
     /// Whether this Deployment ships Service `name`, named or referenced.
@@ -1103,8 +1145,7 @@ impl Stored {
     /// Service it ran as then, unless a Service of `saved` runs as it now and so
     /// replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
-        let targeting = self.targeting();
-        let full = targeting.is_full();
+        let full = self.targeting().is_full();
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
@@ -1139,21 +1180,47 @@ impl Stored {
                 TargetNode::Volume { .. } | TargetNode::Config { .. } => {}
             }
         }
-        match targeting {
-            Targeting::Full => Ships::All {
-                removals,
-                prune: self.run.prune,
-            },
-            Targeting::Named(targeted) => {
-                let services = targeted
+        Ships {
+            targeting: self.targeting().map(|targeted| {
+                targeted
                     .iter()
                     .filter(|service| shipped.contains(service))
                     .cloned()
-                    .collect();
-                Ships::Named { services, removals }
-            }
+                    .collect()
+            }),
+            removals,
         }
     }
+}
+
+/// The Organization Deployment `id` belongs to.
+pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
+    tx.query(
+        "SELECT organization_id FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment"))?
+    .parse(0, "Deployment")
+}
+
+/// Insert a `config_deployment` row of `columns`, each named beside its value.
+fn insert(tx: &mut dyn Tx, columns: &[(&str, crate::storage::Param<'_>)]) -> Result<(), RpcError> {
+    let names = columns
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let slots = (1..=columns.len())
+        .map(|at| format!("?{at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values: Vec<crate::storage::Param<'_>> = columns.iter().map(|(_, value)| *value).collect();
+    tx.execute(
+        &format!("INSERT INTO config_deployment ({names}) VALUES ({slots})"),
+        &values,
+    )
+    .map(drop)
 }
 
 /// What a Deployment row reads as, from an unaliased `config_deployment`. The
@@ -1223,12 +1290,13 @@ enum Standing {
 /// Store before [`Standing`] did:
 /// - It reads Unknown once its status says a runner holds it and that runner's
 ///   lease [`lapsed`], with its `ended` as the column holds it.
-/// - Each edge, [`Standing::claim_for`] through [`Standing::restamp`], writes the
+/// - Each edge, [`Standing::queue`] through [`Standing::restamp`], writes the
 ///   columns it writes for the typed standing of the same status, and no others
 ///   (`parity_tests`).
 /// - Whatever picks a row to move or count tests its status or its columns, never
-///   its kind of [`Standing`]: lifecycle.rs `cancel_held`, and history.rs
-///   `settling`, which counts the lease of any row with no `ended`.
+///   its kind of [`Standing`]: lifecycle.rs `queue`, `hold`, `supersede_held` and
+///   `cancel_held`, and history.rs `settling`, which counts the lease of any row
+///   with no `ended`.
 #[derive(Debug)]
 struct Raw {
     status: DeploymentStatus,
@@ -1375,16 +1443,6 @@ impl End {
     }
 }
 
-impl Raw {
-    /// Whether its status says a runner holds it.
-    const fn claimed(&self) -> bool {
-        matches!(
-            self.status,
-            DeploymentStatus::Running | DeploymentStatus::Cancelling
-        )
-    }
-}
-
 /// What a summary shows of a [`Standing`].
 struct Shown {
     status: DeploymentStatus,
@@ -1396,16 +1454,15 @@ struct Shown {
 
 impl Standing {
     /// Decode a row's `status` with its `number`, `runner`, `started`, `lease` and
-    /// `ended`, read at `now`. A row an older Store left without `ended` reads its
-    /// `admitted` once superseded, and [`runner_lost`] once Unknown. Any row whose
-    /// columns fit no other standing reads as [`Raw`], so every row a Store read
-    /// before [`Standing`] still reads.
+    /// `ended`. Any row whose columns fit no other standing reads as [`Raw`], so
+    /// every row a Store read before [`Standing`] still reads. Migration
+    /// `0034_deployment_ended` stamped `ended` on each superseded or Unknown row an
+    /// older Store left without one.
     fn decode(
         status: DeploymentStatus,
         number: Option<u64>,
         (runner, started, lease): (Option<RunnerId>, Option<i64>, i64),
         ended: Option<i64>,
-        (admitted, now): (i64, i64),
     ) -> Self {
         use DeploymentStatus as S;
         // A claim needs its runner and its start; none needs neither.
@@ -1431,13 +1488,10 @@ impl Standing {
                 claim,
                 phase: Phase::Cancelling,
             }),
-            (S::Superseded, number, Some(None), ended) => Self::Superseded {
+            (S::Superseded, number, Some(None), Some(ended)) => Self::Superseded { number, ended },
+            (S::Unknown, number, Some(Some(claim)), Some(ended)) => Self::Ended(Ended {
                 number,
-                ended: ended.unwrap_or(admitted),
-            },
-            (S::Unknown, number, Some(Some(claim)), ended) => Self::Ended(Ended {
-                number,
-                ended: ended.unwrap_or_else(|| runner_lost(claim.lease, now)),
+                ended,
                 claim: Some(claim),
                 end: End::Unknown,
             }),
@@ -1487,7 +1541,9 @@ impl Standing {
     fn status(&self, now: i64) -> DeploymentStatus {
         match self {
             Self::Claimed(claimed) if lapsed(claimed.claim.lease, now) => DeploymentStatus::Unknown,
-            Self::Raw(raw) if raw.claimed() && lapsed(raw.lease, now) => DeploymentStatus::Unknown,
+            Self::Raw(raw) if raw.status.claimed() && lapsed(raw.lease, now) => {
+                DeploymentStatus::Unknown
+            }
             standing @ (Self::Waiting(_)
             | Self::Queued(_)
             | Self::Claimed(_)
@@ -1596,12 +1652,57 @@ impl Standing {
     const fn renew(&mut self, now: i64) {
         match self {
             Self::Claimed(claimed) => claimed.renew(now),
-            Self::Raw(raw) if raw.claimed() => raw.lease = now + LEASE,
+            Self::Raw(raw) if raw.status.claimed() => raw.lease = now + LEASE,
             Self::Waiting(_)
             | Self::Queued(_)
             | Self::Superseded { .. }
             | Self::Ended(_)
             | Self::Raw(_) => {}
+        }
+    }
+
+    /// Queued as `number`, when it waits for CI: its CI passed, so it is admitted in
+    /// place. Any other stands as it was.
+    fn queue(self, number: u64) -> Self {
+        match self {
+            Self::Waiting(Waiting) => Self::Queued(Queued { number }),
+            Self::Raw(mut raw) => {
+                if raw.status == DeploymentStatus::WaitingForCi {
+                    raw.status = DeploymentStatus::Queued;
+                    raw.number = Some(number);
+                }
+                Self::Raw(raw)
+            }
+            standing @ (Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Replaced at `now` by a newer admission, when it is queued or waits for CI.
+    /// Any other stands as it was.
+    fn supersede(self, now: i64) -> Self {
+        match self {
+            Self::Waiting(Waiting) => Self::Superseded {
+                number: None,
+                ended: now,
+            },
+            Self::Queued(Queued { number }) => Self::Superseded {
+                number: Some(number),
+                ended: now,
+            },
+            Self::Raw(mut raw) => {
+                if matches!(
+                    raw.status,
+                    DeploymentStatus::WaitingForCi | DeploymentStatus::Queued
+                ) {
+                    raw.status = DeploymentStatus::Superseded;
+                    raw.ended = Some(now);
+                }
+                Self::Raw(raw)
+            }
+            standing @ (Self::Claimed(_) | Self::Superseded { .. } | Self::Ended(_)) => standing,
         }
     }
 
@@ -1664,7 +1765,7 @@ impl Standing {
         match self {
             Self::Claimed(claimed) => Self::Ended(claimed.lose_runner(now)),
             Self::Raw(mut raw) => {
-                if raw.claimed() {
+                if raw.status.claimed() {
                     raw.status = DeploymentStatus::Unknown;
                     raw.ended = Some(runner_lost(raw.lease, now));
                 }
@@ -1727,21 +1828,61 @@ pub(crate) fn cluster_domain(
 
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
-/// Organization holds that, then suffixed with this Environment's ID. `reserve`
-/// fixes a new one; a plan only looks.
+/// Organization holds that, then suffixed with this Environment's ID. A plan only
+/// looks; [`reserve_namespace`] fixes a new one.
 pub(crate) fn namespace(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentSummary,
-    reserve: bool,
 ) -> Result<Namespace, RpcError> {
-    let rows = tx.query(
+    match kept_namespace(tx, environment)? {
+        Some(namespace) => Ok(namespace),
+        None => free_namespace(tx, who, environment),
+    }
+}
+
+/// [`namespace`], fixed for `environment` if it was new.
+pub(crate) fn reserve_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
+    if let Some(namespace) = kept_namespace(tx, environment)? {
+        return Ok(namespace);
+    }
+    let namespace = free_namespace(tx, who, environment)?;
+    tx.execute(
+        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            who.organization.as_str().into(),
+            namespace.as_str().into(),
+            environment.id.as_str().into(),
+        ],
+    )?;
+    Ok(namespace)
+}
+
+fn kept_namespace(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentSummary,
+) -> Result<Option<Namespace>, RpcError> {
+    tx.query(
         "SELECT namespace FROM config_namespace WHERE environment_id = ?1",
         &[environment.id.as_str().into()],
-    )?;
-    if let Some(row) = rows.first() {
-        return row.parse::<Namespace>(0, "Namespace");
-    }
+    )?
+    .first()
+    .map(|row| row.parse::<Namespace>(0, "Namespace"))
+    .transpose()
+}
+
+/// The first of `environment`'s candidate Namespaces no other Environment of `who`'s
+/// Organization holds.
+fn free_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
     let base = format!("{}-{}", environment.project, environment.name);
     let suffix: String = environment
         .id
@@ -1765,17 +1906,6 @@ pub(crate) fn namespace(
             .is_empty();
         if namespace.is_reserved() || taken {
             continue;
-        }
-        if reserve {
-            tx.execute(
-                "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
-                 VALUES (?1, ?2, ?3)",
-                &[
-                    who.organization.as_str().into(),
-                    namespace.as_str().into(),
-                    environment.id.as_str().into(),
-                ],
-            )?;
         }
         return Ok(namespace);
     }
@@ -1813,6 +1943,23 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
     stored(rows.first().ok_or_else(|| missing(id))?)
 }
 
+/// Every Deployment `condition` selects from `config_deployment`, as [`load`] reads
+/// one.
+fn load_where(
+    tx: &mut dyn Tx,
+    condition: &str,
+    params: &[crate::storage::Param<'_>],
+) -> Result<Vec<Stored>, RpcError> {
+    let columns = COLUMNS.as_str();
+    tx.query(
+        &format!("SELECT {columns} FROM config_deployment WHERE {condition}"),
+        params,
+    )?
+    .iter()
+    .map(stored)
+    .collect()
+}
+
 fn stored(row: &Row) -> Result<Stored, RpcError> {
     let read_at = now();
     let number = row
@@ -1830,7 +1977,6 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             row.int(12)?,
         ),
         row.optional_int(16)?,
-        (admitted_at, read_at),
     );
     let Shown {
         status,
@@ -1857,11 +2003,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
-    let service_uploads: Option<uploads::ServiceUploads> = row
-        .optional_text(23)?
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| error::corrupt("Deployment uploads"))?;
+    let service_uploads: Option<uploads::ServiceUploads> =
+        row.optional_json(23, "Deployment uploads")?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -1872,11 +2015,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             services: row.json(5, "Deployment")?,
             ships: shipped(&nodes),
             runner,
-            upload: row
-                .optional_text(9)?
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            upload: row.optional_json(9, "Deployment upload")?,
             chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             preparing: preparing(status, &run),
             all_waiting: all_waiting(status, &nodes, &run),
@@ -2060,10 +2199,6 @@ fn parse_stored<T: TryFrom<String, Error = RpcError>>(value: &str) -> Result<T, 
     T::try_from(value.to_owned()).map_err(|_| error::corrupt("identity"))
 }
 
-fn json_text(value: &impl Serialize) -> String {
-    serde_json::to_string(value).expect("stored documents are JSON")
-}
-
 fn missing(id: &DeploymentId) -> RpcError {
     error::not_found(format!("No Deployment {id}"), json!({}))
 }
@@ -2098,16 +2233,6 @@ fn invalid_evidence(what: &str) -> RpcError {
         format!("The runner's {what} does not match this Deployment"),
         json!({}),
     )
-}
-
-/// Seconds since the Unix epoch: when a Deployment was admitted, which the idle
-/// rule for Branches reads.
-pub(crate) fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]
@@ -2170,7 +2295,7 @@ mod parity_tests {
     /// A typed one read again from the columns `save` wrote for it.
     fn again(standing: &Standing) -> Standing {
         let (status, number, runner, started, lease, ended) = columns(standing);
-        let again = Standing::decode(status, number, (runner, started, lease), ended, (50, NOW));
+        let again = Standing::decode(status, number, (runner, started, lease), ended);
         assert!(
             !matches!(again, Standing::Raw(_)),
             "{:?}",
@@ -2210,7 +2335,6 @@ mod parity_tests {
                                     number,
                                     (runner.clone(), started, lease),
                                     ended,
-                                    (50, NOW),
                                 );
                                 if !matches!(standing, Standing::Raw(_)) {
                                     typed.push(standing);
@@ -2226,7 +2350,9 @@ mod parity_tests {
 
     type Edge = (&'static str, fn(Standing) -> Standing);
 
-    const EDGES: [Edge; 11] = [
+    const EDGES: [Edge; 13] = [
+        ("queue", |standing| standing.queue(8)),
+        ("supersede", |standing| standing.supersede(NOW)),
         ("claim_for", |standing| {
             standing.claim_for(&runner("runner-b"), NOW)
         }),

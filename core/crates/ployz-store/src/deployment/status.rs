@@ -4,7 +4,8 @@
 
 use std::sync::LazyLock;
 
-use super::{DeploymentStatus, now};
+use super::DeploymentStatus;
+use crate::storage::now;
 
 impl DeploymentStatus {
     /// Every status.
@@ -42,6 +43,15 @@ impl DeploymentStatus {
         matches!(self, Self::Running | Self::Cancelling)
     }
 }
+
+pub(crate) const WAITING_FOR_CI: &str = DeploymentStatus::WaitingForCi.as_str();
+pub(crate) const QUEUED: &str = DeploymentStatus::Queued.as_str();
+pub(crate) const RUNNING: &str = DeploymentStatus::Running.as_str();
+pub(crate) const APPLIED: &str = DeploymentStatus::Applied.as_str();
+pub(crate) const FAILED: &str = DeploymentStatus::Failed.as_str();
+pub(crate) const UNKNOWN: &str = DeploymentStatus::Unknown.as_str();
+pub(crate) const CANCELLING: &str = DeploymentStatus::Cancelling.as_str();
+pub(crate) const CANCELLED: &str = DeploymentStatus::Cancelled.as_str();
 
 /// `status IN (...)` over the statuses of [`DeploymentStatus::ALL`] that `member` keeps.
 fn status_in(member: impl Fn(DeploymentStatus) -> bool) -> String {

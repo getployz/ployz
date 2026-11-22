@@ -21,9 +21,6 @@ export const UPTIME_RETENTION = {
 /** The history a dashboard read can ask for. */
 export type UptimeSeries = Exclude<Retained, "finishedAlerts">;
 
-/** Rows per prune statement, so no delete holds a long transaction. */
-export const PRUNE_BATCH_ROWS = 5000;
-
 /** Calendar months back in UTC, with the day clamped to the month's end, as Postgres `- interval 'N months'` does. */
 function monthsBefore(at: Date, months: number) {
   const shifted = new Date(at);
@@ -44,10 +41,9 @@ export function retentionCutoff(kind: Retained, now: Date): Date {
 
 /**
  * The visible start of a read: `since`, moved up to the series' retention cutoff when it reaches further back. Every
- * uptime read applies it. Retention is the same for every organization today. A per-plan cutoff would read the
- * organization here.
+ * uptime read applies it.
  */
-export function clampSince(_organizationId: string, series: UptimeSeries, since: Date, now: Date): Date {
+export function clampSince(series: UptimeSeries, since: Date, now: Date): Date {
   const cutoff = retentionCutoff(series, now);
   return since < cutoff ? cutoff : since;
 }

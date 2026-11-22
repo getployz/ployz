@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { ApprovalCard } from "#/components/agent-sidebar/approval-card";
-import type { ApprovalView } from "#/components/agent-sidebar/approvals.queries";
+import type { ApprovalView } from "#/modules/approvals/approvals.queries";
 import * as approvals from "#/modules/approvals/approvals.functions";
 import * as approvedKey from "#/modules/private-access/approved-key";
 import * as functions from "#/modules/private-access/private-access.functions";

@@ -1,8 +1,7 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import { Context, Effect, Layer, Redacted } from "effect";
+import { Context } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
-import { AppConfig } from "#/server/config.server";
 
 function getEncryptionKey(encryptionSecret: string) {
   return crypto
@@ -51,7 +50,7 @@ export function decryptSecretValue(
   ]).toString("utf8");
 }
 
-export interface SecretEncryptionService {
+interface SecretEncryptionService {
   readonly encrypt: (value: string) => EncryptedSecretValue;
   readonly decrypt: (value: EncryptedSecretValue) => string;
 }
@@ -69,10 +68,3 @@ export class SecretEncryption extends Context.Service<
   SecretEncryption,
   SecretEncryptionService
 >()("ployz/SecretEncryption") {}
-
-export const SecretEncryptionLive = Layer.effect(
-  SecretEncryption,
-  Effect.map(AppConfig, (config) =>
-    makeSecretEncryption(Redacted.value(config.encryptionSecret)),
-  ),
-);

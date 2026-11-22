@@ -495,3 +495,123 @@ fn a_token_for_an_environment_cannot_write_what_belongs_to_none() {
         .unwrap_err();
     assert_eq!(refused.message, "This token can deploy only to staging.");
 }
+
+/// `command`, sent as Cloud sends it, by a token holding every permission but
+/// limited to `environments`.
+fn send(
+    store: &ConfigStore,
+    who: &Actor,
+    command: serde_json::Value,
+    environments: &[&str],
+) -> Result<ployz_store::Written, RpcError> {
+    let command = Command::decode(command).unwrap();
+    store.write_trusted(
+        who,
+        &command,
+        &Trusted {
+            environments: Some(
+                environments
+                    .iter()
+                    .map(|name| EnvironmentName::parse(*name).unwrap())
+                    .collect(),
+            ),
+            ..holding(Permission::ALL)
+        },
+    )
+}
+
+fn outside_staging(refused: Result<ployz_store::Written, RpcError>, command: &str) {
+    let refused = refused.expect_err(command);
+    assert_eq!(refused.code.as_str(), "forbidden", "{command}: {refused:?}");
+    assert_eq!(
+        refused.message, "This token can deploy only to staging.",
+        "{command}"
+    );
+}
+
+#[test]
+fn a_token_for_one_environment_writes_no_other_through_any_command() {
+    let (store, who) = with_staging();
+    let production = json!({ "environment": "production" });
+    let at = |mut command: serde_json::Value| {
+        command
+            .as_object_mut()
+            .unwrap()
+            .insert("environment".into(), production.clone());
+        command
+    };
+    // Each lands, in order, once the token names production too.
+    let writes = [
+        at(
+            json!({ "command": "create_service", "id": "00000000-0000-4000-8000-000000000010", "name": "api", "image": "nginx:1" }),
+        ),
+        at(json!({ "command": "rename_service", "service": "api", "name": "api2" })),
+        at(json!({ "command": "remove_service", "service": "api2" })),
+        at(
+            json!({ "command": "create_volume", "id": "00000000-0000-4000-8000-000000000011", "name": "data" }),
+        ),
+        at(
+            json!({ "command": "set_volume_shared_writes", "volume": "data", "shared_writes": false }),
+        ),
+        at(json!({ "command": "rename_volume", "volume": "data", "name": "data2" })),
+        at(json!({ "command": "remove_volume", "volume": "data2" })),
+        at(
+            json!({ "command": "create_config", "id": "00000000-0000-4000-8000-000000000012", "name": "conf" }),
+        ),
+        at(
+            json!({ "command": "put_config_file", "config": "conf", "file": "a.txt", "content": "a" }),
+        ),
+        at(
+            json!({ "command": "attach_config", "service": "web", "config": "conf", "dir": "/etc/conf" }),
+        ),
+        at(json!({ "command": "detach_config", "service": "web", "config": "conf" })),
+        at(json!({ "command": "remove_config_file", "config": "conf", "file": "a.txt" })),
+        at(json!({ "command": "rename_config", "config": "conf", "name": "conf2" })),
+        at(json!({ "command": "delete_config", "config": "conf2" })),
+        at(
+            json!({ "command": "edit", "changes": [{ "op": "set", "path": "web.replicas", "value": 2 }] }),
+        ),
+        at(json!({ "command": "add_domain", "service": "web", "hostname": "web.example.com" })),
+        at(json!({ "command": "remove_domain", "domain": "web.example.com" })),
+        at(json!({ "command": "never_sync", "rows": ["web"] })),
+        at(json!({ "command": "discard" })),
+        at(json!({ "command": "batch", "commands": [
+            { "command": "create_service", "id": "00000000-0000-4000-8000-000000000013", "name": "worker", "image": "nginx:1" },
+        ] })),
+        at(json!({ "command": "publish", "id": "00000000-0000-4000-8000-000000000014" })),
+        at(json!({ "command": "set_environment_protected", "protected": true })),
+        json!({ "command": "create_environment", "id": "00000000-0000-4000-8000-000000000015", "name": "qa" }),
+    ];
+    for command in writes {
+        let name = command.get("command").unwrap().to_string();
+        outside_staging(send(&store, &who, command.clone(), &["staging"]), &name);
+        send(&store, &who, command, &["production", "qa"])
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    }
+
+    let deploy = serde_json::to_value(Command::Admit(deploy_production(1))).unwrap();
+    outside_staging(send(&store, &who, deploy.clone(), &["staging"]), "admit");
+    let Ok(ployz_store::Written::Deployment(deployment)) =
+        send(&store, &who, deploy, &["production"])
+    else {
+        panic!("a Deploy answers its Deployment");
+    };
+    for command in ["start", "cancel"] {
+        let sent = json!({ "command": command, "deployment": deployment.id });
+        outside_staging(send(&store, &who, sent, &["staging"]), command);
+    }
+
+    // What names no Environment is refused to every token limited to some.
+    let unnamed = [
+        json!({ "command": "rename_project", "project": "shop", "name": "store" }),
+        json!({ "command": "set_build_order", "build_order": null }),
+        json!({ "command": "create_branch", "id": "00000000-0000-4000-8000-000000000016", "from": production, "name": "fix", "copy": ["worker"] }),
+        json!({ "command": "set_default_environment", "environment": { "environment": "staging" } }),
+    ];
+    for command in unnamed {
+        let name = command.get("command").unwrap().to_string();
+        outside_staging(send(&store, &who, command.clone(), &["staging"]), &name);
+        let refused = send(&store, &who, command, &["production", "staging"]).expect_err(&name);
+        assert_eq!(refused.code.as_str(), "forbidden", "{name}: {refused:?}");
+    }
+}

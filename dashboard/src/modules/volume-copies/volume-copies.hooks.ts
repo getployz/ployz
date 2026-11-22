@@ -1,26 +1,31 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { toast } from "sonner";
+import { useQueries } from "@tanstack/react-query";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { toErrorMessage } from "#/lib/error-message";
-import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
-import { refreshMirrorServerFn } from "./volume-copies.functions";
-import { useMirrorStatuses } from "./volume-copies.queries";
+import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
+import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
+import { mirrorStatusesQueryOptions } from "#/modules/volume-copies/mirror-sync/mirror-sync.queries";
+import type { PlacementVolume } from "#/modules/volume-placement/volume-placement";
+import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
+import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 
-/** Refresh now for one Volume's mirror, and what the mirror syncs last saw of each mirror. */
-export function useRefreshMirror(organizationSlug: string, environment: EnvironmentRef, volumeId: string) {
-  const [sending, setSending] = useState(false);
-  const queryClient = useQueryClient();
-  const statuses = useMirrorStatuses(organizationSlug, volumeId);
-
-  const refresh = () => {
-    setSending(true);
-    refreshMirrorServerFn({ data: { organizationSlug, volumeId, environment } }).then((result) => {
-      if (result.ok) toast.success(result.lines.join("\n"));
-      else toast.error(result.refusal.message);
-      void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
-    }, (error: Error) => toast.error(toErrorMessage(error, "Could not refresh the mirror")))
-      .finally(() => setSending(false));
-  };
-  return { refresh, pending: sending, statuses };
+/** The copies of each Volume in `ids`, by Volume id, once its Servers have answered; a Volume without copies is left out. */
+export function useVolumeCopiesOf(
+  organizationSlug: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], ids: readonly string[],
+): ReadonlyMap<string, VolumeCopies> {
+  const rows = useVolumePlacements(organizationSlug).data ?? [];
+  const runs = useActiveVolumeRuns(organizationSlug).data ?? [];
+  const members = useQueries({ queries: ids.map((id) => volumeMembersQueryOptions(organizationSlug, environment, id)) });
+  const synced = useQueries({ queries: ids.map((id) => mirrorStatusesQueryOptions(organizationSlug, id)) });
+  return new Map(ids.flatMap((id, index) => {
+    const volume = volumes.find((entry) => entry.id === id);
+    const answered = members[index]?.data;
+    if (volume === undefined || answered === undefined) return [];
+    const copies = copiesFromPlacement({
+      volume,
+      members: answered,
+      row: rows.find((row) => row.volumeId === id) ?? null,
+      active: runs.find((run) => run.volume_id === id) ?? null,
+      statuses: synced[index]?.data ?? [],
+    });
+    return copies === null ? [] : [[id, copies] as const];
+  }));
 }

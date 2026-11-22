@@ -1,6 +1,7 @@
 //! Retrying an ended Deployment and rolling back to one: queueing again what it froze.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
 /// targets, Namespace, registry credentials, upload and pinned commits, whatever
@@ -273,19 +274,22 @@ pub(crate) fn retry(
     });
     let ran = super::versions::replaying(source)?;
     let admitted_at = now();
-    queue(tx, &stored.summary.environment_id, false, |tx, number| {
-        let listed = next_listed(tx, &stored.summary.environment_id)?;
+    let environment = &stored.summary.environment_id;
+    queue(tx, environment, (id, false), |tx, number| {
+        let listed = next_listed(tx, environment)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state, and runs the images its source ran.
         tx.execute(
-            "INSERT INTO config_deployment \
+            &format!(
+                "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
               message, listed, service_uploads, ran) \
-             SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+             SELECT ?1, organization_id, environment_id, ?2, '{QUEUED}', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
               ?10, ?11 \
-             FROM config_deployment WHERE id = ?4",
+             FROM config_deployment WHERE id = ?4"
+            ),
             &[
                 id.as_str().into(),
                 i64::try_from(number)
@@ -307,18 +311,7 @@ pub(crate) fn retry(
                 ran.as_str().into(),
             ],
         )?;
-        // A retry builds the commits its source pinned, and may reuse the image its
-        // source built, with that image's token and verified build.
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log, \
-              receipt, image_token, verified) \
-             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-              image_token, verified \
-             FROM config_build WHERE deployment_id = ?2",
-            &[id.as_str().into(), source.as_str().into()],
-        )?;
-        Ok(())
+        crate::build::retried(tx, id, source)
     })?;
     Ok((load(tx, id)?.summary, rollback))
 }
@@ -482,7 +475,7 @@ fn retried(
     fresh: Option<(SavedEnvironmentIntent, Vec<VolumeLoss>)>,
 ) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
     let environment = &stored.summary.environment_id;
-    let organization = crate::build::organization(tx, &stored.summary.id)?;
+    let organization = organization(tx, &stored.summary.id)?;
     let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
     let source = saved_at(tx, environment, stored.summary.saved)?;
     let holds = |intent: &SavedEnvironmentIntent, id: &str| {
@@ -493,7 +486,7 @@ fn retried(
     for row in &tx.query(
         &format!(
             "SELECT nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND status = 'queued' AND {named}",
+             WHERE environment_id = ?1 AND status = '{QUEUED}' AND {named}",
             named = scope_sql::NAMED
         ),
         &[environment.as_str().into()],
@@ -546,10 +539,12 @@ fn retried(
                     &organization,
                     &source,
                     &landing,
-                    Scope::All {
-                        losses,
+                    Scope {
+                        targeting: Targeting::Full {
+                            prune: stored.summary.prune,
+                        },
                         retire: &retire,
-                        prune: stored.summary.prune,
+                        losses,
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "#/components/ui/trace";
 import { type DeploymentLight, deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
-import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { formatDuration } from "#/utils/relative-time";
 
 const DEPLOYMENT_STATUSES = [

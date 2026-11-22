@@ -160,10 +160,8 @@ impl LowerDeploymentSnapshot {
         if let Some(config) = self.config.as_object_mut() {
             config.insert(
                 "source".into(),
-                serde_json::json!({
-                    "type": "image", "version": 1,
-                    "image": crate::pending_image(service), "credentials": {"type": "none"},
-                }),
+                serde_json::to_value(ServiceSource::pending(service))
+                    .expect("a Service source is JSON"),
             );
         }
     }

@@ -1,17 +1,13 @@
-import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import type { MachineId } from "@ployz/sdk";
+import { Effect, Option } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
-import {
-  createSealingKeyEnsureRequestedEvent,
-  createServerUpgradeRequestedEvent,
-  serverUpgradeRequestedEventType,
-} from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
+import type { StepTools } from "#/modules/inngest/client";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
+import { serverUpgradeRequested } from "#/modules/server-upgrade/server-upgrade.events";
+import { upgradeFailedMail } from "#/modules/server-upgrade/upgrade-failed-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { machineUpgradeAttemptId } from "#/modules/runtime/ployz.server";
-import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
+import { type FinalOutcome, type ReleaseChannel } from "#/modules/server-upgrade/server-upgrade";
 import {
   closeRunUpgradeAttempts,
   closeStaleUpgradeAttempts,
@@ -31,26 +27,13 @@ import {
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
 import { AppConfig } from "#/server/config.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent" | "sleep">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
+import { eventData } from "#/modules/inngest/define-event";
 
 const POLL_INTERVAL_MS = 15_000;
 const SWEEP_INTERVAL_MS = 60 * 60_000;
 
-const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
-  (value): value is MachineUpgradeAttemptId => typeof value === "string",
-);
-
-const ServerUpgradeRequestedData = Schema.Struct({
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: Schema.NullOr(rustMachineIdSchema),
-  trigger: Schema.Literals(UPGRADE_TRIGGERS),
-  userId: Schema.NullOr(Schema.String),
-  attemptId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)).pipe(Schema.decodeTo(AttemptIdType))),
-});
-type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId"> & { readonly channel: ReleaseChannel };
+type Request = Omit<typeof serverUpgradeRequested.schema.Type, "machineId"> & { readonly channel: ReleaseChannel };
 /** One Server's part of a Rollout: skipped with nothing recorded, or attempted to an outcome. */
 type ServerResult =
   | { readonly kind: "skipped"; readonly reason: "not-online" | "busy" }
@@ -63,14 +46,12 @@ type ServerResult =
  * offline or refuses as Busy is skipped and records nothing. An automatic one that didn't finish mails the members.
  */
 export async function executeRollOutServerUpgrade(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent" | "sleep">; runId: string },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(ServerUpgradeRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(serverUpgradeRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const { machineId, ...rest } = request;
   const channel = await step.run("read-channel", () => runEffect(organizationReleaseChannel(request.organizationId)));
   const machineIds = machineId === null
@@ -93,7 +74,7 @@ export async function executeRollOutServerUpgrade(
     )));
   }
   await step.sendEvent("ensure-cluster-sealing-key",
-    createSealingKeyEnsureRequestedEvent({ organizationId: request.organizationId }));
+    sealingKeyEnsureRequested.create({ organizationId: request.organizationId }));
   return { results };
 }
 
@@ -148,7 +129,7 @@ const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(functio
  * `unknown` with the last stage seen.
  */
 async function upgradeServer(
-  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools; runId: string },
+  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools<"run" | "sendEvent" | "sleep">; runId: string },
   runEffect: EffectRunner,
 ): Promise<ServerResult> {
   const { organizationId, channel, attemptId: requested, ...event } = request;
@@ -199,7 +180,7 @@ async function upgradeServer(
 const lifecycle = attemptLifecycle({
   run: {
     id: "roll-out-server-upgrade",
-    triggers: [{ event: serverUpgradeRequestedEventType }],
+    triggers: [{ event: serverUpgradeRequested.eventType }],
     concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     handler: executeRollOutServerUpgrade,
   },
@@ -212,7 +193,7 @@ const lifecycle = attemptLifecycle({
       const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
       if (organizationIds.length > 0) {
         await step.sendEvent("request-automatic-rollouts", organizationIds.map((organizationId) =>
-          createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null })));
+          serverUpgradeRequested.create({ organizationId, machineId: null, trigger: "automatic", userId: null })));
       }
       return { organizationCount: organizationIds.length };
     },

@@ -18,7 +18,7 @@ use super::{
     Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, probes_in_time,
     record, restart_preparation, systemctl, unit,
 };
-use crate::cloud_reply::Hold;
+use crate::cloud::reply::Hold;
 use crate::failure::Failure;
 
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";

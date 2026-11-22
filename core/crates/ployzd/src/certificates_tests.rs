@@ -12,8 +12,7 @@ use ployz_core::{
     resolve_certificate_policy,
 };
 use ployz_decide::issuance::{
-    Held, Issuance, IssuanceAction, Pass, RANK_STEP, RETRY_INTERVAL, action_due, issuance_action,
-    issued, wake,
+    Held, Issuance, IssuanceAction, Pass, RANK_STEP, RETRY_INTERVAL, action_due, issued, wake,
 };
 use serde_json::json;
 
@@ -26,7 +25,7 @@ use super::{
 use crate::corrosion::{
     AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
     fake_cluster::FakeCluster,
-    store_tests::{corrosion_db, identity_store},
+    fake_cluster::{corrosion_db, identity_store},
 };
 
 #[test]
@@ -975,13 +974,14 @@ async fn order_fails_when_the_directory_is_unreachable() {
 /// What the loop's scheduling answers for `row` as Machine "a" under the built-in policy.
 fn action(row: Option<&CertificateRow>, rank: usize, elapsed: Duration) -> IssuanceAction {
     let policy = default_policy();
-    issuance_action(
+    action_due(
         held(row, &machine_id("a"), &policy),
         rank,
         elapsed,
         UNIX_EPOCH,
         &policy,
     )
+    .0
 }
 
 /// As `action` at `now`, with no rank delay run.
@@ -992,13 +992,14 @@ fn action_at(
     machine: &MachineId,
     policy: &CertificatePolicy,
 ) -> IssuanceAction {
-    issuance_action(
+    action_due(
         held(Some(row), machine, policy),
         rank,
         Duration::ZERO,
         now,
         policy,
     )
+    .0
 }
 
 /// How long the tests give a challenge to be served.
@@ -1141,9 +1142,8 @@ async fn replica_under(
 /// The row holds a failed order's Authority clock, which passes `left` from now.
 async fn authority_clock(store: &ReplicatedStore, hostname: &IngressHost, left: Duration) {
     store
-        .record_certificate_failure(
+        .record_order_failure(
             hostname,
-            None,
             "order for the hostname is invalid",
             IssuanceClock::new(1, SystemTime::now() + left, IssuanceFailure::Authority),
         )
@@ -1235,12 +1235,7 @@ async fn only_rank_0_records_a_refusal() {
         IssuanceFailure::Authority,
     );
     store
-        .record_certificate_failure(
-            &hostname,
-            None,
-            "order for the hostname is invalid",
-            backed_off,
-        )
+        .record_order_failure(&hostname, "order for the hostname is invalid", backed_off)
         .await
         .unwrap();
     let account_dir =

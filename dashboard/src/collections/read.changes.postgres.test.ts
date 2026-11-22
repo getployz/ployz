@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { QueryClient } from "@tanstack/react-query";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { collectionsOf, changeNameSources } from "./change-sources";
-import { pruneChangeLog, readChangeWindow } from "#/modules/organization/change-log.server";
+import { collectionsOf, sourcesOf } from "./change-sources";
+import { pruneChangeLog, readChangeWindow } from "#/collections/change-log/change-log.server";
 import { readCollection } from "./read.server";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import { orgStoreTableNames } from "#/test/org-store-tables";
@@ -257,7 +257,7 @@ describe("every Org Store collection reads its changes from the Organization cha
     const collection = orgStoreTables[table](slug, { queryClient: new QueryClient(), sessionId: "session", userId });
     // SAFETY: read(table) returns rows of the collection that orgStoreTables names `table`.
     const clientKeys = full.rows.map((row) => String(collection.config.getKey(row as never)));
-    for (const source of changeNameSources[table]) {
+    for (const source of sourcesOf(table)) {
       // A no-op update logs every key of the table, so the incremental read must find every row by that key.
       await sql(`update ${source} set organization_id = organization_id where organization_id = $1`, [organizationId]);
       // The client keys its rows exactly as the log names them, so deletes and merges hit the right row.

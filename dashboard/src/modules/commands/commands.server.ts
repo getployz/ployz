@@ -4,7 +4,7 @@ import type { JsonValue } from "@ployz/sdk";
 import type { JsonObject } from "#/db/tables";
 import { Effect } from "effect";
 import { canonicalJson } from "#/lib/json";
-import { type Called, type CommandCall, inputSchema, jsonSchema } from "#/modules/commands/command.server";
+import { type Called, type CommandCall, inputSchema, jsonSchema } from "#/modules/commands/define";
 import { COMMANDS, RUNNABLE } from "#/modules/commands/registry.server";
 import type { Caller } from "#/modules/identity/actor";
 import { PERMISSIONS } from "#/modules/organization/permissions";

@@ -66,7 +66,7 @@ const RAW_INPUTS = new Set(["Input", "Textarea", "InputGroup"]);
 /** Primitives built to hold a control: inside one, a bare control is laid out and labelled for the card. */
 const CONTROL_HOMES = new Set(["SettingsRow", "SettingsField", "SettingsForm", "SettingsFormField", "SettingsListItem", "SettingsWorkspace"]);
 /** Surfaces that float above the card and draw their own layout, so the card's rules stop at them. */
-const SURFACES = new Set(["Dialog", "DialogContent", "AlertDialog", "AlertDialogContent", "Sheet", "SheetContent", "Popover", "PopoverContent", "DropdownMenuContent"]);
+const SURFACES = new Set(["Dialog", "DialogContent", "CommandDialog", "SelectorCommandDialog", "AlertDialog", "AlertDialogContent", "Sheet", "SheetContent", "Popover", "PopoverContent", "DropdownMenuContent"]);
 
 type Body = ESTree.Node;
 

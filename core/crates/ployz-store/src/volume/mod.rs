@@ -26,6 +26,7 @@ use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
+use crate::storage::json_text;
 pub(crate) use size::{StorageRule, check_storage};
 
 /// Create a Volume, optionally mounted into Services.
@@ -320,7 +321,7 @@ fn lock_storage(
     volume: &str,
     storage: &VolumeKind,
 ) -> Result<(), RpcError> {
-    let storage = serde_json::to_string(storage).expect("storage is JSON");
+    let storage = json_text(storage);
     tx.execute(
         "INSERT INTO config_volume_storage (environment_id, volume_id, storage) \
          VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, volume_id) DO NOTHING",
@@ -361,8 +362,7 @@ pub(crate) fn remove_volume(
         .detach_resource(EnvironmentNodeType::Volume, volume.id.as_str());
     for service in &environment.working.services {
         if detached.contains(&service.lineage_id) {
-            let name =
-                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let name = crate::scope::service_name(service)?;
             staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
         }
     }

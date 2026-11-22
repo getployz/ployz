@@ -1,6 +1,6 @@
-use clap::ArgMatches;
+use ployz_core::Region;
 use ployz_core::{Hint, InitialMachinePolicy, Machine, MachineLabelKey, MachineLabelValue};
-use ployz_store::{REGION_LABEL, RegionKey};
+use ployz_store::region_key;
 
 use crate::handlers::Error;
 
@@ -11,7 +11,7 @@ use crate::handlers::Error;
 pub(crate) struct AskedPolicy {
     /// Never holds the `region` label.
     policy: InitialMachinePolicy,
-    region: Option<RegionKey>,
+    region: Option<Region>,
 }
 
 impl AskedPolicy {
@@ -25,9 +25,9 @@ impl AskedPolicy {
         let mut labels = super::parse_labels(labels)?;
         let label = labels
             .remove(&region_label()?)
-            .map(|label| RegionKey::parse(label.as_str()))
+            .map(|label| region_key(label.as_str()))
             .transpose()?;
-        let flag = region.map(RegionKey::parse).transpose()?;
+        let flag = region.map(region_key).transpose()?;
         let region = match (flag, label) {
             (Some(flag), Some(label)) if flag != label => {
                 return Err(Error::usage(format!(
@@ -49,29 +49,23 @@ impl AskedPolicy {
 
     /// The policy of the Server this enrollment lands on: `existing`, or a new Server when
     /// `None`. Enrollment never edits a Server, so a region asked for one already elsewhere
-    /// is refused.
+    /// is refused, naming the command `rerun` builds to move it.
     pub(crate) fn settle(
         &self,
         existing: Option<&Machine>,
-        reach: &ArgMatches,
+        rerun: impl Fn(&[&str]) -> String,
     ) -> Result<InitialMachinePolicy, Error> {
         let key = region_label()?;
         let region = match existing {
-            None => Some(
-                self.region
-                    .clone()
-                    .unwrap_or_else(RegionKey::default_region)
-                    .as_str()
-                    .parse()?,
-            ),
+            None => Some(self.region.clone().unwrap_or_default().as_str().parse()?),
             Some(server) => {
                 let held = server.labels.get(&key);
                 if let Some(asked) = &self.region
                     && !held.is_some_and(|held| {
-                        RegionKey::parse(held.as_str()).is_ok_and(|held| held == *asked)
+                        region_key(held.as_str()).is_ok_and(|held| held == *asked)
                     })
                 {
-                    return Err(elsewhere(server, held, asked, reach));
+                    return Err(elsewhere(server, held, asked, rerun));
                 }
                 held.cloned()
             }
@@ -83,26 +77,29 @@ impl AskedPolicy {
 }
 
 fn region_label() -> Result<MachineLabelKey, Error> {
-    Ok(REGION_LABEL.parse()?)
+    Ok(Region::LABEL.parse()?)
 }
 
 fn elsewhere(
     server: &Machine,
     held: Option<&MachineLabelValue>,
-    asked: &RegionKey,
-    reach: &ArgMatches,
+    asked: &Region,
+    rerun: impl Fn(&[&str]) -> String,
 ) -> Error {
     let name = &server.name;
     let now = held.map_or_else(
         || "has no region".to_owned(),
         |held| format!("is in region {held}"),
     );
-    let label = format!("{REGION_LABEL}={asked}");
+    let label = format!("{}={asked}", Region::LABEL);
     Error::conflict(format!(
         "Server {name} {now}, not {asked}. Adding it again doesn't move it."
     ))
-    .hint(Hint::Next(crate::handlers::rerun(
-        reach,
-        &["server", "set", name.as_str(), "--label-add", &label],
-    )))
+    .hint(Hint::Next(rerun(&[
+        "server",
+        "set",
+        name.as_str(),
+        "--label-add",
+        &label,
+    ])))
 }

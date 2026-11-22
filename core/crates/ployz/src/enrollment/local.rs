@@ -1,15 +1,18 @@
 //! Durable operator-local history. Independent computers and Cloud do not share
 //! this lock and may still allocate overlapping subnets. No claims expire.
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, MachineId, RegisterRequest, WireGuardPublicKey,
+    EnrollmentAssignment, EnrollmentSnapshot, MachineId, RegisterRequest, RpcErrorCode,
+    WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
+    fs::{self, OpenOptions},
+    io,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::Path,
 };
+
+use crate::coded::Coded;
 
 /// Failure to read or durably save operator-local enrollment history.
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +29,15 @@ pub enum Error {
     /// No observed durable Machine identity connects the enrollment scope.
     #[error("enrollment scope requires an observed Entry Machine")]
     MissingScope,
+}
+
+impl Coded for Error {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Error::Allocation(_) => RpcErrorCode::Conflict,
+            Error::Io(_) | Error::Serialization(_) | Error::MissingScope => RpcErrorCode::Internal,
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -101,11 +113,12 @@ pub fn save_assignment(
         }
     }
     scopes.push(merged);
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(&serde_json::to_vec(&scopes)?)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    File::open(directory)?.sync_all()?;
+    crate::atomic_file::replace(
+        &path,
+        &serde_json::to_vec(&scopes)?,
+        crate::atomic_file::OWNER_ONLY,
+    )
+    .map_err(io::Error::from)?;
     Ok(assignment)
 }
 

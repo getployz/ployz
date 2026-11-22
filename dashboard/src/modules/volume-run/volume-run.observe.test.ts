@@ -6,7 +6,7 @@ import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRunt
 import { Database } from "#/server/database.server";
 import { placementChanges } from "#/modules/volume-placement/volume-placement";
 import { COPIES } from "./volume-run.test-fixture";
-import { observeVolumeMembers } from "./volume-run.server";
+import { observeVolumeMembers } from "#/modules/volume-run/volume-run.cluster.server";
 
 const A = "a".padEnd(32, "0") as MachineId;
 const B = "b".padEnd(32, "0") as MachineId;

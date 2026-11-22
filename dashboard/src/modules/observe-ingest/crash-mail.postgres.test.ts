@@ -4,7 +4,7 @@ import { Deferred, Effect, Fiber } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import type { MailSendRequestedEventData } from "#/modules/inngest/events";
+import type { MailMessage } from "#/modules/mail/mail.events";
 import { claimCrashMail, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
 import { crashEvent } from "#/modules/observe-ingest/tables";
 import { Database } from "#/server/database.server";
@@ -58,7 +58,7 @@ const setup = Effect.fn(function* () {
     return (yield* drizzle.select({ eventId: crashEvent.eventId }).from(crashEvent).orderBy(asc(crashEvent.eventId))).map((row) => row.eventId);
   }).pipe(Effect.orDie));
   const mails = () => send.mock.calls.flatMap(([event]) => (Array.isArray(event) ? event : [event]))
-    .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
+    .map((event) => ({ id: event.id, data: event.data as MailMessage }));
   const claim = (now: string) => provide(claimCrashMail(ORGANIZATION, WEB, new Date(now), NAMES));
   // A cancelled run's claim that holds the rows, then rolls back and is never retried.
   const failingClaim = (locked: Deferred.Deferred<void>, release: Deferred.Deferred<void>) => provide(Effect.gen(function* () {

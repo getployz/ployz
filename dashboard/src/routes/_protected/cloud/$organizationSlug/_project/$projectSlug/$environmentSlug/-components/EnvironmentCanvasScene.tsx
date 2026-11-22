@@ -27,10 +27,10 @@ import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { desiredReplicas } from "#/modules/config-store/replica-rows";
-import { isBranch, liveNodes } from "#/modules/config-store/store-branches";
+import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
@@ -120,7 +120,7 @@ function CanvasWithData() {
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
     copies,
-    live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
+    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
     region: settings.region ?? null,
     arriving: arrivingNodes(pending.arriving, [...services.services, ...volumes.volumes, ...configListings]),

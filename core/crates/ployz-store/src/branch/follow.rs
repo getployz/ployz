@@ -95,7 +95,7 @@ pub(crate) fn follow(
                 match locked
                     .and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages, trusted))
                 {
-                    Err(error) if crate::automation::skippable(&error) => Vec::new(),
+                    Err(error) if crate::error::skippable(&error) => Vec::new(),
                     done => done?,
                 }
             }
@@ -153,7 +153,7 @@ pub(crate) fn follow(
                 });
                 match withdrawn {
                     Ok(false) => refused.push(lineage),
-                    Err(error) if crate::automation::skippable(&error) => refused.push(lineage),
+                    Err(error) if crate::error::skippable(&error) => refused.push(lineage),
                     done => {
                         done?;
                     }
@@ -266,7 +266,7 @@ fn into(
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
-            Err(error) if crate::automation::skippable(&error) => landing.clear(),
+            Err(error) if crate::error::skippable(&error) => landing.clear(),
             landed => {
                 landed?;
             }
@@ -404,8 +404,7 @@ pub(crate) fn take(
     };
     let named = scope::environment(tx, who, at)?;
     let row = branch_row(tx, &named)?;
-    scope::lock_project(tx, &named.summary.id)?;
-    let (mut branch, from) = scope::load_pair(tx, who, (&named.summary.id, &row.parent), true)?;
+    let (mut branch, from) = scope::lock_pair(tx, who, (&named.summary.id, &row.parent))?;
     if from.summary.name != *parent {
         return Err(error::invalid(
             format!(

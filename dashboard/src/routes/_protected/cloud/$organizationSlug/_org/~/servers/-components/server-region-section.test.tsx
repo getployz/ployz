@@ -8,7 +8,7 @@ import type { StoreResult, StoreViewOf } from "#/modules/config-store/store.cont
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { storeViewOptions } from "#/modules/config-store/store-view.queries";
-import type { OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
+import type { OwnedNamespaces } from "#/modules/config-store/store-namespaces.hooks";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 

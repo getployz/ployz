@@ -1,3 +1,4 @@
+/** @data-source remote: linked accounts fresh on mount because connects land through a GitHub redirect; an offer never changes, so it is read once */
 import { queryOptions } from "@tanstack/react-query";
 import { listGithubOfferServerFn, listOrganizationGithubServerFn } from "#/modules/github/github-connect.functions";
 import { githubKeys } from "#/modules/github/github.queries";

@@ -8,7 +8,7 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{Retire, Scope, TargetNode};
+use super::{Narrow, Retire, Scope, TargetNode, Targeting};
 use crate::{
     Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentStatus, DeploymentSummary, Edit, EnvironmentId, EnvironmentRef, Mount,
@@ -903,11 +903,13 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                     &who.organization,
                     &saved.intent,
                     &super::Landing::applied(&saved.intent),
-                    Scope::Narrow {
-                        services: &[],
+                    Scope {
+                        targeting: Targeting::Named(Narrow {
+                            services: &[],
+                            every_saved: false,
+                        }),
                         retire: &[retire],
                         losses: &[],
-                        every_saved: false,
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,

@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    net::TcpListener,
-    sync::{Arc, Mutex},
-    time::SystemTime,
-};
+use std::{collections::BTreeMap, net::TcpListener, sync::Arc, time::SystemTime};
 
 use ployz_core::{
     CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
@@ -11,6 +6,9 @@ use ployz_core::{
 };
 use serde_json::json;
 
+use super::fake_cluster::{
+    QueryHold, corrosion_db, crsql_stand_ins, held_identity_store, identity_store,
+};
 use super::{
     IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore,
     store::{RuntimeOverlay, publishable_machine},
@@ -179,7 +177,7 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
 }
 
 #[tokio::test]
-async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() {
+async fn record_order_failure_is_an_error_when_the_store_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
@@ -187,9 +185,8 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
     let hostname = IngressHost::parse("app.example.com").unwrap();
     assert!(
         store
-            .record_certificate_failure(
+            .record_order_failure(
                 &hostname,
-                None,
                 "does not resolve",
                 IssuanceClock::new(
                     1,
@@ -1013,21 +1010,6 @@ pub(crate) fn participating_record() -> (Machine, LocalMachineRecord) {
     .unwrap();
     (machine, local)
 }
-fn sql_param(value: &serde_json::Value) -> rusqlite::types::Value {
-    match value {
-        serde_json::Value::String(value) => value.clone().into(),
-        serde_json::Value::Number(value) => value.as_i64().unwrap().into(),
-        serde_json::Value::Array(bytes) => bytes
-            .iter()
-            .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
-            .collect::<Vec<_>>()
-            .into(),
-        serde_json::Value::Null => rusqlite::types::Value::Null,
-        value @ (serde_json::Value::Bool(_) | serde_json::Value::Object(_)) => {
-            panic!("unsupported test parameter: {value}")
-        }
-    }
-}
 
 #[tokio::test]
 async fn catch_up_rejects_invalid_targets_without_retrying() {
@@ -1051,19 +1033,6 @@ async fn catch_up_rejects_invalid_targets_without_retrying() {
         .expect("invalid targets must fail without retrying")
         .expect_err("invalid targets must not complete catch-up");
     }
-}
-
-/// The cr-sqlite and Corrosion tables [`super::store::crsql`] reads, as the test double
-/// has no extension to create them. Their shapes are the ones the pinned image's
-/// `corrosion::integration_tests` exercise.
-fn crsql_stand_ins(db: &rusqlite::Connection) {
-    db.execute_batch(
-        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
-         CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
-    )
-    .unwrap();
 }
 
 /// #2930: a recreated `store.db` holds only this Machine's row until gossip reaches it,
@@ -1251,180 +1220,6 @@ async fn store_version_stops_below_each_actors_first_hole() {
     // hole, as one does when the actor that wrote the missing versions is gone (#3611).
     assert!(store.has_reached_version(&version).await.unwrap());
     server.abort();
-}
-
-// Exercise the store API against real SQL rows, including corrupt imported documents.
-pub(crate) async fn identity_store(
-    db: rusqlite::Connection,
-) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
-    let (store, _hold, task) = held_identity_store(db).await;
-    (store, task)
-}
-
-/// Holds one answer of a `held_identity_store`, as `FakeCluster::hold_query` does.
-#[derive(Clone, Default)]
-pub(crate) struct QueryHold(Arc<Mutex<Option<HeldQuery>>>);
-
-struct HeldQuery {
-    query: String,
-    nth: usize,
-    gate: Arc<tokio::sync::Barrier>,
-}
-
-impl QueryHold {
-    /// Hold the answer to the `nth` run of `query` from now, read before the hold, until the
-    /// returned gate is waited on twice: once to see it held, once to release it.
-    pub(crate) fn hold(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
-        let gate = Arc::new(tokio::sync::Barrier::new(2));
-        *self.0.lock().unwrap() = Some(HeldQuery {
-            query: query.to_owned(),
-            nth,
-            gate: Arc::clone(&gate),
-        });
-        gate
-    }
-
-    fn due(&self, query: &str) -> Option<Arc<tokio::sync::Barrier>> {
-        let mut held = self.0.lock().unwrap();
-        let due = held.as_mut().is_some_and(|held| {
-            if held.query == query {
-                held.nth -= 1;
-            }
-            held.nth == 0
-        });
-        if due {
-            held.take().map(|held| held.gate)
-        } else {
-            None
-        }
-    }
-}
-
-/// `identity_store` with a hold on the answers to its queries.
-pub(crate) async fn held_identity_store(
-    db: rusqlite::Connection,
-) -> (ReplicatedStore, QueryHold, tokio::task::JoinHandle<()>) {
-    use axum::{Router, body::Bytes, extract::State, routing::post};
-    #[derive(Clone)]
-    struct Served {
-        db: Arc<Mutex<rusqlite::Connection>>,
-        hold: QueryHold,
-    }
-    async fn query(State(served): State<Served>, body: Bytes) -> Vec<u8> {
-        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let gate = served
-            .hold
-            .due(request.get("query").unwrap().as_str().unwrap());
-        let response = answer(&served.db.lock().unwrap(), &request);
-        if let Some(gate) = gate {
-            gate.wait().await;
-            gate.wait().await;
-        }
-        response
-    }
-    fn answer(db: &rusqlite::Connection, request: &serde_json::Value) -> Vec<u8> {
-        let mut statement = db
-            .prepare(request.get("query").unwrap().as_str().unwrap())
-            .unwrap();
-        let columns = statement
-            .column_names()
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect::<Vec<_>>();
-        let params = request
-            .get("params")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(sql_param);
-        let mut rows = statement.query(rusqlite::params_from_iter(params)).unwrap();
-        let mut response = serde_json::to_vec(&json!({"columns": columns})).unwrap();
-        let mut index = 0;
-        while let Some(row) = rows.next().unwrap() {
-            index += 1;
-            let values = (0..columns.len())
-                .map(|i| match row.get_ref(i).unwrap() {
-                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                    rusqlite::types::ValueRef::Integer(value) => json!(value),
-                    rusqlite::types::ValueRef::Text(value) => {
-                        json!(std::str::from_utf8(value).unwrap())
-                    }
-                    rusqlite::types::ValueRef::Blob(value) => json!(value),
-                    value @ rusqlite::types::ValueRef::Real(_) => {
-                        panic!("unsupported test row value: {value:?}")
-                    }
-                })
-                .collect::<Vec<_>>();
-            response.extend(serde_json::to_vec(&json!({"row": [index, values]})).unwrap());
-        }
-        response.extend(br#"{"eoq":{"time":0.0}}"#);
-        response
-    }
-    async fn transact(State(served): State<Served>, body: Bytes) -> Vec<u8> {
-        let requests: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        let db = served.db.lock().unwrap();
-        let results = requests
-            .iter()
-            .map(|request| {
-                let params = request
-                    .get("params")
-                    .unwrap()
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(sql_param);
-                let affected = db
-                    .execute(
-                        request.get("query").unwrap().as_str().unwrap(),
-                        rusqlite::params_from_iter(params),
-                    )
-                    .unwrap();
-                json!({"rows_affected": affected, "time": 0.0})
-            })
-            .collect::<Vec<_>>();
-        serde_json::to_vec(&json!({"results": results, "time": 0.0})).unwrap()
-    }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let store = ReplicatedStore::new(
-        ApiClient::http1(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
-    );
-    let hold = QueryHold::default();
-    let served = Served {
-        db: Arc::new(Mutex::new(db)),
-        hold: hold.clone(),
-    };
-    let task = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new()
-                .route("/v1/queries", post(query))
-                .route("/v1/transactions", post(transact))
-                .with_state(served),
-        )
-        .await
-        .unwrap();
-    });
-    (store, hold, task)
-}
-
-/// Corrosion re-renders schema.sql before creating its tables, which declares
-/// the SQLite keyword column `key` as `KEY`; an unaliased `SELECT key` then
-/// reports `KEY`.
-pub(crate) fn corrosion_db() -> rusqlite::Connection {
-    let schema = include_str!("schema.sql").replacen("    key  ", "    KEY  ", 1);
-    assert_ne!(schema, include_str!("schema.sql"));
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(&schema).unwrap();
-    // cr-sqlite keeps a Machine's key after its row is deleted: the deletion evidence.
-    db.execute_batch(
-        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id UNIQUE);
-         CREATE TRIGGER machines_crsql_pks AFTER INSERT ON machines BEGIN
-             INSERT OR IGNORE INTO machines__crsql_pks (id) VALUES (NEW.id);
-         END;",
-    )
-    .unwrap();
-    db
 }
 
 #[tokio::test]
@@ -2206,7 +2001,7 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .record_renewal_failure(&hostname, &material, "ACME request failed", clock)
         .await
         .unwrap();
     let row = store.certificate_row(&hostname).await.unwrap();
@@ -2225,7 +2020,7 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .await
         .unwrap();
     store
-        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .record_renewal_failure(&hostname, &material, "ACME request failed", clock)
         .await
         .unwrap();
     let row = store.certificate_row(&hostname).await.unwrap();
@@ -2729,7 +2524,7 @@ async fn a_late_certificate_failure_leaves_newly_issued_material() {
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+        .record_order_failure(&hostname, "ACME request failed", clock)
         .await
         .unwrap();
     let issued = certificate_material(&hostname);
@@ -2740,7 +2535,7 @@ async fn a_late_certificate_failure_leaves_newly_issued_material() {
             let hostname = hostname.clone();
             move |store| async move {
                 store
-                    .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+                    .record_order_failure(&hostname, "ACME request failed", clock)
                     .await
                     .unwrap();
             }
@@ -2940,7 +2735,7 @@ async fn a_certificate_failure_without_tried_material_keeps_a_row_with_material(
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .record_order_failure(&hostname, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Kept
@@ -2955,7 +2750,7 @@ async fn a_certificate_policy_refusal_with_the_same_reason_keeps_its_clock() {
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, None, "policy refused", clock)
+        .record_order_failure(&hostname, "policy refused", clock)
         .await
         .unwrap();
     let before = stored_certificate_body(&store, &hostname).await;
@@ -2996,11 +2791,11 @@ async fn every_acme_certificate_writer_keeps_a_published_row() {
             .await
             .unwrap(),
         store
-            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .record_order_failure(&hostname, "ACME request failed", clock)
             .await
             .unwrap(),
         store
-            .record_certificate_failure(&hostname, Some(&published), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &published, "ACME request failed", clock)
             .await
             .unwrap(),
         store
@@ -3103,7 +2898,7 @@ async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_a
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &tried, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Changed
@@ -3119,7 +2914,7 @@ async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_a
     let renewed = stored_certificate_body(&store, &hostname).await;
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &tried, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Moved

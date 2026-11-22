@@ -655,6 +655,8 @@ fn github() -> Trusted {
 struct Approvals {
     rows: Vec<(&'static str, &'static str)>,
     deletes_volume: Option<&'static str>,
+    /// Whether staging an edit needs approval too.
+    edits: bool,
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
     runs: std::sync::Mutex<Vec<String>>,
@@ -696,7 +698,8 @@ impl Approvals {
         let deploy = command["command"] == "admit" && command["admit"] == "deploy";
         let asks = ["publish", "sync", "take", "set_pr_plan", "set_build_order"]
             .iter()
-            .any(|asking| command["command"] == *asking);
+            .any(|asking| command["command"] == *asking)
+            || (self.edits && command["command"] == "edit");
         if self.rows.is_empty() || !(deploy || asks) {
             return None;
         }
@@ -7291,6 +7294,19 @@ fn an_agent_gets_the_approval_a_save_needs_and_retries_with_it() {
         approvals.calls().is_empty(),
         "--json never waits or decides"
     );
+}
+
+#[test]
+fn a_patch_that_needs_approval_retries_as_set() {
+    let (target, _) = serving(Approvals {
+        rows: vec![("apr_1", "pending")],
+        edits: true,
+        ..Approvals::default()
+    });
+    let refused = error(&target, &["set", "web", "--patch", r#"{"replicas":3}"#]);
+    assert_eq!(refused["code"], json!("approval_required"), "{refused}");
+    let retry = refused["details"]["retry"].as_str().unwrap();
+    assert!(retry.starts_with("ployz set "), "{retry}");
 }
 
 #[test]

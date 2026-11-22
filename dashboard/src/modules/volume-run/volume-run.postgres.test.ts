@@ -34,34 +34,12 @@ import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { firstFrame, PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
-import {
-  askCopy,
-  closeStaleVolumeRuns,
-  closeVolumeRun,
-  commitAndStart,
-  commitMove,
-  type CopyAnswer,
-  insertRun,
-  isVolumeOwed,
-  listVolumeRuns,
-  observeOrganization,
-  observeOrganizationCopies,
-  orphanSlotNames,
-  planVolumeRun,
-  releaseLanesOff,
-  requestVolumeRun,
-  requireOwner,
-  resolveVolume,
-  type RunContext,
-  sendSwitch,
-  setVolumeCopy,
-  SwitchAttemptError,
-  startOrphanDeletes,
-  volumeBusyMessage,
-} from "#/modules/volume-run/volume-run.server";
+import { askCopy, commitAndStart, commitMove, type CopyAnswer, planVolumeRun, releaseLanesOff, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { closeStaleVolumeRuns, closeVolumeRun, insertRun, isVolumeOwed, listVolumeRuns, requestVolumeRun, requireOwner, resolveVolume, type RunContext, volumeBusyMessage } from "#/modules/volume-run/volume-run.rows.server";
+import { observeOrganization, observeOrganizationCopies, orphanSlotNames, startOrphanDeletes } from "#/modules/volume-run/volume-run.orphans.server";
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -73,7 +51,7 @@ import { decideApproval } from "#/modules/approvals/approvals.server";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
@@ -4612,7 +4590,7 @@ describe("volume runs", () => {
       await fence(placed);
       const worker = createRunStoreDeployment(new Inngest({ id: "test" }), runEffect);
       const failed = () => invokeOnFailure(worker, DEPLOY, {
-        name: configDeploymentAdmittedEvent,
+        name: configDeploymentAdmitted.name,
         data: { organizationId, environmentId: "env-1", deploymentId: "d-1" },
       });
       send.mockClear();

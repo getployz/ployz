@@ -10,6 +10,8 @@
 //! Cloud's own choices under them (a session's length, an approval's length) stay Cloud's.
 
 pub use crate::authority::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
+/// The paths every ingress Server answers with its Machine id, which Cloud probes.
+pub use crate::domain::{HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH};
 
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays under
 /// the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCancelRetireOld, createRetireOld } from "#/modules/config-store/retire-old.inngest";
 import * as cleanupRows from "#/modules/config-store/retire-old.server";
 import type { CleanupLeft } from "#/modules/config-store/tables";
-import { configDeploymentRetireRequestedEvent } from "#/modules/inngest/events";
+import { configDeploymentRetireRequested } from "#/modules/config-store/config-store.events";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { useServiceFreeEffectRunner } from "#/test/service-free-effect-runner";
 
@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 
 const requested = {
-  name: configDeploymentRetireRequestedEvent,
+  name: configDeploymentRetireRequested.name,
   data: { organizationId: "org", environmentId: "env", deploymentId: "dep", number: 1 },
 };
 

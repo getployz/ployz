@@ -4,8 +4,7 @@ import { Effect, Redacted } from "effect";
 import { releaseHostedDomain, reserveHostedDomain } from "#/modules/cluster-domain/hosted-dns.server";
 import { organizationClusterDomain, type OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Actor } from "#/modules/identity/actor";
-import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { requestClusterDomainSync, sendClusterDomainSyncRequest } from "#/modules/cluster-domain/sync-request.server";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -54,9 +53,7 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
   }).onConflictDoNothing().returning();
   if (inserted) {
     // A lost request only delays the records and wildcard until the hourly sync.
-    yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
-      Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
-    );
+    yield* requestClusterDomainSync(organizationId);
     return inserted;
   }
   // A concurrent reserve won; hand our name back rather than let it wait for the reaper.
@@ -80,7 +77,7 @@ export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(functio
   input: { readonly organizationSlug: string },
 ) {
   const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "org:read");
-  yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
+  yield* sendClusterDomainSyncRequest(id).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),
     )),

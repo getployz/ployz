@@ -31,6 +31,7 @@ pub(crate) use plan::*;
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
 };
+use crate::storage::json_text;
 use std::collections::BTreeSet;
 use std::num::NonZeroU8;
 
@@ -40,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::{AutoDeployed, Automated, Skipped};
+use crate::automation::{self, Automated, Skipped};
 use crate::branch::idle::Deadline;
 use crate::branch::{self, CreateBranch, Setup, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
@@ -94,6 +95,17 @@ pub struct PullRequest {
     pub target_head: Option<CommitSha>,
     /// When GitHub last changed it.
     pub updated: crate::GithubTimestamp,
+}
+
+impl PullRequest {
+    /// Its head as a push of its branch.
+    pub(crate) fn head_push(&self) -> deployment::GitPush {
+        deployment::GitPush {
+            repository_id: self.repository_id,
+            branch: self.head_branch.clone(),
+            head: self.head.clone(),
+        }
+    }
 }
 
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
@@ -343,17 +355,6 @@ impl Phase {
     }
 }
 
-/// The JSON in column `index` of `row`, if any.
-fn optional<T: serde::de::DeserializeOwned>(
-    row: &crate::storage::Row,
-    index: usize,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    row.optional_text(index)?
-        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
-}
-
 /// A pull request's row: the facts Cloud last reported, and where it is.
 struct Record {
     facts: PullRequest,
@@ -372,11 +373,11 @@ impl Record {
         let facts: PullRequest = row.json(at, "pull request")?;
         let derived = Phase::of_columns(
             &facts,
-            optional(row, at + 1, "pull request merge")?,
-            optional(row, at + 2, "unlanded")?,
-            optional(row, at + 3, "pull request standing")?,
+            row.optional_json(at + 1, "pull request merge")?,
+            row.optional_json(at + 2, "unlanded")?,
+            row.optional_json(at + 3, "pull request standing")?,
         );
-        let stored: Option<Phase> = optional(row, at + 4, "pull request phase")?;
+        let stored: Option<Phase> = row.optional_json(at + 4, "pull request phase")?;
         let agrees = |stored: &Phase| {
             std::mem::discriminant(stored) == std::mem::discriminant(&derived)
                 && stored.head() == derived.head()
@@ -626,10 +627,7 @@ pub(crate) fn withdraw_trust(
         ),
         &[
             who.organization.as_str().into(),
-            serde_json::to_string(&Standing::Trusted)
-                .expect("a standing is JSON")
-                .as_str()
-                .into(),
+            json_text(&Standing::Trusted).as_str().into(),
         ],
     )?;
     for row in rows {
@@ -669,10 +667,7 @@ pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
                 row.text(0)?.into(),
                 row.int(1)?.into(),
                 row.int(2)?.into(),
-                serde_json::to_string(&phase)
-                    .expect("a phase is JSON")
-                    .as_str()
-                    .into(),
+                json_text(&phase).as_str().into(),
             ],
         )?;
     }
@@ -694,14 +689,8 @@ fn write_phase(
             who.organization.as_str().into(),
             pr.repository_id.into(),
             pr.number.into(),
-            serde_json::to_string(phase)
-                .expect("a phase is JSON")
-                .as_str()
-                .into(),
-            serde_json::to_string(&phase.standing())
-                .expect("a standing is JSON")
-                .as_str()
-                .into(),
+            json_text(phase).as_str().into(),
+            json_text(&phase.standing()).as_str().into(),
         ],
     )?;
     Ok(())
@@ -820,7 +809,7 @@ fn record_facts(
         number: event.number,
     };
     let (repository_id, number) = (pr.repository_id.into(), pr.number.into());
-    let facts = serde_json::to_string(event).expect("facts are JSON");
+    let facts = json_text(event);
     // The lock: a placeholder no facts are older than, or the row. A second first
     // report waits here on the first, then reads what it left.
     tx.execute(
@@ -857,11 +846,10 @@ fn record_facts(
     )? != 0;
     let mut first_merge = false;
     if let Some(commit) = &event.merge_commit {
-        let merged = serde_json::to_string(&Merged {
+        let merged = json_text(&Merged {
             commit: commit.clone(),
             into: event.target_branch.clone(),
-        })
-        .expect("a merge is JSON");
+        });
         first_merge = tx.execute(
             &format!(
                 "UPDATE config_pull_request SET merged = ?4 \
@@ -1255,32 +1243,14 @@ fn open(
         else {
             continue;
         };
-        if !admits {
-            automated.skipped.push(Skipped {
-                environment: start.summary.id.clone(),
-                reason: NEEDS_APPROVAL.to_owned(),
-            });
-            continue;
-        }
-        if trusted.runnable().is_err() {
-            automated.skipped.push(Skipped {
-                environment: start.summary.id.clone(),
-                reason: crate::trusted::NO_SERVERS.to_owned(),
-            });
-            continue;
-        }
-        match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted))) {
-            Ok(Some(deployed)) => automated.admitted.push(deployed),
-            Ok(None) => {}
-            Err(error) if crate::automation::skippable(&error) => {
-                // The plan can't make one: nothing to retry until someone changes it.
-                automated.skipped.push(Skipped {
-                    environment: start.summary.id.clone(),
-                    reason: error.message,
-                });
-            }
-            Err(error) => return Err(error),
-        }
+        let deployed = if !admits {
+            Ok(Some(automation::Deploy::NeedsApproval))
+        } else if trusted.runnable().is_err() {
+            Ok(Some(automation::Deploy::NoServers))
+        } else {
+            crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted)))
+        };
+        automation::record(&start.summary.id, deployed, automated)?;
     }
     Ok(())
 }
@@ -1293,7 +1263,7 @@ fn create(
     start: &Environment,
     plan: &Stored,
     (event, trusted): (&PullRequest, &Trusted),
-) -> Result<Option<AutoDeployed>, RpcError> {
+) -> Result<Option<automation::Deploy>, RpcError> {
     let Some(made) = make(tx, who, start, plan, (event, trusted))? else {
         return Ok(None);
     };
@@ -1306,14 +1276,14 @@ fn create(
         .working
         .services
         .iter()
-        .filter(|service| ours(event, &service.config.source))
+        .filter(|service| {
+            service
+                .config
+                .source
+                .builds_repository(event.repository_id.get())
+        })
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
-    let push = crate::deployment::GitPush {
-        repository_id: event.repository_id,
-        branch: event.head_branch.clone(),
-        head: event.head.clone(),
-    };
     let deployment = crate::automation::auto_admit(
         tx,
         who,
@@ -1321,20 +1291,12 @@ fn create(
         (&[], &[]),
         (cluster_domain.as_ref(), &pins),
         crate::deployment::Admission::New {
-            id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
-            push: Some(&push),
+            id: &crate::id::DeploymentId::fresh(),
+            push: Some(&event.head_push()),
         },
         trusted,
     )?;
-    Ok(Some(AutoDeployed {
-        environment: environment.summary.id.clone(),
-        deployment,
-    }))
-}
-
-/// Whether `source` builds from the pull request's repository.
-fn ours(event: &PullRequest, source: &ServiceSource) -> bool {
-    source.builds_repository(event.repository_id.get())
+    Ok(Some(automation::Deploy::Admitted(Box::new(deployment))))
 }
 
 /// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated
@@ -1355,7 +1317,7 @@ fn make(
     (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
-    let ours = |source: &ServiceSource| ours(event, source);
+    let ours = |source: &ServiceSource| source.builds_repository(event.repository_id.get());
     let mut copy: Vec<NodeName> = working
         .services
         .iter()
@@ -1393,7 +1355,7 @@ fn make(
     // refuses, isn't made: the caller rolls it back.
     let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
     let name = free_name(tx, start, event.number)?;
-    let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let id = EnvironmentId::fresh();
     let from = EnvironmentRef {
         project: Some(start.summary.project.clone()),
         environment: Some(start.summary.name.clone()),

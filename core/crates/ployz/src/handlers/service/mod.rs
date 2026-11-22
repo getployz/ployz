@@ -101,10 +101,7 @@ fn retiring(services: &[&ServiceObservation]) -> HashSet<ContainerId> {
 fn is_draining(container: ContainerRef<'_>, retiring: &HashSet<ContainerId>) -> bool {
     let observation = container.as_observation();
     matches!(container, ContainerRef::Service(_))
-        && matches!(
-            observation.runtime,
-            ContainerRuntimeObservation::Running { .. }
-        )
+        && observation.runtime.is_running()
         && retiring.contains(&observation.container_id)
 }
 

@@ -2,9 +2,9 @@ import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
-import { machineNames, MAX_SEARCH_LENGTH } from "#/modules/runtime/log-history-page.server";
+import { MAX_SEARCH_LENGTH, readLogPage } from "#/modules/runtime/log-history-page.server";
 import { clickhouseEndpoint, OBSERVE_NOT_CONFIGURED } from "#/modules/observe-store/clickhouse.server";
-import { logHistoryCursor, readLogHistory } from "#/modules/runtime/log-history.server";
+import { logHistoryCursor } from "#/modules/runtime/log-history.server";
 import { lacks } from "#/modules/organization/access.server";
 import { readCappedBody } from "#/server/capped-body";
 import { Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
@@ -47,13 +47,12 @@ export const handleLogsRead = Effect.fn("Runtime.handleLogsRead")(function* (req
   const filter = yield* resolveLogFilter(organizationId, {
     organizationSlug: caller.organization.slug, projectSlug: environment.project, environmentSlug: environment.environment,
   });
-  const page = yield* readLogHistory(endpoint, {
+  const page = yield* readLogPage(endpoint, {
     organizationId, namespace: filter.namespace, serviceName: service, machineId: machine, search,
   }, { limit: limit ?? DEFAULT_LIMIT, cursor });
-  const names = yield* machineNames(organizationId, [...new Set(page.rows.map((row) => row.machineId))]);
   return Response.json({
-    lines: page.rows.map((row) => ({
-      timestamp: row.timestamp, machineId: row.machineId, machineName: names.get(row.machineId) ?? row.machineId,
+    lines: page.rows.map(({ row, machineName }) => ({
+      timestamp: row.timestamp, machineId: row.machineId, machineName,
       containerId: row.containerId, service: row.serviceName, stream: row.stream, message: row.message,
     })),
     cursor: page.cursor,

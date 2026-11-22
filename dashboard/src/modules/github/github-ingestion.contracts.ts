@@ -1,18 +1,33 @@
 import { DateTime, Option, Schema, SchemaGetter } from "effect";
-import { GITHUB_CHECK_SUITE_ACTIONS, GITHUB_CHECK_SUITE_CONCLUSIONS, GITHUB_CHECK_SUITE_STATUSES, type GithubCheckSuiteAction, type GithubCheckSuiteConclusion, type GithubCheckSuiteStatus } from "#/modules/github/github-check-suite-vocabulary";
 
-export {
-  GITHUB_CHECK_SUITE_ACTIONS,
-  GITHUB_CHECK_SUITE_CONCLUSIONS,
-  GITHUB_CHECK_SUITE_STATUSES,
-};
-export type {
-  GithubCheckSuiteAction,
-  GithubCheckSuiteConclusion,
-  GithubCheckSuiteStatus,
-};
+export const GITHUB_CHECK_SUITE_ACTIONS = [
+  "requested",
+  "rerequested",
+  "completed",
+] as const;
 
-export const GITHUB_COMPARE_STATUSES = [
+const GITHUB_CHECK_SUITE_STATUSES = [
+  "queued",
+  "in_progress",
+  "completed",
+  "pending",
+  "waiting",
+  "requested",
+] as const;
+
+const GITHUB_CHECK_SUITE_CONCLUSIONS = [
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "success",
+  "skipped",
+  "stale",
+  "timed_out",
+  "startup_failure",
+] as const;
+
+const GITHUB_COMPARE_STATUSES = [
   "ahead",
   "behind",
   "diverged",
@@ -78,7 +93,10 @@ function isCanonicalRepositoryPath(value: string): boolean {
     .every((segment) => segment !== "." && segment !== "..");
 }
 
-const nonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
+export const githubNonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
+
+/** A slash-separated GitHub name or path with each segment URL-encoded, for a request path. */
+export const encodeGithubPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const positiveSafeIntegerSchema = Schema.Finite.check(
   Schema.isInt(),
   Schema.isGreaterThan(0),
@@ -109,15 +127,6 @@ export const githubBranchNameSchema = Schema.String.check(
 
 export const githubRepositoryPathSchema = Schema.String.check(
   Schema.makeFilter(isCanonicalRepositoryPath),
-);
-export const githubWatchPatternSchema = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.makeFilter(
-    (value) =>
-      !value.includes("\0") &&
-      !value.includes("\\") &&
-      !containsAsciiControl(value),
-  ),
 );
 
 const githubChangedPathsTypeSchema = Schema.Array(githubRepositoryPathSchema);
@@ -173,7 +182,7 @@ export const githubPushWebhookSchema = Schema.Struct({
   installationId: githubIdSchema,
   repositoryId: githubIdSchema,
   ref: githubSafeBranchRefSchema,
-  branch: nonEmptyStringSchema,
+  branch: githubNonEmptyStringSchema,
   beforeSha: githubExactShaSchema,
   afterSha: githubExactShaSchema,
   created: Schema.Boolean,
@@ -216,18 +225,25 @@ export const githubPullRequestWebhookSchema = Schema.Struct({
   headSha: githubExactShaSchema,
 });
 
+/** The identity a delivery's per-branch, per-check-suite or per-pull-request event is ordered by. */
+export const githubPushBranchKey = (push: { installationId: number; repositoryId: number; ref: string }) =>
+  `${push.installationId}:${push.repositoryId}:${push.ref}`;
+export const githubCheckSuiteKey = (suite: { installationId: number; repositoryId: number; checkSuiteId: number }) =>
+  `${suite.installationId}:${suite.repositoryId}:${suite.checkSuiteId}`;
+export const githubPullRequestKey = (pullRequest: { installationId: number; repositoryId: number; number: number }) =>
+  `${pullRequest.installationId}:${pullRequest.repositoryId}:${pullRequest.number}`;
+
 export const githubPushReceivedEventInputSchema = Schema.Struct({
   ...githubPushWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubPushReceivedEventDataSchema = Schema.Struct({
   ...githubPushReceivedEventInputSchema.fields,
-  branchKey: nonEmptyStringSchema,
+  branchKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.branchKey ===
-        `${value.installationId}:${value.repositoryId}:${value.ref}` &&
+      value.branchKey === githubPushBranchKey(value) &&
       value.ref === `refs/heads/${value.branch}`,
     {
       message: "GitHub push event authority key does not match its identity.",
@@ -237,16 +253,15 @@ export const githubPushReceivedEventDataSchema = Schema.Struct({
 
 export const githubCheckSuiteReceivedEventInputSchema = Schema.Struct({
   ...githubCheckSuiteWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
   ...githubCheckSuiteReceivedEventInputSchema.fields,
-  checkSuiteKey: nonEmptyStringSchema,
+  checkSuiteKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.checkSuiteKey ===
-      `${value.installationId}:${value.repositoryId}:${value.checkSuiteId}`,
+      value.checkSuiteKey === githubCheckSuiteKey(value),
     {
       message: "GitHub check-suite authority key does not match its identity.",
     },
@@ -255,16 +270,15 @@ export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
 
 export const githubPullRequestReceivedEventInputSchema = Schema.Struct({
   ...githubPullRequestWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubPullRequestReceivedEventDataSchema = Schema.Struct({
   ...githubPullRequestReceivedEventInputSchema.fields,
-  pullRequestKey: nonEmptyStringSchema,
+  pullRequestKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.pullRequestKey ===
-      `${value.installationId}:${value.repositoryId}:${value.number}`,
+      value.pullRequestKey === githubPullRequestKey(value),
     {
       message: "GitHub pull request authority key does not match its identity.",
     },
@@ -275,32 +289,6 @@ export const githubResolvedRepositorySchema = Schema.Struct({
   id: githubIdSchema,
   fullName: githubRepositoryFullNameSchema,
 });
-export const githubBranchHeadObservationSchema = Schema.Union([
-  Schema.Struct({
-    state: Schema.Literal("present"),
-    ref: githubSafeBranchRefSchema,
-    headSha: githubExactShaSchema,
-  }),
-  Schema.Struct({
-    state: Schema.Literal("absent"),
-    ref: githubSafeBranchRefSchema,
-  }),
-]);
-export const githubCompareObservationSchema = Schema.Struct({
-  status: githubCompareStatusSchema,
-  baseSha: githubExactShaSchema,
-  headSha: githubExactShaSchema,
-  changedPaths: githubChangedPathsSchema,
-  pathsComplete: Schema.Boolean,
-});
-export const githubCheckSuiteObservationSchema = Schema.Struct({
-  checkSuiteId: githubIdSchema,
-  headSha: githubExactShaSchema,
-  status: githubCheckSuiteStatusSchema,
-  conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
-  updatedAt: githubTimestampSchema,
-});
-
 export const isValidGithubId: <Input>(input: Input) => input is Input & number =
   Schema.is(githubIdSchema);
 
@@ -316,8 +304,6 @@ export function isValidGithubExactSha<Input>(
   return Option.isSome(Schema.decodeUnknownOption(githubExactShaSchema)(input));
 }
 
-export type GithubId = typeof githubIdSchema.Type;
-export type GithubCompareStatus = typeof githubCompareStatusSchema.Type;
 export type GithubPushWebhook = typeof githubPushWebhookSchema.Type;
 export type GithubCheckSuiteWebhook = typeof githubCheckSuiteWebhookSchema.Type;
 export type GithubPullRequestAction = typeof githubPullRequestActionSchema.Type;
@@ -336,9 +322,3 @@ export type GithubCheckSuiteReceivedEventData =
   typeof githubCheckSuiteReceivedEventDataSchema.Type;
 export type GithubResolvedRepository =
   typeof githubResolvedRepositorySchema.Type;
-export type GithubBranchHeadObservation =
-  typeof githubBranchHeadObservationSchema.Type;
-export type GithubCompareObservation =
-  typeof githubCompareObservationSchema.Type;
-export type GithubCheckSuiteObservation =
-  typeof githubCheckSuiteObservationSchema.Type;

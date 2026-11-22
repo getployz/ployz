@@ -88,7 +88,7 @@ async fn image_ingest_runs_the_pinned_helper_when_its_tag_names_other_content() 
     let ingest = ImageIngest::new(None, Some(docker.clone()));
     ingest.shutdown().await.unwrap();
     // What a peer pull's `docker tag -- <pulled> <tag>` leaves when its tag is the helper's.
-    let helper_tag = super::unregistry::IMAGE.as_str().split_once('@').unwrap().0;
+    let helper_tag = ployz_core::ImageRef::new(super::unregistry::IMAGE.as_str()).name;
     let (repo, tag) = helper_tag.rsplit_once(':').unwrap();
     docker
         .client
@@ -1589,12 +1589,8 @@ async fn live_stats_leave_out_an_exited_service_container() {
         .await
         .unwrap();
     let id = ContainerId::parse(created.id).unwrap();
-    let inspected = docker
-        .client
-        .inspect_container(id.as_str(), None)
-        .await
-        .unwrap();
-    crate::docker::holder::start(&docker.client, &inspected, None)
+    let inspected = docker.inspect(&id).await.unwrap();
+    crate::docker::holder::start_inspected(&docker.client, &inspected, None)
         .await
         .unwrap();
     let review = || vec![format!("{}=review", labels::NAMESPACE)];

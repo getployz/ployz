@@ -1,16 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { fromClient } from "#/routes/api/cli/-handlers";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
-import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
+import { apiRoute } from "#/server/api-route";
 
 /** `POST /api/config/read` and `/api/config/write`: the `ployz` CLI's way into the Config Store. */
 export const Route = createFileRoute("/api/config/$")({
   server: {
-    handlers: {
-      POST: async ({ request }) =>
-        runAppEffect(fromClient(request, handleConfigRequest(request)), { signal: request.signal }).catch(publicErrorResponse),
-      ANY: (): Response => methodNotAllowed(Route),
-    },
+    handlers: apiRoute({ POST: ({ request }) => handleConfigRequest(request) }, { clientAddress: true }),
   },
 });

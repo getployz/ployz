@@ -72,7 +72,7 @@ fn assert_still_in_its_slot(test: &TestDir) {
 /// another Volume's data, so the old copy never becomes its root.
 #[tokio::test]
 async fn a_promote_under_a_holder_expecting_other_data_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(
         &test,
         &["root", "mirror", "mirror-fs"],
@@ -93,7 +93,7 @@ async fn a_promote_under_a_holder_expecting_other_data_is_refused() {
 /// replaces what it mounts, even while it is stopped.
 #[tokio::test]
 async fn a_promote_of_born_data_under_an_unlabelled_holder_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(
         &test,
         &["root", "mirror", "mirror-fs"],
@@ -114,7 +114,7 @@ async fn a_promote_of_born_data_under_an_unlabelled_holder_is_refused() {
 /// A label that does not list the name says nothing the copy could match.
 #[tokio::test]
 async fn a_promote_under_a_label_that_omits_the_name_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(
         &test,
         &["root", "mirror", "mirror-fs"],
@@ -134,7 +134,7 @@ async fn a_promote_under_a_label_that_omits_the_name_is_refused() {
 /// Docker down means the holders are unknown, so nothing moves under the name.
 #[tokio::test]
 async fn a_promote_while_docker_cannot_list_holders_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(
         &test,
         &["root", "mirror", "mirror-fs"],
@@ -155,7 +155,7 @@ async fn a_promote_while_docker_cannot_list_holders_is_refused() {
 #[tokio::test]
 async fn a_promote_under_holders_expecting_its_data_lands() {
     for (origin, label) in [(Some(BORN), BORN.to_owned()), (None, legacy("data"))] {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = start_holding(
             &test,
             &["root", "mirror", "mirror-fs"],
@@ -185,7 +185,7 @@ async fn a_promote_under_holders_expecting_its_data_lands() {
 /// copy stays in its slot.
 #[tokio::test]
 async fn a_seed_landing_under_a_holder_expecting_other_data_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(
         &test,
         &["root", "volume"],
@@ -239,7 +239,7 @@ fn stalled_docker(socket: &Path, reply: &'static [u8]) {
 /// as unavailable, so admission is not held past the bound.
 #[tokio::test]
 async fn a_promote_while_docker_stalls_in_the_list_body_is_refused() {
-    let test = TestDir::new();
+    let test = test_dir();
     let docker = test.0.join("docker.sock");
     stalled_docker(
         &docker,
@@ -268,7 +268,7 @@ async fn a_promote_while_docker_stalls_in_the_list_body_is_refused() {
 /// may have changed the copy.
 #[tokio::test]
 async fn a_promote_while_docker_never_answers_is_refused_inside_a_callers_budget() {
-    let test = TestDir::new();
+    let test = test_dir();
     let docker = test.0.join("docker.sock");
     stalled_docker(&docker, b"");
     let socket = start_listing(
@@ -338,12 +338,12 @@ async fn a_fresh_root_under_a_holder_expecting_other_data_is_refused() {
         (Some(BORN), None),
         (Some(BORN), Some(other.as_str())),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = start_holding(&test, &["root"], Ok(vec![holder("data", held)]));
 
         let error = create(&socket, requested).await;
         assert!(
-            error.contains(ployzd::volume_copy::HELD_FOR_OTHER_DATA),
+            error.contains(crate::volume_copy::HELD_FOR_OTHER_DATA),
             "{held:?} took {requested:?}: {error}"
         );
         assert!(!test.0.join("volume").exists(), "no root was made");
@@ -360,7 +360,7 @@ async fn a_fresh_root_under_a_holder_expecting_other_data_is_refused() {
 #[tokio::test]
 async fn a_fresh_root_is_made_only_under_holders_expecting_it() {
     for (held, requested) in [(Some(BORN), Some(BORN)), (None, None)] {
-        let test = TestDir::new();
+        let test = test_dir();
         let label = held.map_or_else(|| legacy("data"), str::to_owned);
         let socket = start_holding(&test, &["root"], Ok(vec![holder("data", Some(&label))]));
 
@@ -369,7 +369,7 @@ async fn a_fresh_root_is_made_only_under_holders_expecting_it() {
         assert_eq!(property(&test, ROOT, "ployz:origin").as_deref(), requested);
     }
 
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = start_holding(&test, &["root"], Err("connection refused".into()));
     let error = create(&socket, None).await;
     assert!(error.contains("Docker is not answering"), "{error}");

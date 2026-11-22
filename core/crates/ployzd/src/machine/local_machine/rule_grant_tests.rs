@@ -17,7 +17,7 @@ use super::*;
 use crate::{
     github::test_support::{CLAIMS, TEST_KID, keys_with_test_signer, signed_by_test_signer},
     machine::{LocalMachineStore, RecordOwner},
-    management::build_grant::Mint,
+    management::build_grant::{Mint, Minter},
     sealed_env::test_support::Cluster,
 };
 
@@ -285,7 +285,7 @@ impl Fixture {
 fn refused(result: Result<AdmittedRule, Error>, field: &str) {
     match result {
         Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field: named })) => {
-            assert_eq!(named, field);
+            assert_eq!(named.text(), field);
         }
         other => panic!("expected a refusal naming {field}, got {other:?}"),
     }
@@ -310,8 +310,8 @@ async fn a_valid_token_mints_and_its_secrets_open_only_for_the_build() {
             sealed: Some(fixture.record()),
             rule: Some(grant),
         },
-        Some(&fixture.sealing.dir.0),
-        Some(admitted),
+        Some(&fixture.sealing.store()),
+        Minter::Rule(admitted),
     );
     assert!(mint.is_ok(), "{:?}", mint.err());
 }
@@ -327,7 +327,7 @@ struct ForgetDuringWait<'a> {
 impl Github for ForgetDuringWait<'_> {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -578,7 +578,9 @@ async fn a_token_for_another_branch_is_refused_naming_ref() {
         matches!(
             result,
             Err(Error::RuleProofRefused(ProofRefusal::Claim(
-                AuthorityRefusal::Mismatch { field: "ref" }
+                AuthorityRefusal::Mismatch {
+                    field: MismatchField::ClaimRef
+                }
             )))
         ),
         "{result:?}"

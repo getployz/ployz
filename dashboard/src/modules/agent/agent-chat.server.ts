@@ -17,9 +17,10 @@ import {
 import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } from "@tanstack/ai-anthropic";
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { refused } from "#/lib/refusal";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
-import { type CallOrigin, sessionIdOf } from "#/modules/analytics/agent-calls.server";
+import { AGENT_TOOLS, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
+import { type CallOrigin, sessionIdOf } from "#/modules/agent/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
@@ -35,18 +36,16 @@ import {
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
 import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
-import type { CallError } from "#/modules/analytics/agent-calls.server";
+import type { CallError } from "#/modules/agent/agent-calls.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { findCommand } from "#/modules/commands/commands.server";
 import { readStore } from "#/modules/config-store/config-store.server";
-import type { Caller } from "#/modules/identity/actor";
+import type { AgentCaller, Caller } from "#/modules/identity/actor";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
-
-const invalid = (message: string): ToolOutcome => ({ ok: false, refusal: { code: "invalid_argument", message, details: null } });
 
 /** A gated call as the sidebar shows it. */
 const shown = (result: AgentResult): Gated =>
@@ -127,7 +126,7 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
       const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
       const refuse = async (call: (typeof calls)[number], message: string) => {
         await run(ended(call, ctx.runId, { type: "validation", message }));
-        outcomes.set(call.id, invalid(message));
+        outcomes.set(call.id, refused("invalid_argument", message));
       };
       if (staged.length > 1) {
         for (const call of staged) await refuse(call, "Stage one step at a time.");
@@ -162,13 +161,16 @@ const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, ori
       return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page, origin }).pipe(Effect.map(outcomeOf)));
     }));
 
+/** The system prompt's account of which calls may wait for a human. `agent-chat.server.test.ts` holds it to `GATED`. */
+export const GATE_NOTE = "A Deploy (skip_deploy included), removing an Environment or a Project, a Service restart or stop, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service start never waits, and neither does a server upgrade.";
+
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
 
 You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you. Never act in another Organization.
 
 Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
 
-A Deploy (skip_deploy included), removing an Environment or a Project, a Service restart or stop, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service start never waits, and neither does a server upgrade.
+${GATE_NOTE}
 
 To run several Service restarts, stops or starts as one plan, call proposal_create, stage each step with proposal set to its id, in the order to run, then call proposal_present. A person approves every step at once. Only those three tools can be staged, and a staged step never runs on its own.
 

@@ -3,7 +3,7 @@ import { type AdapterYieldChunk, type DefaultMessageMetadataByModality, EventTyp
 import { BaseTextAdapter, type StructuredOutputResult } from "@tanstack/ai/adapters";
 import { Option, Schema } from "effect";
 import type { JsonObject } from "#/db/tables";
-import { isPageContext, latestPageContext, readPageContext } from "#/modules/agent/page-context";
+import { latestPageContext, readPageContext, typedText } from "#/modules/agent/page-context";
 import { volumeLoss } from "#/modules/config-store/store-volumes";
 
 /** One model turn: words for the member, or the tool calls it makes at once. */
@@ -153,11 +153,7 @@ const proposing = (results: ReadonlyArray<string>, plan: string): ScriptedTurn =
 const text = ({ content }: ModelMessage) =>
   Array.isArray(content) ? content.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("") : content ?? "";
 
-/** What the member typed, without the page block Cloud put before it, so a page named "deploy" deploys nothing. */
-const typed = ({ content }: ModelMessage) =>
-  Array.isArray(content)
-    ? content.flatMap((part) => (part.type === "text" && !isPageContext(part.content) ? [part.content] : [])).join("")
-    : content ?? "";
+const typed = ({ content }: ModelMessage) => typedText(content);
 
 /** The latest page block in plain words. */
 const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {

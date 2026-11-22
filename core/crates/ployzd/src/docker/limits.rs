@@ -1,11 +1,12 @@
 //! In-place CPU and memory limit updates of a running Service Container.
 
-use bollard::models::{ContainerInspectResponse, ContainerUpdateBody, HostConfig};
+use bollard::models::ContainerUpdateBody;
 use ployz_core::{
     ByteQuantity, ContainerId, ContainerKind, ContainerLimits, ContainerLimitsUpdated, CpuNanos,
     LimitsRefusal, ResolvedServiceSpec, SpecChange, compare_specs,
 };
 
+use super::inspect::{Inspected, RawHostConfig};
 use super::{ContainerRuntime, Error, docker_error};
 use ployz_core::labels::ServiceLabels;
 
@@ -67,11 +68,7 @@ impl ContainerRuntime {
             }
         };
         let inspected = self.observation().ensure_managed(container_id).await?;
-        let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .ok_or(Error::NotManaged)?;
+        let labels = inspected.labels().ok_or(Error::NotManaged)?;
         if ServiceLabels::parse(labels)?.kind != ContainerKind::ServiceContainer {
             return Err(Error::NotAServiceContainer(*container_id));
         }
@@ -97,12 +94,7 @@ impl ContainerRuntime {
             .update_container(container_id.as_str(), update_body(requested))
             .await
             .map_err(|error| docker_error(container_id, error))?;
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
-            .await
-            .map_err(|error| docker_error(container_id, error))?;
+        let inspected = self.docker.inspect(container_id).await?;
         let observed = confirm(container_id, requested, &inspected)?;
         config_operation.put(container_id, None, spec, None).await?;
         // Docker's `update` event can rescan before the spec is written.
@@ -134,7 +126,7 @@ fn refusal(stored: &ResolvedServiceSpec, spec: &ResolvedServiceSpec) -> Option<L
 fn refuse_lowering_memory(
     container_id: &ContainerId,
     requested: ContainerLimits,
-    inspected: &ContainerInspectResponse,
+    inspected: &Inspected,
 ) -> Result<(), Error> {
     let Some(requested) = requested.memory_bytes else {
         return Ok(());
@@ -150,7 +142,7 @@ fn refuse_lowering_memory(
     })
 }
 
-fn live_limits(inspected: &ContainerInspectResponse) -> Result<ContainerLimits, Error> {
+fn live_limits(inspected: &Inspected) -> Result<ContainerLimits, Error> {
     inspected
         .host_config
         .as_ref()
@@ -164,9 +156,9 @@ fn live_limits(inspected: &ContainerInspectResponse) -> Result<ContainerLimits, 
 fn confirm(
     container_id: &ContainerId,
     requested: ContainerLimits,
-    inspected: &ContainerInspectResponse,
+    inspected: &Inspected,
 ) -> Result<ContainerLimits, Error> {
-    if !is_running(inspected) {
+    if !inspected.process_alive() {
         return Err(Error::StoppedAfterLimitsUpdate(*container_id));
     }
     let observed = live_limits(inspected)?;
@@ -182,11 +174,8 @@ fn confirm(
     Ok(observed)
 }
 
-fn refuse_unless_running(
-    container_id: &ContainerId,
-    inspected: &ContainerInspectResponse,
-) -> Result<(), Error> {
-    if is_running(inspected) {
+fn refuse_unless_running(container_id: &ContainerId, inspected: &Inspected) -> Result<(), Error> {
+    if inspected.process_alive() {
         Ok(())
     } else {
         Err(Error::LimitsRefused {
@@ -194,14 +183,6 @@ fn refuse_unless_running(
             refusal: LimitsRefusal::NotRunning,
         })
     }
-}
-
-pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
-    inspected
-        .state
-        .as_ref()
-        .and_then(|state| state.running)
-        .unwrap_or(false)
 }
 
 fn update_body(limits: ContainerLimits) -> ContainerUpdateBody {
@@ -219,7 +200,7 @@ fn update_body(limits: ContainerLimits) -> ContainerUpdateBody {
 }
 
 /// Docker reports an unset limit as zero.
-fn observed_limits(host_config: &HostConfig) -> Result<ContainerLimits, Error> {
+fn observed_limits(host_config: &RawHostConfig) -> Result<ContainerLimits, Error> {
     let set = |value: Option<i64>| value.filter(|value| *value > 0);
     Ok(ContainerLimits {
         cpu_nanos: set(host_config.nano_cpus)
@@ -301,19 +282,11 @@ mod tests {
     #[test]
     fn a_stopped_container_is_refused() {
         let container_id = ContainerId::parse("c".repeat(64)).unwrap();
-        let running = |running: Option<bool>| ContainerInspectResponse {
-            state: Some(bollard::models::ContainerState {
-                running,
-                ..bollard::models::ContainerState::default()
-            }),
-            ..ContainerInspectResponse::default()
+        let running = |running: Option<bool>| -> Inspected {
+            serde_json::from_value(json!({ "State": { "Running": running } })).unwrap()
         };
         assert!(refuse_unless_running(&container_id, &running(Some(true))).is_ok());
-        for stopped in [
-            running(Some(false)),
-            running(None),
-            ContainerInspectResponse::default(),
-        ] {
+        for stopped in [running(Some(false)), running(None), Inspected::default()] {
             assert!(matches!(
                 refuse_unless_running(&container_id, &stopped),
                 Err(Error::LimitsRefused {
@@ -328,16 +301,12 @@ mod tests {
     fn a_container_stopped_after_the_update_is_unconfirmed_not_refused() {
         let container_id = ContainerId::parse("c".repeat(64)).unwrap();
         let requested = spec(Some(128)).container.resources.limits();
-        let inspected = |running: bool| ContainerInspectResponse {
-            state: Some(bollard::models::ContainerState {
-                running: Some(running),
-                ..bollard::models::ContainerState::default()
-            }),
-            host_config: Some(HostConfig {
-                memory: Some(128),
-                ..HostConfig::default()
-            }),
-            ..ContainerInspectResponse::default()
+        let inspected = |running: bool| -> Inspected {
+            serde_json::from_value(json!({
+                "State": { "Running": running },
+                "HostConfig": { "Memory": 128 },
+            }))
+            .unwrap()
         };
         assert_eq!(
             confirm(&container_id, requested, &inspected(true)).unwrap(),
@@ -380,12 +349,8 @@ mod tests {
     #[test]
     fn a_memory_limit_below_or_onto_the_live_one_is_refused() {
         let container_id = ContainerId::parse("c".repeat(64)).unwrap();
-        let live = |memory: Option<i64>| ContainerInspectResponse {
-            host_config: Some(HostConfig {
-                memory,
-                ..HostConfig::default()
-            }),
-            ..ContainerInspectResponse::default()
+        let live = |memory: Option<i64>| -> Inspected {
+            serde_json::from_value(json!({ "HostConfig": { "Memory": memory } })).unwrap()
         };
         let requested = |memory: Option<i64>| spec(memory).container.resources.limits();
         let refusal = |result: Result<(), Error>| match result {
@@ -415,7 +380,7 @@ mod tests {
             refusal(refuse_lowering_memory(
                 &container_id,
                 requested(Some(64)),
-                &ContainerInspectResponse::default()
+                &Inspected::default()
             )),
             Some(LimitsRefusal::MemoryUnlimited)
         );
@@ -423,11 +388,11 @@ mod tests {
 
     #[test]
     fn docker_reports_an_unset_limit_as_zero() {
-        let observed = observed_limits(&HostConfig {
+        let observed = observed_limits(&RawHostConfig {
             memory: Some(64),
             nano_cpus: Some(0),
             memory_reservation: None,
-            ..HostConfig::default()
+            ..RawHostConfig::default()
         })
         .unwrap();
         assert_eq!(

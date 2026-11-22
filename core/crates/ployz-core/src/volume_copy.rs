@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, ManagementAddress, Namespace,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
+    CodedRefusal, ContainerId, DeploymentLogId, DockerVolumeName, Evidence, Gen, ManagementAddress,
+    Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
 };
 
 /// The idempotency key a driver gives a new Container.
@@ -33,6 +33,36 @@ impl CreationKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The slot of operation `index` of `run`'s Deploy Plan, whose operations hash to
+    /// `digest`: `{run}:{digest}:{index}`.
+    #[must_use]
+    pub fn for_slot(run: &DeploymentLogId, digest: &str, index: usize) -> Self {
+        Self(format!("{run}:{digest}:{index}"))
+    }
+
+    /// The slot one drain's move of `old` mints once and every resend carries:
+    /// `move:{old}:{nonce}`.
+    #[must_use]
+    pub fn for_move(old: &ContainerId, nonce: uuid::Uuid) -> Self {
+        Self(format!("move:{old}:{}", nonce.simple()))
+    }
+
+    /// Whether `key`, a `ployz.creation.key` label, names a slot of `run`.
+    #[must_use]
+    pub fn made_under(key: &str, run: &DeploymentLogId) -> bool {
+        key.strip_prefix(run.as_str())
+            .is_some_and(|slot| slot.starts_with(':'))
+    }
+
+    /// Whether `key`, a `ployz.creation.key` label, names a move of `old`: minted
+    /// `move:{old}:{nonce}`, or `move:{old}` from a release before minted keys.
+    #[must_use]
+    pub fn made_by_move(key: &str, old: &ContainerId) -> bool {
+        key.strip_prefix("move:")
+            .and_then(|key| key.strip_prefix(old.to_string().as_str()))
+            .is_some_and(|nonce| nonce.is_empty() || nonce.starts_with(':'))
     }
 }
 
@@ -149,10 +179,6 @@ pub enum ExpectedCopy {
 /// The copy the sender wants this Machine to hold.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a Writer start carries the whole resolved spec; one request holds one"
-)]
 pub enum WantedCopy {
     /// A writable root whose newest snapshot is `at`, numbered `epoch`, with its
     /// Container running when `start` is given.
@@ -185,10 +211,6 @@ pub enum WantedCopy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(rename = "CopyStart")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a Create carries the whole resolved spec; one request holds one"
-)]
 pub enum Start {
     Kept {
         container_id: ContainerId,
@@ -1206,5 +1228,34 @@ mod tests {
             serde_json::from_value::<SetVolumeCopyRequest>(wire).unwrap(),
             sent
         );
+    }
+
+    #[test]
+    fn creation_keys_keep_the_label_text_older_containers_carry() {
+        let run = DeploymentLogId::parse("deploy-7").unwrap();
+        let old = ContainerId::parse("a".repeat(64)).unwrap();
+        let other = ContainerId::parse("b".repeat(64)).unwrap();
+        let a = "a".repeat(64);
+        let slot = CreationKey::for_slot(&run, "0f3a9c2e5b7d1a48", 3);
+        let moved = CreationKey::for_move(&old, uuid::Uuid::from_u128(0x0123_4567_89ab_cdef));
+        assert_eq!(slot.as_str(), "deploy-7:0f3a9c2e5b7d1a48:3");
+        assert_eq!(
+            moved.as_str(),
+            format!("move:{a}:00000000000000000123456789abcdef")
+        );
+        for (key, under_run, by_move) in [
+            (slot.as_str().to_owned(), true, false),
+            ("deploy-7:0".to_owned(), true, false),
+            ("deploy-70:0".to_owned(), false, false),
+            ("deploy-7".to_owned(), false, false),
+            (moved.as_str().to_owned(), false, true),
+            (format!("move:{a}"), false, true),
+            (format!("move:{a}0"), false, false),
+            (format!("move:{}", "b".repeat(64)), false, false),
+        ] {
+            assert_eq!(CreationKey::made_under(&key, &run), under_run, "{key}");
+            assert_eq!(CreationKey::made_by_move(&key, &old), by_move, "{key}");
+        }
+        assert!(!CreationKey::made_by_move(moved.as_str(), &other));
     }
 }

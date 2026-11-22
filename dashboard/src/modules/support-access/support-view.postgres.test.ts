@@ -10,10 +10,11 @@ import { openContainerLogs } from "#/modules/runtime/container-logs.server";
 import { readHistoryPage } from "#/modules/runtime/log-history-page.server";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { setSupportAccess } from "#/modules/support-access/support-access.server";
-import { Auth, type AuthService, type AuthSession } from "#/server/auth.server";
+import { Auth, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
-import type { StoreRefusal, ViewAnswer } from "#/modules/config-store/store.contract";
+import type { ViewAnswer } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import { sealedSecret } from "#/test/sealed-secret";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 

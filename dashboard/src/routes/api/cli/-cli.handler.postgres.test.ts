@@ -13,13 +13,15 @@ import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
-import { member, organizationToken, session } from "#/modules/identity/tables";
+import { organizationToken, session } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
 import { clusterSealingKey, enrollmentAllocation, machineRemoveAttempt, organizationMachine, organizationSealingKey, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server";
-import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
 import { runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
@@ -29,11 +31,10 @@ import type { Caller } from "#/modules/identity/actor";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { forgetServer } from "#/modules/operations/operations.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
-import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
+import { removeOrganizationAsMember } from "#/modules/organization-teardown/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
-import { organization } from "#/modules/organization/tables";
 import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -41,13 +42,13 @@ import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/
 import { volumeRun } from "#/modules/volume-run/tables";
 import { deviceRequest } from "#/modules/devices/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
-import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
-import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
+import { cliReply } from "#/routes/api/cli/-cli.handler";
+import { handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
 import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
-import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
-import { readCliSealingRecovery, recoveryDigest, rotateCliSealingRecovery } from "#/modules/machines/sealing-key.server";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/sealing/sealing-key";
+import { readCliSealingRecovery, recoveryDigest, rotateCliSealingRecovery } from "#/modules/sealing/sealing-key.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
@@ -330,14 +331,11 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   if (as.via !== undefined) headers.set("x-ployz-via", as.via);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
-  if (Exit.isSuccess(exit) && exit.value instanceof Response) {
-    const text = yield* Effect.promise(() => (exit.value as Response).text());
-    return { status: exit.value.status, json: decodeReply(text), text };
-  }
+  const exit = yield* Effect.exit(cliReply(new Request(`${origin}/api/cli/${path}`, init)));
   if (Exit.isSuccess(exit)) {
-    const text = JSON.stringify(exit.value);
-    return { status: 200, json: decodeReply(text), text };
+    const response = exit.value;
+    const text = yield* Effect.promise(() => response.text());
+    return { status: response.status, json: decodeReply(text), text };
   }
   const empty: Reply = {};
   const error = encodePublicError(Cause.squash(exit.cause));
@@ -634,7 +632,7 @@ it.live(
           headers: { cookie: alice.cookie, origin: "https://evil.example", "sec-fetch-site": "cross-site" },
           body: JSON.stringify({ name: "forged", expires_in_days: 365 }),
         });
-        const refused = yield* handleCliRequest(forged).pipe(
+        const refused = yield* cliReply(forged).pipe(
           Effect.map((response) => response instanceof Response ? response.status : 200),
           Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
         );

@@ -1,6 +1,6 @@
 ---
 name: verify-build-handoff
-description: Model-check a Git build handed to a GitHub Actions run, between Cloud's walk that follows the run (github-open, github-wait and github-check steps, checkStoreGithubBuild's start limit, budget and ended looks, github_finish, cancelStoreGithubBuilds) and the runner's check-in, Build Steps reports and push, with the Deployment runner's report on the build, against a user cancelling the Deployment, GitHub ending the run, an unreachable or refusing grant Machine, a grant Machine that loses the grant, and Inngest running a step again, with the Stateright model in core/crates/ployz-verify/src/build_handoff.rs. Use when a change touches dashboard/src/modules/config-store/store-github-builds.server.ts (startStoreGithubBuild, followPushRun, checkStoreGithubBuild, storeGithubBuildOpen, checkInStoreGithubBuild, grantRuleBuild, recordStoreGithubBuildSteps), walkGithub in dashboard/src/modules/config-store/store-deployment.inngest.ts, cancelStoreGithubBuilds, cancelDispatchedGithubRun or heldGithubBuild in dashboard/src/modules/config-store/config-store.server.ts, core/crates/ployz/src/sdk/github_build.rs (github_check_in, mint, github_rule_grant, rule_build, github_report, github_finish, settle, inspect_grant, grant_read, github_cancel), core/crates/ployz-decide/src/github_build.rs (GithubLook, first, after_read, github_end_holds, Why), or core/crates/ployz-store/src/build.rs (record, Stage, GithubHold, building_on, github_dispatched, github_build, github_authorize, github_check_in, github_report, github_end, github_outstanding).
+description: Model-check a Git build handed to a GitHub Actions run, between Cloud's walk that follows the run (github-open, github-wait and github-check steps, checkStoreGithubBuild's start limit, budget and ended looks, github_finish, cancelStoreGithubBuilds) and the runner's check-in, Build Steps reports and push, with the Deployment runner's report on the build, against a user cancelling the Deployment, GitHub ending the run, an unreachable or refusing grant Machine, a grant Machine that loses the grant, and Inngest running a step again, with the Stateright model in core/crates/ployz-verify/src/build_handoff.rs. Use when a change touches dashboard/src/modules/config-store/store-github-builds.server.ts (startStoreGithubBuild, followPushRun, checkStoreGithubBuild, storeGithubBuildOpen, checkInStoreGithubBuild, grantRuleBuild, recordStoreGithubBuildSteps), walkGithub in dashboard/src/modules/config-store/store-deployment.inngest.ts, cancelStoreGithubBuilds, cancelDispatchedGithubRun or heldGithubBuild in dashboard/src/modules/config-store/config-store.server.ts, core/crates/ployz/src/sdk/github_build.rs (github_check_in, mint, github_rule_grant, rule_build, github_report, github_finish, settle, inspect_grant, grant_read, github_cancel), core/crates/ployz-decide/src/github_build.rs (GithubLook, first, after_read, github_end_holds, github_check_in_holds, Why), or core/crates/ployz-store/src/build.rs (record, Stage, GithubHold, building_on, github_dispatched, github_build, github_authorize, github_check_in, github_report, github_end, github_outstanding).
 ---
 
 # Verify the GitHub build hand-off
@@ -16,7 +16,7 @@ The model in `core/crates/ployz-verify/src/build_handoff.rs` explores every inte
 - **GitHub.** It ends the run once its job exits, or after Cloud's cancel (`cancelGithubRun`, `dashboard/src/modules/github/github-build.server.ts:117-120`), and sends the `workflow_run` webhook, which sends the run's event (`dashboard/src/routes/api/github/-webhook.handler.ts:78-83`).
 - **The Deployment runner** on the Deployment's Servers. Its `run-deployment` step runs once every walk returned (`dashboard/src/modules/config-store/store-deployment.inngest.ts:63`, `:80`), and reports the builds it runs through the Store's `deployment::record::record` (`core/crates/ployz-store/src/deployment/record.rs`).
 - **The grant's Machine.** It admits one push on a Build Grant: once a tagged manifest is stored, the grant admits no other (`core/crates/ployzd/src/management/build_grant.rs:314`, `:545-551`). It keeps the grant, marked with what it received, in memory until `GRANT_LIFETIME` passes or the daemon stops, and `inspect` reads the push until then (`core/crates/ployzd/src/management/build_grant.rs:6-9`, `:59`, `:265`, `:284-296`). The model lets it lose the grant the row records, once, at any step while the build is on GitHub (`Who::Machine`). After that it admits no push (`core/crates/ployzd/src/management/build_grant.rs:306-315`), and its `inspect` answers NotFound whatever was pushed (`core/crates/ployzd/src/management/build_grant.rs:280-292`), which `grant_read` reads as `Pushed(None)` (`core/crates/ployz/src/sdk/github_build.rs:846-847`).
-- **The Store,** Postgres. Each write is one transaction that first takes the Deployment's Environment row lock (`deployment::locked`, `core/crates/ployz-store/src/deployment/mod.rs:1786-1790`; `scope::lock_all` in `core/crates/ployz-store/src/scope.rs`) and then reads the build. Writers run read committed and readers in one snapshot (`core/crates/ployz-store/src/storage/pg.rs:107-120`), so a write sees every write committed before it took the lock, and a read sees one state. Each model write and each model read is one atomic step.
+- **The Store,** Postgres. Each write is one transaction that first takes the Deployment's Environment row lock (`ployz_store::deployment::locked`; `ployz_store::scope::lock_all`) and then reads the build. Writers run read committed and readers in one snapshot (`ployz_store::storage::pg::begin`), so a write sees every write committed before it took the lock, and a read sees one state. Each model write and each model read is one atomic step.
 
 **Every writer of the row's GitHub fields** (`status`, `github`, `github_skipped`, and `message`, the skip reason on a pending row), and what the model does with it:
 - `github_dispatched` (`core/crates/ployz-store/src/build.rs:1047-1070`), from the `github-start` step (`:193-195`). Modeled for the retried start (`BuildHandoff::hand_off`). The model starts from two `github-start` steps (`init_states`). On the first try, `githubDispatched` committed and answered, and the walk's first look is next (`dashboard/src/modules/config-store/store-deployment.inngest.ts:154-155`). On the retry, the first try's call timed out, so Cloud cancelled its run (`:195`) and Inngest ran the step again. The timed-out call keeps running (`core/crates/ployz/src/sdk/store_call.rs:35-57`), so its write (`Who::Delayed`) commits or is refused at any step after. The retry's steps are `Walk::Start`: `holder`'s read (`:121-122`), its own run's `githubDispatched`, and `holder`'s second read after a refusal (`refused`, `:125`). `State::retried` marks the retry's start. The model keeps one `RUN`: the first try's run, until the retry's hand-off commits, which makes `RUN` the retry's run (`retry_won`). The run that loses never held the build, so its check-in and its late hand-off are refused, and Cloud cancelled it. The checker explores the first try's start first, so a story starts there wherever both reach a state. A rule build follows the run its push started (`:158-168`) instead of dispatching one: both tries hand off that same run, which `github_dispatched` takes again without a change (`core/crates/ployz-store/src/build.rs:1054-1056`), and no failed hand-off makes Cloud cancel it. The model's dispatched start stands for it (A rule build, under Bounds and blind spots).
@@ -113,7 +113,7 @@ Cloud's walk keeps its control flow, and passes the look (`:251`, `:256`, `:259`
 | The start limit issues only Unstarted (`core/crates/ployz/src/sdk/github_build.rs:730-736, :781-785`) | A run whose check-in committed inside the window: the start limit's end is refused, not settled | `start_limit_reads_the_grant` | `the_start_limit_needs_its_look`, `STARTED_RUN_KEPT` |
 | The Unstarted grant guard (`core/crates/ployz-store/src/build.rs:1377-1389`) | The same run: without it the start limit's Unstarted passes the run on | `unstarted_ignores_grant` | `the_start_limit_needs_the_unstarted_guard`, `STARTED_RUN_KEPT`; with `start_limit_reads_the_grant`, `timed_out_needs_the_unstarted_guard` |
 | The done-gate on Cloud's cancel (`:262`) | The same run: on Waiting, Cloud does not cancel it | `cancel_ignores_done` | `the_start_limit_needs_the_done_gate`, `STARTED_RUN_KEPT` |
-| The check-in's guard (`core/crates/ployz-store/src/build.rs:1273-1278`) | No check-in for a cancelled Deployment, and no second grant over the first | `check_in_unguarded` | `the_check_in_guard_refuses_a_cancelled_deployment`, `NO_GRANT_AFTER_CANCEL`; `the_check_in_guard_refuses_a_second_grant`, `ONE_GRANT_PER_RUN`, with two requests |
+| The check-in's guard (`github_check_in_holds`, called by `ployz_store::build::github_check_in`) | No check-in for a cancelled Deployment, and no second grant over the first | `check_in_unguarded` | `the_check_in_guard_refuses_a_cancelled_deployment`, `NO_GRANT_AFTER_CANCEL`; `the_check_in_guard_refuses_a_second_grant`, `ONE_GRANT_PER_RUN`, with two requests |
 | After a refused write, the retried start reads the build again and follows the run that holds it (`:125`) | The walk returns only once no run holds the build, so the Servers' report lands | `start_leaves_held_run` | `a_retried_start_needs_its_second_read`, `SERVERS_REPORT_LANDS` |
 | `record`'s GitHub guard (`core/crates/ployz-store/src/build.rs:292-299`) | No Server's report on a build a GitHub run holds or ended | `record_ignores_github` | `record_needs_its_github_guard`, `NO_SERVER_ON_GITHUB_BUILD`, with `start_leaves_held_run` |
 
@@ -242,8 +242,9 @@ In `after_read` (`core/crates/ployz-decide/src/github_build.rs`):
 **B7. check_in_unguarded made a no-op.** Red: `the_check_in_guard_refuses_a_cancelled_deployment`, `the_check_in_guard_refuses_a_second_grant`.
 
 ```diff
--if !self.broken.check_in_unguarded && (!wanted || github.grant.is_some()) {
-+if !wanted || github.grant.is_some() {
+-if !self.broken.check_in_unguarded
+-    && !github_check_in_holds(state.row.hold(RUN), wanted)
++if !github_check_in_holds(state.row.hold(RUN), wanted)
 ```
 
 **B8. cancel_ignores_done made a no-op.** Red: `the_start_limit_needs_the_done_gate`.
@@ -271,16 +272,20 @@ In `first` (`core/crates/ployz-decide/src/github_build.rs`): every look reads th
 
 **B11. the check-in ignores the Deployment.** Red: `the_check_in_guard_refuses_a_second_grant`, `the_code_keeps_a_started_run`, `timed_out_breaks_only_the_finding`.
 
+In `github_check_in_holds` (`core/crates/ployz-decide/src/github_build.rs`):
+
 ```diff
--if !self.broken.check_in_unguarded && (!wanted || github.grant.is_some()) {
-+if !self.broken.check_in_unguarded && github.grant.is_some() {
+-building_on == Some(Hold::Dispatched) && in_flight
++building_on == Some(Hold::Dispatched)
 ```
 
 **B12. the check-in ignores a grant.** Red: `the_check_in_guard_refuses_a_second_grant`.
 
+In `github_check_in_holds` (`core/crates/ployz-decide/src/github_build.rs`):
+
 ```diff
--if !self.broken.check_in_unguarded && (!wanted || github.grant.is_some()) {
-+if !self.broken.check_in_unguarded && !wanted {
+-building_on == Some(Hold::Dispatched) && in_flight
++building_on.is_some() && in_flight
 ```
 
 **B13. wake does nothing.** Red: `the_code_keeps_a_started_run`, `timed_out_breaks_only_the_finding`.
@@ -527,7 +532,7 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `dashboard/src/modules/config-store/config-store.server.ts`: `cancelDispatchedGithubRun`, `heldGithubBuild`, `cancelStoreGithubBuilds` and `afterWrite`'s cancel.
 - `dashboard/src/routes/api/github/-webhook.handler.ts`: the `workflow_run` event.
 - `core/crates/ployz/src/sdk/github_build.rs`: `github_check_in`, `mint`, `github_rule_grant`, `rule_build`, `github_report`, `github_finish`, `settle`, `inspect_grant`, `grant_read` and `github_cancel`.
-- `core/crates/ployz-decide/src/github_build.rs`: `GithubLook`, `first`, `after_read`, `github_end_holds` and `Why`, which the model calls.
+- `core/crates/ployz-decide/src/github_build.rs`: `GithubLook`, `first`, `after_read`, `github_end_holds`, `github_check_in_holds` and `Why`, which the model calls.
 - `core/crates/ployz-store/src/build.rs`: `record`, `Stage`, `GithubHold`, `building_on`, `github_build`, `github_authorize`, `github_check_in`, `github_report`, `github_end` and `github_outstanding`.
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`.
 - `core/crates/ployz-store/src/deployment/record.rs`: `record`, the call for a runner's build report.

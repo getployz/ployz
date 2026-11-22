@@ -127,7 +127,8 @@ fn install(
     fence: BridgeFence,
 ) -> Result<Restored, NetworkError> {
     let mut restored = Restored::default();
-    let moved = &mut restored.displaced;
+    let hooks = hooks(subnet);
+    let placed = |place| hooks.iter().filter(move |hook: &&Hook| hook.place == place);
     let gateway = subnet.gateway().0;
     let dns_port = dns::PORT;
     let mut ipv4 = mesh_ports();
@@ -136,27 +137,14 @@ fn install(
             "-i {DOCKER_NETWORK_NAME} -d {gateway} -p {protocol} --dport {dns_port} -j ACCEPT"
         ));
     }
-    let mut ipv4_document = filter_document("iptables", &ipv4, moved)?;
-    let nat_moves = move_to_top(
-        "iptables",
-        "nat",
-        "POSTROUTING",
-        &format!("-s {subnet} -o {WIREGUARD_INTERFACE_NAME} -j RETURN"),
-        &mut restored.behind_docker_nat,
-    )?;
-    let moved = &mut restored.displaced;
-    if !nat_moves.is_empty() {
-        ipv4_document.push_str(&format!("*nat\n{nat_moves}COMMIT\n"));
+    let mut ipv4_document =
+        Chain::input().document("iptables", &ipv4, &[], &mut restored.displaced)?;
+    for hook in placed(Place::BehindDockerNat) {
+        ipv4_document.push_str(&hook.document(&mut restored.behind_docker_nat)?);
     }
-    let forward_moves = move_to_top(
-        "iptables",
-        "filter",
-        "DOCKER-USER",
-        &format!("-i {WIREGUARD_INTERFACE_NAME} -o {DOCKER_NETWORK_NAME} -j ACCEPT"),
-        moved,
-    )?;
-    if !forward_moves.is_empty() {
-        ipv4_document.push_str(&format!("*filter\n{forward_moves}COMMIT\n"));
+    let moved = &mut restored.displaced;
+    for hook in placed(Place::First) {
+        ipv4_document.push_str(&hook.document(moved)?);
     }
     // The tunnel's hook first, so the build hook's insert lands above it.
     ipv4_document.push_str(&tunnel_forward_document(
@@ -170,19 +158,22 @@ fn install(
         moved,
     )?);
     restore("iptables", &ipv4_document)?;
-    add_mss_clamp(moved);
-    for rule in loose_build_forwarding() {
-        delete_rule(
-            "iptables",
-            "mangle",
-            "FORWARD",
-            &rule.split(' ').collect::<Vec<_>>(),
-        )?;
+    for hook in placed(Place::Appended) {
+        hook.append(moved);
     }
-    let mut ipv6_document =
-        filter_document("ip6tables", &management_policy(management_address), moved)?;
+    for hook in placed(Place::Retired) {
+        hook.delete()?;
+    }
+    let mut ipv6_document = Chain::input().document(
+        "ip6tables",
+        &management_policy(management_address),
+        &[],
+        moved,
+    )?;
     if keeps_fence(fence, docker_ipv6_firewall())? {
-        ipv6_document.push_str(&container_mesh_fence_document(moved)?);
+        for hook in placed(Place::Fence) {
+            ipv6_document.push_str(&hook.document(moved)?);
+        }
     }
     // The tunnel's hook first, so the build hook's insert lands above it.
     ipv6_document.push_str(&tunnel_forward_document(
@@ -197,6 +188,107 @@ fn install(
     )?);
     restore("ip6tables", &ipv6_document)?;
     Ok(restored)
+}
+
+/// A rule this firewall puts in a chain it doesn't own.
+struct Hook {
+    program: &'static str,
+    table: &'static str,
+    chain: &'static str,
+    rule: String,
+    place: Place,
+}
+
+/// How an install puts a [`Hook`] in place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Place {
+    /// First in its chain, in its family's restore. Docker displaces it with its own
+    /// MASQUERADE each time it creates a network or restarts, so its moves are
+    /// recorded apart.
+    BehindDockerNat,
+    /// First in its chain, in its family's restore.
+    First,
+    /// First in its chain, in its family's restore, while the install keeps the fence
+    /// (see [`keeps_fence`]). Removed while its chain exists.
+    Fence,
+    /// Appended outside the restore (see [`Hook::append`]).
+    Appended,
+    /// An earlier daemon's: every install and every removal deletes it.
+    Retired,
+}
+
+/// Every hook, in the order a removal deletes them.
+fn hooks(subnet: MachineSubnet) -> Vec<Hook> {
+    let mut hooks = vec![
+        Hook {
+            program: "iptables",
+            table: "filter",
+            chain: "DOCKER-USER",
+            rule: format!("-i {WIREGUARD_INTERFACE_NAME} -o {DOCKER_NETWORK_NAME} -j ACCEPT"),
+            place: Place::First,
+        },
+        Hook {
+            program: "iptables",
+            table: "nat",
+            chain: "POSTROUTING",
+            rule: format!("-s {subnet} -o {WIREGUARD_INTERFACE_NAME} -j RETURN"),
+            place: Place::BehindDockerNat,
+        },
+    ];
+    hooks.extend(loose_build_forwarding().map(|rule| Hook {
+        program: "iptables",
+        table: "mangle",
+        chain: "FORWARD",
+        rule,
+        place: Place::Retired,
+    }));
+    hooks.push(mss_clamp());
+    hooks.push(container_mesh_fence());
+    hooks
+}
+
+impl Hook {
+    fn words(&self) -> Vec<&str> {
+        self.rule.split(' ').collect()
+    }
+
+    /// Restore lines that put this hook first in its chain, in a section of their own;
+    /// none when it already is.
+    fn document(&self, moved: &mut Vec<String>) -> Result<String, NetworkError> {
+        let moves = move_to_top(self.program, self.table, self.chain, &self.rule, moved)?;
+        Ok(if moves.is_empty() {
+            moves
+        } else {
+            format!("*{}\n{moves}COMMIT\n", self.table)
+        })
+    }
+
+    /// Append this hook outside the policy's restore: a kernel without the TCPMSS target
+    /// loses only the clamp, and the route MTU still covers the Machine's own TCP. An
+    /// added hook is recorded in `moved`.
+    fn append(&self, moved: &mut Vec<String>) {
+        let words = self.words();
+        let added = rule_exists(self.program, self.table, self.chain, &words).and_then(|exists| {
+            if exists {
+                return Ok(false);
+            }
+            let mut append = vec!["-t", self.table, "-A", self.chain];
+            append.extend_from_slice(&words);
+            xtables(self.program, &append).map(|_| true)
+        });
+        match added {
+            Ok(true) => moved.push(format!("{} {}: {}", self.table, self.chain, self.rule)),
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "failed to clamp container TCP to the mesh path MTU: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ),
+        }
+    }
+
+    fn delete(&self) -> Result<(), NetworkError> {
+        delete_rule(self.program, self.table, self.chain, &self.words())
+    }
 }
 
 /// Whether an install adds the mesh fence, given what the Docker probe found.
@@ -216,33 +308,15 @@ fn keeps_fence(fence: BridgeFence, probe: Result<(), Ipv6Off>) -> Result<bool, N
 /// container segments that cross. The container's own segments are bounded by the
 /// route MTU as they're forwarded. On a full route it changes nothing. Container IPv6 never enters the mesh
 /// (see [`container_mesh_fence`]), so IPv4 is the whole of it.
-fn mss_clamp() -> String {
-    format!(
-        "-o {WIREGUARD_INTERFACE_NAME} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
-    )
-}
-
-/// Add [`mss_clamp`] outside the policy's restore: a kernel without the TCPMSS target
-/// loses only the clamp, and the route MTU still covers the Machine's own TCP. An
-/// added clamp is recorded in `moved`.
-fn add_mss_clamp(moved: &mut Vec<String>) {
-    let rule = mss_clamp();
-    let words: Vec<&str> = rule.split(' ').collect();
-    let added = rule_exists("iptables", "mangle", "FORWARD", &words).and_then(|exists| {
-        if exists {
-            return Ok(false);
-        }
-        let mut append = vec!["-t", "mangle", "-A", "FORWARD"];
-        append.extend_from_slice(&words);
-        xtables("iptables", &append).map(|_| true)
-    });
-    match added {
-        Ok(true) => moved.push(format!("mangle FORWARD: {rule}")),
-        Ok(false) => {}
-        Err(error) => eprintln!(
-            "failed to clamp container TCP to the mesh path MTU: {error}",
-            error = ployz_core::error_chain::inline(&error),
+fn mss_clamp() -> Hook {
+    Hook {
+        program: "iptables",
+        table: "mangle",
+        chain: "FORWARD",
+        rule: format!(
+            "-o {WIREGUARD_INTERFACE_NAME} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
         ),
+        place: Place::Appended,
     }
 }
 
@@ -251,23 +325,14 @@ fn add_mss_clamp(moved: &mut Vec<String>) {
 /// container over IPv6, so even replies drop: a container can forge the state of a
 /// DNAT'd connection through hairpin NAT. Container IPv4 into the mesh keeps its own
 /// source and reaches only containers, so it stays open.
-fn container_mesh_fence() -> String {
-    format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP")
-}
-
-fn container_mesh_fence_document(moved: &mut Vec<String>) -> Result<String, NetworkError> {
-    let moves = move_to_top(
-        "ip6tables",
-        "filter",
-        "DOCKER-USER",
-        &container_mesh_fence(),
-        moved,
-    )?;
-    Ok(if moves.is_empty() {
-        moves
-    } else {
-        format!("*filter\n{moves}COMMIT\n")
-    })
+fn container_mesh_fence() -> Hook {
+    Hook {
+        program: "ip6tables",
+        table: "filter",
+        chain: "DOCKER-USER",
+        rule: format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP"),
+        place: Place::Fence,
+    }
 }
 
 /// Docker filters IPv6 itself, so DOCKER-USER exists for the mesh fence. Without it
@@ -293,7 +358,7 @@ fn docker_user_chain() -> bool {
 /// Returns an error when ip6tables rejects the rule.
 pub(super) fn fence_container_ipv6() -> Result<(), NetworkError> {
     let _writer = writer();
-    let document = container_mesh_fence_document(&mut Vec::new())?;
+    let document = container_mesh_fence().document(&mut Vec::new())?;
     if document.is_empty() {
         Ok(())
     } else {
@@ -378,24 +443,12 @@ fn build_bridges() -> String {
     format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX)
 }
 
-fn build_forward_jump() -> String {
-    format!("-i {} -j {BUILD_FORWARD_CHAIN}", build_bridges())
-}
-
 fn build_forward_document(
     program: &str,
     rules: &[String],
     moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
-    chain_document(
-        program,
-        "mangle",
-        "FORWARD",
-        &build_forward_jump(),
-        BUILD_FORWARD_CHAIN,
-        rules,
-        moved,
-    )
+    Chain::build_forward().document(program, rules, &[], moved)
 }
 
 /// The Tunnel Connector dials whatever origin its tunnel's routes name, and a tunnel
@@ -436,10 +489,6 @@ fn edge_returns(family: impl Fn(&str) -> bool) -> impl Iterator<Item = String> {
         })
 }
 
-fn tunnel_forward_jump() -> String {
-    format!("-i {TUNNEL_NETWORK_NAME} -j {TUNNEL_FORWARD_CHAIN}")
-}
-
 /// The tunnel's hook goes first in mangle FORWARD but for the build bridges' hook,
 /// which matches other interfaces, so neither reapply moves the other. Its document
 /// goes before the build one, whose insert at the top then lands above it.
@@ -448,20 +497,7 @@ fn tunnel_forward_document(
     rules: &[String],
     moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
-    let mut document = format!("*mangle\n:{TUNNEL_FORWARD_CHAIN} - [0:0]\n");
-    for rule in rules {
-        document.push_str(&format!("-A {TUNNEL_FORWARD_CHAIN} {rule}\n"));
-    }
-    document.push_str(&move_behind(
-        program,
-        "mangle",
-        "FORWARD",
-        &tunnel_forward_jump(),
-        &[build_forward_jump()],
-        moved,
-    )?);
-    document.push_str("COMMIT\n");
-    Ok(document)
+    Chain::tunnel_forward().document(program, rules, &[Chain::build_forward().jump], moved)
 }
 
 const LINK_LOCAL: &str = "169.254.0.0/16";
@@ -484,23 +520,18 @@ const DNS_PORT: u16 = 53;
 pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
     let _writer = writer();
     let mut moved = Vec::new();
-    let chain = format!("{BUILD_CHAIN}{}", fence.slot);
+    let chain = Chain::build_fence(fence.slot);
     for (program, rules, forwarding) in [
         ("iptables", ipv4_fence(fence), ipv4_build_forwarding()),
         ("ip6tables", ipv6_fence(fence), ipv6_build_forwarding()),
     ] {
-        chain_document(
-            program,
-            "filter",
-            "OUTPUT",
-            &format!("-j {chain}"),
-            &chain,
-            &rules,
-            &mut moved,
-        )
-        .and_then(|fence| Ok(fence + &build_forward_document(program, &forwarding, &mut moved)?))
-        .and_then(|document| restore(program, &document))
-        .map_err(|error| ployz_core::error_chain::inline(&error))?;
+        chain
+            .document(program, &rules, &[], &mut moved)
+            .and_then(
+                |fence| Ok(fence + &build_forward_document(program, &forwarding, &mut moved)?),
+            )
+            .and_then(|document| restore(program, &document))
+            .map_err(|error| ployz_core::error_chain::inline(&error))?;
     }
     Ok(())
 }
@@ -571,7 +602,7 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
     .iter()
     .map(|output| format!("-o {output}"))
     .collect();
-    drops.push(format!("-d {}", super::default_cluster_network()));
+    drops.push(format!("-d {}", ployz_core::DEFAULT_CLUSTER_NETWORK));
     fenced(fence, "127.0.0.0/8", allowed, &drops, &PRIVATE_V4)
 }
 
@@ -628,40 +659,97 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     rules
 }
 
-fn filter_document(
-    program: &str,
-    rules: &[String],
-    moved: &mut Vec<String>,
-) -> Result<String, NetworkError> {
-    chain_document(
-        program,
-        "filter",
-        "INPUT",
-        &format!("-j {INPUT_CHAIN}"),
-        INPUT_CHAIN,
-        rules,
-        moved,
-    )
+/// A Ployz chain, entered from `hook` in `table` by `jump`.
+struct Chain {
+    table: &'static str,
+    hook: &'static str,
+    name: String,
+    jump: String,
 }
 
-/// Declaring the chain in a `--noflush` restore replaces its rules in the same
-/// commit that fills it again. `jump` enters `chain` from `hook`, first.
-fn chain_document(
-    program: &str,
-    table: &str,
-    hook: &str,
-    jump: &str,
-    chain: &str,
-    rules: &[String],
-    moved: &mut Vec<String>,
-) -> Result<String, NetworkError> {
-    let mut document = format!("*{table}\n:{chain} - [0:0]\n");
-    for rule in rules {
-        document.push_str(&format!("-A {chain} {rule}\n"));
+impl Chain {
+    fn input() -> Self {
+        Self {
+            table: "filter",
+            hook: "INPUT",
+            name: INPUT_CHAIN.to_owned(),
+            jump: format!("-j {INPUT_CHAIN}"),
+        }
     }
-    document.push_str(&move_to_top(program, table, hook, jump, moved)?);
-    document.push_str("COMMIT\n");
-    Ok(document)
+
+    fn build_forward() -> Self {
+        Self {
+            table: "mangle",
+            hook: "FORWARD",
+            name: BUILD_FORWARD_CHAIN.to_owned(),
+            jump: format!("-i {} -j {BUILD_FORWARD_CHAIN}", build_bridges()),
+        }
+    }
+
+    fn tunnel_forward() -> Self {
+        Self {
+            table: "mangle",
+            hook: "FORWARD",
+            name: TUNNEL_FORWARD_CHAIN.to_owned(),
+            jump: format!("-i {TUNNEL_NETWORK_NAME} -j {TUNNEL_FORWARD_CHAIN}"),
+        }
+    }
+
+    fn build_fence(slot: impl std::fmt::Display) -> Self {
+        let name = format!("{BUILD_CHAIN}{slot}");
+        Self {
+            table: "filter",
+            hook: "OUTPUT",
+            jump: format!("-j {name}"),
+            name,
+        }
+    }
+
+    /// The chains every install writes, in the order a removal takes them down.
+    fn installed() -> [Self; 3] {
+        [Self::input(), Self::build_forward(), Self::tunnel_forward()]
+    }
+
+    /// Declaring the chain in a `--noflush` restore replaces its rules in the same
+    /// commit that fills it again. The jump goes first in the hook but for the
+    /// leading rules among `ahead`.
+    fn document(
+        &self,
+        program: &str,
+        rules: &[String],
+        ahead: &[String],
+        moved: &mut Vec<String>,
+    ) -> Result<String, NetworkError> {
+        let Self {
+            table,
+            hook,
+            name,
+            jump,
+        } = self;
+        let mut document = format!("*{table}\n:{name} - [0:0]\n");
+        for rule in rules {
+            document.push_str(&format!("-A {name} {rule}\n"));
+        }
+        document.push_str(&move_behind(program, table, hook, jump, ahead, moved)?);
+        document.push_str("COMMIT\n");
+        Ok(document)
+    }
+
+    fn remove(&self, program: &str) -> Result<(), NetworkError> {
+        let Self {
+            table,
+            hook,
+            name,
+            jump,
+        } = self;
+        let jump: Vec<&str> = jump.split(' ').collect();
+        delete_rule(program, table, hook, &jump)?;
+        if command_succeeds(program, &["-t", table, "-n", "-L", name]) {
+            xtables(program, &["-t", table, "-F", name])?;
+            xtables(program, &["-t", table, "-X", name])?;
+        }
+        Ok(())
+    }
 }
 
 /// Restore lines that make `rule` the first in `chain`; none when it already is.
@@ -727,10 +815,7 @@ fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(NetworkError::Command {
-            program,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-        })
+        Err(NetworkError::failed(program.as_ref(), &output))
     }
 }
 
@@ -745,71 +830,17 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             failures.push(ployz_core::error_chain::inline(&error));
         }
     };
-    attempt(delete_rule(
-        "iptables",
-        "filter",
-        "DOCKER-USER",
-        &[
-            "-i",
-            WIREGUARD_INTERFACE_NAME,
-            "-o",
-            DOCKER_NETWORK_NAME,
-            "-j",
-            "ACCEPT",
-        ],
-    ));
-    attempt(delete_rule(
-        "iptables",
-        "nat",
-        "POSTROUTING",
-        &[
-            "-s",
-            &subnet.to_string(),
-            "-o",
-            WIREGUARD_INTERFACE_NAME,
-            "-j",
-            "RETURN",
-        ],
-    ));
-    for rule in loose_build_forwarding() {
-        attempt(delete_rule(
-            "iptables",
-            "mangle",
-            "FORWARD",
-            &rule.split(' ').collect::<Vec<_>>(),
-        ));
-    }
-    let clamp = mss_clamp();
-    let clamp = clamp.split(' ').collect::<Vec<_>>();
-    attempt(delete_rule("iptables", "mangle", "FORWARD", &clamp));
-    // A fence left in a chain Docker abandoned is still ours to remove.
-    if docker_user_chain() {
-        let fence = container_mesh_fence();
-        let fence = fence.split(' ').collect::<Vec<_>>();
-        attempt(delete_rule("ip6tables", "filter", "DOCKER-USER", &fence));
+    for hook in hooks(subnet) {
+        // A fence left in a chain Docker abandoned is still ours to remove.
+        if hook.place == Place::Fence && !docker_user_chain() {
+            continue;
+        }
+        attempt(hook.delete());
     }
     for program in ["iptables", "ip6tables"] {
-        attempt(remove_chain(
-            program,
-            "filter",
-            "INPUT",
-            &format!("-j {INPUT_CHAIN}"),
-            INPUT_CHAIN,
-        ));
-        attempt(remove_chain(
-            program,
-            "mangle",
-            "FORWARD",
-            &build_forward_jump(),
-            BUILD_FORWARD_CHAIN,
-        ));
-        attempt(remove_chain(
-            program,
-            "mangle",
-            "FORWARD",
-            &tunnel_forward_jump(),
-            TUNNEL_FORWARD_CHAIN,
-        ));
+        for chain in Chain::installed() {
+            attempt(chain.remove(program));
+        }
         attempt(remove_build_fences(program));
     }
     if failures.is_empty() {
@@ -817,22 +848,6 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     } else {
         Err(NetworkError::Io(std::io::Error::other(failures.join("; "))))
     }
-}
-
-fn remove_chain(
-    program: &str,
-    table: &str,
-    hook: &str,
-    jump: &str,
-    chain: &str,
-) -> Result<(), NetworkError> {
-    let jump: Vec<&str> = jump.split(' ').collect();
-    delete_rule(program, table, hook, &jump)?;
-    if command_succeeds(program, &["-t", table, "-n", "-L", chain]) {
-        xtables(program, &["-t", table, "-F", chain])?;
-        xtables(program, &["-t", table, "-X", chain])?;
-    }
-    Ok(())
 }
 
 /// Every slot's fence, whichever slots this Machine ever ran.
@@ -922,10 +937,7 @@ fn rule_exists(
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1 | 2) => Ok(false),
-        _ => Err(NetworkError::Command {
-            program: program.into(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-        }),
+        _ => Err(NetworkError::failed(program.as_ref(), &output)),
     }
 }
 
@@ -1010,7 +1022,7 @@ mod tests {
             assert!(rule.starts_with(&format!("-i {bridges} ")), "{rule}");
         }
         assert_eq!(
-            build_forward_jump(),
+            Chain::build_forward().jump,
             format!("-i {bridges} -j {BUILD_FORWARD_CHAIN}")
         );
         assert_eq!(mesh_ports().first(), Some(&format!("-i {bridges} -j DROP")));
@@ -1062,7 +1074,7 @@ mod tests {
 
     #[test]
     fn containers_never_reach_the_mesh_over_ipv6() {
-        assert_eq!(container_mesh_fence(), "-i ployz -o ployz-wg -j DROP");
+        assert_eq!(container_mesh_fence().rule, "-i ployz -o ployz-wg -j DROP");
     }
 
     #[test]
@@ -1233,16 +1245,15 @@ mod tests {
         }
         let listings = in_namespace(
             "network::firewall::tests::a_reapply_that_runs_after_teardown_puts_nothing_back",
-            &["filter", "nat"],
+            &["filter", "nat", "mangle"],
         );
         for rules in listings {
-            for ployz in [
-                "PLOYZ-INPUT",
-                "-i ployz-wg -o ployz -j ACCEPT",
-                "-o ployz-wg -j RETURN",
-            ] {
-                assert!(!rules.contains(ployz), "teardown left {ployz}:\n{rules}");
-            }
+            assert!(
+                rules
+                    .lines()
+                    .all(|line| line.starts_with("-P ") || line == "-N DOCKER-USER"),
+                "a hook or chain survived teardown:\n{rules}"
+            );
         }
     }
 }

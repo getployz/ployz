@@ -192,7 +192,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
             tx.execute(
                 "UPDATE config_deployment SET ended = CASE WHEN lease < ?1 THEN lease ELSE ?1 END \
                  WHERE status = 'unknown' AND ended IS NULL",
-                &[crate::deployment::now().into()],
+                &[now().into()],
             )?;
             tx.execute(
                 "UPDATE config_deployment SET ended = admitted \
@@ -217,8 +217,8 @@ const MIGRATIONS: &[(&str, Step)] = &[
             tx.batch(include_str!("migrations/0035_build_interrupted.sql"))?;
             // The clock is read twice, as it was when this shipped: first for the
             // in-flight test, then for the parameters. The reads may straddle a second.
-            let in_flight_at = crate::deployment::now();
-            steps::interrupt_builds(tx, in_flight_at, crate::deployment::now())?;
+            let in_flight_at = now();
+            steps::interrupt_builds(tx, in_flight_at, now())?;
             Ok(None)
         }),
     ),
@@ -497,6 +497,24 @@ pub(crate) fn attempt<T>(
 
 /// A unit enum variant as the Store stores it: its serde name, so SQL and JSON
 /// always agree.
+/// A new, empty Postgres database named from `prefix`, when `PLOYZ_STORE_TEST_POSTGRES`
+/// names a server; its URL.
+#[cfg(test)]
+pub(crate) fn fresh_postgres(prefix: &str) -> Option<String> {
+    let server = std::env::var("PLOYZ_STORE_TEST_POSTGRES").ok()?;
+    let database = format!("{prefix}_{}", uuid::Uuid::new_v4().simple());
+    postgres::Client::connect(&server, postgres::NoTls)
+        .unwrap()
+        .batch_execute(&format!("CREATE DATABASE {database}"))
+        .unwrap();
+    Some(format!("{server}/{database}"))
+}
+
+/// A value as the JSON text a document column stores.
+pub(crate) fn json_text(value: &(impl serde::Serialize + ?Sized)) -> String {
+    serde_json::to_string(value).expect("stored documents are JSON")
+}
+
 pub(crate) fn name_of(variant: impl serde::Serialize) -> String {
     serde_json::to_value(variant)
         .ok()
@@ -543,6 +561,15 @@ pub(crate) fn admit_protect(
         details.extend(reached);
     }
     Err(refused)
+}
+
+/// Seconds since the Unix epoch, the Store's clock for every time it records.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// A bound parameter. Only the column types the schema uses exist.
@@ -650,6 +677,18 @@ impl Row {
         what: &str,
     ) -> Result<T, RpcError> {
         serde_json::from_str(self.text(index)?).map_err(|_| error::corrupt(what))
+    }
+
+    /// A JSON document column that may be NULL, as `T`; one it can't be is `what`,
+    /// corrupt.
+    pub(crate) fn optional_json<T: serde::de::DeserializeOwned>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<Option<T>, RpcError> {
+        self.optional_text(index)?
+            .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
+            .transpose()
     }
 
     /// An Environment document column, validated whole; one that isn't is `what`,
@@ -964,15 +1003,10 @@ mod lock_wait_tests {
     #[test]
     fn a_shorter_lock_wait_lasts_until_lifted_or_rolled_back() {
         // SQLite never waits for a row.
-        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+        let Some(url) = super::fresh_postgres("lock_wait") else {
             return;
         };
-        let database = format!("lock_wait_{}", uuid::Uuid::new_v4().simple());
-        postgres::Client::connect(&server, postgres::NoTls)
-            .unwrap()
-            .batch_execute(&format!("CREATE DATABASE {database}"))
-            .unwrap();
-        let (storage, _) = Storage::open(&format!("{server}/{database}")).unwrap();
+        let (storage, _) = Storage::open(&url).unwrap();
         storage
             .write(|tx| {
                 assert_eq!(lock_timeout(tx), "10s");

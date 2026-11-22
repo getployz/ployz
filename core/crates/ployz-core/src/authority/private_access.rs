@@ -12,10 +12,10 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, Timestamp, hex_bytes, write_hex},
+    canonical::{self, Timestamp},
     keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
     open::the_signer,
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
@@ -36,7 +36,7 @@ impl AuthKeyDigest {
     /// # Errors
     /// Returns a [`crate::ValueError`] unless `value` is 64 lowercase hex digits.
     pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-        hex_bytes(value).map(Self).ok_or_else(|| {
+        crate::hex::decode(value).map(Self).ok_or_else(|| {
             crate::ValueError::new("auth key digest", value, "64 lowercase hex digits")
         })
     }
@@ -44,7 +44,7 @@ impl AuthKeyDigest {
 
 impl fmt::Display for AuthKeyDigest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_hex(&self.0, formatter)
+        crate::hex::write(&self.0, formatter)
     }
 }
 
@@ -184,7 +184,7 @@ pub fn verify(
             let approvers = signed.approvers(facts.trusted)?;
             if signed.proposal.is_some() {
                 return Err(AuthorityRefusal::Mismatch {
-                    field: "a proposal",
+                    field: MismatchField::Proposal,
                 });
             }
             the_signer(approvers, body.signer)?
@@ -192,7 +192,7 @@ pub fn verify(
     };
     if !by.signs_as(body.signer) {
         return Err(AuthorityRefusal::Mismatch {
-            field: "the signer",
+            field: MismatchField::Signer,
         });
     }
     // This approval never rides `open_approval`, so it asks its approver here: a router
@@ -201,9 +201,9 @@ pub fn verify(
     facts.trusted.covers(&by, Ask::PrivateAccess)?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
+        (MismatchField::Cluster, body.cluster == cluster),
         (
-            "an auth key",
+            MismatchField::AuthKey,
             body.auth_key == AuthKeyDigest::of(facts.sealed),
         ),
     ])?;

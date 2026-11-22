@@ -42,7 +42,7 @@ macro_rules! define_capabilities {
         /// Every route, unary then server-streaming then bidi, in catalog order.
         pub const ROUTES: &[RouteRow] = &[
             $(RouteRow {
-                path: concat!("/", $package, ".MachineRpc/", stringify!($unary_variant)),
+                path: <crate::rpc::op::$unary_variant as crate::rpc::Rpc>::PATH,
                 command: stringify!($unary_method),
                 capability: $unary_capability,
                 advertisement: CapabilityAdvertisement::$unary_advertisement,
@@ -50,7 +50,7 @@ macro_rules! define_capabilities {
                 shape: RouteShape::Unary,
             },)+
             $(RouteRow {
-                path: concat!("/", $package, ".MachineRpc/", stringify!($stream_variant)),
+                path: crate::rpc::op::$stream_variant::PATH,
                 command: stringify!($stream_method),
                 capability: $stream_capability,
                 advertisement: CapabilityAdvertisement::$stream_advertisement,
@@ -58,7 +58,7 @@ macro_rules! define_capabilities {
                 shape: RouteShape::ServerStreaming,
             },)+
             $(RouteRow {
-                path: concat!("/", $package, ".MachineRpc/", stringify!($bidi_variant)),
+                path: crate::rpc::op::$bidi_variant::PATH,
                 command: stringify!($bidi_method),
                 capability: $bidi_capability,
                 advertisement: CapabilityAdvertisement::$bidi_advertisement,

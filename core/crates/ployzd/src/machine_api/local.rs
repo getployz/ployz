@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
     sync::Arc,
 };
 
@@ -22,9 +21,10 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        AdmittedSpec, LocalMachine, LocalMachineError, LocalMachineRecord, Presented,
-        RecoveryError, SealingError, StoreError,
+        AdmittedSpec, Caller, LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError,
+        Scope, SealingError, StoreError,
     },
+    management::build_grant::Minter,
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
@@ -37,7 +37,6 @@ pub struct MachineService {
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
-    switch_mutation: Arc<tokio::sync::Mutex<()>>,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
@@ -93,7 +92,6 @@ impl MachineService {
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
-            switch_mutation: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
@@ -108,24 +106,32 @@ impl MachineService {
         }
     }
 
+    /// Serve the calls of the management connection `remote` authenticated. Until a call's
+    /// own marks say otherwise, its work is an Operator's that Cloud routed.
     pub(super) fn with_management_client(mut self, remote: ClientKey) -> Self {
-        self.local = self.local.with_management_client(remote);
+        self.local = self.local.at(crate::machine::Call::new(
+            Caller::Management(remote),
+            ployz_core::ManagementScope::Operator,
+            true,
+        ));
         self
     }
 
-    /// This Machine, marked when `request` came over its own local socket. A routed call
-    /// reaches its target over the mesh, so only the Server the caller sits at is marked.
-    fn caller<T>(&self, request: &Request<T>) -> LocalMachine {
-        let local = self.local.clone();
-        if request
+    /// This Machine serving `request`: at the scope and Cloud routing its edge marked, from
+    /// this Server's local socket when it came over it, else from the connection this
+    /// service serves. A routed call reaches its target over the mesh, so only the Server
+    /// the caller sits at sees its local socket.
+    fn at<T>(&self, request: &Request<T>) -> LocalMachine {
+        let caller = if request
             .extensions()
             .get::<tonic::transport::server::UdsConnectInfo>()
             .is_some()
         {
-            local.on_local_socket()
+            Caller::LocalSocket
         } else {
-            local
-        }
+            self.local.call().caller()
+        };
+        self.local.clone().at(Provenance::of(request).call(caller))
     }
 
     /// Serve through `local` itself, so everything else cloned from it shares its state.
@@ -160,16 +166,6 @@ impl MachineService {
     #[must_use]
     pub(crate) fn local(&self) -> LocalMachine {
         self.local.clone()
-    }
-
-    /// This Machine for one call, at Operator scope when `operator`.
-    fn local_at(&self, operator: bool) -> LocalMachine {
-        let scope = if operator {
-            ployz_core::ManagementScope::Operator
-        } else {
-            ployz_core::ManagementScope::Full
-        };
-        self.local.clone().at_scope(scope)
     }
 
     #[cfg(test)]
@@ -292,7 +288,7 @@ impl MachineService {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
-        crate::faults::apply(verb, None).await;
+        crate::faults::apply(crate::faults::Point::Verb(verb), None).await;
         match self.local.plugin().call::<T>(route, request).await {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),
@@ -336,7 +332,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let details = self.local.inspect(expect::<op::Inspect>(request)?).await;
+        let details = self
+            .at(&request)
+            .inspect(expect::<op::Inspect>(request)?)
+            .await;
         finish(details.map(|mut details| {
             for rtt in &mut details.rtts {
                 let Some(machine) = &rtt.machine else {
@@ -356,7 +355,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.enroll(expect::<op::Enroll>(request)?).await)
+        finish(
+            self.at(&request)
+                .enroll(expect::<op::Enroll>(request)?)
+                .await,
+        )
     }
 
     async fn enroll_for_recovery(
@@ -364,7 +367,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(
-            self.local
+            self.at(&request)
                 .enroll_for_recovery(expect::<op::EnrollForRecovery>(request)?)
                 .await,
         )
@@ -374,10 +377,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let cloud_routed = Provenance::of(&request).cloud_routed();
         finish(
-            self.local
-                .wrap_sealing_key(expect::<op::WrapSealingKey>(request)?, cloud_routed),
+            self.at(&request)
+                .wrap_sealing_key(expect::<op::WrapSealingKey>(request)?),
         )
     }
 
@@ -385,10 +387,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let cloud_routed = Provenance::of(&request).cloud_routed();
         finish(
-            self.local
-                .recover_sealing_key(expect::<op::RecoverSealingKey>(request)?, cloud_routed)
+            self.at(&request)
+                .recover_sealing_key(expect::<op::RecoverSealingKey>(request)?)
                 .await,
         )
     }
@@ -397,8 +398,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         expect::<op::PendingJoins>(request)?;
-        finish(self.local.pending_joins())
+        finish(local.pending_joins())
     }
 
     async fn approve_join(
@@ -406,7 +408,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(
-            self.local
+            self.at(&request)
                 .approve_join(expect::<op::ApproveJoin>(request)?)
                 .await,
         )
@@ -416,30 +418,38 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.register(expect::<op::Register>(request)?).await)
+        finish(
+            self.at(&request)
+                .register(expect::<op::Register>(request)?)
+                .await,
+        )
     }
 
     async fn set_management_client(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::SetManagementClient>(request)?;
-        finish(self.local.set_management_client(request).await)
+        finish(local.set_management_client(request).await)
     }
 
     async fn set_device(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
-        finish(local.set_device(expect::<op::SetDevice>(request)?).await)
+        finish(
+            self.at(&request)
+                .set_device(expect::<op::SetDevice>(request)?)
+                .await,
+        )
     }
 
     async fn key_step(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
+        let local = self.at(&request);
         finish(local.key_step(expect::<op::KeyStep>(request)?).await)
     }
 
@@ -447,7 +457,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
+        let local = self.at(&request);
         finish(
             local
                 .forget_versions(expect::<op::ForgetVersions>(request)?)
@@ -459,8 +469,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::SetPushTarget>(request)?;
-        finish(self.local.set_push_target(request).await)
+        finish(local.set_push_target(request).await)
     }
 
     async fn select_endpoint(
@@ -478,8 +489,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         expect::<op::ListMachines>(request)?;
-        finish(self.local.list_machines().await.map(|mut list| {
+        finish(local.list_machines().await.map(|mut list| {
             for machine in &mut list.machines {
                 machine.path = self.paths.get(&machine.machine.id);
                 if let Some(rtt) = self.paths.rtt(&machine.machine.id) {
@@ -519,7 +531,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -532,7 +544,7 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(mut details) => {
-                if operator {
+                if let Scope::Operator = local.scope() {
                     match self.opened_keys(request.container_id).await {
                         Ok(opened) => withhold_opened(&mut details.environment, &opened),
                         Err(_) => details.environment = None,
@@ -548,33 +560,34 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::EnsureContainer>(request)?;
         if let Some(refusal) = pin_on_ensure(&request.want) {
             return respond(refusal);
         }
-        self.ensure(operator, request).await
+        self.ensure(local, request).await
     }
 
     async fn ensure_pinned_container(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::EnsurePinnedContainer>(request)?;
         if let Some(refusal) = pinned_shape(&request.want) {
             return respond(refusal);
         }
-        self.ensure(operator, request).await
+        self.ensure(local, request).await
     }
 
     async fn update_container_limits(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::UpdateContainerLimits>(request)?;
         finish(
-            self.local
+            local
                 .update_container_limits(request.container_id, request.spec)
                 .await,
         )
@@ -584,9 +597,10 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::UpdateContainerPlacement>(request)?;
         finish(
-            self.local
+            local
                 .update_container_placement(request.container_id, request.spec)
                 .await,
         )
@@ -612,14 +626,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::PrepareVolumes>(request)?;
-        finish(
-            self.local
-                .clone()
-                .with_switch(Arc::clone(&self.switch_mutation))
-                .prepare_volumes(request.specs)
-                .await,
-        )
+        finish(local.prepare_volumes(request.specs).await)
     }
 
     async fn list_volumes(
@@ -642,8 +651,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::RemoveVolume>(request)?;
-        finish(self.local.remove_volume(request.name, request.force).await)
+        finish(local.remove_volume(request.name, request.force).await)
     }
 
     async fn inspect_volume_copy(
@@ -663,16 +673,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::SetVolumeCopy>(request)?;
         let service = Self {
-            local: self.local_at(operator),
+            local,
             ..self.clone()
         };
         let admitted = match &request.want {
             ployz_core::WantedCopy::Writer {
                 start: Some(start), ..
-            } => match service.local.admit_volume_start(start, operator).await {
+            } => match service.local.admit_volume_start(start).await {
                 Ok(admitted) => admitted,
                 Err(error) => return local_error(error),
             },
@@ -690,7 +700,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SeedVolume>(request)?;
-        let _guard = self.switch_mutation.lock().await;
+        let _guard = self.local.lock_switch().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
@@ -712,7 +722,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetVolumeSize>(request)?;
-        let _guard = self.switch_mutation.lock().await;
+        let _guard = self.local.lock_switch().await;
         self.volume_verb::<ployz_core::SetVolumeSizeReply>(
             "SetVolumeSize",
             crate::volume_copy::VOLUME_SIZE_SET_ROUTE,
@@ -729,10 +739,10 @@ impl MachineRpc for MachineService {
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
         Ok(Response::new(crate::build::start(
-            self.local.clone(),
+            self.at(&request),
             request.into_inner(),
             self.builds.clone(),
-            containers.sealing_key_dir().map(Path::to_owned),
+            containers.sealing().clone(),
         )))
     }
 
@@ -825,7 +835,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(
-            self.local
+            self.at(&request)
                 .update(expect::<op::UpdateMachine>(request)?)
                 .await,
         )
@@ -836,7 +846,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         sealing_refused(
-            self.local
+            self.at(&request)
                 .generate_sealing_key(expect::<op::GenerateSealingKey>(request)?)
                 .await,
             ployz_core::GENERATE_SEALING_KEY_CAPABILITY,
@@ -848,7 +858,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(
-            self.local
+            self.at(&request)
                 .share_sealing_key(expect::<op::ShareSealingKey>(request)?)
                 .await,
         )
@@ -859,7 +869,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         sealing_refused(
-            self.local
+            self.at(&request)
                 .install_sealing_key(expect::<op::InstallSealingKey>(request)?)
                 .await,
             ployz_core::INSTALL_SEALING_KEY_CAPABILITY,
@@ -870,14 +880,9 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let provenance = Provenance::of(&request);
         finish(
-            self.local
-                .request_upgrade(
-                    expect::<op::RequestMachineUpgrade>(request)?,
-                    provenance.cloud_routed(),
-                    provenance.scope(),
-                )
+            self.at(&request)
+                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?)
                 .await,
         )
     }
@@ -886,16 +891,18 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::Leave>(request)?;
-        finish(self.local.leave(request).await)
+        finish(local.leave(request).await)
     }
 
     async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::Forget>(request)?;
-        finish(self.local.forget(request).await)
+        finish(local.forget(request).await)
     }
 
     async fn list_images(
@@ -920,7 +927,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(
-            self.local
+            self.at(&request)
                 .prune_images(expect::<op::PruneImages>(request)?)
                 .await,
         )
@@ -930,24 +937,21 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         expect::<op::EnsureImageIngest>(request)?;
-        finish(
-            self.local
-                .ensure_image_ingest(Arc::clone(&self.ingest))
-                .await,
-        )
+        finish(local.ensure_image_ingest(Arc::clone(&self.ingest)).await)
     }
 
     async fn pull_image(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let mut request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
-        if operator {
+        if let Scope::Operator = local.scope() {
             if !ployz_core::authority::deploy::content_addressed(&request.image) {
                 return respond(self.tag_refusal(ployz_core::PULL_IMAGE_CAPABILITY));
             }
@@ -956,68 +960,67 @@ impl MachineRpc for MachineService {
                 request.policy = ployz_core::PullPolicy::Never;
             }
         }
-        finish(self.local.pull_image(request).await)
+        finish(local.pull_image(request).await)
     }
 
     async fn pull_free_image(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::PullFreeImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
-        if !operator {
+        match local.scope() {
             // A Full creation runs the tag by name, so the tag is what this pull must place.
-            return finish(
-                self.local
+            Scope::Full(_) => finish(
+                local
                     .pull_image(ployz_core::PullImageRequest {
                         image: request.image,
                         policy: request.policy,
                         registry_auth: request.registry_auth,
                     })
                     .await,
-            );
+            ),
+            Scope::Operator => finish(local.pull_free_image(request).await),
         }
-        finish(self.local.pull_free_image(request).await)
     }
 
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
         // Refused before the copy starts, so no name, staging or final, is written.
-        if operator && !names_content(&request.pull) {
+        if let Scope::Operator = local.scope()
+            && !names_content(&request.pull)
+        {
             return respond(self.tag_refusal(ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY));
         }
-        finish(self.local.pull_image_from_machine(request).await)
+        finish(local.pull_image_from_machine(request).await)
     }
 
     async fn mint_build_grant(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let provenance = Provenance::of(&request);
-        let operator = provenance.operator();
+        let local = self.at(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
-        // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
+        // Refused before the mint, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
-        let admitted = match &request.rule {
-            None => {
-                if operator {
-                    return local_error(LocalMachineError::BuildRefused {
-                        capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
-                    });
-                }
-                None
+        let minter = match (&request.rule, local.scope()) {
+            (None, Scope::Operator) => {
+                return local_error(LocalMachineError::BuildRefused {
+                    capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+                });
             }
-            Some(grant) => {
+            (None, Scope::Full(full)) => Minter::Full(full),
+            (Some(grant), _) => {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
                 let Some(admitted) = admitted.await else {
@@ -1026,27 +1029,17 @@ impl MachineRpc for MachineService {
                     ));
                 };
                 match admitted {
-                    Ok(admitted) => Some(admitted),
+                    Ok(admitted) => Minter::Rule(admitted),
                     Err(error) => return local_error(error),
                 }
             }
         };
-        let key_dir = self
-            .containers()
-            .ok()
-            .and_then(|containers| containers.sealing_key_dir());
-        let scope = provenance.scope();
-        let mint = match crate::management::build_grant::Mint::check_admitted(
-            request, key_dir, admitted,
-        ) {
-            Ok(mint) => mint.minted_by(scope),
-            Err(refused) => return respond(refused),
-        };
-        match crate::management::build_grant::mint_for(
+        match crate::management::build_grant::mint(
             &self.grants,
-            &self.local,
+            &local,
             Arc::clone(&self.ingest),
-            mint,
+            request,
+            minter,
         )
         .await
         {
@@ -1149,20 +1142,18 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.at(&request);
         let request = expect::<op::SetIngressDoors>(request)?;
-        finish(self.local.set_ingress_doors(request).await)
+        finish(local.set_ingress_doors(request).await)
     }
 
     async fn set_private_access(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
+        let local = self.at(&request);
         let request = expect::<op::SetPrivateAccess>(request)?;
-        if operator && let Err(error) = self.local.admit_operator_private_access(&request) {
-            return local_error(error);
-        }
-        finish(self.local.set_private_access(request).await)
+        finish(local.set_private_access(request).await)
     }
 
     async fn read_cluster_name(
@@ -1243,27 +1234,13 @@ impl MachineService {
     /// reads the spec alone, never the pin.
     async fn ensure(
         &self,
-        operator: bool,
+        local: LocalMachine,
         request: ployz_core::EnsureContainerRequest,
     ) -> Result<Response<OpaquePayload>, Status> {
-        // Every start or create of a Provisioned Volume's holder, a hook's included, waits
-        // out any switch on this Machine, as a Writer's start does. The lock is one for the
-        // Machine, not one per Volume: a create reads each Volume's origin, and no promote
-        // or seed may land between that read and Docker.
-        let local = self
-            .local_at(operator)
-            .with_switch(Arc::clone(&self.switch_mutation));
-        let presented = if operator {
-            Presented::Operator {
-                rule: request.rule.as_deref(),
-                versions: &request.versions,
-            }
-        } else {
-            Presented::FullAccess {
-                versions: &request.versions,
-            }
-        };
-        let admitted = match local.admit_spec(&request.want, presented).await {
+        let admitted = match local
+            .admit_spec(&request.want, request.rule.as_deref(), &request.versions)
+            .await
+        {
             Ok(admitted) => admitted,
             Err(error) => return local_error(error),
         };
@@ -1338,7 +1315,7 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 /// the copy checks against the content before writing. Image Cleanup alone reads those
 /// names, so an Operator may write them; any other name a Full creation may run.
 fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
-    let Some((_, digest)) = pull.image().split_once('@') else {
+    let Some(digest) = ployz_core::ImageRef::new(pull.image()).digest else {
         return false;
     };
     pull.tag().is_none_or(|tag| {

@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { changeNameSources, storeViewSources } from "#/collections/change-sources";
+import { sourcesOf } from "#/collections/change-sources";
 import { collectionNames } from "#/collections/read.contract";
 import { Effect } from "effect";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
-import { changeSources } from "#/modules/organization/change-log.sources";
+import { storeTablesOf, storeViewNames } from "#/modules/config-store/store.change-sources";
+import { changeSources } from "#/collections/change-log/change-log.sources";
 import {
   type PostgresTestHarness,
   startPostgresTestHarness,
@@ -160,7 +161,7 @@ it("keys every source feeding a collection by its key table's key", async () => 
   `);
   const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
   // A change to any source names the collection rows it affects only if it logs their key.
-  const required = [...collectionNames.map((name) => changeNameSources[name]), ...Object.values(storeViewSources)].flatMap(([keyTable, ...others]) =>
+  const required = [...collectionNames.map(sourcesOf), ...storeViewNames.map(storeTablesOf)].flatMap(([keyTable, ...others]) => keyTable === undefined ? [] :
     others.map((source) => `${source}(${changeSources[source].key.join(", ")}) -> ${keyTable}(${changeSources[keyTable].key.join(", ")})`));
   expect(required.length).toBeGreaterThan(0);
   expect(required.filter((reference) => !references.has(reference))).toEqual([]);

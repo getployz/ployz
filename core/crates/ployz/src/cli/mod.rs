@@ -65,7 +65,7 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .long_help("SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.")
             .value_parser(clap::value_parser!(u32).range(1..))
             // A fresh SSH login to a distant Server takes 4–5s on its own (Bali → Sydney measured 4.1–4.7s).
-            .default_value("20")
+            .default_value(crate::connect::DEFAULT_SSH_TIMEOUT.as_secs().to_string())
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
@@ -92,6 +92,15 @@ pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
             .get_one::<u32>("ssh-timeout")
             .expect("ssh-timeout has a default"),
     ))
+}
+
+/// What a command dials Servers with, under its `--ssh-timeout`.
+pub(crate) fn connector(
+    matches: &clap::ArgMatches,
+) -> std::sync::Arc<crate::connect::SystemConnector> {
+    std::sync::Arc::new(
+        crate::connect::SystemConnector::default().with_ssh_timeout(ssh_timeout(matches)),
+    )
 }
 
 pub(crate) fn value(name: &'static str, short: Option<char>) -> Arg {

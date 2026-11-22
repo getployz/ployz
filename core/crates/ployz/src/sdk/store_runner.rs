@@ -39,7 +39,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
+use crate::deploy::cleanup::{self, Copy, Rotated};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -487,7 +487,7 @@ async fn retire_copy<C: CopyLifecycle>(
     {
         Ok(details) => details.container,
         Err(error) if error.code == RpcErrorCode::NotFound => return None,
-        Err(error) => return Some(machine_failure_reason(&copy.machine, error)),
+        Err(error) => return Some(left_by(&copy.machine, error)),
     };
     let step = cleanup::retire(
         client,
@@ -499,29 +499,15 @@ async fn retire_copy<C: CopyLifecycle>(
     .await;
     match step.map(Rotated::failure) {
         Ok(Ok(())) => None,
-        Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
-        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) if unconfirmed.machines.is_empty() => {
-            Some("the route set did not name every live Machine".into())
+        Ok(Err(failure)) => {
+            Some(failure.left_reason(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string())))
         }
-        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) => {
-            let proxies: Vec<String> = unconfirmed
-                .machines
-                .iter()
-                .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
-                .collect();
-            Some(format!("proxy on {} did not confirm", proxies.join(", ")))
-        }
-        Ok(Err(RotationFailure::Cancelled)) => Some("interrupted".into()),
-        Err(error) => Some(machine_failure_reason(&copy.machine, error)),
+        Err(error) => Some(left_by(&copy.machine, error)),
     }
 }
 
-fn machine_failure_reason(machine: &str, error: RpcError) -> String {
-    if error.code == RpcErrorCode::Unavailable || error.target_unanswered() {
-        format!("{machine} did not answer")
-    } else {
-        error.message
-    }
+fn left_by(machine: &str, error: RpcError) -> String {
+    cleanup::did_not_answer(machine, &error).unwrap_or(error.message)
 }
 
 /// Every claim pair is kept, under its name: a name sealed after the claim
@@ -606,7 +592,7 @@ fn ingress_failure_message<'a>(
 impl Run {
     /// Keep the verified builds the Servers issued during the run, so a later Deployment
     /// or drain of the same image needs no token. Failing to keep them costs only that.
-    async fn keep_verified(&self, proofs: &crate::cluster::RuleProofs) {
+    async fn keep_verified(&self, proofs: &crate::deploy::RuleProofs) {
         let kept = proofs.issued();
         if kept.is_empty() {
             return;
@@ -663,7 +649,7 @@ impl Run {
             .collect();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
-        let mut rules = crate::cluster::RuleProofs::default();
+        let mut rules = crate::deploy::RuleProofs::default();
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -1563,20 +1549,20 @@ async fn rule_proofs(
     claimed: &Claimed,
     receipts: &BTreeMap<ServiceName, BuildReceipt>,
     reader: Option<&ployz_core::GithubToken>,
-) -> crate::cluster::RuleProofs {
+) -> crate::deploy::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleEvidence, RuleProof,
+        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
     };
-    let mut proofs = crate::cluster::RuleProofs::default();
+    let mut proofs = crate::deploy::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
         return proofs;
     };
     for (service, kept) in &claimed.verified {
         let runs = receipts
             .get(service)
-            .and_then(|receipt| ImageDigest::parse(&receipt.image.reference).ok());
+            .and_then(|receipt| BuiltImageDigest::parse(&receipt.image.reference).ok());
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
-            proofs.rules.insert(
+            proofs.insert(
                 service.clone(),
                 RuleProof {
                     rule: signed.clone(),
@@ -1606,7 +1592,7 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
-        if proofs.rules.contains_key(service) {
+        if proofs.contains(service) {
             continue;
         }
         let approved = rule.service(service);
@@ -1621,7 +1607,7 @@ async fn rule_proofs(
             continue;
         };
         let (Ok(image), Ok(policy)) = (
-            ImageDigest::parse(&receipt.image.reference),
+            BuiltImageDigest::parse(&receipt.image.reference),
             PolicyDigest::of(&approved.policy),
         ) else {
             continue;
@@ -1639,7 +1625,7 @@ async fn rule_proofs(
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.token.clone());
-        proofs.rules.insert(
+        proofs.insert(
             service.clone(),
             RuleProof {
                 rule: signed.clone(),

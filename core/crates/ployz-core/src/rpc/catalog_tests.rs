@@ -603,6 +603,7 @@ fn each_advertisement_lists_its_capabilities_in_catalog_order() {
             .collect();
         assert_eq!(listed, expected, "{class:?}");
     }
+    assert_eq!(served_capabilities().len(), ROWS.len() + EXTRAS.len());
 }
 
 #[test]

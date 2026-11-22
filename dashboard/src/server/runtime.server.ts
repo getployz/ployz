@@ -2,10 +2,11 @@ import "@tanstack/react-start/server-only";
 import * as OtelTracer from "@effect/opentelemetry/OtelTracer";
 import * as Resource from "@effect/opentelemetry/Resource";
 import { Layer, ManagedRuntime } from "effect";
-import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { PolarLive } from "#/modules/billing/polar-provider.server";
 import { PostHogLive } from "#/modules/analytics/posthog.server";
+import { McpAnalyticsLive } from "#/modules/agent/agent-calls.server";
 import { MailerLive } from "#/modules/mail/mailer.server";
 import { SupportStaffLive } from "#/modules/organization/access.server";
 import { GithubAuthorityLive } from "#/modules/github/github-authority.server";
@@ -14,10 +15,10 @@ import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
 import { GithubTokensLive } from "#/modules/github/github-token.server";
 import { InngestLive } from "#/modules/inngest/client";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
-import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { DatabaseLive } from "#/server/database.server";
+import { SecretEncryptionLive } from "#/server/secret-encryption.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { RedactedLogsLive, redactSpanExits } from "#/server/log-redaction";
 
@@ -25,12 +26,12 @@ const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
   PolarLive,
   PostHogLive,
+  McpAnalyticsLive,
   MailerLive,
   SupportStaffLive,
   InngestLive,
   GithubRepositoriesLive,
   GithubOidcKeysLive,
-  ReportingDatabaseLive,
   CloudStoreLive,
 ).pipe(
   Layer.provideMerge(GithubApiLive),
@@ -55,7 +56,7 @@ const TracingLive = redactSpanExits(OtelTracer.layerGlobal.pipe(
 ));
 
 // Every log, to the console and the span, names a failed query by its kind and never its params.
-export const AppLive = AuthLive.pipe(
+const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
   Layer.merge(RuntimeLive),
   Layer.provideMerge(TracingLive),

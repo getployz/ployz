@@ -1,3 +1,4 @@
+use crate::cloud;
 use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
 use ployz_core::error_chain;
@@ -12,8 +13,8 @@ use super::fence::{Forgotten, already_forgotten};
 use super::forget::{cloud_forgot, no_cloud_row};
 use super::{ConnectionOptions, target};
 use crate::approval;
-use crate::cloud_account::{self, Credential, Release, StoreCallError};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud::account::{Credential, Release, StoreCallError};
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::cluster::{
     CloudHold, DeadConfirmed, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
 };
@@ -246,8 +247,8 @@ struct Confirmed {
 struct Left {
     reset_failure: Option<String>,
     departed: Option<Departed>,
-    cloud_released: Option<bool>,
-    cloud_kept: Option<bool>,
+    /// What Cloud did with its hold on the Cluster; none when Cloud didn't run the removal.
+    release: Option<Release>,
 }
 
 /// Where the removal went after the operator confirmed.
@@ -564,7 +565,7 @@ fn start(
             shell_words::join(command)
         },
         async |approval| match removal {
-            Removal::Reset => cloud_account::start_removal(
+            Removal::Reset => cloud::account::start_removal(
                 credential,
                 selected,
                 &confirmed.confirmation,
@@ -572,7 +573,7 @@ fn start(
             )
             .await
             .map(Ok),
-            Removal::Forget => match cloud_account::start_forget(credential, selected, approval)
+            Removal::Forget => match cloud::account::start_forget(credential, selected, approval)
                 .await
             {
                 Err(StoreCallError::Refused(refused)) if no_cloud_row(&refused) => Ok(Err(refused)),
@@ -600,21 +601,19 @@ async fn depart(
     let mut left = Left {
         reset_failure: None,
         departed: None,
-        cloud_released: None,
-        cloud_kept: None,
+        release: None,
     };
     // TODO: do not reroute away from the current entry before removal.
     if let (Some(credential), Some(id)) = (&surveyed.cloud, run) {
         let removed =
-            cloud_account::follow_removal(credential, &selected.name, removal.following(), id)
+            cloud::account::follow_removal(credential, &selected.name, removal.following(), id)
                 .await?;
         left.reset_failure = removed.reset_warning;
         left.departed = removed.departed;
         if let Release::Kept { reason } = &removed.release {
             crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
         }
-        left.cloud_kept = Some(matches!(removed.release, Release::Kept { .. }));
-        left.cloud_released = Some(removed.release == Release::Released);
+        left.release = Some(removed.release);
     } else if removal == Removal::Forget {
         client
             .remove_membership(
@@ -666,9 +665,14 @@ fn report(
     let Left {
         reset_failure,
         departed,
-        cloud_released,
-        cloud_kept,
+        release,
     } = left;
+    let cloud_released = release
+        .as_ref()
+        .map(|release| *release == Release::Released);
+    let cloud_kept = release
+        .as_ref()
+        .map(|release| matches!(release, Release::Kept { .. }));
     // A Server that reset leaves no doubt, though its own row removal failed after. An
     // older Cloud doesn't say how it departed, so its warning still reads as doubt.
     let reset_doubt = match departed {
@@ -683,14 +687,14 @@ fn report(
             Forgotten::Answering(&selected.name).warn();
         }
     }
-    if *cloud_released == Some(true) {
+    if cloud_released == Some(true) {
         crate::ui::stream(
             "Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.",
         );
         crate::ui::hint(&Hint::Next("ployz server add".into()));
     }
     if let Some(reason) = reset_doubt
-        && *cloud_kept == Some(false)
+        && cloud_kept == Some(false)
     {
         // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
         crate::ui::warn(error_chain::then_sentence(
@@ -753,7 +757,7 @@ fn report(
         "no_copies": short.no_copies,
         "cloud_released": cloud_released,
         "cloud_kept": cloud_kept,
-        "next": (*cloud_released == Some(true)).then_some("ployz server add"),
+        "next": (cloud_released == Some(true)).then_some("ployz server add"),
     }))?;
     let config = options.load_or_empty_config().map_err(|error| {
         Error::from(error).context("Server removed; local context cleanup failed.")
@@ -793,7 +797,7 @@ async fn cloud_removal(
         .hint(Hint::Next("ployz server forget".into())));
     }
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
-    match cloud_account::from_env(&store).await {
+    match cloud::account::from_env(&store).await {
         Ok(credential) => Ok(credential),
         Err(LoginError::SignedOut) => Err(Error::coded(
             RpcErrorCode::Conflict,

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { useStoreRenamePending } from "#/modules/config-store/store-pending";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 
 /** Whether a rename in this Environment is saving. Any edit can name the renamed node, in its path or its value, so all of them wait. */
 export function useEnvironmentRenaming(): boolean {

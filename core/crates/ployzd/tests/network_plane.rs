@@ -10,7 +10,7 @@ use ployz_core::{
 };
 use ployzd::network::{
     EndpointSelection, PeerStatus, WIREGUARD_KEEPALIVE_SECONDS, allocate_machine_subnet,
-    default_cluster_network, discover_network, management_address, peers_for,
+    discover_network, management_address, peers_for,
 };
 
 #[test]
@@ -27,7 +27,7 @@ fn management_address_matches_the_network_contract() {
 
 #[test]
 fn allocation_uses_only_the_supplied_stale_snapshot() {
-    let pool = default_cluster_network();
+    let pool = ployz_core::DEFAULT_CLUSTER_NETWORK;
     let claimed = ["10.210.0.0/24".parse().unwrap()];
     assert_eq!(
         allocate_machine_subnet(pool, claimed).unwrap(),

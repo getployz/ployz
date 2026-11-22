@@ -10,11 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    MachineId, ManagementCapability,
+    MachineId, ManagementCapability, RpcErrorCode,
     private_fs::{Durability, Existing, Replace, TempName, create_private_dir, replace_file},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 /// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
 /// `$XDG_CONFIG_HOME` when that is an absolute path, else `~/.config`.
@@ -397,6 +399,15 @@ pub enum ConnectionSource {
     Cloud,
 }
 
+impl ConnectionSource {
+    /// Whether a connection from this source over `transport` is the person's own Full
+    /// access: SSH or the local socket on a connection Cloud didn't hand over. Cloud's
+    /// Server Access can name an SSH endpoint of its own, so nothing from it is.
+    pub(crate) fn own_full_access(&self, transport: &Transport) -> bool {
+        !matches!(self, Self::Cloud) && transport.says_who_answers()
+    }
+}
+
 impl fmt::Display for ConnectionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -473,6 +484,15 @@ pub enum Transport {
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
+}
+
+impl Transport {
+    /// SSH or the local socket: the transports that reach a Server's daemon as the person
+    /// themself, which Cloud doesn't carry. Plain TCP authenticates no one, and a
+    /// Management connection may be an Operator slot.
+    pub(crate) fn says_who_answers(&self) -> bool {
+        matches!(self, Self::Ssh { .. } | Self::Unix(_))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -865,6 +885,22 @@ pub enum ConfigError {
     Write { path: PathBuf, source: io::Error },
 }
 
+impl Coded for ConfigError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ConfigError::Context(error) => error.code(),
+            ConfigError::Parse { .. }
+            | ConfigError::PrivatePermissions(_)
+            | ConfigError::EmptyCurrentContext(_)
+            | ConfigError::Read { .. }
+            | ConfigError::Write { .. }
+            | ConfigError::CreateDirectory { .. }
+            | ConfigError::Encode(_)
+            | ConfigError::ManagementConnectionMissing => RpcErrorCode::Internal,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectionError {
     #[error("invalid Management Capability")]
@@ -887,6 +923,12 @@ pub enum ConnectionError {
     UnsupportedScheme(String),
 }
 
+impl Coded for ConnectionError {
+    fn code(&self) -> RpcErrorCode {
+        RpcErrorCode::InvalidArgument
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ContextError {
     #[error("no Ployz config or local daemon socket is available")]
@@ -901,6 +943,20 @@ pub enum ContextError {
     NoConnections { name: String },
     #[error(transparent)]
     Connection(ConnectionError),
+}
+
+impl Coded for ContextError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ContextError::NoConfig
+            | ContextError::NoContexts(_)
+            | ContextError::ContextNotFound { .. }
+            | ContextError::NoConnections { .. } => RpcErrorCode::NotFound,
+            ContextError::NoCurrentContext(_) | ContextError::Connection(_) => {
+                RpcErrorCode::InvalidArgument
+            }
+        }
+    }
 }
 
 #[cfg(test)]

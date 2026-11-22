@@ -6,7 +6,7 @@
 use bollard::{
     Docker,
     errors::Error as DockerError,
-    models::{ContainerCreateBody, ContainerInspectResponse},
+    models::ContainerCreateBody,
     query_parameters::{
         CreateContainerOptionsBuilder, KillContainerOptionsBuilder, RemoveContainerOptionsBuilder,
         StopContainerOptions, StopContainerOptionsBuilder,
@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::docker_image::{is_not_found, prepare_image};
 
+use super::inspect::{Inspected, inspect};
 use super::{Error, LocalDocker, Status, classify};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,20 +66,12 @@ struct Existing {
 }
 
 impl Existing {
-    fn of(container: &ContainerInspectResponse) -> Self {
+    fn of(container: &Inspected) -> Self {
         Self {
             digest: container
-                .config
-                .as_ref()
-                .and_then(|config| config.labels.as_ref())
-                .and_then(|labels| labels.get(labels::SPEC))
-                .cloned()
-                .map(SpecDigest),
-            running: container
-                .state
-                .as_ref()
-                .and_then(|state| state.running)
-                .unwrap_or(false),
+                .label(labels::SPEC)
+                .map(|digest| SpecDigest(digest.to_owned())),
+            running: container.process_alive(),
         }
     }
 }
@@ -195,11 +188,10 @@ impl<R: ServiceRuntime> ManagedService<R> {
     )]
     pub(crate) async fn ensure(&self, desired: DesiredContainer) -> Result<Ensure, R::Error> {
         let docker = self.runtime.client();
-        let existing = match docker.inspect_container(&self.name, None).await {
-            Ok(container) => Some(Existing::of(&container)),
-            Err(error) if is_not_found(&error) => None,
-            Err(error) => return Err(error.into()),
-        };
+        let existing = inspect(docker, &self.name)
+            .await?
+            .as_ref()
+            .map(Existing::of);
         let ensure = decide(existing.as_ref(), &desired.digest);
         match ensure {
             Ensure::Keep => {}

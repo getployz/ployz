@@ -4,7 +4,7 @@ use std::{
     fs::File,
     io,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -49,7 +49,7 @@ use crate::{
 
 mod planes;
 
-use planes::{Participation, cluster_plane};
+use planes::{Participation, optional_plane};
 
 /// How the daemon attaches a Container Runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,7 +291,7 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &local).await?;
+        let corrosion = start_corrosion(&config.data_dir, &run_dir, &local).await?;
         let shutdown = CancellationToken::new();
         let link = corrosion
             .as_ref()
@@ -326,7 +326,7 @@ impl Daemon {
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
         let ingress_data_dir = config.data_dir.clone();
-        let ingress_runtime_dir = MachineLayout::run_dir_of(&config.socket).join("ingress");
+        let ingress_runtime_dir = run_dir.join("ingress");
         let grants = Arc::new(management::BuildGrants::default());
         let builds = crate::build::Runner::new(build_policy, shutdown.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -350,14 +350,11 @@ impl Daemon {
             .build();
         let machine_api = EndsOnShutdown::new(machine_api, shutdown.clone());
 
-        let rpc = Server::builder()
-            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
-            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
-            .serve_with_incoming_shutdown(
-                machine_api.clone(),
-                UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
-                shutdown.clone().cancelled_owned(),
-            );
+        let rpc = rpc_server().serve_with_incoming_shutdown(
+            machine_api.clone(),
+            UnixListenerStream::new(UnixListener::from_std(socket.listener)?),
+            shutdown.clone().cancelled_owned(),
+        );
         let publisher = run_machine_publisher(
             link.as_ref().map(ClusterLink::observed),
             local.clone(),
@@ -389,13 +386,27 @@ impl Daemon {
             let shutdown = shutdown_for_servers;
             let network_rpc = async {
                 tokio::try_join!(
-                    serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
-                    serve_volume_send(
-                        volume_send_listener,
-                        plugin_socket.clone(),
-                        serving_local.clone(),
-                        shutdown.clone(),
-                    ),
+                    optional_plane(machine_api_listener, &shutdown, |listener| async {
+                        rpc_server()
+                            .serve_with_incoming_shutdown(
+                                machine_api.clone(),
+                                TcpListenerStream::new(listener),
+                                shutdown.clone().cancelled_owned(),
+                            )
+                            .await
+                            .map_err(io::Error::other)
+                    }),
+                    // The send stream asks this Machine's own record and accepted rows
+                    // whom it may serve.
+                    optional_plane(volume_send_listener, &shutdown, |listener| {
+                        crate::volume_send::serve(
+                            listener,
+                            (PathBuf::from("zfs"), PathBuf::from("zpool")),
+                            plugin_socket.clone(),
+                            serving_local.clone(),
+                            shutdown.clone(),
+                        )
+                    }),
                     async {
                         management::serve(
                             management_endpoint,
@@ -413,49 +424,33 @@ impl Daemon {
                 )
                 .map(|_| ())
             };
-            let network_runner = async {
-                if let Some(network) = &mut network {
-                    network
-                        .run(
-                            link.as_ref().map(ClusterLink::observed),
-                            local.clone(),
-                            endpoint_choices,
-                            shutdown.clone(),
-                        )
+            let network_runner = optional_plane(network.as_mut(), &shutdown, |network| {
+                network.run(
+                    link.as_ref().map(ClusterLink::observed),
+                    local.clone(),
+                    endpoint_choices,
+                    shutdown.clone(),
+                )
+            });
+            let observer = optional_plane(containers.clone(), &shutdown, |runtime| {
+                let shutdown = shutdown.clone();
+                async move {
+                    runtime
+                        .publish_observations(shutdown)
                         .await
-                } else {
-                    drop(endpoint_choices);
-                    shutdown.cancelled().await;
-                    Ok(())
+                        .map_err(io::Error::other)
                 }
-            };
-            let observer = async {
-                match containers.clone() {
-                    Some(runtime) => runtime
-                        .publish_observations(shutdown.clone())
-                        .await
-                        .map_err(io::Error::other),
-                    None => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
-            };
-            let collector = async {
-                match containers.clone() {
-                    Some(runtime) => runtime.collector().run(shutdown.clone()).await,
-                    None => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
-            };
+            });
+            let collector = optional_plane(containers.clone(), &shutdown, |runtime| {
+                let shutdown = shutdown.clone();
+                async move { runtime.collector().run(shutdown).await }
+            });
             let dns = dns_service.run(records.clone(), shutdown.clone());
             let ingress = async {
                 if !participation.wait().await? {
                     return Ok(());
                 }
-                cluster_plane(
+                optional_plane(
                     local_machine.clone().zip(link.clone()),
                     &shutdown,
                     |(machine, link)| {
@@ -477,7 +472,7 @@ impl Daemon {
                 if !participation.wait().await? {
                     return Ok(());
                 }
-                cluster_plane(link.clone(), &shutdown, |link| async {
+                optional_plane(link.clone(), &shutdown, |link| async {
                     certificates::run(
                         link.context.replicated,
                         certificate_data_dir,
@@ -494,7 +489,7 @@ impl Daemon {
                 if !participation.wait().await? {
                     return Ok(());
                 }
-                cluster_plane(link.clone(), &shutdown, |link| async {
+                optional_plane(link.clone(), &shutdown, |link| async {
                     let Some(runtime) = containers.clone() else {
                         return Ok(());
                     };
@@ -661,17 +656,15 @@ impl Daemon {
                 errors.push(ployz_core::error_chain::inline(&error));
             }
         }
-        // Admitted work is detached from its RPC and outlives the server drain. Give
-        // it the same grace, then release the data directory so the next daemon on
-        // it can claim it; work still running keeps the record until process exit
-        // rather than failing halfway through.
-        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().write_owned()).await {
-            Ok(_admission) => {
-                if let Err(error) = self.local.close().await {
-                    errors.push(ployz_core::error_chain::inline(&error));
-                }
-            }
-            Err(_) => tracing::warn!(
+        // Admitted work is detached from its RPC and outlives the server drain, so it
+        // gets the same grace before the next daemon may claim the data directory.
+        match crate::machine::LocalMachine::new(self.local.clone())
+            .close_when_idle(SERVER_DRAIN)
+            .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => errors.push(ployz_core::error_chain::inline(&error)),
+            None => tracing::warn!(
                 "admitted Machine work is still running; the record stays claimed until exit"
             ),
         }
@@ -713,53 +706,10 @@ fn join_servers(result: Result<io::Result<()>, tokio::task::JoinError>) -> io::R
     }
 }
 
-async fn serve_machine_api(
-    listener: Option<TcpListener>,
-    machine_api: EndsOnShutdown<MachineApi>,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    match listener {
-        Some(listener) => Server::builder()
-            .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
-            .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
-            .serve_with_incoming_shutdown(
-                machine_api,
-                TcpListenerStream::new(listener),
-                shutdown.cancelled_owned(),
-            )
-            .await
-            .map_err(io::Error::other),
-        None => {
-            shutdown.cancelled().await;
-            Ok(())
-        }
-    }
-}
-
-/// The send stream asks `recipients`, this Machine's own record and accepted rows, whom
-/// it may serve.
-async fn serve_volume_send(
-    listener: Option<TcpListener>,
-    plugin_socket: PathBuf,
-    recipients: crate::machine::LocalMachine,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    match listener {
-        Some(listener) => {
-            crate::volume_send::serve(
-                listener,
-                (PathBuf::from("zfs"), PathBuf::from("zpool")),
-                plugin_socket,
-                recipients,
-                shutdown,
-            )
-            .await
-        }
-        None => {
-            shutdown.cancelled().await;
-            Ok(())
-        }
-    }
+fn rpc_server() -> Server {
+    Server::builder()
+        .initial_stream_window_size(ployz_core::RPC_STREAM_WINDOW_BYTES)
+        .initial_connection_window_size(ployz_core::RPC_CONNECTION_WINDOW_BYTES)
 }
 
 async fn finish_interrupted_reset(
@@ -783,7 +733,8 @@ async fn finish_reset(
 }
 
 async fn start_corrosion(
-    config: &DaemonConfig,
+    data_dir: &Path,
+    run_dir: &Path,
     local: &RecordOwner,
 ) -> Result<Option<RunningCorrosion>, Error> {
     let record = local.record();
@@ -794,11 +745,7 @@ async fn start_corrosion(
             return Ok(None);
         }
     };
-    let run_dir = config
-        .socket
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
-    let paths = CorrosionPaths::under(&config.data_dir, run_dir);
+    let paths = CorrosionPaths::under(data_dir, run_dir);
     let bootstrap = record.bootstrap().into_iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),

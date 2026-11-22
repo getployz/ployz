@@ -26,8 +26,8 @@ use ployz_core::{
     resolve_ingress_addresses,
 };
 use ployz_decide::issuance::{
-    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
-    machine_rank, step, wake,
+    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, action_due, issued, machine_rank,
+    records_refusal, step, wake,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -548,13 +548,18 @@ async fn issue_wanted(
         };
         hosts.insert(hostname.clone(), host);
         match host.issuance {
-            Issuance::Refused { refusal, clock } if rank == 0 => {
+            Issuance::Refused { refusal, clock } if records_refusal(rank) => {
                 let reason = refusal_reason(hostname, refusal, &cluster);
                 let tried = row.and_then(CertificateRow::material);
-                match store
-                    .record_certificate_failure(hostname, tried, reason, clock)
-                    .await
-                {
+                let recorded = match tried {
+                    Some(tried) => {
+                        store
+                            .record_renewal_failure(hostname, tried, reason, clock)
+                            .await
+                    }
+                    None => store.record_order_failure(hostname, reason, clock).await,
+                };
+                match recorded {
                     Ok(write) => note_failure_write(
                         hostname,
                         write,
@@ -606,15 +611,16 @@ async fn issue_wanted(
                 let tried = rows
                     .get(hostname.as_str())
                     .and_then(CertificateRow::material);
-                match store
-                    .record_certificate_failure(
-                        hostname,
-                        tried,
-                        ployz_core::error_chain::inline(&error),
-                        clock,
-                    )
-                    .await
-                {
+                let reason = ployz_core::error_chain::inline(&error);
+                let recorded = match tried {
+                    Some(tried) => {
+                        store
+                            .record_renewal_failure(hostname, tried, reason, clock)
+                            .await
+                    }
+                    None => store.record_order_failure(hostname, reason, clock).await,
+                };
+                match recorded {
                     Ok(write) => note_failure_write(
                         hostname,
                         write,
@@ -658,7 +664,7 @@ async fn obtain(
     let row = store.certificate_row(hostname).await?;
     let held = held(Some(&row), machine_id, policy);
     if held != Held::Nothing
-        && issuance_action(held, rank, Duration::ZERO, SystemTime::now(), policy)
+        && action_due(held, rank, Duration::ZERO, SystemTime::now(), policy).0
             == IssuanceAction::Nothing
     {
         return Ok(());

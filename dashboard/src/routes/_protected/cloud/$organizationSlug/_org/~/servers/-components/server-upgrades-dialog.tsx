@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useId } from "react";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -17,7 +18,7 @@ export function ServerUpgradesDialog({ organizationSlug, open, onOpenChange }: {
   onOpenChange: (open: boolean) => void;
 }) {
   const settings = useServerUpgradeSettings(organizationSlug);
-  const gate = useRoleGate(organizationSlug, "servers:operate", "Only an owner or admin can change these.");
+  const gate = useRoleGate(organizationSlug, "servers:operate", refusalFor("servers:operate", "change these"));
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>

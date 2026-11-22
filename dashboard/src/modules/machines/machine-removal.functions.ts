@@ -1,7 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
 import { Effect } from "effect";
-import { dashboardCaller } from "#/modules/identity/caller.server";
 import {
   EnqueueMachineRemoveInput,
   ForgetServerInput,
@@ -15,8 +13,8 @@ import {
 } from "#/modules/machines/machine-removal.server";
 import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
+  callerMiddleware,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
@@ -24,7 +22,7 @@ import {
 export const loadMachineDataLossServerFn = createServerFn({
   method: "GET",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(LoadMachineDataLossInput))
   .handler(({ context, data }) =>
     runActor(context, Effect.scoped(loadMachineDataLoss(context.actor, data))),
@@ -33,7 +31,7 @@ export const loadMachineDataLossServerFn = createServerFn({
 export const enqueueMachineRemoveServerFn = createServerFn({
   method: "POST",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(EnqueueMachineRemoveInput))
   .handler(({ context, data }) =>
     runActor(context, enqueueMachineRemove(context.actor, data)),
@@ -42,7 +40,7 @@ export const enqueueMachineRemoveServerFn = createServerFn({
 export const getMachineRemoveAttemptServerFn = createServerFn({
   method: "GET",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(GetMachineRemoveAttemptInput))
   .handler(({ context, data }) =>
     runActor(context, getMachineRemoveAttempt(context.actor, data)),
@@ -52,11 +50,7 @@ export const getMachineRemoveAttemptServerFn = createServerFn({
 export const forgetServerServerFn = createServerFn({
   method: "POST",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(ForgetServerInput))
+  .middleware([callerMiddleware(ForgetServerInput)])
   .handler(({ context, data }) =>
-    runActor(context, Effect.gen(function* () {
-      const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
-      return yield* forgetServerFromDashboard(caller, data.machineId, data.requestId);
-    })),
+    runActor(context, forgetServerFromDashboard(context.caller, data.machineId, data.requestId)),
   );

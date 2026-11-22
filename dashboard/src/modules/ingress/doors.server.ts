@@ -5,21 +5,19 @@ import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk"
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/cluster-domain/ingress-running";
-import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/ingress/door-frames";
+import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
 import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
-import { publishedOf } from "#/modules/config-store/domain-evidence.server";
+import { publishedOf } from "#/modules/runtime/published-hostnames";
 import { owners } from "#/modules/config-store/store-lookup.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { SERVERS_UNANSWERED_MESSAGE, StoreRefused } from "#/lib/refusal";
 import {
   type CloudflareSetup,
   type ClusterIngressObservation,
   type ClusterIngressView,
   DOORS_PENDING_LIMIT_MS,
   DOORS_RUNNING_LIMIT_MS,
-  type DoorsState,
-  type DoorsWant,
   type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
@@ -35,14 +33,15 @@ import {
   unknownHostnames,
   wantWords,
 } from "#/modules/ingress/doors";
+import type { DoorsState, DoorsWant } from "#/modules/ingress/doors.states";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
-import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
+import { type IngressDoorsRequestedEventData, ingressDoorsRequested } from "#/modules/ingress/ingress.events";
 import { observeClusterEnrollment } from "#/modules/machines/enrollment.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -262,7 +261,7 @@ export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function*
 });
 
 const enqueueSwitch = (row: AttemptRow, delivery: "await" | "detach") =>
-  enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }), delivery);
+  enqueueEvent(ingressDoorsRequested.create({ attemptId: row.id, organizationId: row.organizationId }), delivery);
 
 /**
  * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event, under the lock Cloudflare
@@ -438,7 +437,7 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
     .where(and(owned, eq(ingressDoorsAttempt.state, "pending"))).returning({ id: ingressDoorsAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
   const end = session === null
-    ? failed("Your servers aren't answering. Try again once they are.")
+    ? failed(SERVERS_UNANSWERED_MESSAGE)
     : yield* applySwitch(session, request, runId, row.want).pipe(
       Effect.map((ended) => ended.ok ? finished() : failed(ended.failure)),
       Effect.catch((error) => Effect.succeed(failed(failureWords(error)))),

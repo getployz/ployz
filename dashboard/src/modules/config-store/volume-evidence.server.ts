@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { observeVolumes, type VolumeObservation } from "@ployz/sdk";
 import { Context, Effect, Option, Schema } from "effect";
-import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 
@@ -41,8 +41,14 @@ const EvidenceCommand = Schema.Union([AdmitCommand, RetryCommand, RemoveCommand,
  * reached the evidence names them and why, or is left out when Cloud couldn't try, and the Store refuses the write
  * rather than act on data it could not see.
  */
+/** Loads an Organization's Server connections once, however many observers ask: undefined when they didn't load. */
+export const connectionsLoader = (organizationId: string) =>
+  Effect.cached(loadOrganizationConnections(organizationId).pipe(Effect.option, Effect.map(Option.getOrUndefined)));
+
+export type ConnectionsLoader = Effect.Success<ReturnType<typeof connectionsLoader>>;
+
 export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence")(function* (
-  organizationId: string,
+  loadConnections: ConnectionsLoader,
   call: StoreCall,
   read: StoreRead,
 ) {
@@ -53,8 +59,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   const asked = yield* Effect.option(questions(command, read));
   const sought = Option.getOrUndefined(asked)?.flatMap((removals) => removals.volumes.map((volume) => volume.docker_volume));
   if (sought === undefined || sought.length === 0) return undefined;
-  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
-  const connections = Option.getOrUndefined(loaded);
+  const connections = yield* loadConnections;
   if (connections?.kind !== "ready") return undefined;
   const { observe } = yield* VolumeObserver;
   const observed = yield* storeTry(() => observe(connections.connections, sought, clusterExpectation(connections))).pipe(Effect.option);
@@ -68,7 +73,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
  * Servers that were silent before, never reading it as all of them answering.
  */
 export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(function* (
-  organizationId: string,
+  loadConnections: ConnectionsLoader,
   call: StoreCall,
   volumes: VolumeObservation | undefined,
 ) {
@@ -78,8 +83,7 @@ export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(functi
   const removes = command?.command === "remove" || (command?.command === "admit" && command.admit === "remove");
   if (!removes) return undefined;
   if (volumes !== undefined) return volumes.unanswered;
-  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
-  const connections = Option.getOrUndefined(loaded);
+  const connections = yield* loadConnections;
   if (connections?.kind !== "ready") return undefined;
   if (connections.connections.length === 0) return [];
   const { observe } = yield* VolumeObserver;
@@ -95,14 +99,13 @@ export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(functi
  * Servers can't be reached, the push keeps their data and the next Deploy asks again.
  */
 export const systemVolumeEvidence = Effect.fn("ConfigStore.systemVolumeEvidence")(function* (
-  organizationId: string,
+  loadConnections: ConnectionsLoader,
   read: StoreRead,
 ) {
   const consented = yield* storeTry(() => read({ query: "consented" })).pipe(Effect.option);
   const sought = Option.getOrUndefined(consented)?.volumes;
   if (sought === undefined || sought.length === 0) return undefined;
-  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
-  const connections = Option.getOrUndefined(loaded);
+  const connections = yield* loadConnections;
   if (connections?.kind !== "ready") return undefined;
   const { observe } = yield* VolumeObserver;
   const observed = yield* storeTry(() => observe(connections.connections, sought, clusterExpectation(connections))).pipe(Effect.option);

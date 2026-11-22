@@ -41,14 +41,15 @@ use tokio::{
 };
 use tonic::transport::{Channel, Endpoint};
 
+use crate::coded::Coded;
 use crate::context::{
     Config, ConfigError, Connection, ConnectionError, ConnectionSource, ContextError,
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
 pub use crate::cluster::{
-    Budgeted, Call, Client, Deadline, MachineImagesObservation, Once, Pacing, Remover, Repeat,
-    Replay, Wait, Waiting,
+    Budgeted, Call, Carried, Client, Deadline, MachineImagesObservation, Once, Pacing, Remover,
+    Repeat, Replay, Wait, Waiting,
 };
 
 pub(crate) const UNARY_RETRY_DELAYS: [Duration; 3] = [
@@ -78,6 +79,12 @@ const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A socket-activated daemon accepts connects before it serves; this bound is
 /// what keeps a starting daemon from hanging the CLI.
 pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a Management dial or tunnel open through the relay may take.
+const MANAGEMENT_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The SSH setup budget when the caller sets none, and `--ssh-timeout`'s default.
+pub(crate) const DEFAULT_SSH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
 /// Machine: a Machine stops its containers one at a time, each taking up to its grace.
@@ -135,7 +142,7 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
-            ssh_timeout: Duration::from_secs(20),
+            ssh_timeout: DEFAULT_SSH_TIMEOUT,
             relay: ManagementRelay::default(),
         }
     }
@@ -163,7 +170,7 @@ impl SystemConnector {
     ) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
-                Duration::from_secs(15),
+                MANAGEMENT_DIAL_TIMEOUT,
                 connect_management(capability, &self.relay),
             )
             .await
@@ -221,7 +228,7 @@ impl Connector for SystemConnector {
         }
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
-                Duration::from_secs(15),
+                MANAGEMENT_DIAL_TIMEOUT,
                 dial_tunnel(capability, &self.relay, address),
             )
             .await
@@ -852,7 +859,7 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 
 /// How long a dial over `transport` may go unconfirmed before the next connection
 /// is dialled beside it. A down Server holds its dial for the whole connect bound,
-/// 15 s through Cloud and the SSH timeout over SSH. A daemon that answers confirms
+/// [`MANAGEMENT_DIAL_TIMEOUT`] through Cloud and the SSH timeout over SSH. A daemon that answers confirms
 /// well inside 1 s, but a cold SSH dial may take seconds while healthy, and racing
 /// it costs a second login.
 fn entry_stagger(transport: &Transport) -> Duration {
@@ -1321,6 +1328,57 @@ pub enum ConnectError {
     Value(#[from] ployz_core::ValueError),
 }
 
+impl Coded for ConnectError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ConnectError::Remote(error) => error.code.clone(),
+            ConnectError::Rpc(error) => error.to_rpc_error().code,
+            ConnectError::ClientRefused
+            | ConnectError::ClientCleared
+            | ConnectError::TunnelNeedsFull => RpcErrorCode::Unauthenticated,
+            ConnectError::OlderMachine => RpcErrorCode::Unsupported,
+            ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
+                RpcErrorCode::Unsupported
+            }
+            ConnectError::Context(error) => error.code(),
+            ConnectError::Config(error) => error.code(),
+            ConnectError::Connection(_) | ConnectError::Value(_) => RpcErrorCode::InvalidArgument,
+            ConnectError::Codec(error) => error.code(),
+            // Every connection failed: `last` says why, a Server that needs an upgrade first.
+            ConnectError::AllFailed {
+                last: Some(last), ..
+            } => last.code(),
+            ConnectError::Join(_) => RpcErrorCode::Internal,
+            ConnectError::IdentityMismatch { .. }
+            | ConnectError::ClusterMismatch { .. }
+            | ConnectError::ClusterUnverified { .. }
+            | ConnectError::PredatesSealing { .. } => RpcErrorCode::Unauthenticated,
+            ConnectError::Attempt(_)
+            | ConnectError::Exhausted(_)
+            | ConnectError::EntryNotReady
+            | ConnectError::Io(_)
+            | ConnectError::Dial(_)
+            | ConnectError::MissingMachineDetails
+            | ConnectError::SshClientMissing
+            | ConnectError::SshProbe { .. }
+            | ConnectError::Routing(_)
+            | ConnectError::Path { .. }
+            | ConnectError::AllFailed { last: None, .. }
+            | ConnectError::Framing(_) => RpcErrorCode::Unavailable,
+        }
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        if let Self::Remote(error) = self {
+            return Some(error.details.clone());
+        }
+        if let Self::Rpc(error) = self {
+            return Some(error.to_rpc_error().details);
+        }
+        None
+    }
+}
+
 /// That a Server gave no answer, and what to check. Through Ployz Cloud's relay, the
 /// Server's network is as likely the cause as its daemon.
 fn isnt_answering(relayed: bool) -> &'static str {
@@ -1655,6 +1713,16 @@ pub struct TransportError {
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<ployz_core::error_chain::JoinedChain>,
+}
+
+impl Coded for TransportError {
+    fn code(&self) -> RpcErrorCode {
+        self.to_rpc_error().code
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        Some(self.to_rpc_error().details)
+    }
 }
 
 impl TransportError {

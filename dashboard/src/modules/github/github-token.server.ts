@@ -1,11 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
 import { Cache, Context, Effect, Layer } from "effect";
 import { GithubDisconnected, type GithubAccess } from "#/modules/github/github-access";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { isValidGithubId } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
-import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
+import { findInstallationLink, installationUsable } from "#/modules/github/github.repository";
 import { Database } from "#/server/database.server";
 
 /** Installation tokens live for one hour on GitHub. */
@@ -35,31 +34,6 @@ export interface GithubTokensService {
 
 export class GithubTokens extends Context.Service<GithubTokens, GithubTokensService>()("ployz/GithubTokens") {}
 
-/** What Cloud knows of an installation for one Organization: whether it links it, and whether GitHub suspended it. */
-export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink")(function* (organizationId: string, installationId: number) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle
-    .select({
-      accountLogin: githubInstallation.accountLogin,
-      suspendedAt: githubInstallation.suspendedAt,
-      linked: organizationGithubInstallation.organizationId,
-    })
-    .from(githubInstallation)
-    .leftJoin(organizationGithubInstallation, and(
-      eq(organizationGithubInstallation.installationId, githubInstallation.installationId),
-      eq(organizationGithubInstallation.organizationId, organizationId),
-    ))
-    .where(eq(githubInstallation.installationId, installationId))
-    .limit(1);
-  const row = rows[0];
-  return {
-    installed: row !== undefined,
-    linked: row?.linked !== undefined && row.linked !== null,
-    suspended: row?.suspendedAt !== undefined && row.suspendedAt !== null,
-    accountLogin: row?.accountLogin ?? `installation ${installationId}`,
-  };
-});
-
 type InstallationLink = Effect.Success<ReturnType<typeof findInstallationLink>>;
 
 const refusalOf = (organizationId: string, installationId: number, link: InstallationLink) => link.linked && !link.suspended
@@ -69,13 +43,6 @@ const refusalOf = (organizationId: string, installationId: number, link: Install
 /** Why the Organization can't use the installation now, or null when it can. */
 export const installationRefusal = Effect.fn("GithubTokens.installationRefusal")(function* (organizationId: string, installationId: number) {
   return refusalOf(organizationId, installationId, yield* findInstallationLink(organizationId, installationId));
-});
-
-const installationUsable = Effect.fn("GithubTokens.installationUsable")(function* (installationId: number) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ suspendedAt: githubInstallation.suspendedAt }).from(githubInstallation)
-    .where(eq(githubInstallation.installationId, installationId)).limit(1);
-  return rows[0] !== undefined && rows[0].suspendedAt === null;
 });
 
 export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
@@ -91,33 +58,31 @@ export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (
   // next asked for, not where the webhook landed.
   const forgotten = (installationId: number) =>
     Cache.invalidate(cache, installationId).pipe(Effect.andThen(mintFailed({ code: "not_found", retriable: false })));
-  const systemInstallationToken: GithubTokensService["systemInstallationToken"] = Effect.fn("GithubTokens.system")(function* (installationId) {
+  const knownInstallation = Effect.fn("GithubTokens.knownInstallation")(function* (installationId: number) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
-    const usable = yield* installationUsable(installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
-    if (!usable) return yield* forgotten(installationId);
-    return yield* cached(installationId);
+    const known = yield* installationUsable(installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
+    if (!known) return yield* forgotten(installationId);
+    return installationId;
   });
-  const installationToken: GithubTokensService["installationToken"] = Effect.fn("GithubTokens.installation")(function* (organizationId, installationId) {
+  const linkedInstallation = Effect.fn("GithubTokens.linkedInstallation")(function* (organizationId: string, installationId: number) {
     if (!isValidGithubId(installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
     const link = yield* findInstallationLink(organizationId, installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
     if (!link.installed || link.suspended) yield* Cache.invalidate(cache, installationId);
     const refusal = refusalOf(organizationId, installationId, link);
     if (refusal !== null) return yield* refusal;
-    return yield* cached(installationId);
+    return installationId;
   });
-  const usable: GithubTokensService["usable"] = Effect.fn("GithubTokens.usable")(function* (access) {
-    if (!isValidGithubId(access.installationId)) return yield* mintFailed({ code: "request_failed", retriable: false });
-    if (access.type === "installation") {
-      const known = yield* installationUsable(access.installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
-      if (!known) return yield* forgotten(access.installationId);
-      return access.installationId;
-    }
-    const link = yield* findInstallationLink(access.organizationId, access.installationId).pipe(Effect.provideService(Database, database), Effect.orDie);
-    if (!link.installed || link.suspended) yield* Cache.invalidate(cache, access.installationId);
-    const refusal = refusalOf(access.organizationId, access.installationId, link);
-    if (refusal !== null) return yield* refusal;
-    return access.installationId;
-  });
+  const systemInstallationToken: GithubTokensService["systemInstallationToken"] = Effect.fn("GithubTokens.system")(
+    (installationId) => knownInstallation(installationId).pipe(Effect.andThen(cached)),
+  );
+  const installationToken: GithubTokensService["installationToken"] = Effect.fn("GithubTokens.installation")(
+    (organizationId, installationId) => linkedInstallation(organizationId, installationId).pipe(Effect.andThen(cached)),
+  );
+  const usable: GithubTokensService["usable"] = Effect.fn("GithubTokens.usable")(
+    (access) => access.type === "installation"
+      ? knownInstallation(access.installationId)
+      : linkedInstallation(access.organizationId, access.installationId),
+  );
   return { installationToken, systemInstallationToken, usable } satisfies GithubTokensService;
 });
 

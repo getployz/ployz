@@ -337,17 +337,9 @@ async fn sqlite_entry(
     std::path::PathBuf,
     tokio::task::JoinHandle<()>,
 ) {
-    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+    use crate::corrosion::fake_cluster::{corrosion_db, identity_store};
 
-    let db = corrosion_db();
-    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
-    db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
-    )
-    .unwrap();
-    let (replicated, server) = identity_store(db).await;
+    let (replicated, server) = identity_store(corrosion_db()).await;
     replicated
         .publish_cluster_network("10.210.0.0/16".parse().unwrap())
         .await
@@ -782,14 +774,14 @@ fn enroll_refuses_a_second_founding_and_keeps_the_sealing_key() {
         wireguard_mtu: None,
         pinned: Default::default(),
     };
-    assert_eq!(store.enroll(found("edge")).unwrap(), EnrollPlan::Fresh);
+    assert_eq!(store.enroll(found("edge")).unwrap(), EnrollPlan::Fresh(()));
     let founded = SealingKey::load(&data_dir)
         .unwrap()
         .expect("the founder holds a key");
 
     for name in ["edge", "other"] {
         let plan = store.enroll(found(name)).unwrap();
-        assert_ne!(plan, EnrollPlan::Fresh, "{name}");
+        assert_ne!(plan, EnrollPlan::Fresh(()), "{name}");
         assert_eq!(SealingKey::load(&data_dir).unwrap(), Some(founded.clone()));
     }
 }

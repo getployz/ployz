@@ -1,9 +1,4 @@
-import type {
-  Collection,
-  UtilsRecord,
-  VirtualRowProps,
-  WithoutVirtualProps,
-} from "@tanstack/react-db";
+import type { VirtualRowProps, WithoutVirtualProps } from "@tanstack/react-db";
 import type { Schema } from "effect";
 import { decodeStrict } from "#/lib/schema";
 
@@ -28,30 +23,4 @@ export function parseLiveQueryRow<S extends Schema.ConstraintDecoder<object>>(
   row: VirtualRowProps,
 ): S["Type"] {
   return decodeStrict(schema, withoutVirtualProps(row));
-}
-
-// TanStack types live-query rows with the four virtual props ($hasPendingWrites,
-// $origin, $key, $collectionId), but app-facing collection types use the plain
-// row shape.
-export function plainRowCollection<
-  Row extends VirtualRowProps,
-  Utils extends UtilsRecord,
->(
-  collection: Collection<Row & object, string | number, Utils>,
-): Collection<
-  Omit<Row, keyof VirtualRowProps> & object,
-  string | number,
-  Utils,
-  never,
-  Omit<Row, keyof VirtualRowProps> & object
-> {
-  // SAFETY: live-query virtual props are additive metadata; the collection identity is unchanged when those keys are omitted from the row type.
-  return collection as typeof collection &
-    Collection<
-      Omit<Row, keyof VirtualRowProps> & object,
-      string | number,
-      Utils,
-      never,
-      Omit<Row, keyof VirtualRowProps> & object
-    >;
 }

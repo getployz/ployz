@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, 
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { InngestClient } from "#/modules/inngest/client";
-import type { ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
+import type { ServerUpgradeRequestedEventData } from "#/modules/server-upgrade/server-upgrade.events";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import {
@@ -31,7 +31,7 @@ import { admitOperation } from "#/modules/operations/keyed.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import * as ids from "#/test/ids";
 import { invokeOnFailure } from "#/test/inngest-failure";
@@ -113,7 +113,6 @@ describe("roll-out-server-upgrade", () => {
         capture: (input) => Effect.sync(() => void captured.push(input)),
         identify: (distinctId, properties) => Effect.sync(() => void identified.push([distinctId, properties])),
         identifyOrganization: () => Effect.void,
-        mcp: () => Effect.void,
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,

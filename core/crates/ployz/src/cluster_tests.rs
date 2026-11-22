@@ -533,9 +533,7 @@ async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
         client
             .call::<op::ListMachines>(
                 ListMachinesRequest {},
-                Call::read()
-                    .to(&MachineTarget::parse("machine-a").unwrap())
-                    .budget(crate::connect::target_read_timeout()),
+                Call::target_read(&MachineTarget::parse("machine-a").unwrap()),
             )
             .await
     } else {
@@ -996,9 +994,7 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
         .clone()
         .call::<op::ListMachines>(
             ListMachinesRequest {},
-            Call::read()
-                .to(&MachineTarget::parse("machine-a").unwrap())
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::parse("machine-a").unwrap()),
         )
         .await
         .map(drop);

@@ -1,5 +1,5 @@
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLoaderData } from "@tanstack/react-router";
+import { useOrganizationContext } from "#/collections/use-organization-context";
 import { toast } from "sonner";
 import { getClusterNameCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -15,7 +15,7 @@ export function useClusterName(organizationSlug: string) {
   const collection = getClusterNameCollection(organizationSlug, scope);
   const { data: rows } = useLiveSuspenseQuery(collection);
   const { data: enrollment } = useLiveSuspenseQuery(getOrganizationEnrollmentCollection(organizationSlug, scope));
-  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const { organizationId } = useOrganizationContext();
   const view = clusterNameView(rows[0], organizationSlug, organizationEnrollmentStatus(enrollment[0]) === "ready");
   const rename = createOptimisticAction<string>({
     onMutate: (name) => {

@@ -1,7 +1,9 @@
 //! Driver behavior with a controllable inbox clock and a real indicatif terminal.
 
 use super::*;
+use crate::failure::LogTail;
 use indicatif::{InMemoryTerm, TermLike};
+use ployz_core::ServiceName;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -105,11 +107,11 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
 #[test]
 fn a_removed_service_counts_as_removed_in_the_summary() {
     let removal = |state| {
-        crate::deploy::service_row(
+        crate::handlers::deploy::progress::rows::service_row(
             QualifiedService::parse("shop/web").unwrap(),
             None,
             None,
-            [crate::deploy::Replica {
+            [crate::handlers::deploy::progress::rows::Replica {
                 machine: MachineId::random(),
                 state,
                 timing: Timing::Unavailable,
@@ -146,20 +148,19 @@ fn a_removal_that_has_begun_reads_as_removing_not_starting() {
     use ployz_store::RowState;
     let machines = [MachineId::random(), MachineId::random()];
     let removal = |states: [&RowState; 2]| {
-        let row = crate::deploy::service_row(
+        let row = crate::handlers::deploy::progress::rows::service_row(
             QualifiedService::parse("shop/api").unwrap(),
             None,
             None,
-            machines
-                .iter()
-                .zip(states)
-                .map(|(machine, state)| crate::deploy::Replica {
+            machines.iter().zip(states).map(|(machine, state)| {
+                crate::handlers::deploy::progress::rows::Replica {
                     machine: *machine,
                     state,
                     timing: Timing::Unavailable,
                     starts: false,
                     updates: None,
-                }),
+                }
+            }),
         );
         Frame {
             run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
@@ -1017,11 +1018,11 @@ fn live_rows_each_keep_their_own_line_on_an_80_column_terminal() {
 }
 
 fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState) -> Row {
-    crate::deploy::service_row(
+    crate::handlers::deploy::progress::rows::service_row(
         QualifiedService::parse(format!("shop/{name}")).unwrap(),
         Some(depth),
         None,
-        (0..servers).map(|_| crate::deploy::Replica {
+        (0..servers).map(|_| crate::handlers::deploy::progress::rows::Replica {
             machine: MachineId::random(),
             state,
             timing: Timing::Finished(Duration::from_secs(5)),

@@ -4,7 +4,7 @@ import { FolderIcon, HardDriveIcon, LinkIcon } from "lucide-react";
 import { listNames } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { useNodePick } from "../new-branch/branch-picking";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES, StagedBadge } from "./node-status-view";
 import { usePendingNode } from "./usePendingNode";
@@ -13,7 +13,7 @@ import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.
 import { traySpeech } from "#/modules/volume-copies/volume-copies";
 import { Spinner } from "#/components/ui/spinner";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
-import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SHARED_VOLUME_WHY } from "#/modules/volume-placement/volume-placement";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
 const LitVolume = createContext<[string | null, (id: string | null) => void]>([null, () => {}]);

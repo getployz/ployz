@@ -1,46 +1,31 @@
-/** One piece of a variable's value: literal text, or a `${{ }}` reference to a variable. */
-export type ValuePart =
-  | { kind: "text"; value: string }
-  | { kind: "ref"; owner: { scope: "self" } | { scope: "service"; lineageId: string }; key: string };
-
 /**
- * Pure, isomorphic helpers for the variable-templating grammar. Shared by the
- * client (autocomplete + display) and the server (deploy resolver + edge
- * derivation), so this module must not import anything `server-only`.
+ * The `${{ }}` reference grammar, shared by the client (autocomplete, add form, display) and the server, so it must
+ * not import anything `server-only`. References name a Service by its name, as the Store shows them.
  *
- * Two representations exist:
- *  - **parts** (`ValuePart[]`) — canonical, persisted form.
- *  - **display string** — `${{ }}`-style text used in inputs, the raw editor,
- *    and copy. Owner refs render with the producer's current slug; a literal
- *    `${{` inside a text part is escaped as `$${{` so the string round-trips.
- *
- * Display grammar:
- *  - `${{ KEY }}`            — self ref (owner's own scope)
- *  - `${{ slug.KEY }}`       — ref to service `slug`'s exported `KEY`
- *  - `${{ <deleted slug>.KEY }}` — ref to removed service `slug`; `#2` and on tell apart
- *    removed services shown alike, as `<deleted slug#2>`. One no record names shows by the
- *    last 8 hex digits of its id, as `<deleted #3f2a9c01>`, and `<deleted>` when unknown
- *  - `$${{`                  — a literal `${{`
+ *  - `${{ KEY }}`            a variable of the Service the text belongs to
+ *  - `${{ name.KEY }}`       the exported `KEY` of Service `name`
+ *  - `${{ <deleted name>.KEY }}` a removed Service: the Engine renders `<deleted name>`, `<deleted name#2>` when
+ *    removed Services share a name, `<deleted #3f2a9c01>` when no record names it, and `<deleted>` when unknown
+ *  - `$${{`                  a literal `${{`
  */
+
+/** One piece of a value: literal text, or a reference (`owner` null is the Service the text belongs to). */
+type ValuePart =
+  | { kind: "text"; value: string }
+  | { kind: "ref"; owner: string | null; key: string };
 
 export const KEY_SRC = "[A-Za-z_][A-Za-z0-9_]*";
 export const SLUG_SRC = "[A-Za-z0-9][A-Za-z0-9_-]*";
 
 const DELETED_SRC = `<deleted(?: (?:${SLUG_SRC}(?:#[1-9][0-9]*)?|#[0-9a-f]{8}))?>`;
 
-// Anchored matcher for a single `${{ [slug.]KEY }}` token at the start of a string.
 const TOKEN_AT_START = new RegExp(
   `^\\$\\{\\{\\s*(?:(${SLUG_SRC}|${DELETED_SRC})\\.)?(${KEY_SRC})\\s*\\}\\}`,
 );
 
-export type LookupSlug = (lineageId: string) => string | null;
-export type LookupLineage = (
-  slug: string,
-) => { lineageId: string; scope: "service" } | null;
-
-export type ParseDisplayResult = {
+type ParseDisplayResult = {
   parts: ValuePart[];
-  /** Slugs that could not be resolved to a producer; their tokens remain literal text. */
+  /** Names `isKnown` rejected; their tokens remain literal text. */
   unresolved: string[];
 };
 
@@ -55,51 +40,24 @@ export type CaretToken = {
   ownerSlug: string | null;
 };
 
-export function isPureLiteral(parts: ValuePart[]): boolean {
-  return parts.every((part) => part.kind === "text");
-}
-
-/**
- * The plain literal string for a value, or `null` if it contains any ref (a
- * templated value cannot be copied/exported as a literal).
- */
-export function partsToLiteralString(parts: ValuePart[]): string | null {
-  if (!isPureLiteral(parts)) return null;
-  return parts.map((part) => (part.kind === "text" ? part.value : "")).join("");
-}
-
-/** Slug rendered for a ref whose owning producer no longer exists in the env. */
-const DELETED_OWNER_SENTINEL = "<deleted>";
-
 const DELETED_REF = new RegExp(`(?<!\\$)\\$\\{\\{\\s*${DELETED_SRC}\\.`);
 
-/** Whether a rendered display value references a producer that was deleted. */
 export function referencesDeletedOwner(displayValue: string): boolean {
   return DELETED_REF.test(displayValue);
 }
 
-/** Render canonical parts into the `${{ slug.KEY }}` display string. */
-export function partsToDisplay(
-  parts: ValuePart[],
-  lookupSlug: LookupSlug,
-): string {
+/** Render parts into the `${{ name.KEY }}` text; a literal `${{` is escaped as `$${{`. */
+function partsToDisplay(parts: ValuePart[]): string {
   return parts.map((part) => {
     if (part.kind === "text") return part.value.replaceAll("${{", () => "$${{");
-    const prefix = part.owner.scope === "self"
-      ? ""
-      : `${lookupSlug(part.owner.lineageId) ?? DELETED_OWNER_SENTINEL}.`;
-    return `\${{ ${prefix}${part.key} }}`;
+    return `\${{ ${part.owner === null ? "" : `${part.owner}.`}${part.key} }}`;
   }).join("");
 }
 
-/**
- * Parse a display/input string into canonical parts, resolving owner slugs to
- * lineage ids. Unresolvable slugs are kept as literal text and reported in
- * `unresolved` for callers that need diagnostics.
- */
+/** Parse text into parts. A name `isKnown` rejects stays literal text and is reported in `unresolved`. */
 export function parseDisplayToParts(
   text: string,
-  lookupLineage: LookupLineage,
+  isKnown: (name: string) => boolean,
 ): ParseDisplayResult {
   const parts: ValuePart[] = [];
   const unresolved: string[] = [];
@@ -114,7 +72,6 @@ export function parseDisplayToParts(
   };
 
   while (i < text.length) {
-    // Escaped literal `$${{` -> `${{`.
     if (text.startsWith("$${{", i)) {
       pending += "${{";
       i += 4;
@@ -131,26 +88,17 @@ export function parseDisplayToParts(
         }
         if (slug === undefined) {
           flush();
-          parts.push({ kind: "ref", owner: { scope: "self" }, key });
+          parts.push({ kind: "ref", owner: null, key });
+        } else if (isKnown(slug)) {
+          flush();
+          parts.push({ kind: "ref", owner: slug, key });
         } else {
-          const resolved = lookupLineage(slug);
-          if (resolved) {
-            flush();
-            parts.push({
-              kind: "ref",
-              owner: { scope: resolved.scope, lineageId: resolved.lineageId },
-              key,
-            });
-          } else {
-            // Keep the raw token as literal text and flag it.
-            unresolved.push(slug);
-            pending += raw;
-          }
+          unresolved.push(slug);
+          pending += raw;
         }
         i += raw.length;
         continue;
       }
-      // Malformed `${{` — treat as literal text.
       pending += "${{";
       i += 3;
       continue;
@@ -171,11 +119,9 @@ export function parseDisplayToParts(
 export function caretToken(text: string, caret: number): CaretToken | null {
   const open = text.lastIndexOf("${{", caret);
   if (open === -1) return null;
-  // Escaped `$${{` is not an active token.
   if (open >= 1 && text[open - 1] === "$") return null;
 
   const inner = text.slice(open + 3, caret);
-  // A closed token (`}}` before the caret) means we're past it.
   if (inner.includes("}}")) return null;
 
   const body = inner.replace(/^\s+/, "");
@@ -189,13 +135,11 @@ export function caretToken(text: string, caret: number): CaretToken | null {
     query = body.slice(dot + 1);
     if (!new RegExp(`^${SLUG_SRC}$`).test(ownerSlug)) return null;
   }
-  // Reject anything that can't be part of a key prefix (e.g. spaces, `}`).
   if (query !== "" && !/^[A-Za-z0-9_]*$/.test(query)) return null;
 
   return { start: open, end: caret, query, ownerSlug };
 }
 
-/** Build the display token a picked autocomplete item should insert. */
 export function buildRefToken(input: {
   ownerSlug: string | null;
   key: string;
@@ -210,13 +154,13 @@ export function buildRefToken(input: {
  * variable `key` of Service `service` switched to `to`; null when it has none.
  */
 export function renameReferences(text: string, owner: string, service: string, key: string, to: string): string | null {
-  const { parts } = parseDisplayToParts(text, (slug) => ({ lineageId: slug, scope: "service" }));
+  const { parts } = parseDisplayToParts(text, () => true);
   let renamed = false;
   const switched = parts.map((part): ValuePart => {
     if (part.kind !== "ref" || part.key !== key) return part;
-    if ((part.owner.scope === "self" ? owner : part.owner.lineageId) !== service) return part;
+    if ((part.owner ?? owner) !== service) return part;
     renamed = true;
     return { ...part, key: to };
   });
-  return renamed ? partsToDisplay(switched, (name) => name) : null;
+  return renamed ? partsToDisplay(switched) : null;
 }

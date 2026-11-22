@@ -53,7 +53,8 @@ pub(crate) struct PreparedReset {
 }
 
 pub(crate) struct Installation {
-    body: LocalMachineBody,
+    machine: Machine,
+    installing: Installing,
     sealing_key: Option<SealingKey>,
     /// The floors sealed beside the Sealing Key, which the joiner takes before the key.
     floors: Floors,
@@ -63,18 +64,30 @@ pub(crate) struct Installation {
     enrollment: EnrollRequest,
 }
 
-/// What an enrollment installs: the body, the Cluster's key with the floors sealed beside
-/// it, and the keys its approval names.
+/// How the enrolled Machine takes part in its Cluster.
+enum Installing {
+    /// It founds the Cluster, so it participates at once.
+    Founding(FoundingCluster),
+    /// It joins through the peers its approval names.
+    Joining {
+        bootstrap: Vec<Machine>,
+        min_store_version: std::collections::BTreeMap<String, i64>,
+    },
+}
+
+/// What an enrollment installs: the Machine, how it takes part, the Cluster's key with
+/// the floors sealed beside it, and the keys its approval names.
 type Enrolled = (
-    LocalMachineBody,
+    Machine,
+    Installing,
     Option<SealingKey>,
     Floors,
     ployz_core::authority::TrustedKeys,
 );
 
 impl Installation {
-    pub(crate) fn machine(&self) -> Option<&Machine> {
-        self.body.machine()
+    pub(crate) fn machine(&self) -> &Machine {
+        &self.machine
     }
 
     /// The Cluster whose Sealing Key this installs, and the floors sealed beside it.
@@ -89,10 +102,10 @@ impl Installation {
     }
 }
 
-/// What an Enroll does on this Machine.
+/// What an Enroll does on this Machine. A fresh one carries what it installs.
 #[derive(Clone, Debug, PartialEq)]
-pub enum EnrollPlan {
-    Fresh,
+pub(crate) enum EnrollPlan<Fresh = ()> {
+    Fresh(Fresh),
     /// Already enrolled exactly as asked; the stored Machine.
     Replay(Machine),
     /// Enrolled as someone else, or resetting.
@@ -108,6 +121,16 @@ pub enum Rediscovered {
 }
 
 /// Replay when the stored Machine and MTU equal what the request would produce.
+impl EnrollPlan {
+    fn installing(self, installation: Installation) -> EnrollPlan<Installation> {
+        match self {
+            Self::Fresh(()) => EnrollPlan::Fresh(installation),
+            Self::Replay(machine) => EnrollPlan::Replay(machine),
+            Self::Conflict(now) => EnrollPlan::Conflict(now),
+        }
+    }
+}
+
 pub(crate) fn plan_enroll(
     now: &MachineNow,
     stored_mtu: Option<u32>,
@@ -115,7 +138,7 @@ pub(crate) fn plan_enroll(
     wanted_mtu: Option<u32>,
 ) -> EnrollPlan {
     match now.phase {
-        LocalMachinePhase::Uninitialized => EnrollPlan::Fresh,
+        LocalMachinePhase::Uninitialized => EnrollPlan::Fresh(()),
         LocalMachinePhase::Joining | LocalMachinePhase::Participating
             if now.machine.as_ref() == Some(wanted) && stored_mtu == wanted_mtu =>
         {
@@ -335,21 +358,18 @@ impl LocalMachineStore {
         })
     }
 
-    /// Persist a fresh enrollment. A replay or a conflict changes nothing.
-    ///
-    /// # Errors
-    /// Rejects missing endpoints or peers, an invalid network, an assignment for
-    /// another Machine or key, or a failed save.
-    pub fn enroll(&mut self, request: EnrollRequest) -> Result<EnrollPlan, StoreError> {
+    /// Persist a fresh enrollment without the leftovers check `LocalMachine::enroll`
+    /// runs first, for tests that hold only a store. A replay or a conflict changes
+    /// nothing.
+    #[cfg(test)]
+    pub(crate) fn enroll(&mut self, request: EnrollRequest) -> Result<EnrollPlan, StoreError> {
         self.enroll_with(request, None)
     }
 
-    /// Persist a fresh founding that holds no Sealing Key until it recovers
+    /// As [`Self::enroll`], for a founding that holds no Sealing Key until it recovers
     /// the one `recovery` names.
-    ///
-    /// # Errors
-    /// As [`Self::enroll`], and rejects a request that does not found a Cluster.
-    pub fn enroll_for_recovery(
+    #[cfg(test)]
+    pub(crate) fn enroll_for_recovery(
         &mut self,
         request: EnrollRequest,
         recovery: RecoverySeed,
@@ -357,62 +377,47 @@ impl LocalMachineStore {
         self.enroll_with(request, Some(recovery))
     }
 
+    #[cfg(test)]
     fn enroll_with(
         &mut self,
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<EnrollPlan, StoreError> {
         let now = ployz_core::authority::Timestamp::now();
-        let (plan, installation) = self.plan_enrollment(request, recovery, now)?;
-        if matches!(plan, EnrollPlan::Fresh) {
-            self.install(installation, now)?;
-        }
-        Ok(plan)
+        Ok(match self.plan_enrollment(request, recovery, now)? {
+            EnrollPlan::Fresh(installation) => {
+                self.install(installation, now)?;
+                EnrollPlan::Fresh(())
+            }
+            EnrollPlan::Replay(machine) => EnrollPlan::Replay(machine),
+            EnrollPlan::Conflict(now) => EnrollPlan::Conflict(now),
+        })
     }
 
-    /// The Installation this request would persist, and whether this Machine
-    /// takes it fresh, already holds it, or holds another enrollment. `now` is this
-    /// Machine's floored clock, which a Member's join approval must be open at.
+    /// Whether this Machine takes the request fresh, with the Installation it would
+    /// persist, already holds it, or holds another enrollment. `now` is this Machine's
+    /// floored clock, which a Member's join approval must be open at.
     pub(crate) fn plan_enrollment(
         &self,
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
         now: ployz_core::authority::Timestamp,
-    ) -> Result<(EnrollPlan, Installation), StoreError> {
-        let enrollment = request.clone();
+    ) -> Result<EnrollPlan<Installation>, StoreError> {
         if self.record.enrollment.as_ref() == Some(&request) {
-            let plan = match self.record.phase() {
-                LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
-                    EnrollPlan::Replay(
-                        self.record
-                            .machine()
-                            .expect("persisted enrollment owns a Machine")
-                            .clone(),
-                    )
+            return Ok(match (self.record.phase(), self.record.machine()) {
+                (LocalMachinePhase::Joining | LocalMachinePhase::Participating, Some(machine)) => {
+                    EnrollPlan::Replay(machine.clone())
                 }
-                LocalMachinePhase::Uninitialized
-                | LocalMachinePhase::Resetting
-                | LocalMachinePhase::Unrecognized(_) => EnrollPlan::Conflict(self.record.now()),
-            };
-            return Ok((
-                plan,
-                Installation {
-                    body: self.record.body.clone(),
-                    sealing_key: None,
-                    floors: Floors::new(),
-                    keys: ployz_core::authority::TrustedKeys::default(),
-                    wireguard_mtu: request.wireguard_mtu,
-                    pinned: request.pinned,
-                    enrollment: request,
-                },
-            ));
+                _ => EnrollPlan::Conflict(self.record.now()),
+            });
         }
+        let enrollment = request.clone();
         let EnrollRequest {
             role,
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, floors, keys) = match role {
+        let (machine, installing, sealing_key, floors, keys) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -420,49 +425,38 @@ impl LocalMachineStore {
                 public_ip,
                 advertised_endpoints,
                 grant,
-            } => {
-                let (body, sealing_key) = self.founder(
-                    name,
-                    FoundingCluster {
-                        network: cluster_network,
-                        recovery,
-                        grant,
-                    },
-                    initial_policy,
-                    public_ip,
-                    advertised_endpoints,
-                )?;
-                (
-                    body,
-                    sealing_key,
-                    Floors::new(),
-                    ployz_core::authority::TrustedKeys::default(),
-                )
-            }
+            } => self.founder(
+                name,
+                FoundingCluster {
+                    network: cluster_network,
+                    recovery,
+                    grant,
+                },
+                initial_policy,
+                public_ip,
+                advertised_endpoints,
+            )?,
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
             EnrollAs::Member { registration, pin } => self.member(registration, pin, now)?,
         };
-        let wanted = body.machine().expect("an enrollment owns its Machine");
         let plan = plan_enroll(
             &self.record.now(),
             self.record.wireguard_mtu,
-            wanted,
+            &machine,
             wireguard_mtu,
         );
-        Ok((
-            plan,
-            Installation {
-                body,
-                sealing_key,
-                floors,
-                keys,
-                wireguard_mtu,
-                pinned,
-                enrollment,
-            },
-        ))
+        Ok(plan.installing(Installation {
+            machine,
+            installing,
+            sealing_key,
+            floors,
+            keys,
+            wireguard_mtu,
+            pinned,
+            enrollment,
+        }))
     }
 
     fn founder(
@@ -472,7 +466,7 @@ impl LocalMachineStore {
         initial_policy: ployz_core::InitialMachinePolicy,
         public_ip: Option<std::net::IpAddr>,
         advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
-    ) -> Result<(LocalMachineBody, Option<SealingKey>), StoreError> {
+    ) -> Result<Enrolled, StoreError> {
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
@@ -495,11 +489,11 @@ impl LocalMachineStore {
         };
         let sealing_key = cluster.recovery.is_none().then(SealingKey::generate);
         Ok((
-            LocalMachineBody::Participating {
-                machine,
-                origin: ParticipationOrigin::Founder { cluster },
-            },
+            machine,
+            Installing::Founding(cluster),
             sealing_key,
+            Floors::new(),
+            ployz_core::authority::TrustedKeys::default(),
         ))
     }
 
@@ -617,8 +611,8 @@ impl LocalMachineStore {
         machine.join_approval = Some(approval);
         machine.runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
         Ok((
-            LocalMachineBody::Joining {
-                machine,
+            machine,
+            Installing::Joining {
                 bootstrap: visible_peers,
                 min_store_version: target_versions,
             },
@@ -637,20 +631,35 @@ impl LocalMachineStore {
         now: ployz_core::authority::Timestamp,
     ) -> Result<(), StoreError> {
         self.require_uninitialized()?;
-        if let LocalMachineBody::Joining { machine, .. } = &installation.body {
-            let approval = machine
-                .join_approval
-                .as_ref()
-                .ok_or(StoreError::JoinRefused(
-                    ployz_core::authority::AuthorityRefusal::Unsigned {
-                        purpose: ployz_core::authority::Purpose::Join,
-                    },
-                ))?;
+        if let Installing::Joining { .. } = &installation.installing {
+            let approval =
+                installation
+                    .machine
+                    .join_approval
+                    .as_ref()
+                    .ok_or(StoreError::JoinRefused(
+                        ployz_core::authority::AuthorityRefusal::Unsigned {
+                            purpose: ployz_core::authority::Purpose::Join,
+                        },
+                    ))?;
             ployz_core::authority::join::windows(approval, now).map_err(StoreError::JoinRefused)?;
         }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         self.commit(|installed| {
-            installed.body = installation.body;
+            installed.body = match installation.installing {
+                Installing::Founding(cluster) => LocalMachineBody::Participating {
+                    machine: installation.machine,
+                    origin: ParticipationOrigin::Founder { cluster },
+                },
+                Installing::Joining {
+                    bootstrap,
+                    min_store_version,
+                } => LocalMachineBody::Joining {
+                    machine: installation.machine,
+                    bootstrap,
+                    min_store_version,
+                },
+            };
             installed.filters_peers = true;
             let joins = installed.phase() == LocalMachinePhase::Joining;
             installed.trusted_machines =
@@ -1522,7 +1531,7 @@ mod plan_enroll_tests {
                 "fresh",
                 now(LocalMachinePhase::Uninitialized, None),
                 None,
-                EnrollPlan::Fresh,
+                EnrollPlan::Fresh(()),
             ),
             (
                 "same record replays",

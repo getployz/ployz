@@ -109,7 +109,7 @@ impl NetworkPlane {
         };
         if let Err(error) = plane
             .configure_device(&private_key, initialize)
-            .and_then(|()| plane.apply_peers(&peers, PeerSet::Bootstrap, record, None))
+            .and_then(|()| plane.apply_peers(&peers, &PeerSet::Bootstrap, record))
         {
             plane
                 .rollback_start(docker_created, wireguard_created)
@@ -350,15 +350,13 @@ fn leftovers(
     leftovers
 }
 
-mod docker_network;
+pub(crate) mod bridge;
 mod firewall_keeper;
-mod pins;
-mod stopped;
 #[cfg(test)]
 mod tests;
 mod wireguard;
 
-use docker_network::{FoundNetwork, found_network, required_docker_network_options};
+use bridge::{FoundNetwork, found_network, required_docker_network_options};
 use firewall_keeper::{keep_firewall, remove_firewall};
 use wireguard::{
     Lowered, PeerSet, peer_routes, read_device, read_retained_device, validate_retained_device,

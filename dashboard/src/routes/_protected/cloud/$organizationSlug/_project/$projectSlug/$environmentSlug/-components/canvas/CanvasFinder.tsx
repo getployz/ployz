@@ -12,7 +12,7 @@ import {
   CommandList,
 } from "#/components/ui/command";
 import { Kbd } from "#/components/ui/kbd";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { nodeDestination, type NavigationNode } from "../environment-node-navigation";
 
 const nodeIcons = { service: BoxIcon, volume: DatabaseIcon, config: FolderIcon };

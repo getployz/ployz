@@ -2,6 +2,7 @@ import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentVie
 import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { asRecord } from "#/lib/json";
+import { DNS_LABEL_MAX } from "#/utils/dns-name";
 import { slugifySegment } from "#/utils/slug";
 import { SOURCE_FIELDS } from "./store-branches";
 import { replicaCount } from "./volume-sharing";
@@ -12,9 +13,6 @@ export type NewServiceSource =
   | { type: "image"; image: string }
   | { type: "git"; repository: string; branch: string | null };
 
-/** The longest Store name: a DNS label. */
-export const MAX_NAME = 63;
-
 function sourceName(source: NewServiceSource) {
   if (source.type === "git") return source.repository.split("/").at(-1) ?? "";
   if (source.type === "image") return source.image.split("/").at(-1)?.split(/[:@]/)[0] ?? "";
@@ -23,7 +21,7 @@ function sourceName(source: NewServiceSource) {
 
 /** Why a name isn't what a Store name must be (a Service's, Volume's, Environment's or Project's): a DNS label. */
 export function dnsLabelError(name: string): string | null {
-  if (name.length > 63) return "Use at most 63 characters.";
+  if (name.length > DNS_LABEL_MAX) return `Use at most ${DNS_LABEL_MAX} characters.`;
   return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/u.test(name) ? null
     : "Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
 }
@@ -52,12 +50,6 @@ export function serviceName(wanted: string, services: readonly ServiceListing[])
   return uniqueName(wanted, services.flatMap((service) => [service.name, service.private_dns]));
 }
 
-// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for a 32-letter password.
-/** `length` random characters of `alphabet`. */
-export function randomText(alphabet: string, length: number) {
-  return Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => alphabet[byte % alphabet.length]).join("");
-}
-
 /**
  * The first of `wanted`, `wanted-2`, `wanted-3`… that is none of `taken`, as a DNS label: the stem is trimmed so the
  * number fits in 63 characters. A `tail` (`-1413`) is kept whole between the stem and the number; one that leaves no
@@ -66,10 +58,10 @@ export function randomText(alphabet: string, length: number) {
 export function uniqueName(wanted: string, taken: Iterable<string>, { tail = "" }: { tail?: string } = {}) {
   if (tail.endsWith("-")) throw new Error(`uniqueName: tail ${JSON.stringify(tail)} ends in "-"`);
   const used = new Set(taken);
-  const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
+  const base = slugifySegment(wanted).slice(0, DNS_LABEL_MAX).replace(/-+$/u, "") || "service";
   for (let n = 1; ; n++) {
     const end = `${tail}${n === 1 ? "" : `-${n}`}`;
-    const room = MAX_NAME - end.length;
+    const room = DNS_LABEL_MAX - end.length;
     if (room < 1) throw new Error(`uniqueName: tail ${JSON.stringify(tail)} leaves no room for a stem before ${JSON.stringify(end)}`);
     const name = `${base.slice(0, room).replace(/-+$/u, "")}${end}`;
     if (!used.has(name)) return name;

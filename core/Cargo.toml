@@ -16,7 +16,9 @@ ployz-core = { path = "crates/ployz-core" }
 ployz-decide = { path = "crates/ployz-decide" }
 ployz-store = { path = "crates/ployz-store" }
 ployz-testkit = { path = "crates/ployz-testkit" }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 ts-rs = { version = "12.0.1", features = ["serde-compat", "serde-json-impl", "no-serde-warnings"] }
+wasm-bindgen = "=0.2.127"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

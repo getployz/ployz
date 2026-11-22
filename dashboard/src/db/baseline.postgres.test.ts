@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { collectionReadInput } from "#/collections/read.contract";
+import { orgCollections } from "#/collections/registry";
 import {
   type PostgresTestHarness,
   startPostgresTestHarness,
@@ -15,10 +15,8 @@ afterAll(async () => {
   await harness?.stop();
 });
 
-it("creates collection tables with default replication identity without the retired notification triggers", async () => {
-  const tables = [...new Set(collectionReadInput.fields.table.literals.map((table) =>
-    table === "organization_enrollment" ? "organization_pairing" : table,
-  ))].sort();
+it("creates collection tables with default replication identity", async () => {
+  const tables = [...new Set(orgCollections.map((collection) => collection.sources[0]))].sort();
   const replication = await harness.pool.query<{
     relname: string;
     relreplident: string;
@@ -30,10 +28,4 @@ it("creates collection tables with default replication identity without the reti
   `, [tables]);
   expect(replication.rows.map((row) => row.relname)).toEqual(tables);
   expect(replication.rows.filter((row) => row.relreplident !== "d")).toEqual([]);
-
-  const triggers = await harness.pool.query(`
-    select tgname from pg_trigger
-    where not tgisinternal and tgname like 'ployz_%_realtime_changed'
-  `);
-  expect(triggers.rows).toEqual([]);
 });

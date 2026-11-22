@@ -6,6 +6,7 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { PLOYZ_SDK, PLOYZ_SDK_AND_SUBPATHS } from './vite.sdk'
 import { SECURITY_HEADERS } from './src/server/security-headers'
 
 const marketingOrigin = process.env['MARKETING_ORIGIN']
@@ -14,15 +15,11 @@ const config = defineConfig({
   resolve: {
     tsconfigPaths: true,
   },
-  test: {
-    setupFiles: ["./vitest.setup.ts"],
-  },
-  // ponytail: native NAPI addon, rolldown can't parse the .node binary
   ssr: {
-    external: ['@ployz/sdk'],
+    external: [PLOYZ_SDK],
   },
   optimizeDeps: {
-    exclude: ['@ployz/sdk'],
+    exclude: [PLOYZ_SDK],
     // tanstackStart excludes better-auth, so the scanner never sees what its client imports; vite then finds these
     // on first page load, re-optimizes and reloads into stale `?v=` hashes (504 Outdated Optimize Dep).
     include: [
@@ -51,10 +48,6 @@ const config = defineConfig({
     ],
   },
   server: {
-    allowedHosts: [
-      'ployz-dev.nickpotts.com.au',
-      'codex-vm.tailcb9c5.ts.net',
-    ],
     strictPort: true,
     // Dev only: Vite answers asset-looking paths (`.js`, `.css`, images) itself before any app route runs, so the
     // marketing proxy (src/routes/$.tsx) never sees the marketing site's built assets. Production has no such layer.
@@ -66,7 +59,7 @@ const config = defineConfig({
     tanstackStart({ client: { entry: './client.tsx' } }),
     nitro({
       plugins: ['./src/server/config-check.nitro.ts', './src/server/unhandled-errors.nitro.ts'],
-      rollupConfig: { external: [/^@ployz\/sdk(?:\/|$)/] },
+      rollupConfig: { external: [PLOYZ_SDK_AND_SUBPATHS] },
       routeRules: { '/**': { headers: { ...SECURITY_HEADERS } } },
     }),
     viteReact(),

@@ -1,6 +1,6 @@
 import type { ContainerId, MachineId, RowId, ServiceId } from "@ployz/sdk";
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 const decodeMachineId = Schema.decodeUnknownSync(rustMachineIdSchema);
 

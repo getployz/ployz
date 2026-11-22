@@ -4,11 +4,11 @@
 //! the dataset and reading the snapshot. The send checks the stream's own BEGIN record
 //! against the GUID, which covers a replacement after this answer.
 
+use crate::volume_copy::{SendPoint, SendPointRequest};
 use axum::{Json, extract::State};
 use ployz_core::{RpcError, RpcErrorCode, SwitchError};
-use ployzd::volume_copy::{SendPoint, SendPointRequest};
 
-use super::{VolumeStorage, inspect::internal, marks::Mark, slot};
+use super::{VolumeName, VolumeStorage, marks::Mark};
 
 pub(super) async fn send_point(
     State(storage): State<VolumeStorage>,
@@ -23,16 +23,15 @@ fn unknown(message: String) -> RpcError {
 
 impl VolumeStorage {
     async fn send_point(&self, request: &SendPointRequest) -> Result<SendPoint, RpcError> {
-        let name = slot::name(&request.name)?;
-        let (_held, _installation) = self.admit_mutation().await.map_err(internal)?;
+        let name = VolumeName::try_from(&request.name)?;
+        let (_held, _installation) = self.admit_mutation().await?;
         let pool = self
             .pool
             .one_usable()
-            .await
-            .map_err(internal)?
+            .await?
             .ok_or_else(|| unknown("no Machine Pool is imported on this Machine".to_owned()))?;
         // Every 404 below is an absence, judged only from listings ZFS finished.
-        let datasets = self.complete_datasets(&pool).await.map_err(internal)?;
+        let datasets = self.complete_datasets(&pool).await?;
         let pulled = || {
             SwitchError::Busy.rpc_error(format!(
                 "Volume {name} is still being pulled on this Server"
@@ -45,13 +44,11 @@ impl VolumeStorage {
         // to a stale parent sends only once that parent is clean.
         if let Some(parent) = Self::slot(&datasets, &pool, &name) {
             let marks = self.marks(&parent.name);
-            if marks.is_set(Mark::Pull).await.map_err(internal)?
-                || marks.is_set(Mark::PullOrigin).await.map_err(internal)?
-            {
+            if marks.is_set(Mark::Pull).await? || marks.is_set(Mark::PullOrigin).await? {
                 return Err(pulled());
             }
         }
-        let dataset = match Self::dataset(&datasets, &pool, &name).map_err(internal)? {
+        let dataset = match Self::dataset(&datasets, &pool, &name)? {
             Some(root) => root.name.clone(),
             None => Self::slot_fs(&datasets, &pool, &name)
                 .ok_or_else(|| unknown(format!("Volume {name} has no writer on this Machine")))?
@@ -59,18 +56,10 @@ impl VolumeStorage {
                 .clone(),
         };
         let at = format!("{dataset}@{}", request.target);
-        if !self
-            .snapshot_names(&dataset)
-            .await
-            .map_err(internal)?
-            .contains(&at)
-        {
+        if !self.snapshot_names(&dataset).await?.contains(&at) {
             return Err(unknown(format!("snapshot {at} does not exist")));
         }
-        let point = self
-            .point(&dataset, request.target.as_str())
-            .await
-            .map_err(internal)?;
+        let point = self.point(&dataset, request.target.as_str()).await?;
         Ok(SendPoint {
             dataset,
             guid: point.guid,

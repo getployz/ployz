@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-
-const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+import { BASE32 } from "#/lib/base32";
 
 export const DEVICE_KEY = /^[0-9a-f]{64}$/;
 

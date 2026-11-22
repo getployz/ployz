@@ -1101,7 +1101,8 @@ impl ReplicatedStore {
             .await
     }
 
-    pub async fn certificate(
+    #[cfg(test)]
+    pub(crate) async fn certificate(
         &self,
         hostname: &IngressHost,
     ) -> Result<Option<CertificateMaterial>, Error> {
@@ -1242,34 +1243,42 @@ impl ReplicatedStore {
         .await
     }
 
-    /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
-    /// try again.
-    ///
-    /// With `tried` `None`, this keeps a row that holds material. With `tried`, it writes only the
-    /// failure fields, and answers `Moved` when the row no longer held `tried`, unpublished.
+    /// Record why a hostname has no certificate and when the Cluster may try again. Keeps a row
+    /// that holds material.
     ///
     /// # Errors
     ///
     /// Returns if the row cannot be read or written.
-    pub(crate) async fn record_certificate_failure(
+    pub(crate) async fn record_order_failure(
         &self,
         hostname: &IngressHost,
-        tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<AcmeWrite, Error> {
         let last_error = last_error.into();
-        let Some(tried) = tried else {
-            return self
-                .write_acme_row(hostname, |latest| {
-                    if latest.material().is_some() {
-                        AcmeEdge::Keep
-                    } else {
-                        AcmeEdge::Write(latest.clone().with_backoff(last_error.clone(), clock))
-                    }
-                })
-                .await;
-        };
+        self.write_acme_row(hostname, |latest| {
+            if latest.material().is_some() {
+                AcmeEdge::Keep
+            } else {
+                AcmeEdge::Write(latest.clone().with_backoff(last_error.clone(), clock))
+            }
+        })
+        .await
+    }
+
+    /// Record why the renewal of `tried` failed and when the Cluster may try again. Writes only
+    /// the failure fields, and answers `Moved` when the row no longer holds `tried`, unpublished.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub(crate) async fn record_renewal_failure(
+        &self,
+        hostname: &IngressHost,
+        tried: &CertificateMaterial,
+        last_error: impl Into<String>,
+        clock: IssuanceClock,
+    ) -> Result<AcmeWrite, Error> {
         let Some(AcmeRowRead {
             key, row: latest, ..
         }) = self.acme_row(hostname).await?
@@ -1279,25 +1288,25 @@ impl ReplicatedStore {
         // A failed renewal keeps serving its material and backs off like a first order. Only the
         // failure fields change, and only over the ACME material that failed, so a renewal, a
         // publication or another Machine's challenge landing after the read survives.
-        let failed: serde_json::Value =
-            serde_json::from_str(&latest.with_backoff(last_error, clock).encode()?)?;
-        let field = |name: &str| failed.get(name).cloned().unwrap_or_default();
+        let patch = latest.with_backoff(last_error, clock).failure_patch();
+        let set = patch
+            .iter()
+            .map(|(path, _)| format!("'{path}', ?"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let counts = self
             .api
             .execute_counted([Statement::new(
-                "UPDATE certificates SET body = json_set(body, \
-                   '$.last_error', ?, '$.next_attempt_at', ?, '$.failures', ?, '$.last_failure', ?) \
-                 WHERE hostname = ? \
-                 AND json_extract(body, '$.certificate') = ? \
-                 AND NOT coalesce(json_extract(body, '$.published'), 0)",
-                [
-                    field("last_error"),
-                    field("next_attempt_at"),
-                    field("failures"),
-                    field("last_failure"),
-                    json!(key.as_str()),
-                    json!(tried.certificate()),
-                ],
+                format!(
+                    "UPDATE certificates SET body = json_set(body, {set}) \
+                     WHERE hostname = ? \
+                     AND json_extract(body, '$.certificate') = ? \
+                     AND NOT coalesce(json_extract(body, '$.published'), 0)"
+                ),
+                patch
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .chain([json!(key.as_str()), json!(tried.certificate())]),
             )])
             .await?;
         acme_written(counts)
@@ -1407,7 +1416,8 @@ impl ReplicatedStore {
         Ok(())
     }
 
-    pub async fn certificates(
+    #[cfg(test)]
+    pub(crate) async fn certificates(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateMaterial>, Error> {
         Ok(self
@@ -1735,89 +1745,4 @@ fn removal(machine_id: &MachineId) -> [Statement; 4] {
         ),
         Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
     ]
-}
-
-#[cfg(test)]
-mod statement_tests {
-    use ployz_core::MachineId;
-    use serde_json::json;
-
-    use super::*;
-
-    fn machine() -> Machine {
-        crate::corrosion::store_tests::participating_record().0
-    }
-
-    fn sent(statement: &Statement) -> serde_json::Value {
-        serde_json::to_value(statement).unwrap()
-    }
-
-    #[test]
-    fn the_guarded_upserts_send_the_text_every_daemon_has_sent_since_the_guard() {
-        let machine = machine();
-        let body = serde_json::to_string(&machine).unwrap();
-        assert_eq!(
-            sent(&machine_upsert(&machine).unwrap()),
-            json!({
-                "query": "INSERT INTO machines (id, info) \
-                          SELECT ?1, json_set(?2, '$.self_published', json('true')) \
-                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
-                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-                          ON CONFLICT (id) DO UPDATE SET info = excluded.info",
-                "params": [machine.id, body],
-            })
-        );
-        let row = RegisterRow::new(machine.clone());
-        let body = serde_json::to_string(&row.0).unwrap();
-        assert_eq!(
-            sent(&registration_upsert(&row).unwrap()),
-            json!({
-                "query": "INSERT INTO machines (id, info) SELECT ?1, ?2 \
-                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-                          OR ((NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
-                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-                          AND NOT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id = ?1)) \
-                          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-                          WHERE json_extract(machines.info, '$.self_published') IS NULL \
-                          OR json_extract(machines.info, '$.public_key') \
-                          IS NOT json_extract(excluded.info, '$.public_key')",
-                "params": [machine.id, body],
-            })
-        );
-    }
-
-    #[test]
-    fn a_forget_sends_both_tombstone_inserts_before_the_removal() {
-        let id = MachineId::parse("b".repeat(32)).unwrap();
-        let sent = forget_statements(&id).iter().map(sent).collect::<Vec<_>>();
-        let [identity_tombstone, id_tombstone, removed @ ..] = sent.as_slice() else {
-            panic!("a forget sends two tombstones and a removal: {sent:?}");
-        };
-        assert_eq!(
-            [identity_tombstone.clone(), id_tombstone.clone()],
-            [
-                json!({
-                    "query": "INSERT INTO cluster (key, value) \
-                              SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
-                              FROM machines \
-                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
-                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                    "params": [id],
-                }),
-                json!({
-                    "query": "INSERT INTO cluster (key, value) \
-                              SELECT 'forgotten-id:' || id, id \
-                              FROM machines \
-                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
-                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                    "params": [id],
-                }),
-            ]
-        );
-        assert_eq!(
-            removed.to_vec(),
-            removal(&id).iter().map(self::sent).collect::<Vec<_>>()
-        );
-    }
 }

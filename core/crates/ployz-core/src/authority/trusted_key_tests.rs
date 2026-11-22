@@ -1,3 +1,4 @@
+use crate::authority::MismatchField;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::Signer as _;
 use sha2::{Digest, Sha256};
@@ -155,35 +156,35 @@ fn each_spoiled_part_of_an_assertion_is_refused_by_name() {
                 kind: "webauthn.create",
                 ..HONEST
             },
-            "an assertion type",
+            MismatchField::AssertionType,
         ),
         (
             Answer {
                 challenge: b"another body",
                 ..HONEST
             },
-            "a challenge",
+            MismatchField::Challenge,
         ),
         (
             Answer {
                 origin: "https://evil.example",
                 ..HONEST
             },
-            "an origin",
+            MismatchField::Origin,
         ),
         (
             Answer {
                 rp_id: "evil.example",
                 ..HONEST
             },
-            "a relying party",
+            MismatchField::RelyingParty,
         ),
         (
             Answer {
                 flags: USER_PRESENT,
                 ..HONEST
             },
-            "user verification",
+            MismatchField::UserVerification,
         ),
     ];
     for (answer, field) in cases {
@@ -205,7 +206,7 @@ fn a_signature_from_another_key_is_refused() {
     assert_eq!(
         trusted.passkey_approval(&assertion, CHALLENGE),
         Err(AuthorityRefusal::Mismatch {
-            field: "a passkey signature"
+            field: MismatchField::PasskeySignature
         })
     );
 }
@@ -230,7 +231,7 @@ fn a_passkey_never_signs_an_envelope_even_when_its_key_is_ed25519() {
     )
     .unwrap();
     assert_eq!(
-        enrollment.verified_signers(trusted.signing_keys()),
+        enrollment.approvers(&trusted),
         Err(AuthorityRefusal::UnknownKey {
             key: signer.public()
         })

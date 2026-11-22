@@ -3,31 +3,23 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
+import { serverEnrollmentRequested } from "#/modules/machines/waiting/server-enrollment.events";
 import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
-import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing, shareOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
+import { isDeadFoundingClaim, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment, shareOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { foundingClusterName } from "#/modules/cluster-name/cluster-name.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
-import {
-  COMMITTED_STAGES,
-  ENROLL_MIN_CLI_VERSION,
-  INGRESS_CLOSED_OPTION,
-  type EnrollInput,
-  type EnrollInstruction,
-  type EnrollmentRole,
-  type EnrollmentState,
-  type EnrollStorage,
-  isReadyFor,
-} from "#/modules/machines/waiting/server-enrollment";
+import { COMMITTED_STAGES, ENROLL_MIN_CLI_VERSION, INGRESS_CLOSED_OPTION, type EnrollInput, isReadyFor } from "#/modules/machines/waiting/server-enrollment";
+import { type EnrollInstruction, type EnrollmentRole, type EnrollmentState, type EnrollStorage } from "#/modules/machines/waiting/enrollment-states";
 import { serversOffline } from "#/modules/machines/waiting/servers-offline";
 import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { isBehind } from "#/modules/server-upgrade/server-upgrade";
@@ -410,7 +402,7 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
       state,
       requestedByUserId: userId,
     });
-    yield* enqueueEvent(createServerEnrollmentRequestedEvent({ attemptId: id, organizationId }), delivery);
+    yield* enqueueEvent(serverEnrollmentRequested.create({ attemptId: id, organizationId }), delivery);
     attempts.push({ id, waitingServerId: row.waitingServerId, role: row.role, name: row.instruction.name, state });
   }
   return { attempts, skipped: plan.skipped, spread: plan.spread };

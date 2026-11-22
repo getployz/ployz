@@ -9,7 +9,7 @@
 //!
 //! The actors, each step one `RecordOwner::mutate` or one store read of the code it copies:
 //!
-//! - Forget (`LocalMachine::forget`, local_machine.rs): the denial, `remove_members`, then
+//! - Forget (`LocalMachine::forget`, local_machine/departure.rs): the denial, `remove_members`, then
 //!   `forget_machine`'s delete, which may fail and leave the row. Forget may run again.
 //! - An observation (`ReplicatedStore::machines`, corrosion/store.rs): the row read, then
 //!   `record_removed`, which records S only on `removed_machines`' deletion evidence, then

@@ -9,7 +9,7 @@ import { Button } from "#/components/ui/button";
 import { planSummary, prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
 import { useStoreView } from "#/modules/config-store/store-view.queries";
-import { ENVIRONMENT_PR_PLAN_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_PR_PLAN_ROUTE_TO } from "#/lib/environment-routes";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 

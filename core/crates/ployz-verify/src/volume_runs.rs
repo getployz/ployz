@@ -84,8 +84,9 @@ use std::{net::Ipv6Addr, num::NonZeroU64};
 use ployz_core::{
     ContainerId, CopyPlan, CopyRefusal, CopyTransition, Drain, ExpectedCopy, ManagementAddress,
     ProvisionedVolumeMaximumBytes, SlotId, SlotRole, Snapshot, SnapshotGuid, Start, VolumeCopy,
-    WantedCopy, WriterEpoch,
+    VolumeGen, WantedCopy, WriterEpoch,
 };
+use ployz_decide::volume_floor;
 use ployz_decide::volume_size::{Refused, SizeFacts, SizePlan, size_plan};
 use stateright::{Checker, Model, Property};
 
@@ -248,7 +249,7 @@ struct Host {
     /// `volume_floors`: the newest lane `gen` this Machine admitted for the Volume.
     floor: u8,
     holder: Holder,
-    /// `MachineService::switch_mutation`, held by one request from its second floor
+    /// `LocalMachine::lock_switch`'s lock, held by one request from its second floor
     /// check, or a Prepare from its first read, to its reply.
     switch: Option<usize>,
     /// The exclusive admission turn, held by `start_volume_holder` from its floor
@@ -1321,16 +1322,28 @@ fn start_state(holder: Holder, start: StartKind) -> StartState {
     }
 }
 
+/// A modelled gen as the lane gen `ployz_decide::volume_floor` reads.
+fn lane(r#gen: u8) -> VolumeGen {
+    VolumeGen::new(r#gen.into())
+}
+
+fn modelled(r#gen: VolumeGen) -> u8 {
+    u8::try_from(r#gen.get()).expect("a modelled gen")
+}
+
 // --- One Machine ------------------------------------------------------------------
 
 impl VolumeRuns {
-    /// `FloorTurn::admit`: refuse a `gen` below the floor, else raise the floor to it.
+    /// `FloorTurn::admit`, through `ployz_decide::volume_floor::admit`. Without floors a
+    /// refused gen passes and leaves the floor.
     fn admit(&self, host: &mut Host, r#gen: u8) -> bool {
-        if !self.broken.floors && r#gen < host.floor {
-            return false;
+        match volume_floor::admit(lane(host.floor), lane(r#gen)) {
+            Ok(raised) => {
+                host.floor = modelled(raised);
+                true
+            }
+            Err(_) => self.broken.floors,
         }
-        host.floor = host.floor.max(r#gen);
-        true
     }
 
     fn can_step(&self, state: &State, index: usize) -> bool {
@@ -1340,7 +1353,7 @@ impl VolumeRuns {
             return false;
         }
         match request.progress {
-            // `switch_verb` queues `SetVolumeSize` on the switch lock, and
+            // `set_volume_size` queues `SetVolumeSize` on the switch lock, and
             // `prepare_volumes` takes it before its admission turn.
             Progress::Sent if matches!(request.want, Want::Size { .. }) => host.switch.is_none(),
             Progress::Sent if request.want == Want::Prepare && !self.broken.prepare_switch => {

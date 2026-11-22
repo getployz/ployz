@@ -1,7 +1,7 @@
-import type { DeletionCheck } from "#/components/deletion-dialog";
+import type { DeletionCheck } from "#/modules/config-store/deletion";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import type { StoreRefused } from "./store.contract";
-import { volumeLossItems } from "#/modules/volume-placement/volume-placement";
+import type { StoreRefused } from "#/lib/refusal";
+import { volumeLossItems } from "#/modules/volume-placement/volume-placement.review";
 import { volumeLoss, type VolumeLoss } from "./store-volumes";
 
 /** What the user accepts when they confirm a Volume loss: exactly the Volumes asked about, bound to the Store's version. */

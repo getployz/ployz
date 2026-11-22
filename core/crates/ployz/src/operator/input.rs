@@ -4,8 +4,10 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
-use ployz_core::{ContainerSelector, ServiceSelector};
+use ployz_core::{ContainerSelector, RpcErrorCode, ServiceSelector};
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 /// The forms `--since` and `--until` accept, as the help names them.
 pub const TIME_FORMATS: &str =
@@ -32,6 +34,12 @@ pub enum InputError {
     InvalidLocalPort(String),
     #[error("invalid remote port {0:?}: expected 1-65535")]
     InvalidRemotePort(String),
+}
+
+impl Coded for InputError {
+    fn code(&self) -> RpcErrorCode {
+        RpcErrorCode::InvalidArgument
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -144,26 +144,9 @@ impl DeployOperations for Recording {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
+        auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ImagePulled, RpcError> {
-        self.fake.ensure_image(machine_id, spec).await
-    }
-}
-
-impl ProxyPlacement for Recording {
-    async fn set_ingress_doors(
-        &self,
-        machine_id: &MachineId,
-        request: ployz_core::SetIngressDoorsRequest,
-    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
-        self.fake.set_ingress_doors(machine_id, request).await
-    }
-
-    async fn set_private_access(
-        &self,
-        machine_id: &MachineId,
-        request: ployz_core::SetPrivateAccessRequest,
-    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
-        self.fake.set_private_access(machine_id, request).await
+        self.fake.ensure_image(machine_id, spec, auth).await
     }
 }
 

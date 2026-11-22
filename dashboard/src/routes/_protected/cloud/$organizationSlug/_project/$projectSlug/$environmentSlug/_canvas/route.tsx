@@ -1,7 +1,9 @@
 import { Suspense } from "react";
 import { createFileRoute, type ErrorComponentProps } from "@tanstack/react-router";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { prefetchStoreEnvironment, requireStoreEnvironment, streamRemote, streamRemoteUptime, streamStoreViews } from "#/collections/route-data";
+import { streamRemote } from "#/collections/route-data";
+import { prefetchStoreEnvironment, requireStoreEnvironment, streamStoreViews } from "#/modules/config-store/store.route-data";
+import { streamRemoteUptime } from "#/modules/uptime/uptime.route-data";
 import { configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { githubWebQueryOptions } from "#/modules/github/github.queries";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";

@@ -290,7 +290,7 @@ pub(crate) fn remove(
             false => refused,
         }
     })?;
-    lock_project(tx, &project.id)?;
+    scope::lock_project(tx, &project.id)?;
     let (target, target_name, members) = match &remove.environment {
         Some(name) => {
             let environment = scope::lock(
@@ -412,7 +412,7 @@ pub(crate) fn remove(
             if !held {
                 live.accepted = accepted;
             }
-            live.retried = deployment::now();
+            live.retried = crate::storage::now();
             live
         }
         None => {
@@ -490,7 +490,7 @@ fn review_member(
 ) -> Result<Reviewed, RpcError> {
     let id = &environment.summary.id;
     let review = crate::review::review(tx, &environment)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let deployed = approval::deployed(&review.head);
     let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;
@@ -803,7 +803,7 @@ pub(crate) fn cancel_removal(
     cancel: &CancelRemoval,
 ) -> Result<RemovalCancelled, RpcError> {
     let project = scope::project(tx, who, Some(&cancel.project))?;
-    lock_project(tx, &project.id)?;
+    scope::lock_project(tx, &project.id)?;
     let target = match &cancel.environment {
         Some(name) => Target::Environment(
             scope::lock(
@@ -920,7 +920,7 @@ pub(crate) fn project_marked(
     project: &ProjectId,
     name: &ProjectName,
 ) -> Result<(), RpcError> {
-    lock_project(tx, project)?;
+    scope::lock_project(tx, project)?;
     let live = mark::of(tx, &Target::Project(project.clone()))?
         .is_some_and(|mark| mark.state == State::Removing);
     if !live {
@@ -933,14 +933,6 @@ pub(crate) fn project_marked(
         }
         .details(),
     ))
-}
-
-fn lock_project(tx: &mut dyn Tx, project: &ProjectId) -> Result<(), RpcError> {
-    tx.execute(
-        "UPDATE config_project SET name = name WHERE id = ?1",
-        &[project.as_str().into()],
-    )?;
-    Ok(())
 }
 
 /// Where `environment`'s removal stands, as `env ls` shows it: its latest

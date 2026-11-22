@@ -183,7 +183,7 @@ fn server(
         region: machine
             .labels
             .iter()
-            .find(|(key, _)| key.as_str() == ployz_store::REGION_LABEL)
+            .find(|(key, _)| key.as_str() == ployz_core::Region::LABEL)
             .map(|(_, value)| value.as_str().to_owned()),
         disk: match observed.storage {
             Some(MachineStorageObservation::Pool {

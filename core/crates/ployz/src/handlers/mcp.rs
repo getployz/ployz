@@ -26,7 +26,6 @@ use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
-use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
@@ -36,8 +35,10 @@ use tokio_util::sync::CancellationToken;
 use super::{Error, leaf_matches, store};
 use crate::agent_call::{self, Started};
 use crate::approval::{self, Asked, Subject, Verb};
-use crate::cloud_account::{self, CALL_DEADLINE, Credential, StoreCallError, Via};
-use crate::cloud_login::{self, CredentialStore, LoginError};
+use crate::cloud;
+use crate::cloud::account::{Credential, StoreCallError, StoreClient};
+use crate::cloud::http::{CALL_DEADLINE, Via};
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
@@ -72,7 +73,7 @@ fn located(config: PathBuf) -> Locate {
         let scope = match &store {
             StoreAt::Local => super::link::scope_from_env(&config)?,
             StoreAt::Cloud { organization } => {
-                super::link::scope_from_env_in(&config, organization.as_str())?
+                crate::scope::Scope::from_env()?.linked_in(&config, organization.as_str())?
             }
         };
         let at = scope.at();
@@ -103,8 +104,8 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     if local.is_none() {
         crate::ui::note(CLOUD_CREDENTIAL);
     }
-    let cloud = crate::cloud_origin::CloudOrigin::named_by_env();
-    let token = crate::cloud_account::env_token();
+    let cloud = crate::cloud::origin::CloudOrigin::named_by_env();
+    let token = crate::cloud::account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.
     let setup = local
         .is_none()
@@ -256,6 +257,13 @@ enum Backend<'a> {
 }
 
 impl Backend<'_> {
+    fn client(&self) -> StoreClient<'_> {
+        match self {
+            Self::Local(store, who) => StoreClient::Local(store, who),
+            Self::Cloud(cloud) => StoreClient::Cloud(&cloud.credential, Via::Agent),
+        }
+    }
+
     /// The Store the registry's tools address for this call.
     fn at(&self) -> StoreAt {
         match self {
@@ -272,16 +280,10 @@ impl Backend<'_> {
 
     async fn ask(&self, ask: &Ask) -> Result<Value, RpcError> {
         match (self, ask) {
-            (Self::Local(store, who), Ask::Store(query)) => {
-                store.read(who, query).and_then(|view| value(&view))
-            }
+            (_, Ask::Store(query)) => called(self.client().read_json(query).await),
             (Self::Local(..), Ask::Cloud(_)) => Err(cloud_only()),
-            (Self::Cloud(cloud), Ask::Store(query)) => called(
-                cloud_account::config_store(&cloud.credential, Via::Agent, "read", query, None)
-                    .await,
-            ),
             (Self::Cloud(cloud), Ask::Cloud(query)) => called(
-                cloud_account::approved_answer(
+                cloud::account::approved_answer(
                     &cloud.credential,
                     Method::POST,
                     "agent/ask",
@@ -295,22 +297,12 @@ impl Backend<'_> {
 
     async fn write(&self, write: &Write, approval: Option<&str>) -> Result<Value, RpcError> {
         match (self, write) {
-            (Self::Local(store, who), Write::Store(command)) => store
-                .write(who, command)
-                .and_then(|written| value(&written)),
+            (_, Write::Store(command)) => {
+                written(self.client().write_json(command, approval).await)
+            }
             (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
-            (Self::Cloud(cloud), Write::Store(command)) => written(
-                cloud_account::config_store(
-                    &cloud.credential,
-                    Via::Agent,
-                    "write",
-                    command,
-                    approval,
-                )
-                .await,
-            ),
             (Self::Cloud(cloud), Write::Act(act)) => written(
-                cloud_account::approved_answer(
+                cloud::account::approved_answer(
                     &cloud.credential,
                     Method::POST,
                     "agent/act",
@@ -321,10 +313,6 @@ impl Backend<'_> {
             ),
         }
     }
-}
-
-fn value(answer: &impl Serialize) -> Result<Value, RpcError> {
-    serde_json::to_value(answer).map_err(|error| RpcError::caused(RpcErrorCode::Internal, &error))
 }
 
 fn called(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
@@ -660,7 +648,7 @@ impl Server {
     }
 
     async fn person(&self) -> Result<Credential, String> {
-        cloud_account::credential(
+        cloud::account::credential(
             &CredentialStore::beside(&self.account.config),
             self.account.token.clone(),
             self.account.cloud.clone(),
@@ -682,7 +670,7 @@ impl Server {
         asked: &Asked,
     ) -> Result<Credential, String> {
         let signed_in =
-            match cloud_login::signed_in(&CredentialStore::beside(&self.account.config)).await {
+            match cloud::login::signed_in(&CredentialStore::beside(&self.account.config)).await {
                 Ok(signed_in) => signed_in,
                 Err(LoginError::SignedOut) => return self.person().await,
                 Err(error) => return Err(Error::from(error).to_string()),
@@ -699,14 +687,14 @@ impl Server {
             ));
         }
         let device = Credential::Device(signed_in);
-        let current = cloud_account::organizations(&device)
+        let current = cloud::account::organizations(&device)
             .await
             .map_err(|error| Error::from(error).to_string())?
             .into_iter()
             .find(|entry| entry.current)
             .ok_or_else(|| Error::from(LoginError::TokenRefused).to_string())?;
         if current.id != acting.as_str() {
-            let organization = cloud_account::acting_in(agent)
+            let organization = cloud::account::acting_in(agent)
                 .await
                 .map_err(|error| Error::from(error).to_string())?
                 .slug;
@@ -727,7 +715,7 @@ impl Server {
         if let Some(organization) = self.account.organization.of(credential) {
             return Ok(organization);
         }
-        let organization = cloud_account::acting_in(credential)
+        let organization = cloud::account::acting_in(credential)
             .await
             .map_err(|error| Error::from(error).to_string())?;
         let organization = OrganizationId::parse(organization.id).map_err(|error| error.message)?;
@@ -847,7 +835,7 @@ fn reporting_as(
         Box::pin(async move {
             match ActingAs::resolve(&config, token.as_deref()) {
                 Ok(ActingAs::Token) => {
-                    cloud_account::credential(&CredentialStore::beside(&config), token, cloud)
+                    cloud::account::credential(&CredentialStore::beside(&config), token, cloud)
                         .await
                         .ok()
                 }
@@ -953,7 +941,7 @@ impl Server {
         let result = self.call_compiled(gate, request, context).await;
         // A compiled tool that reached Cloud kept the revision Cloud named.
         let revision =
-            (self.setup.as_ref()).and_then(|setup| cloud_account::revision_seen(&setup.cloud));
+            (self.setup.as_ref()).and_then(|setup| cloud::http::revision_seen(&setup.cloud));
         self.follow(revision, context).await;
         result
     }
@@ -1237,8 +1225,9 @@ fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
 /// `credential` acts in, which lists the approval under Waiting on you. Cloud itself when
 /// the Organization can't be read.
 async fn waiting_on_you(credential: &Credential) -> String {
-    let cloud = credential.cloud().trim_end_matches('/');
-    match cloud_account::acting_in(credential).await {
+    let origin = credential.origin();
+    let cloud = origin.as_str();
+    match cloud::account::acting_in(credential).await {
         Ok(organization) => format!(
             "{cloud}/cloud/{}?chat={}",
             organization.slug,

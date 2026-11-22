@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import type { Departed, LocalMachineRemoved, MachineId } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
-import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
+import { machineRemoveRequested } from "#/modules/machines/machines.events";
 import type { Actor } from "#/modules/identity/actor";
 import {
   type DataLossList,
@@ -10,14 +10,8 @@ import {
 import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import type {
-  EnqueueMachineRemoveInput,
-  GetMachineRemoveAttemptInput,
-  LoadMachineDataLossInput,
-  MachineRemoveAttemptContext,
-  RemoveMachineOutcome,
-  ServerRelease,
-} from "#/modules/machines/machine-removal";
+import type { EnqueueMachineRemoveInput, GetMachineRemoveAttemptInput, LoadMachineDataLossInput, MachineRemoveAttemptContext, RemoveMachineOutcome } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { removalLack } from "#/modules/machines/machine-removal";
 import {
   claimMachineRemoveAttempt,
@@ -28,14 +22,17 @@ import {
   markOwnedMachineRemoveSent,
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
-import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
+import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { nameLostVolumes, planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
+import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
+import { releaseLanesOff } from "#/modules/volume-run/volume-run.cluster.server";
+import { frameServers } from "#/modules/runtime/daemon-compat";
 
 export class MachineRemovalProviderFailure extends Data.TaggedError(
   "MachineRemovalProviderFailure",
@@ -89,25 +86,6 @@ export function asRemoveMachineOutcome<R>(
   );
 }
 
-export const loadMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.loadAttempt",
-)(loadMachineRemoveAttempt);
-
-export const loadMachineRemoveAttemptByRunActivity = Effect.fn(
-  "MachineRemoval.loadAttemptByRun",
-)((inngestRunId: string) =>
-  loadMachineRemoveAttemptByRun(inngestRunId));
-
-export const claimMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.claim",
-)((input: Parameters<typeof claimMachineRemoveAttempt>[0]) =>
-  claimMachineRemoveAttempt(input));
-
-export const completeMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.complete",
-)((input: Parameters<typeof completeMachineRemoveAttempt>[0]) =>
-  completeMachineRemoveAttempt(input));
-
 /** Why a Server Cloud reaches only through itself can't be removed while `others` are listed, and what unblocks it. */
 function carriedOnlyBy(name: string, others: readonly string[]) {
   const listed = others.join(", ");
@@ -142,12 +120,7 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     }
     // Without a frame every Server's capabilities are unknown, and an unknown capability attempts.
     const frame = yield* Effect.option(session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS));
-    const servers = Option.match(frame, {
-      onNone: () => [],
-      onSome: ({ machines }) => machines.map(({ machine }) => ({
-        id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [],
-      })),
-    });
+    const servers = frameServers(Option.getOrNull(frame));
     const lack = removalLack(servers, {
       target: attempt.machineId,
       entries: access.connections.flatMap((connection) => connection.machine_id ?? []),
@@ -261,14 +234,14 @@ export const prepareMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const existing = yield* loadMachineRemoveAttemptActivity(input.attemptId);
+  const existing = yield* loadMachineRemoveAttempt(input.attemptId);
   if (existing === null) {
     return { kind: "missing" as const, attemptId: input.attemptId };
   }
   if (isTerminalMachineRemove(existing)) {
     return { kind: "terminal" as const, attempt: existing };
   }
-  const claimed = yield* claimMachineRemoveAttemptActivity(input);
+  const claimed = yield* claimMachineRemoveAttempt(input);
   return { kind: "ready" as const, attempt: claimed.attempt };
 });
 
@@ -279,7 +252,7 @@ export const failOwnedMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const attempt = yield* loadMachineRemoveAttemptActivity(input.attemptId);
+  const attempt = yield* loadMachineRemoveAttempt(input.attemptId);
   if (
     attempt === null ||
     attempt.state !== "running" ||
@@ -287,7 +260,7 @@ export const failOwnedMachineRemoveAttemptActivity = Effect.fn(
   ) {
     return { state: "skipped" as const };
   }
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     ...input,
     completion: {
       state: "failed",
@@ -304,13 +277,13 @@ export const cancelMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const attempt = yield* loadMachineRemoveAttemptByRunActivity(
+  const attempt = yield* loadMachineRemoveAttemptByRun(
     input.inngestRunId,
   );
   if (attempt === null || attempt.state !== "running") {
     return { state: "skipped" as const };
   }
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     attemptId: attempt.id,
     inngestRunId: input.inngestRunId,
     now: input.now,
@@ -381,7 +354,7 @@ export const startMachineRemove = Effect.fn("MachineRemoval.start")(
     const { transaction } = yield* Database;
     return yield* transaction(Effect.gen(function* () {
       const requested = yield* requestMachineRemoveAttempt(input);
-      yield* enqueueEvent(createMachineRemoveRequestedEvent({ attemptId: requested.id }));
+      yield* enqueueEvent(machineRemoveRequested.create({ attemptId: requested.id }));
       return requested;
     }));
   },

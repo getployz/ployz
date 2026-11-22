@@ -73,6 +73,12 @@ impl VolumeName {
         &self.0
     }
 
+    /// The name as Core carries it.
+    #[must_use]
+    pub fn wire(&self) -> ployz_core::DockerVolumeName {
+        ployz_core::DockerVolumeName::parse(self.0.clone()).expect("a VolumeName is never empty")
+    }
+
     /// Where Docker mounts this Volume's writer root.
     #[must_use]
     pub fn mountpoint(&self) -> String {
@@ -97,12 +103,6 @@ impl<'pool> DatasetLayout<'pool> {
     #[must_use]
     pub fn of(pool: &'pool MachinePool) -> Self {
         Self::new(pool.name())
-    }
-
-    /// The imported Pool's name.
-    #[must_use]
-    pub fn pool(&self) -> &'pool str {
-        self.pool
     }
 
     /// `<pool>/ployz`, the parent of every writer root.

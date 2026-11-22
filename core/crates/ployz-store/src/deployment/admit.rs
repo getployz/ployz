@@ -12,17 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, PostedVersion, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
 use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
-use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::trusted::Evidence;
 use crate::{Actor, Approval, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
@@ -482,30 +479,19 @@ fn deploy(
         ));
     }
     let prunes = admit.services.is_empty() && !admit.no_prune;
-    let review = review::review(tx, &environment)?;
     let shipping = review::Shipping::Deploy {
         services: &admit.services,
         upload: admit.upload.as_ref().map(|upload| &upload.digest),
     };
-    if let Err(stale) = review::check(&review, admit.version.as_deref()) {
-        let target = canonicalize_environment_intent(environment.working.clone());
-        let probe =
-            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
-                review::destructive(
-                    tx,
-                    who,
-                    &review,
-                    (&target, &namespace, shipping),
-                    (None, &[], review::consent(review.saved.as_ref())),
-                    trusted.volumes.as_ref(),
-                )
-            });
-        return Err(review::with_loss(stale, probe));
-    }
+    let (review, _) = review::publish::review_for_save(
+        tx,
+        who,
+        &environment,
+        (shipping, admit.version.as_deref()),
+        trusted,
+    )?;
     let id = &environment.summary.id;
-    // A manual Deploy ends the draft's proposals: what they brought is its own now.
-    crate::branch::end_included(tx, id, None)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(
         tx,
@@ -524,12 +510,7 @@ fn deploy(
             &who.organization,
             &saved_intent,
             &landing,
-            deployment::Scope::Narrow {
-                services: &admit.services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(&admit.services, &[]),
             namespace.clone(),
             cluster_domain,
         )?),
@@ -540,25 +521,6 @@ fn deploy(
             narrowed.as_ref().is_none_or(|frozen| frozen.hands(service))
         }),
         Shipping::Working,
-    )?;
-    let losses = review::destructive(
-        tx,
-        who,
-        &review,
-        (&saved_intent, &namespace, shipping),
-        (
-            admit.version.as_deref(),
-            &admit.accept_volume_loss,
-            review::consent(review.saved.as_ref()),
-        ),
-        trusted.volumes.as_ref(),
-    )?;
-    review::guard_saving(
-        tx,
-        Evidence::Caller(trusted),
-        id,
-        review.saved.as_ref(),
-        &saved_intent,
     )?;
     let pruning = match prunes {
         // What this Store holds, deploying or dropping, isn't the prune's.
@@ -573,19 +535,24 @@ fn deploy(
         ),
         false => review::Pruning::Off,
     };
-    pruning.admit(trusted, None)?;
-    let gate = review::Gate::new(tx, id, trusted)?;
-    review::approve(who, &review, (&saved_intent, shipping, &pruning), &gate)?;
-    let (saved, _) = review::publish(
+    let (saved, _, losses) = review::publish::save(
         tx,
-        Evidence::Caller(trusted),
         who,
-        id,
-        environment.working.clone(),
-        review.saved.as_ref(),
-        (admit.message.as_deref(), &losses),
+        &review::publish::Save {
+            environment: &environment,
+            review: &review,
+            target: &saved_intent,
+            namespace: &namespace,
+            shipping,
+            pruning: &pruning,
+            version: admit.version.as_deref(),
+            accept_volume_loss: &admit.accept_volume_loss,
+            message: admit.message.as_deref(),
+            unchanged: review::publish::UnchangedSave::KeepsConsent,
+        },
+        trusted,
     )?;
-    let mut frozen = match narrowed {
+    let frozen = match narrowed {
         Some(frozen) => frozen,
         None => {
             let retire = deployment::dropped(tx, id, &saved_intent, &landing)?;
@@ -594,17 +561,16 @@ fn deploy(
                 &who.organization,
                 &saved_intent,
                 &landing,
-                deployment::Scope::All {
-                    losses: &losses,
+                deployment::Scope {
+                    targeting: deployment::Targeting::Full { prune: prunes },
                     retire: &retire,
-                    prune: prunes,
+                    losses: &losses,
                 },
                 namespace,
                 cluster_domain,
             )?
         }
     };
-    frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
         uploader: who.principal.clone(),
@@ -622,7 +588,7 @@ fn deploy(
             upload,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         saved,
         &frozen,
     )?;
@@ -632,18 +598,15 @@ fn deploy(
         deployment::versions::recreate(tx, &summary.id)?;
     }
     // What merges landed and this Deploy ships no longer waits for a push.
-    let shipped = match admit.services.is_empty() {
-        true => Shipped::All(&saved_intent),
-        false => Shipped::Services(
-            frozen
-                .nodes
-                .iter()
-                .filter(|node| node.service().is_some())
-                .map(TargetNode::id)
-                .collect(),
-        ),
-    };
-    crate::automation::shipped_landed(tx, id, &shipped)?;
+    let shipped = frozen.targeting.as_ref().map(|_| {
+        frozen
+            .nodes
+            .iter()
+            .filter(|node| node.service().is_some())
+            .map(TargetNode::id)
+            .collect()
+    });
+    crate::automation::shipped_landed(tx, id, &saved_intent, &shipped)?;
     Ok(summary)
 }
 
@@ -710,17 +673,15 @@ fn reapply(
     }
     let services = running
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
+        .map(|service| crate::scope::service_name(service))
         .collect::<Result<Vec<_>, _>>()?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let cluster_domain = trusted
         .domains
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    let Some((revision, saved, mut frozen)) = unchanged(
+    let Some((revision, saved, frozen)) = unchanged(
         tx,
         who,
         (id, &running),
@@ -752,7 +713,7 @@ fn reapply(
         services: saved
             .services
             .iter()
-            .filter(|service| frozen.shipped.contains(&service.config.private_dns))
+            .filter(|service| frozen.hands(service))
             .cloned()
             .collect(),
         ..saved.clone()
@@ -764,8 +725,6 @@ fn reapply(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    refuse_shared_writes(&environment, (&shipping, |_: &_| true), Shipping::Saved)?;
-    frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
     let summary = deployment::admit(
         tx,
         who,
@@ -775,12 +734,12 @@ fn reapply(
             None,
             admit.message.clone(),
         ),
-        id,
+        &environment,
         revision,
         &frozen,
     )?;
     for service in &running {
-        pin_running_commit(tx, (id, &summary.id), service)?;
+        crate::build::pin_running(tx, (id, &summary.id), service)?;
     }
     Ok(summary)
 }
@@ -809,12 +768,7 @@ fn unchanged(
             &who.organization,
             &saved,
             landing,
-            deployment::Scope::Narrow {
-                services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(services, &[]),
             namespace.clone(),
             cluster_domain,
         )?;
@@ -846,29 +800,4 @@ fn revisions(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Revisio
     .iter()
     .map(|row| row.number(0, "revision"))
     .collect()
-}
-
-/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
-/// Deployment that put it in Applied State. A Service without a Git source has no
-/// build to pin. Builds go by the runtime name, which a rename keeps.
-fn pin_running_commit(
-    tx: &mut dyn Tx,
-    (environment, id): (&EnvironmentId, &DeploymentId),
-    service: &SavedServiceIntent,
-) -> Result<(), RpcError> {
-    tx.execute(
-        "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
-         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
-         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
-         AND b.commit_sha IS NOT NULL",
-        &[
-            id.as_str().into(),
-            environment.as_str().into(),
-            service.id.as_str().into(),
-            service.config.private_dns.as_str().into(),
-        ],
-    )
-    .map(drop)
 }

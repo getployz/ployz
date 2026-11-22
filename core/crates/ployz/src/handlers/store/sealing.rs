@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use super::super::config_path;
 use super::{Backend, Error, Store};
-use crate::cloud_account::{self, StoreCallError};
+use crate::cloud;
+use crate::cloud::account::StoreCallError;
 use crate::sealing_pin::{self, Pins};
 
 /// What Cloud answers about sealing one write's secrets.
@@ -46,10 +47,9 @@ impl Backend {
         let Self::Cloud(runtime, credential) = self else {
             return Ok(None);
         };
-        let answer = runtime.block_on(cloud_account::config_store_if_routed(
+        let answer = runtime.block_on(cloud::account::sealing(
             credential,
-            cloud_account::Via::Cli,
-            "sealing",
+            cloud::http::Via::Cli,
             query,
         ))?;
         // A Cloud without the route predates sealing on the client, as one answering Off does.

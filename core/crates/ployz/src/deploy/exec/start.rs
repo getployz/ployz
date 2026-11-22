@@ -1,15 +1,17 @@
 use super::cleanup;
-use super::machine_ops::CopyLifecycle;
-use super::machine_ops::MachineOperations;
+use super::report::{Left, left_by};
 use super::stop_first::{Withdrawn, leave_unstopped};
-use super::transport::{Outstanding, RESTART_WAIT, RestartTolerant};
-use super::{Left, Rows, SlotPolicy, left_by, machine_error, stop};
+use super::{Shared, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
+use crate::deploy::machine_calls::CopyLifecycle;
+use crate::deploy::machine_calls::MachineOperations;
+use crate::deploy::machine_calls::SlotPolicy;
+use crate::deploy::machine_calls::{Outstanding, RESTART_WAIT, RestartTolerant};
 use crate::deploy::progress::Progress;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    ContainerRefusalReason, ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
     ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
     ImageDigest, LastRun, MachineAction, MachineId, Namespace, NewContainer, OperationPhase,
     OutOfMemory, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation,
@@ -23,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) async fn discard_new<C: MachineOperations>(
     client: &C,
     progress: &Progress,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     (service, machine_id, container_id): (Option<&QualifiedService>, &MachineId, ContainerId),
     hold: Option<&DeploymentLogId>,
     cancellation: &CancellationToken,
@@ -44,7 +46,9 @@ pub(super) async fn discard_new<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
-                rows.leave_unrouted(progress, service, *machine_id, container_id, error);
+                shared
+                    .report
+                    .leave_unrouted(progress, service, *machine_id, container_id, error);
             }
             return running();
         }
@@ -79,18 +83,18 @@ pub(super) async fn discard_new<C: MachineOperations>(
             match stop(client, machine_id, &container_id, Drain::DEFAULT, None).await {
                 Ok(()) => Withdrawn::Held(Box::new(spec), copy),
                 Err(error) => {
-                    leave_unstopped(client, progress, &copy, &spec, rows, left_by(error)).await;
+                    leave_unstopped(client, progress, &copy, &spec, shared, left_by(error)).await;
                     running()
                 }
             }
         }
         (None, Some(left)) => {
-            rows.leave_running(progress, &copy, left);
+            shared.report.leave_running(progress, &copy, left);
             running()
         }
         (Some(run), Some(left)) => {
             copy.rotation = CopyRotation::Held(run.clone());
-            leave_unstopped(client, progress, &copy, &spec, rows, left).await;
+            leave_unstopped(client, progress, &copy, &spec, shared, left).await;
             running()
         }
     }
@@ -103,12 +107,12 @@ pub(super) async fn discard_new<C: MachineOperations>(
 pub(super) async fn remove_stray<C: MachineOperations>(
     client: &C,
     progress: &Progress,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
-    let removed = tokio::time::timeout(
-        RESTART_WAIT,
+    let removed = within_restart(
+        machine_id,
         cleanup::gone(
             client,
             machine_id,
@@ -119,23 +123,16 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         ),
     );
     let answer = tokio::select! {
-        answer = removed => answer.unwrap_or_else(|_| {
-            Err(crate::cluster::answered_by(
-                machine_id,
-                ConnectError::Rpc(TransportError::budget_expired(
-                    "target Machine RPC timed out",
-                )),
-            ))
-        }),
+        answer = removed => answer,
         () = cancellation.cancelled() => {
-            rows.name_left(progress, service, *machine_id, container_id, "interrupted".into());
+            shared.report.name_left(progress, service, *machine_id, container_id, "interrupted".into());
             return;
         }
     };
     let error = match answer {
         Ok(cleanup::Gone::Removed) => return,
         Ok(cleanup::Gone::InRotation { .. }) => {
-            rows.name_left(
+            shared.report.name_left(
                 progress,
                 service,
                 *machine_id,
@@ -147,7 +144,9 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
-    rows.leave_unrouted(progress, service, *machine_id, container_id, error);
+    shared
+        .report
+        .leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
 /// Why a move's replacement never served, and whether none of it is left on its
@@ -234,7 +233,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         spec,
         None,
-        || format!("move:{old}:{}", uuid::Uuid::new_v4().simple()),
+        || CreationKey::for_move(old, uuid::Uuid::new_v4()),
     );
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
     let source = match client.inspect_container(from, old).await {
@@ -461,15 +460,25 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
             anonymous_volumes: AnonymousVolumes::Remove,
         },
     );
-    match tokio::time::timeout(RESTART_WAIT, discarded).await {
-        Ok(result) => result.map(|_| ()),
-        Err(_) => Err(crate::cluster::answered_by(
-            machine_id,
-            ConnectError::Rpc(TransportError::budget_expired(
-                "target Machine RPC timed out",
-            )),
-        )),
-    }
+    within_restart(machine_id, discarded).await.map(|_| ())
+}
+
+/// `removal`'s answer, or, once it has gone unanswered for as long as a restart takes,
+/// the error of a target Machine that timed out.
+async fn within_restart<T>(
+    machine_id: &MachineId,
+    removal: impl std::future::Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    tokio::time::timeout(RESTART_WAIT, removal)
+        .await
+        .unwrap_or_else(|_| {
+            Err(crate::cluster::answered_by(
+                machine_id,
+                ConnectError::Rpc(TransportError::budget_expired(
+                    "target Machine RPC timed out",
+                )),
+            ))
+        })
 }
 
 pub(super) async fn run_new<C: MachineOperations>(

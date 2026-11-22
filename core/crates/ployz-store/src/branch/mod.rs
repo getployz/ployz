@@ -33,8 +33,8 @@ pub(crate) use setup::{
     setup_is_not_staged,
 };
 pub use sync::{
-    Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
-    UndoSync, Undone,
+    Mark, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced, UndoSync,
+    Undone,
 };
 pub(crate) use sync::{
     admit_secret_text, seal_secret, sealing_targets, sync, sync_view, take, undo,
@@ -512,8 +512,7 @@ pub(crate) fn not_set(
         for variable in &service.variables {
             if variable.value == VariableValue::NotSet {
                 not_set.push(review::history::NotSetVariable {
-                    service: ServiceName::parse(&service.slug)
-                        .map_err(|_| error::corrupt("Service name"))?,
+                    service: crate::scope::service_name(service)?,
                     key: variable.key.clone(),
                 });
             }
@@ -694,8 +693,4 @@ fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
         .filter(|node| node.kind != EnvironmentNodeType::Config)
         .map(|node| node.lineage.to_owned())
         .collect()
-}
-
-pub(crate) fn document(intent: &SavedEnvironmentIntent) -> String {
-    serde_json::to_string(intent).expect("Working State is JSON")
 }

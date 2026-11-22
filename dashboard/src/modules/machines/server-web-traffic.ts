@@ -1,17 +1,7 @@
 import type { IngressCheck } from "@ployz/sdk";
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-
-/** Which way the switch was flipped: on starts the web server on the Server, off stops it. */
-export const WEB_TRAFFIC_WANTS = ["on", "off"] as const;
-export type WebTrafficWant = (typeof WEB_TRAFFIC_WANTS)[number];
-
-/**
- * One web traffic change Cloud applies to one Server, as its row moves: the flip writes `pending`, the run claims it
- * `running` right before the Engine is asked, and the Engine's answer ends it `finished` or `failed` with why.
- */
-export const WEB_TRAFFIC_STATES = ["pending", "running", "finished", "failed"] as const;
-export type WebTrafficState = (typeof WEB_TRAFFIC_STATES)[number];
+import { rustMachineIdSchema } from "#/lib/schema";
+import { WEB_TRAFFIC_WANTS, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 
 /** A request no run picked up in this long never starts; the hourly sweep closes it. */
 export const WEB_TRAFFIC_PENDING_LIMIT_MS = 15 * 60_000;
@@ -34,7 +24,6 @@ export type LatestWebTraffic =
   | { readonly attemptId: string; readonly want: WebTrafficWant; readonly state: "finished"; readonly endedAt: string }
   | { readonly attemptId: string; readonly want: WebTrafficWant; readonly state: "failed"; readonly endedAt: string; readonly failure: string };
 
-/** The change a request admitted. */
 export type RequestedServerWebTraffic = { readonly change: LatestWebTraffic };
 
 /** Every Server's latest web traffic change, by Machine ID; a Server never switched from Cloud has none. */

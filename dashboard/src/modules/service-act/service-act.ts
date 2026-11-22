@@ -42,9 +42,6 @@ export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActSt
 
 const confirmed = (step: LegStep | null) => step === "done" || step === "already_there";
 
-/** A copy a run stopped, or found stopped, and hasn't confirmed started again: what the person has to start now. */
-export const leftStopped = (leg: ServiceActLeg) => confirmed(leg.stop) && takes(leg, "start") && !confirmed(leg.start);
-
 /** A restart rolls on only once the copy it just restarted is confirmed started again. */
 export const cameBack = (legs: readonly ServiceActLeg[], copy: Pick<ServiceActLeg, "machine" | "container">) =>
   legs.every((leg) => leg.machine !== copy.machine || leg.container !== copy.container || !takes(leg, "start") || confirmed(leg.start));
@@ -112,22 +109,6 @@ export const legOf = (leg: ServiceActLeg): Leg => ({
   started: leg.start === null ? null : RECEIPTS[leg.start],
   reason: leg.reason,
 });
-
-type FrameContainer = { readonly container_id: string; readonly machine_id: string };
-
-/** The part of a Runtime Watch frame that says which Servers run a Service. */
-export type ServicesFrame = {
-  readonly services: readonly { readonly identity: string; readonly containers: readonly FrameContainer[]; readonly hook_containers: readonly FrameContainer[] }[];
-};
-
-/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included and marked. */
-export function copiesIn(frame: ServicesFrame, identity: string) {
-  const service = frame.services.find((candidate) => candidate.identity === identity);
-  return service === undefined ? [] : [
-    ...service.containers.map((copy) => ({ ...copy, hook: false })),
-    ...service.hook_containers.map((copy) => ({ ...copy, hook: true })),
-  ];
-}
 
 const NEEDS_NEWER = "needs a newer Ployz to";
 

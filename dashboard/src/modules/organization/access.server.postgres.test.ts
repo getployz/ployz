@@ -1,8 +1,8 @@
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
-import { organization } from "#/modules/organization/tables";
 import { setSupportAccess } from "#/modules/support-access/support-access.server";
 import type { Database } from "#/server/database.server";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";

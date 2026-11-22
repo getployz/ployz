@@ -8,11 +8,12 @@ use ployz_core::{Hint, Machine, RpcErrorCode, op};
 use serde_json::json;
 
 use super::Error;
+use crate::cloud;
 use crate::{
-    cloud_account::{self, Credential, StoreCallError},
-    cloud_login::{CredentialStore, LoginError},
+    cloud::account::{Credential, StoreCallError},
+    cloud::login::{CredentialStore, LoginError},
     cluster::{Call, FullRoutes},
-    connect::{Client, ConnectError, Connector, SystemConnector},
+    connect::{Client, ConnectError, Connector},
     context::{Connection, ConnectionSource, ContextError, SelectedConnections},
     failure::ConnectFailure,
 };
@@ -50,9 +51,8 @@ pub(super) async fn connect_full(
             .map(|direct| direct.parse())
             .collect::<Result<Vec<Connection>, _>>()
             .map_err(ConnectError::from)?;
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        return connect_each(connections, Arc::new(connector)).await;
+        let connector = crate::cli::connector(matches);
+        return connect_each(connections, connector).await;
     }
     let direct = direct.first().copied();
     let access = access(matches, context).await?;
@@ -64,10 +64,9 @@ pub(super) async fn connect_full(
     ) {
         Ok(mut selected) => {
             selected.connections = as_device(selected.connections, &key)?;
-            let connector =
-                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+            let connector = crate::cli::connector(matches);
             let connections = selected.connections.clone();
-            crate::connect::connect_selected_with(selected, Arc::new(connector))
+            crate::connect::connect_selected_with(selected, connector)
                 .await
                 .map(|client| {
                     client.with_full_routes(FullRoutes::chosen(connections, direct.is_some()))
@@ -82,7 +81,7 @@ pub(super) async fn connect_full(
     if let Ok(client) = local {
         return Ok(client);
     }
-    let mut access = cloud_account::server_access(&credential).await?;
+    let mut access = cloud::account::server_access(&credential).await?;
     access.connections = as_device(access.connections, &key)?;
     let connections = access.connections.clone();
     dial(matches, access)
@@ -182,7 +181,7 @@ enum Login {
 
 async fn login(matches: &ArgMatches) -> Result<Login, Error> {
     let store = CredentialStore::beside(&super::config_path(matches)?);
-    Ok(match cloud_account::from_env(&store).await {
+    Ok(match cloud::account::from_env(&store).await {
         Ok(credential) => Login::SignedIn(credential),
         Err(LoginError::SignedOut) => Login::SignedOut,
         Err(error) => Login::Broken(error),
@@ -237,7 +236,7 @@ async fn connect_or_none_held(
 ) -> Result<Option<(Client, Option<Vec<Connection>>)>, Error> {
     match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             Ok(dial_held(matches, access)
                 .await?
                 .map(|(client, held)| (client, Some(held))))
@@ -267,28 +266,10 @@ pub(super) async fn connect_avoiding(
     leaving: &Machine,
 ) -> Result<(Client, ployz_core::MachineId), Error> {
     let mut selected = entries(matches, context).await?;
-    let via = selected.source.clone();
     selected
         .connections
         .retain(|connection| connection.machine_id() != Some(&leaving.id));
-    if !selected.connections.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut client =
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
-        let entry = client
-            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
-            .await?
-            .machine_id;
-        if entry != leaving.id {
-            return Ok((client, entry));
-        }
-    }
-    Err(Error::conflict(format!(
-        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
-         Connect through another Server, then retry. No changes made.",
-        leaving.name
-    )))
+    enter_avoiding(matches, selected, None, leaving).await
 }
 
 /// [`connect_full`], entered through a Server other than `leaving` while another one is
@@ -309,29 +290,40 @@ pub(super) async fn connect_full_avoiding(
         return Ok((client, entry, false));
     };
     let routes = client.full_routes().spread();
-    let every = routes.connections().to_vec();
-    let others: Vec<Connection> = every
-        .iter()
-        .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
-        .cloned()
-        .collect();
-    let via = client.connection_source().clone();
-    if !others.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let selected = SelectedConnections {
-            source: via.clone(),
-            connections: others,
-        };
-        let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
-            .await?
-            .with_full_routes(routes);
+    let selected = SelectedConnections {
+        source: client.connection_source().clone(),
+        connections: routes
+            .connections()
+            .iter()
+            .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
+            .cloned()
+            .collect(),
+    };
+    let (client, entry) = enter_avoiding(matches, selected, Some(routes), leaving).await?;
+    Ok((client, entry, true))
+}
+
+/// Enter through `selected`, which leaves `leaving` out, keeping `routes` when given: the
+/// client and its entry, or a conflict when no other Server answers as the entry.
+async fn enter_avoiding(
+    matches: &ArgMatches,
+    selected: SelectedConnections,
+    routes: Option<FullRoutes>,
+    leaving: &Machine,
+) -> Result<(Client, ployz_core::MachineId), Error> {
+    let via = selected.source.clone();
+    if !selected.connections.is_empty() {
+        let mut client =
+            crate::connect::connect_selected_with(selected, crate::cli::connector(matches)).await?;
+        if let Some(routes) = routes {
+            client = client.with_full_routes(routes);
+        }
         let entry = client
             .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
         if entry != leaving.id {
-            return Ok((client, entry, true));
+            return Ok((client, entry));
         }
     }
     Err(Error::conflict(format!(
@@ -363,9 +355,9 @@ pub(super) async fn connect_only(
     if selected.connections.is_empty() {
         return Ok(None);
     }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    let connector = crate::cli::connector(matches);
     Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
+        crate::connect::connect_selected_with(selected, connector).await?,
     ))
 }
 
@@ -399,7 +391,7 @@ pub(super) fn signed_in(
 /// Whether [`signed_in`] would find something to act with, read from `PLOYZ_TOKEN` and the
 /// stored sign-in alone: it never asks Cloud or writes, so a pending code counts as signed out.
 pub(super) fn signed_in_locally(matches: &ArgMatches) -> bool {
-    crate::cloud_account::env_token().is_some()
+    crate::cloud::account::env_token().is_some()
         || super::config_path(matches).is_ok_and(|config| {
             matches!(CredentialStore::beside(&config).organization(), Ok(Some(_)))
         })
@@ -451,7 +443,7 @@ pub(super) async fn reach_or_silent(
     let config = super::config_path(matches)?;
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = match cloud_account::server_access(&credential).await {
+            let access = match cloud::account::server_access(&credential).await {
                 Ok(access) => access,
                 Err(StoreCallError::Refused(error))
                     if error.code.as_str() == ployz_core::FORBIDDEN_CODE =>
@@ -509,7 +501,7 @@ pub(super) async fn connect_or_unanswered(
 ) -> Result<Reached, Error> {
     match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             Ok(match answering(matches, access).await? {
                 Some(client) => Reached::Client(client),
                 None => Reached::Unanswered(credential),
@@ -524,7 +516,7 @@ pub(super) async fn connect_or_unanswered(
 /// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
 async fn answering(
     matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
+    mut access: cloud::account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     if access.connections.is_empty() {
         return match (access.unreachable.is_empty(), access.refused.is_empty()) {
@@ -555,7 +547,7 @@ pub(super) async fn entries(
     let direct = matches.get_one::<String>("connect").map(String::as_str);
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
-            let access = cloud_account::server_access(&credential).await?;
+            let access = cloud::account::server_access(&credential).await?;
             if access.connections.is_empty() {
                 return Err(
                     if access.unreachable.is_empty() && access.refused.is_empty() {
@@ -584,7 +576,7 @@ pub(super) async fn entries(
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
-    access: cloud_account::ServerAccess,
+    access: cloud::account::ServerAccess,
 ) -> Result<Option<Client>, Error> {
     Ok(dial_held(matches, access).await?.map(|(client, _)| client))
 }
@@ -592,7 +584,7 @@ async fn dial(
 /// [`dial`], with the connections Cloud handed over, so a later dial needs no second ask.
 async fn dial_held(
     matches: &ArgMatches,
-    mut access: cloud_account::ServerAccess,
+    mut access: cloud::account::ServerAccess,
 ) -> Result<Option<(Client, Vec<Connection>)>, Error> {
     if access.connections.is_empty() {
         if access.unreachable.is_empty() && access.refused.is_empty() {
@@ -649,8 +641,8 @@ async fn dial_connections(
         source: ConnectionSource::Cloud,
         connections,
     };
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+    let connector = crate::cli::connector(matches);
+    crate::connect::connect_selected_with(selected, connector).await
 }
 
 pub(super) fn no_servers() -> Error {
@@ -668,7 +660,7 @@ pub(super) fn has_no_servers(error: &Error) -> bool {
 /// connection to and those Cloud couldn't reach didn't answer, and Cloud says why each
 /// refused one couldn't. Only with no refusal does it read as [`no_reachable_server`].
 fn no_server_access(
-    access: cloud_account::ServerAccess,
+    access: cloud::account::ServerAccess,
     mut unanswered: Vec<ployz_core::MachineId>,
     cause: Option<ConnectError>,
 ) -> Error {
@@ -913,7 +905,7 @@ mod tests {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
-        let access = |unreachable| cloud_account::ServerAccess {
+        let access = |unreachable| cloud::account::ServerAccess {
             connections: Vec::new(),
             unreachable,
             refused: Vec::new(),
@@ -948,7 +940,7 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
         let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = cloud_account::ServerAccess {
+        let access = cloud::account::ServerAccess {
             connections: serde_json::from_value(json!([
                 { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
             ]))
@@ -985,7 +977,7 @@ mod tests {
             .try_get_matches_from(["ployz", "status"])
             .unwrap();
         let (held, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: Vec<&String>| -> cloud_account::ServerAccess {
+        let access = |unreachable: Vec<&String>| -> cloud::account::ServerAccess {
             serde_json::from_value(json!({
                 "connections": [
                     { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
@@ -1038,7 +1030,7 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "forget", "web-1"])
             .unwrap();
         let matches = leaf_matches(&matches);
-        let unprovisioned = cloud_account::ServerAccess {
+        let unprovisioned = cloud::account::ServerAccess {
             connections: Vec::new(),
             unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
             refused: Vec::new(),
@@ -1050,7 +1042,7 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap();
-        let held: cloud_account::ServerAccess = serde_json::from_value(json!({
+        let held: cloud::account::ServerAccess = serde_json::from_value(json!({
             "connections": [{ "machine_id": "a".repeat(32), "tcp": closed.to_string() }],
             "unreachable": [],
         }))
@@ -1065,7 +1057,7 @@ mod tests {
             .unwrap();
         let matches = leaf_matches(&matches);
         let (refusing, gone) = ("a".repeat(32), "b".repeat(32));
-        let access = |unreachable: &[&String]| -> cloud_account::ServerAccess {
+        let access = |unreachable: &[&String]| -> cloud::account::ServerAccess {
             serde_json::from_value(json!({
                 "connections": [],
                 "unreachable": unreachable,

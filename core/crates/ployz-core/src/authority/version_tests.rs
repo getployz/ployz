@@ -1,3 +1,4 @@
+use crate::authority::MismatchField;
 use serde_json::json;
 
 use super::*;
@@ -172,9 +173,12 @@ fn a_version_moved_or_edited_by_whoever_carries_it_is_refused() {
     let mut edited = signed(&device, &honest);
     edited.body = edited.body.replace("\"app\"", "\"ap2\"");
     let cases = [
-        (signed(&device, &other_service), "a Service"),
-        (signed(&device, &other_namespace), "an Environment"),
-        (signed(&device, &other_cluster), "a Cluster"),
+        (signed(&device, &other_service), MismatchField::Service),
+        (
+            signed(&device, &other_namespace),
+            MismatchField::Environment,
+        ),
+        (signed(&device, &other_cluster), MismatchField::Cluster),
     ];
 
     for (version, field) in cases {
@@ -193,7 +197,9 @@ fn a_version_moved_or_edited_by_whoever_carries_it_is_refused() {
             &trusted,
             &resolved(&requested("b"))
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a payload" }),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Payload
+        }),
     );
     assert!(check(&[], &trusted, &resolved(&spec)).is_err());
 }
@@ -268,7 +274,9 @@ fn steps_sharing_one_signed_bundle_each_pay_for_the_bundle() {
 
     assert_eq!(
         check(&versions, &trusting(&[&first, &second]), &resolved(&spec)),
-        Err(AuthorityRefusal::Mismatch { field: "a Service" }),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Service
+        }),
         "four steps at two verifications each spend the budget before the fifth statement"
     );
 }
@@ -358,7 +366,7 @@ fn a_version_naming_a_volume_born_in_another_environment_is_refused() {
             &scoped(&elsewhere)
         ),
         Err(AuthorityRefusal::Mismatch {
-            field: "a Volume's Environment"
+            field: MismatchField::VolumesEnvironment
         }),
     );
 }
@@ -409,7 +417,7 @@ fn child(
 
 fn parent_refused() -> Result<VersionAdmitted, AuthorityRefusal> {
     Err(AuthorityRefusal::Mismatch {
-        field: field::PARENT,
+        field: MismatchField::Parent,
     })
 }
 
@@ -537,7 +545,7 @@ fn a_version_that_edits_a_parent_never_forgets() {
     assert_eq!(
         check(&presented, &trusted, &resolved(&spec)),
         Err(AuthorityRefusal::Mismatch {
-            field: field::FORGET_PARENT
+            field: MismatchField::ForgetParent
         }),
     );
     assert_eq!(
@@ -547,7 +555,7 @@ fn a_version_that_edits_a_parent_never_forgets() {
             Some(SealingPublicKey::from_bytes(CLUSTER))
         ),
         vec![Err(AuthorityRefusal::Mismatch {
-            field: field::FORGET_PARENT
+            field: MismatchField::ForgetParent
         })],
     );
 }

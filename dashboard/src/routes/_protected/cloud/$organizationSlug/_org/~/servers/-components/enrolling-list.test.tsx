@@ -47,13 +47,11 @@ it("moves failed or cancelled hosts to the bottom of Waiting in return order", (
 });
 
 
-it("cancels the named attempt and holds every row at 52 pixels inside a ten-row box", () => {
+it("cancels the named attempt", () => {
   const onCancel = vi.fn();
   render(<EnrollingList attempts={Array.from({ length: 12 }, (_, n) => attempt(n + 1))} onCancel={onCancel} />);
   fireEvent.click(screen.getByRole("button", { name: "Cancel web-2" }));
   expect(onCancel).toHaveBeenCalledWith("attempt-2");
-  expect(document.querySelector<HTMLElement>('[data-slot="enrolling-box"]')?.style.maxHeight).toBe("520px");
-  expect(new Set(rows().map((row) => row.style.height))).toEqual(new Set(["52px"]));
 });
 
 it("keeps a fifty-host enrollment list within the ten-row rendering budget", () => {

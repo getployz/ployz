@@ -1,14 +1,27 @@
 //! The one Docker start of a Container, which refuses a second running Service
 //! Container on a Provisioned Volume root. Every start Ployz makes goes through
-//! [`start`], bridge recovery's included. Only Docker's own restarts bypass it.
+//! [`start_inspected`], bridge recovery's included. Only Docker's own restarts bypass it.
 
 use bollard::Docker;
-use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum};
 use bollard::query_parameters::ListContainersOptionsBuilder;
 use ployz_core::labels::ServiceLabels;
 use ployz_core::{ContainerKind, PROVISIONED_VOLUME_DRIVER, QualifiedService, ResolvedServiceSpec};
 
-use super::{Error, Status, classify};
+use super::Error;
+use super::inspect::{self, Inspected, inspect};
+
+/// [`start_inspected`] from bollard's typed inspect, which bridge recovery in
+/// `network::linux::stopped` still reads.
+///
+/// # Errors
+/// As [`start_inspected`], and [`Error::Json`] for an inspect that doesn't re-decode.
+pub(crate) async fn start(
+    client: &Docker,
+    me: &bollard::models::ContainerInspectResponse,
+    spec: Option<&ResolvedServiceSpec>,
+) -> Result<(), Error> {
+    start_inspected(client, &Inspected::from_typed(me)?, spec).await
+}
 
 /// Start `me` through Docker, unless it is a Service Container and another runs on a
 /// Provisioned Volume root it mounts. Its Volumes come from `spec`, the one this
@@ -18,9 +31,9 @@ use super::{Error, Status, classify};
 /// # Errors
 /// [`Error::VolumeHeld`] beside a running holder, the error of a read that failed,
 /// and Docker's own error for a start it refused.
-pub(crate) async fn start(
+pub(crate) async fn start_inspected(
     client: &Docker,
-    me: &ContainerInspectResponse,
+    me: &Inspected,
     spec: Option<&ResolvedServiceSpec>,
 ) -> Result<(), Error> {
     let id = me.id.as_deref().unwrap_or_default();
@@ -78,20 +91,14 @@ pub(crate) async fn refuse_beside(
         if me == Some(id.as_str()) {
             continue;
         }
-        let holder = match client.inspect_container(&id, None).await {
-            Ok(holder) => holder,
-            Err(error) if classify(&error) == Status::Absent => continue,
-            Err(error) => return Err(error.into()),
+        let Some(holder) = inspect(client, &id).await.map_err(inspect::failed)? else {
+            continue;
         };
         // Before reading labels, so a stopped helper Ployz didn't make never matters.
         if !active(&holder) {
             continue;
         }
-        let labels = holder
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref());
-        let held_by = match labels.map(ServiceLabels::parse) {
+        let held_by = match holder.labels().map(ServiceLabels::parse) {
             Some(Ok(service)) => {
                 if service.kind != ContainerKind::ServiceContainer
                     || service.identity == QualifiedService::system_ingress()
@@ -133,10 +140,8 @@ pub(crate) fn provisioned(spec: &ResolvedServiceSpec) -> Vec<(String, String)> {
 }
 
 /// Whether `me` is a Service Container other than the Ingress Proxy's.
-fn serving(me: &ContainerInspectResponse) -> bool {
-    me.config
-        .as_ref()
-        .and_then(|config| config.labels.as_ref())
+fn serving(me: &Inspected) -> bool {
+    me.labels()
         .and_then(|labels| ServiceLabels::parse(labels).ok())
         .is_some_and(|service| {
             service.kind == ContainerKind::ServiceContainer
@@ -144,13 +149,6 @@ fn serving(me: &ContainerInspectResponse) -> bool {
         })
 }
 
-fn active(holder: &ContainerInspectResponse) -> bool {
-    matches!(
-        holder.state.as_ref().and_then(|state| state.status),
-        Some(
-            ContainerStateStatusEnum::RUNNING
-                | ContainerStateStatusEnum::RESTARTING
-                | ContainerStateStatusEnum::PAUSED
-        )
-    )
+fn active(holder: &Inspected) -> bool {
+    matches!(holder.status(), Some("running" | "restarting" | "paused"))
 }

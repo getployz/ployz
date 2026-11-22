@@ -1,21 +1,10 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import { NonRetriableError, RetryAfterError } from "inngest";
-import { sendInngestEvent, type PloyzInngest, type PloyzStepTools } from "#/modules/inngest/client";
-import { createMailSendRequestedEvent, mailSendRequestedEventType } from "#/modules/inngest/events";
-import { sendMail, type MailMessage, type MailSendError } from "#/modules/mail/mailer.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run">;
-type EffectRunner = typeof runInngestEffect;
-
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
-const MailSendRequestedData = Schema.Struct({
-  to: NonEmptyString,
-  subject: NonEmptyString,
-  text: NonEmptyString,
-  html: Schema.optionalKey(NonEmptyString),
-  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-});
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
+import { eventData } from "#/modules/inngest/define-event";
+import { mailSendRequested } from "#/modules/mail/mail.events";
+import { sendMail, type MailSendError } from "#/modules/mail/mailer.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 export const SEND_MAIL_RETRIES = 5;
 
@@ -31,10 +20,10 @@ const toInngestError = (error: MailSendError, attempt: number) => {
 
 /** The event id keys the send, so every retry of this run delivers one mail. */
 export async function executeSendMail(
-  { event, step, attempt }: { event: { id?: string; data: unknown }; step: StepTools; attempt: number },
+  { event, step, attempt }: { event: { id?: string; data: unknown }; step: StepTools<"run">; attempt: number },
   runEffect: EffectRunner,
 ) {
-  const decoded = Schema.decodeUnknownOption(MailSendRequestedData)(event.data);
+  const decoded = eventData(mailSendRequested)(event);
   if (Option.isNone(decoded)) throw new NonRetriableError("The mail/send event carries no sendable mail.");
   const key = event.id;
   if (key === undefined) throw new NonRetriableError("The mail/send event has no id to key its send.");
@@ -49,12 +38,9 @@ export const createSendMail = (inngest: PloyzInngest, runEffect: EffectRunner = 
     {
       id: "send-mail",
       retries: SEND_MAIL_RETRIES,
-      triggers: [{ event: mailSendRequestedEventType }],
+      triggers: [{ event: mailSendRequested.eventType }],
       // PostShiba's cluster cap: every mail shares one hourly budget.
       throttle: { limit: 100, period: "1h" },
     },
     async ({ event, step, attempt }) => executeSendMail({ event, step, attempt }, runEffect),
   );
-
-export const queueMail = (message: MailMessage, key: string) =>
-  sendInngestEvent(createMailSendRequestedEvent(message, key));

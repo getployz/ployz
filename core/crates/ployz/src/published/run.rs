@@ -12,7 +12,8 @@ use serde_json::{Map, Value};
 
 use super::wire::Ran;
 use super::{ArgKind, PublishError, PublishedCommand, Render, Setup, Typed, UNKNOWN_COMMAND};
-use crate::cloud_account::{self, StoreCallError};
+use crate::cloud;
+use crate::cloud::account::StoreCallError;
 use crate::failure::Failure;
 use crate::ui;
 
@@ -41,7 +42,7 @@ pub(crate) fn run(
     let credential = runtime
         .block_on(setup.credential())
         .map_err(Failure::from)?
-        .ok_or_else(|| Failure::from(crate::cloud_login::LoginError::SignedOut))?;
+        .ok_or_else(|| Failure::from(crate::cloud::login::LoginError::SignedOut))?;
     setup.acts_with(&credential).map_err(Failure::command)?;
     if command.typed == Some(Typed::Organization) {
         let needs_terminal = || {
@@ -56,7 +57,7 @@ pub(crate) fn run(
             return Err(needs_terminal());
         }
         let acting = runtime
-            .block_on(cloud_account::acting_as(&credential))
+            .block_on(cloud::account::acting_as(&credential))
             .map_err(Failure::from)?;
         if acting.agent && !command.agents {
             return Err(Failure::command(PublishError::AgentRefused {
@@ -76,7 +77,7 @@ pub(crate) fn run(
         let ran = runtime
             .block_on(run_on(
                 &credential,
-                cloud_account::Via::Cli,
+                cloud::http::Via::Cli,
                 &command.name,
                 Value::Object(input.clone()),
                 approval.as_deref(),
@@ -104,14 +105,14 @@ pub(crate) fn run(
 /// Post `input` to Cloud's run route for the entry named `name`, under `key` so a
 /// retry runs it once. The second half is the manifest revision the reply named.
 pub(crate) async fn run_on(
-    credential: &cloud_account::Credential,
-    via: cloud_account::Via,
+    credential: &cloud::account::Credential,
+    via: cloud::http::Via,
     name: &str,
     input: Value,
     approval: Option<&str>,
     key: &str,
 ) -> (Result<Ran, StoreCallError>, Option<String>) {
-    cloud_account::keyed_reply(
+    cloud::account::keyed_reply(
         credential,
         via,
         Method::POST,
@@ -243,8 +244,9 @@ fn scope(
         return Ok(());
     }
     let given = |name| input.get(name).and_then(Value::as_str);
-    let at =
-        crate::handlers::link::scope_given(config, given("project"), given("environment"))?.at();
+    let at = crate::scope::Scope::given(given("project"), given("environment"))?
+        .linked_here(config)?
+        .at();
     if let Some(project) = at.project {
         input.insert("project".to_owned(), project.as_str().into());
     }
@@ -267,7 +269,7 @@ pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
             })
     };
-    crate::handlers::link::check_env(typed("--project"), typed("--env"))
+    crate::scope::check_env(typed("--project"), typed("--env"))
 }
 
 fn print(

@@ -2,6 +2,7 @@
 //! Node Outcome advances Applied State.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
 /// recording the same evidence again changes nothing.
@@ -13,7 +14,7 @@ pub(crate) fn record(
 ) -> Result<DeploymentSummary, RpcError> {
     // What it records may follow into its Branches.
     let environment = super::load(tx, id)?.summary.environment_id;
-    scope::lock_project(tx, &environment)?;
+    scope::lock_project_of(tx, &environment)?;
     let mut stored = locked(tx, id)?;
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
@@ -115,9 +116,7 @@ pub(crate) fn record(
         } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
-            let executed = crate::digest::short_digest(
-                &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
-            );
+            let executed = crate::digest::short_digest(&json_text(&(&outcome, &removed)));
             if stored.run.outcome.is_some() {
                 if stored.run.executed.as_ref() == Some(&executed) {
                     return Ok(stored.summary);
@@ -171,14 +170,11 @@ pub(crate) fn record(
                 .first()
                 .filter(|_| named_cancel)
                 .map(|(service, failure)| Failure {
-                    reason: format!(
+                    reason: clipped(&format!(
                         "{}: {}",
                         current_name(&stored.nodes, service),
                         failure.reason
-                    )
-                    .chars()
-                    .take(500)
-                    .collect(),
+                    )),
                     cause: failure.cause.clone(),
                     same_again: false,
                 });
@@ -271,7 +267,7 @@ pub(crate) fn record(
                 .filter(|wait| wait.kind == BlockedKind::Wait)
                 .map(|wait| WaitingService {
                     service: current_service(&stored.nodes, wait.service).clone(),
-                    reason: wait.error.message.chars().take(500).collect(),
+                    reason: clipped(&wait.error.message),
                     regions: wait
                         .partial
                         .map(|partial| partial.regions.clone())
@@ -369,7 +365,7 @@ pub(crate) fn record(
             cause,
             same_again,
         }) => {
-            let reason = reason.chars().take(500).collect();
+            let reason = clipped(&reason);
             finish(
                 tx,
                 stored,
@@ -480,7 +476,7 @@ fn failure(
         None => reason,
     };
     Some(Failure {
-        reason: reason.chars().take(500).collect(),
+        reason: clipped(&reason),
         cause,
         same_again: false,
     })
@@ -513,7 +509,7 @@ fn refused(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Opti
         .collect::<Vec<_>>()
         .join("; ");
     Some(Failure {
-        reason: reason.chars().take(500).collect(),
+        reason: clipped(&reason),
         cause,
         same_again: false,
     })

@@ -15,10 +15,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
 use super::{Error, operator::Scoped};
+use crate::cloud;
 use crate::operator::history::{self, StoredLine, StoredPage};
 use crate::{
-    cloud_account::{self, Credential, StoreCallError},
-    cloud_login::LoginError,
+    cloud::account::{Credential, StoreCallError},
+    cloud::login::LoginError,
     ui::{self, Table},
 };
 
@@ -41,7 +42,7 @@ fn refusable<T: DeserializeOwned>(
     credential: &Credential,
     query: CloudQuery,
 ) -> Result<Result<T, StoreCallError>, Error> {
-    Ok(super::runtime()?.block_on(cloud_account::approved_answer(
+    Ok(super::runtime()?.block_on(cloud::account::approved_answer(
         credential,
         Method::POST,
         "agent/ask",
@@ -231,7 +232,7 @@ pub(super) fn stored_logs(
                 asked.insert("cursor".into(), json!(cursor));
             }
             let page: StoredPage = runtime
-                .block_on(cloud_account::read_answer(credential, "logs/read", &asked))
+                .block_on(cloud::account::read_answer(credential, "logs/read", &asked))
                 .map_err(Error::from)?;
             let oldest = page.lines.last().map(|line| line.timestamp);
             kept.extend(

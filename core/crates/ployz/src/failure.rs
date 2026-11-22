@@ -1,19 +1,20 @@
+mod diagnostic;
 mod reported;
 
+pub(crate) use diagnostic::{Detail, Diagnostic, LogTail, StartFailure};
+
 use ployz_core::error_chain;
-use std::{borrow::Cow, error::Error, fmt, io};
+use std::{borrow::Cow, error::Error, fmt};
 
 use ployz_core::{CapabilityRefusal, Hint, RpcError, RpcErrorCode};
 use serde_json::Value;
 
-use reported::Reported as _;
-
 use crate::{
-    cloud_login::LoginError,
+    cloud::login::LoginError,
+    coded::Coded,
     connect::{ConnectError, TransportError},
     context::ContextError,
     deploy::DeployError,
-    image::PushError,
     operator::OperatorError,
     ui,
 };
@@ -25,7 +26,7 @@ pub struct Failure {
     interrupted: bool,
     /// The printed result is itself the failure, not a partial one.
     outcome: bool,
-    diagnostic: Option<Box<ui::progress::Diagnostic>>,
+    diagnostic: Option<Box<Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
     connect_failure: Option<Box<ConnectFailure>>,
@@ -76,6 +77,16 @@ impl Error for Message {
         self.source
             .as_deref()
             .map(|source| source as &(dyn Error + 'static))
+    }
+}
+
+impl Coded for Message {
+    fn code(&self) -> RpcErrorCode {
+        self.code.clone()
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        Some(self.details.clone())
     }
 }
 
@@ -151,7 +162,7 @@ impl Failure {
         self.outcome
     }
 
-    pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
+    pub(crate) fn with_diagnostic(mut self, diagnostic: Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
@@ -193,7 +204,7 @@ impl Failure {
         self.connect_failure.as_deref()
     }
 
-    pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
+    pub(crate) fn diagnostic(&self) -> Option<&Diagnostic> {
         self.diagnostic.as_deref()
     }
 
@@ -393,32 +404,6 @@ fn refusal_before_context(error: &(dyn Error + 'static)) -> Option<CapabilityRef
         })
 }
 
-/// A failed image copy as the SDK reports it.
-pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
-    RpcError::new(error.code(), error.to_string())
-}
-
-pub(crate) fn io_code(error: &io::Error) -> RpcErrorCode {
-    use io::ErrorKind;
-    let kind = error.kind();
-    if kind == ErrorKind::NotFound {
-        RpcErrorCode::NotFound
-    } else if kind == ErrorKind::InvalidInput {
-        RpcErrorCode::InvalidArgument
-    } else if matches!(
-        kind,
-        ErrorKind::ConnectionRefused
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::NotConnected
-            | ErrorKind::TimedOut
-    ) {
-        RpcErrorCode::Unavailable
-    } else {
-        RpcErrorCode::Internal
-    }
-}
-
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
@@ -485,76 +470,18 @@ impl From<DeployError> for Failure {
 }
 
 impl From<LoginError> for Failure {
-    /// Sign-in failures name the command that fixes them. A refusal Cloud sent in the
-    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step;
-    /// a route's `PublicError` keeps its sentence.
+    /// A refusal Cloud sent in the RPC error vocabulary, such as `claim_required`, keeps its
+    /// code, details and next step; a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
-            && let Some(refused) = crate::cloud_account::refusal_of(body.as_bytes())
+            && let Some(refused) = crate::cloud::account::refusal_of(body.as_bytes())
         {
             return Self::command(refused);
         }
-        if let LoginError::Store { path, source } = &error
-            && source.kind() == io::ErrorKind::PermissionDenied
-        {
-            let next = format!("chmod 600 {}", shell_words::quote(&path.to_string_lossy()));
-            return Self::command(error).hint(Hint::Next(next));
-        }
-        let next = match &error {
-            // Cloud binds every call to the acting Organization, `org ls` included: a
-            // sign-in left outside it can only start over.
-            LoginError::Corrupt { .. }
-            | LoginError::TokenCloudUnreadable(_)
-            | LoginError::OtherCloud { .. }
-            | LoginError::NotMember(_) => Some("ployz logout"),
-            LoginError::SignedOut
-            | LoginError::Expired
-            | LoginError::Denied
-            | LoginError::Ended => Some("ployz login"),
-            LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
-            LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
-            LoginError::AgentTokenRefused => Some("ployz mcp login"),
-            LoginError::UnknownOrganization(_) => Some("ployz org ls"),
-            LoginError::UnknownCredential(_) | LoginError::AmbiguousCredential { .. } => {
-                Some("ployz token ls")
-            }
-            LoginError::Unreachable { .. }
-            | LoginError::Unanswered { .. }
-            | LoginError::Unsupported(_)
-            | LoginError::Status { .. }
-            | LoginError::Reply(_)
-            | LoginError::Store { .. }
-            | LoginError::TokenBound
-            | LoginError::TokenMalformed => None,
-        };
-        Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
-    }
-}
-
-pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
-    match error {
-        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => RpcErrorCode::Unavailable,
-        LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
-        LoginError::TokenBound => RpcErrorCode::InvalidArgument,
-        LoginError::Status { status, .. } => crate::cloud_reply::status_code(*status),
-        LoginError::Reply(_)
-        | LoginError::Store { .. }
-        | LoginError::Corrupt { .. }
-        | LoginError::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
-        LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
-        LoginError::SignedOut
-        | LoginError::Expired
-        | LoginError::Denied
-        | LoginError::Ended
-        | LoginError::AwaitingApproval { .. }
-        | LoginError::TokenRefused
-        | LoginError::AgentTokenRefused
-        | LoginError::TokenMalformed
-        | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
-        LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
-            RpcErrorCode::NotFound
-        }
-        LoginError::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
+        let hints = error.hints();
+        hints
+            .into_iter()
+            .fold(Self::command(error), |failure, hint| failure.hint(hint))
     }
 }
 
@@ -569,14 +496,14 @@ mod code_table_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error as StdError;
+    use std::{error::Error as StdError, io};
 
     use ployz_core::{MachineName, MachineTarget, RpcError, RpcErrorCode, op};
     use serde_json::Value;
 
     use super::*;
     use crate::{
-        cloud_enroll, connect::TransportError, context::ConfigError, provisioning::ProvisionError,
+        cloud, connect::TransportError, context::ConfigError, provisioning::ProvisionError,
     };
     use ployz_core::{ContainerSelectorError, MachineSelectorError, ValueError};
 
@@ -928,7 +855,7 @@ mod tests {
 
     #[test]
     fn cloud_coded_conflict_keeps_its_code() {
-        let failure = Failure::from(cloud_enroll::Error::CodedConflict {
+        let failure = Failure::from(cloud::enroll::Error::CodedConflict {
             body: serde_json::json!({"error": "Bring existing Servers online."}).to_string(),
         });
         assert_eq!(failure.report().code, RpcErrorCode::Conflict);
@@ -945,7 +872,7 @@ mod tests {
             (422, RpcErrorCode::InvalidArgument),
             (503, RpcErrorCode::Unavailable),
         ] {
-            let failure = Failure::from(cloud_enroll::Error::Status {
+            let failure = Failure::from(cloud::enroll::Error::Status {
                 status,
                 body: String::new(),
             });
@@ -989,8 +916,8 @@ mod tests {
                 status,
                 body: String::new(),
             };
-            assert_eq!(login_code(&signed_in), code, "login HTTP {status}");
-            let enrolled = Failure::from(cloud_enroll::Error::Status {
+            assert_eq!(signed_in.code(), code, "login HTTP {status}");
+            let enrolled = Failure::from(cloud::enroll::Error::Status {
                 status,
                 body: String::new(),
             });

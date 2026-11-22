@@ -1,5 +1,6 @@
 #![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
 
+use crate::authority::MismatchField;
 use serde_json::{Value, json};
 use sha2::Digest as _;
 
@@ -137,30 +138,34 @@ type Edit = fn(&mut Value);
 
 #[test]
 fn each_claim_the_rule_names_is_refused_by_name() {
-    let cases: [(&str, Edit); 9] = [
-        ("repository_id", |value| {
+    let cases: [(MismatchField, Edit); 9] = [
+        (MismatchField::ClaimRepositoryId, |value| {
             value["repository_id"] = json!("1450985829")
         }),
-        ("repository_owner_id", |value| {
+        (MismatchField::ClaimRepositoryOwnerId, |value| {
             value["repository_owner_id"] = json!("1")
         }),
-        ("ref_type", |value| value["ref_type"] = json!("tag")),
-        ("ref", |value| value["ref"] = json!("refs/heads/attacker")),
-        ("event_name", |value| {
+        (MismatchField::ClaimRefType, |value| {
+            value["ref_type"] = json!("tag")
+        }),
+        (MismatchField::ClaimRef, |value| {
+            value["ref"] = json!("refs/heads/attacker")
+        }),
+        (MismatchField::ClaimEventName, |value| {
             value["event_name"] = json!("pull_request_target")
         }),
-        ("workflow_ref", |value| {
+        (MismatchField::ClaimWorkflowRef, |value| {
             value["workflow_ref"] =
                 json!("Ployz-test/lab-service/.github/workflows/other.yml@refs/heads/main");
         }),
-        ("job_workflow_ref", |value| {
+        (MismatchField::ClaimJobWorkflowRef, |value| {
             value["job_workflow_ref"] =
                 json!("Ployz-test/build/.github/workflows/build.yml@refs/heads/main");
         }),
-        ("job_workflow_sha", |value| {
+        (MismatchField::ClaimJobWorkflowSha, |value| {
             value["job_workflow_sha"] = json!("1111111111111111111111111111111111111111");
         }),
-        ("runner_environment", |value| {
+        (MismatchField::ClaimRunnerEnvironment, |value| {
             value["runner_environment"] = json!("self-hosted")
         }),
     ];
@@ -181,7 +186,9 @@ fn a_tag_with_the_branchs_name_is_refused_as_a_tag() {
     });
     assert_eq!(
         rule().verify_claims(&tag),
-        Err(AuthorityRefusal::Mismatch { field: "ref_type" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ClaimRefType
+        })
     );
 }
 
@@ -196,7 +203,7 @@ fn the_first_failing_claim_in_table_order_is_named() {
     assert_eq!(
         rule().verify_claims(&many),
         Err(AuthorityRefusal::Mismatch {
-            field: "repository_owner_id"
+            field: MismatchField::ClaimRepositoryOwnerId
         })
     );
 }
@@ -209,7 +216,7 @@ fn an_event_the_rule_leaves_out_is_refused() {
     assert_eq!(
         push_only.verify_claims(&dispatched),
         Err(AuthorityRefusal::Mismatch {
-            field: "event_name"
+            field: MismatchField::ClaimEventName
         })
     );
 }
@@ -279,7 +286,7 @@ fn the_build_audience_is_pinned() {
         "ployz-build:d381dad98d9e05abc95e1f858a8daec9bac744f9df1e9ba29f4c6f2590053bce"
     );
     let built = claim(BuildStage::Built {
-        image: ImageDigest::from_bytes([0x44; 32]),
+        image: BuiltImageDigest::from_bytes([0x44; 32]),
         attest: AttestKey::from_bytes([0x55; 32]),
     });
     assert_eq!(
@@ -465,7 +472,7 @@ fn a_passkey_answer_counts_only_for_the_rule_it_answered_and_a_trusted_passkey()
         )
         .unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "a challenge"
+            field: MismatchField::Challenge
         }
     );
     let stranger = Authenticator::es256(5);
@@ -486,7 +493,7 @@ fn a_passkey_answer_counts_only_for_the_rule_it_answered_and_a_trusted_passkey()
         )
         .unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "the signer"
+            field: MismatchField::Signer
         },
         "a body naming a Device is not a passkey's"
     );
@@ -551,7 +558,7 @@ fn approved_rule() -> AutoDeployRule {
 
 fn built() -> BuildClaim {
     claim(BuildStage::Built {
-        image: ImageDigest::from_bytes([0x44; 32]),
+        image: BuiltImageDigest::from_bytes([0x44; 32]),
         attest: AttestKey::from_bytes([0x55; 32]),
     })
 }
@@ -563,7 +570,7 @@ fn create(
     claim: &BuildClaim,
     spec: Value,
     kind: ContainerKind,
-) -> Result<ImageDigest, AuthorityRefusal> {
+) -> Result<BuiltImageDigest, AuthorityRefusal> {
     create_on(rule, claim, spec, kind, (Some(head()), "1"))
 }
 
@@ -579,7 +586,7 @@ fn create_on(
     spec: Value,
     kind: ContainerKind,
     (head, machine): (Option<CommitSha>, &str),
-) -> Result<ImageDigest, AuthorityRefusal> {
+) -> Result<BuiltImageDigest, AuthorityRefusal> {
     let spec = resolved(&requested(spec));
     let machine = MachineId::parse(machine.repeat(32)).unwrap();
     let namespace = Namespace::parse("app").unwrap();
@@ -649,7 +656,7 @@ fn a_rule_admits_the_heads_image_with_the_settings_it_approves() {
             requested_json(),
             ContainerKind::ServiceContainer
         ),
-        Ok(ImageDigest::from_bytes([0x44; 32]))
+        Ok(BuiltImageDigest::from_bytes([0x44; 32]))
     );
     assert_eq!(
         create(
@@ -658,7 +665,7 @@ fn a_rule_admits_the_heads_image_with_the_settings_it_approves() {
             requested_json(),
             ContainerKind::PreDeployHook
         ),
-        Ok(ImageDigest::from_bytes([0x44; 32]))
+        Ok(BuiltImageDigest::from_bytes([0x44; 32]))
     );
 }
 
@@ -667,21 +674,21 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
     let rule = approved_rule();
     let other_image =
         "ployz-build/web@sha256:6666666666666666666666666666666666666666666666666666666666666666";
-    let spec_cases: Vec<(&str, Value, &str)> = vec![
+    let spec_cases: Vec<(&str, Value, MismatchField)> = vec![
         (
             "image digest",
             changed(&["container", "image"], json!(other_image)),
-            "an image",
+            MismatchField::Image,
         ),
         (
             "image tag",
             changed(&["container", "image"], json!("ployz-build/web:latest")),
-            "an image",
+            MismatchField::Image,
         ),
         (
             "plain value",
             changed(&["container", "environment", "PLAIN"], json!("two")),
-            "a payload",
+            MismatchField::Payload,
         ),
         (
             "Sealed ciphertext",
@@ -689,27 +696,27 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
                 &["container", "environment", "SECRET", "sealed"],
                 json!("QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg=="),
             ),
-            "a payload",
+            MismatchField::Payload,
         ),
         (
             "privileged",
             changed(&["container", "privileged"], json!(true)),
-            "a payload",
+            MismatchField::Payload,
         ),
         (
             "Bind Mount",
             changed(&["volumes", "0", "source", "machine_path"], json!("/")),
-            "a payload",
+            MismatchField::Payload,
         ),
         (
             "host port",
             changed(&["ports", "0", "published_port"], json!(22)),
-            "a payload",
+            MismatchField::Payload,
         ),
         (
             "hook command",
             changed(&["pre_deploy", "command"], json!(["sh", "-c", "curl evil"])),
-            "a payload",
+            MismatchField::Payload,
         ),
     ];
     for (case, spec, field) in spec_cases {
@@ -719,14 +726,14 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
             "{case}"
         );
     }
-    let claim_cases: Vec<(&str, BuildClaim, &str)> = vec![
+    let claim_cases: Vec<(&str, BuildClaim, MismatchField)> = vec![
         (
             "lower generation",
             BuildClaim {
                 generation: 2,
                 ..built()
             },
-            "a generation",
+            MismatchField::Generation,
         ),
         (
             "commit not the head",
@@ -734,32 +741,32 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
                 commit: CommitSha::parse(&"0".repeat(40)).unwrap(),
                 ..built()
             },
-            "a commit",
+            MismatchField::Commit,
         ),
         (
             "aud naming another image",
             claim(BuildStage::Built {
-                image: ImageDigest::from_bytes([0x66; 32]),
+                image: BuiltImageDigest::from_bytes([0x66; 32]),
                 attest: AttestKey::from_bytes([0x55; 32]),
             }),
-            "an image",
+            MismatchField::Image,
         ),
         (
             "attest naming another key",
             claim(BuildStage::Built {
-                image: ImageDigest::from_bytes([0x44; 32]),
+                image: BuiltImageDigest::from_bytes([0x44; 32]),
                 attest: AttestKey::from_bytes([0x77; 32]),
             }),
-            "the attest key",
+            MismatchField::AttestKey,
         ),
-        ("the grant token", claim(grant()), "a stage"),
+        ("the grant token", claim(grant()), MismatchField::Stage),
         (
             "another rule",
             BuildClaim {
                 rule: RuleId::from_bytes([0x12; 16]),
                 ..built()
             },
-            "a rule",
+            MismatchField::Rule,
         ),
         (
             "another policy",
@@ -767,7 +774,7 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
                 policy: PolicyDigest::from_bytes([1; 32]),
                 ..built()
             },
-            "a policy",
+            MismatchField::Policy,
         ),
         (
             "another Cluster",
@@ -775,7 +782,7 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
                 cluster: SealingPublicKey::from_bytes([8; 32]),
                 ..built()
             },
-            "a Cluster",
+            MismatchField::Cluster,
         ),
     ];
     for (case, claim, field) in claim_cases {
@@ -807,7 +814,7 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
             ContainerKind::ServiceContainer
         ),
         Err(AuthorityRefusal::Mismatch {
-            field: "an ended rule"
+            field: MismatchField::EndedRule
         })
     );
     let elsewhere = AutoDeployRule {
@@ -822,7 +829,9 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
             requested_json(),
             ContainerKind::ServiceContainer
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Machine
+        })
     );
     let other = AutoDeployRule {
         proposal: None,
@@ -837,7 +846,7 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
             ContainerKind::ServiceContainer
         ),
         Err(AuthorityRefusal::Mismatch {
-            field: "an Environment"
+            field: MismatchField::Environment
         })
     );
     let api = changed(&["name"], json!("api"));
@@ -848,7 +857,9 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
             api,
             ContainerKind::ServiceContainer
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a Service" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Service
+        })
     );
 }
 
@@ -861,7 +872,9 @@ fn a_hook_creation_needs_a_hook_in_the_spec() {
         template(&requested(spec.clone()), &Namespace::parse("app").unwrap()).unwrap();
     assert_eq!(
         create(&rule, &built(), spec, ContainerKind::PreDeployHook),
-        Err(AuthorityRefusal::Mismatch { field: "a hook" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Hook
+        })
     );
 }
 
@@ -928,7 +941,7 @@ fn a_creation_naming_a_volume_born_in_another_environment_is_refused() {
             ContainerKind::ServiceContainer
         ),
         Err(AuthorityRefusal::Mismatch {
-            field: "a Volume's Environment"
+            field: MismatchField::VolumesEnvironment
         })
     );
 }
@@ -967,7 +980,9 @@ fn only_a_spec_whose_placement_is_signed_keeps_to_the_rules_machines() {
             ContainerKind::ServiceContainer,
             later
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Machine
+        })
     );
 }
 
@@ -998,7 +1013,9 @@ fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
             ContainerKind::ServiceContainer,
             (Some(head()), "1")
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a commit" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Commit
+        })
     );
     let next = BuildClaim {
         generation: older.generation + 1,
@@ -1013,7 +1030,7 @@ fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
             offline
         ),
         Err(AuthorityRefusal::Mismatch {
-            field: "a generation"
+            field: MismatchField::Generation
         })
     );
     assert_eq!(
@@ -1024,6 +1041,8 @@ fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
             ContainerKind::ServiceContainer,
             (None, "2")
         ),
-        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Machine
+        })
     );
 }

@@ -2,6 +2,7 @@
 //! Device's key to the approver, who checks it against the code the Device printed: its
 //! [`CheckCode`], which Cloud can't grind a second key to match.
 
+use crate::cloud;
 use crate::cluster::{Call, fan_out_entry_last};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,8 +21,8 @@ use serde_json::json;
 
 use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, positional, yes};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud::account::Credential;
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::connect::Client;
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 use ployz_core::Hint;
@@ -86,7 +87,7 @@ pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
     let config = config_path(leaf_matches(root))?;
     let store = CredentialStore::beside(&config);
     let requested = runtime()?.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
+        let credential = cloud::account::from_env(&store).await?;
         request_at(&credential, &key::path(&config)).await
     })?;
     let code = requested.code;
@@ -123,7 +124,7 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
     let code = key.code();
     let body = json!({ "key": key.to_string() });
     let filed =
-        cloud_account::call::<Filed>(credential, Method::POST, "device-requests", Some(&body))
+        cloud::account::call::<Filed>(credential, Method::POST, "device-requests", Some(&body))
             .await?;
     if filed.code != code {
         return Err(Error::conflict(format!(
@@ -153,7 +154,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(leaf)?);
     let code = CheckCode::parse(typed(leaf))?;
     runtime()?.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
+        let credential = cloud::account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
             confirm_device(leaf, code)?;
             let mut client = route::connect_full(leaf, context(leaf)).await?;
@@ -637,9 +638,10 @@ async fn approve_with<T>(
     set: impl AsyncFnOnce(SetDeviceRequest) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let path = format!("device-requests/{}", code.code());
-    let pending = match cloud_account::call::<Pending>(credential, Method::GET, &path, None).await {
+    let pending = match cloud::account::call::<Pending>(credential, Method::GET, &path, None).await
+    {
         Err(LoginError::Status { body, .. })
-            if cloud_account::refusal(body.as_bytes())
+            if cloud::account::refusal(body.as_bytes())
                 .is_some_and(|refused| refused.code == ployz_core::RpcErrorCode::NotFound) =>
         {
             return Err(Error::not_found(format!(

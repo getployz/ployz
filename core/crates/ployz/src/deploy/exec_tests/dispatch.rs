@@ -548,27 +548,38 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     client.enter_at(machine('1'));
     let mut private = spec(None, None, None);
     private.container.pull_policy = ployz_core::PullPolicy::Always;
+    private.container.image = "registry.example/private:1".into();
     let mut public = private.clone();
     public.name = ployz_core::ServiceName::parse("other").unwrap();
+    public.container.image = "docker.io/library/public:1".into();
     let auth = RegistryAuth {
         username: Some("octocat".into()),
         password: "token".into(),
     };
-    client.deploy.registry_auth =
-        std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
-    for specification in [&private, &public] {
-        DeployOperations::ensure_image(&client, &machine('1'), specification)
-            .await
-            .unwrap();
-    }
+    super::pull_images(
+        &client,
+        &[
+            run(&machine('1'), private.clone(), false),
+            run(&machine('1'), public.clone(), false),
+        ],
+        &std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]),
+    )
+    .await
+    .unwrap();
     server.abort();
     let sent = captured
         .lock()
         .unwrap()
         .iter()
-        .map(|request| request.registry_auth.clone())
-        .collect::<Vec<_>>();
-    assert_eq!(sent, [Some(auth), None]);
+        .map(|request| (request.image.clone(), request.registry_auth.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        sent,
+        std::collections::BTreeMap::from([
+            (private.container.image, Some(auth)),
+            (public.container.image, None),
+        ])
+    );
 }
 
 /// What the Machine is asked to want for a Container removed for `purpose`.
@@ -731,7 +742,8 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
         replicas: std::num::NonZeroU32::new(1).unwrap(),
     };
     let operations = [run(&machine('1'), replica.clone(), true)];
-    let slots = Slots::new("run", &namespace, &operations);
+    let first_run = ployz_core::DeploymentLogId::parse("run").unwrap();
+    let slots = Slots::new(&first_run, &namespace, &operations);
     let key = |kind, spec: &ResolvedServiceSpec, index, replacing| {
         slots
             .slot(kind, spec, index, replacing)
@@ -775,7 +787,7 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
         key(ContainerKind::ServiceContainer, &replica, 1, None),
         "each operation has its own slot"
     );
-    let resent = Slots::new("run", &namespace, &operations);
+    let resent = Slots::new(&first_run, &namespace, &operations);
     assert_eq!(
         replicated,
         resent
@@ -784,7 +796,8 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
             .as_str(),
         "a resent operation of the same run reaches the same slot"
     );
-    let another_run = Slots::new("other", &namespace, &operations);
+    let other = ployz_core::DeploymentLogId::parse("other").unwrap();
+    let another_run = Slots::new(&other, &namespace, &operations);
     assert_ne!(
         replicated,
         another_run
@@ -793,7 +806,7 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
             .as_str()
     );
     let another_plan = Slots::new(
-        "run",
+        &first_run,
         &namespace,
         &[run(&machine('2'), replica.clone(), true)],
     );

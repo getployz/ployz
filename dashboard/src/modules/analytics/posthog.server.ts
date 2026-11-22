@@ -15,18 +15,12 @@ export type PostHogService = {
   }) => Effect.Effect<void>;
   readonly identify: (userId: string, properties: Properties) => Effect.Effect<void>;
   readonly identifyOrganization: (organizationId: string, properties: Properties) => Effect.Effect<void>;
-  /** Runs `send` against MCP Analytics' client, which redacts what it is given; only `recordAgentCall` calls it. */
-  readonly mcp: (send: (client: McpCapture) => void) => Effect.Effect<void>;
 };
-
-/** The part of MCP Analytics' client that records an agent's calls. */
-export type McpCapture = Pick<PostHogMCP, "capture" | "captureToolCall" | "captureInitialize" | "captureToolsList" | "captureFeedback">;
 
 const disabled: PostHogService = {
   capture: () => Effect.void,
   identify: () => Effect.void,
   identifyOrganization: () => Effect.void,
-  mcp: () => Effect.void,
 };
 
 /**
@@ -48,7 +42,6 @@ export const PostHogLive = Layer.effect(
     const { posthog } = yield* AppConfig;
     if (posthog === null) return disabled;
     const client = yield* Effect.acquireRelease(
-      // A failed agent call is no exception: its own `$mcp_is_error` says it failed.
       Effect.sync(() => new PostHogMCP(posthog.key, { host: posthog.host, enableExceptionAutocapture: false })),
       (client) => Effect.tryPromise(() => client.shutdown()).pipe(
         Effect.catch((cause) => Effect.logWarning("PostHog could not flush its queue on shutdown.", cause)),
@@ -66,7 +59,6 @@ export const PostHogLive = Layer.effect(
         bestEffort("identify", () => client.identify({ distinctId: userId, properties: { $set: properties } })),
       identifyOrganization: (organizationId, properties) =>
         bestEffort("groupIdentify", () => client.groupIdentify({ groupType: "organization", groupKey: organizationId, properties })),
-      mcp: (send) => bestEffort("mcp", () => send(client)),
     } satisfies PostHogService;
   }),
 );

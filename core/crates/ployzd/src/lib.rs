@@ -5,17 +5,15 @@ mod build;
 pub(crate) mod forgotten_fence;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.
-#[doc(hidden)]
 #[derive(serde::Deserialize, serde::Serialize)]
-pub struct VolumePluginStatus {
+pub(crate) struct VolumePluginStatus {
     /// Current ZFS dataset byte bound.
-    pub bound_bytes: u64,
+    pub(crate) bound_bytes: u64,
     /// Current referenced ZFS dataset bytes.
-    pub used_bytes: u64,
+    pub(crate) used_bytes: u64,
 }
 
 /// Where Docker finds the Ployz Volume plugin, and where the daemon reaches it.
-#[doc(hidden)]
 pub const VOLUME_PLUGIN_SOCKET: &str = "/run/docker/plugins/ployz.sock";
 
 mod docker_image;
@@ -24,15 +22,15 @@ pub(crate) mod backoff;
 pub(crate) mod certificates;
 pub mod corrosion;
 pub mod daemon;
-#[doc(hidden)]
-pub mod dataset_layout;
+pub(crate) mod dataset_layout;
 pub mod diag;
 pub mod dns;
 pub mod docker;
-pub mod faults;
+pub(crate) mod faults;
 pub(crate) mod filesystem;
 pub mod github;
 mod host_capacity;
+pub(crate) mod host_command;
 pub mod host_facts;
 pub(crate) mod images;
 pub(crate) mod ingress;
@@ -41,11 +39,11 @@ pub mod logs;
 pub mod machine;
 pub mod machine_api;
 pub(crate) mod machine_api_socket;
-#[doc(hidden)]
-pub mod machine_pool;
+pub(crate) mod machine_files;
+pub(crate) mod machine_pool;
 pub mod management;
 pub(crate) mod mesh_peer;
-pub mod mutation;
+pub(crate) mod mutation;
 pub mod network;
 pub mod observe;
 pub(crate) mod reach;
@@ -56,13 +54,13 @@ pub(crate) mod runtime_watch_probe;
 pub(crate) mod sealed_compat;
 pub mod sealed_env;
 pub mod sealing_key;
-mod sealing_recovery;
-pub mod socket_activation;
+pub(crate) mod socket_activation;
 mod storage;
 pub(crate) mod systemd_timeout;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;
 pub(crate) mod units;
-pub mod volume_copy;
-pub mod volume_send;
+pub(crate) mod volume_copy;
+pub mod volume_plugin;
+pub(crate) mod volume_send;

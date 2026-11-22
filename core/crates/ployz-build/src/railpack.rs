@@ -200,7 +200,7 @@ fn frontend_inputs(
             ));
         }
         command.push(' ');
-        command.push_str(&quote(&format!("{name}={value}")));
+        command.push_str(&ployz_core::shell::quote(&format!("{name}={value}")));
         let file = directory.join(format!("secret-{index}"));
         private_file(&file, value.as_bytes())?;
         secrets.push(format!("id={name},src={}", file.display()));
@@ -223,13 +223,13 @@ fn frontend_inputs(
             String::new()
         };
         command.push(' ');
-        command.push_str(&quote(&format!("{name}={planned}")));
+        command.push_str(&ployz_core::shell::quote(&format!("{name}={planned}")));
         secrets.push(format!("id={name},src={}", file.display()));
     }
     command.push_str(" /railpack prepare /app --plan-out /plan.json");
     for name in recipe.variables.keys().chain(recipe.sealed.keys()) {
         command.push_str(" --env=");
-        command.push_str(&quote(name));
+        command.push_str(&ployz_core::shell::quote(name));
     }
     command.push('\n');
     // Length-delimited, sorted JSON prevents ambiguous concatenations. Only
@@ -332,10 +332,6 @@ fn network(docker: &Docker<'_>) -> Result<(), BuildError> {
         )
         .or_else(|error| inspect().map_err(|_| error))
         .map(|_| ())
-}
-
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn private_file(path: &Path, content: &[u8]) -> Result<(), BuildError> {

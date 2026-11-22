@@ -914,9 +914,9 @@ fn creation(
 fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
     use ployz_core::authority::{
-        AttestKey, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest,
-        PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed, Signer, SignerKey,
-        Timestamp,
+        AttestKey, AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority,
+        CommitSha, PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed, Signer,
+        SignerKey, Timestamp,
     };
     let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
     let signer = Signer::from_seed(&[1; 32]);
@@ -954,7 +954,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
             commit: CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
             authority: CommitAuthority::Head,
             stage: BuildStage::Built {
-                image: ImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                 attest: AttestKey::from_bytes([0x55; 32]),
             },
         },
@@ -985,19 +985,24 @@ async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_go
             ployz_core::ResolvedUpdateConfig::default(),
         )
         .unwrap();
-    let proofs = crate::cluster::RuleProofs {
-        rules: BTreeMap::from([(spec.name.clone(), online_proof(&spec.name))]),
-        ..Default::default()
-    };
-    let client = session.client().unwrap().with_rule_proofs(proofs.clone());
+    let mut proofs = crate::deploy::RuleProofs::default();
+    proofs.insert(spec.name.clone(), online_proof(&spec.name));
+    let client = crate::deploy::Approved::new(
+        session.client().unwrap(),
+        crate::deploy::Approvals::signed(Vec::new(), proofs.clone()),
+    );
 
     for (kind, key) in [
         (ContainerKind::PreDeployHook, "hook:test"),
         (ContainerKind::ServiceContainer, "global:test"),
     ] {
-        let created = client
-            .ensure_unsettled(&one.machine.id, creation(&spec, kind, key), None)
-            .await;
+        let created = crate::deploy::CopyLifecycle::ensure_unsettled(
+            &client,
+            &one.machine.id,
+            creation(&spec, kind, key),
+            None,
+        )
+        .await;
         assert!(
             matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
             "the {kind} is created: {created:?}"

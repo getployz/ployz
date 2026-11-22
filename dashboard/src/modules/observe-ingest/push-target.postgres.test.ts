@@ -1,9 +1,8 @@
 import { it } from "@effect/vitest";
-import type { Client } from "@ployz/sdk";
+import type { Client, MachineId } from "@ployz/sdk";
 import { asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { assert, expect } from "vitest";
-import type { MachineId } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { clusterSealingKey, organizationMachine } from "#/modules/machines/tables";
 import { deliverPushTargets } from "#/modules/observe-ingest/push-target.server";

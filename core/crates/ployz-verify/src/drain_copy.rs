@@ -25,7 +25,7 @@
 //!   starts or answers, starts, then reads the Container it acted on and answers. Any of
 //!   those steps may end in an error instead. One request, and one resend after a lost
 //!   answer or a send the entry couldn't dial (`RestartTolerant`,
-//!   ployz/src/deploy/exec/transport.rs), which the entry may refuse to dial again for;
+//!   ployz/src/deploy/machine_calls/transport.rs), which the entry may refuse to dial again for;
 //! - the planter, an honest other caller (an older CLI's move of the same copy, a
 //!   hand-written ensure.v1, a second drain), acting at most twice in the slot `move:{old}`
 //!   or in a second drain's minted slot: it creates a Container of either spec and either

@@ -3,7 +3,7 @@ import { readMigrationFiles } from "drizzle-orm/migrator";
 import { Data, Effect } from "effect";
 import { Client } from "pg";
 
-export class SchemaCompatibilityCheckFailure extends Data.TaggedError("SchemaCompatibilityCheckFailure")<{
+class SchemaCompatibilityCheckFailure extends Data.TaggedError("SchemaCompatibilityCheckFailure")<{
   readonly cause: unknown;
 }> {}
 
@@ -19,10 +19,6 @@ type AppliedMigration = { readonly hash: string; readonly name?: string | null; 
  * migration that reached main is renamed; one folded into the baseline is older than every shipped migration already.
  */
 const RETIRED_MIGRATIONS = new Set(["20261011184200_service_act"]);
-
-const histories = [
-  { table: "__drizzle_migrations", directory: "." },
-];
 
 export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible")(function* ({
   databaseUrl,
@@ -41,36 +37,34 @@ export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible
     try: () => client.connect(),
     catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
   });
-  for (const history of histories) {
-    const shipped = yield* Effect.try({
-      try: () => {
-        const migrations = readMigrationFiles({ migrationsFolder: resolve(migrationsFolder, history.directory) });
-        if (migrations.length === 0) throw new Error(`No migrations in ${resolve(migrationsFolder, history.directory)}`);
-        return migrations;
-      },
-      catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
+  const shipped = yield* Effect.try({
+    try: () => {
+      const migrations = readMigrationFiles({ migrationsFolder: resolve(migrationsFolder) });
+      if (migrations.length === 0) throw new Error(`No migrations in ${resolve(migrationsFolder)}`);
+      return migrations;
+    },
+    catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
+  });
+  const names = new Set(shipped.map(migration => migration.name));
+  const hashes = new Set(shipped.map(migration => migration.hash));
+  const millis = new Set(shipped.map(migration => Number(migration.folderMillis)));
+  const oldest = Math.min(...shipped.map(migration => migration.folderMillis));
+  const applied = yield* Effect.tryPromise({
+    try: async () => {
+      const exists = await client.query<{ present: boolean }>("select to_regclass($1) is not null as present", ["drizzle.__drizzle_migrations"]);
+      if (!exists.rows[0]?.present) return [];
+      const result = await client.query<{ row: AppliedMigration }>("select to_jsonb(t) as row from drizzle.__drizzle_migrations t");
+      return result.rows.map(({ row }) => row);
+    },
+    catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
+  });
+  const explained = (migration: AppliedMigration) =>
+    (migration.name ? names.has(migration.name) || RETIRED_MIGRATIONS.has(migration.name) : millis.has(Number(migration.created_at)))
+    || hashes.has(migration.hash)
+    || Number(migration.created_at) < oldest;
+  if (!applied.every(explained)) {
+    return yield* new UnsupportedDatabaseSchema({
+      message: `Ployz Cloud image ${imageVersion} does not ship all migrations recorded in drizzle.__drizzle_migrations. Use a newer Ployz Cloud image.`,
     });
-    const names = new Set(shipped.map(migration => migration.name));
-    const hashes = new Set(shipped.map(migration => migration.hash));
-    const millis = new Set(shipped.map(migration => Number(migration.folderMillis)));
-    const oldest = Math.min(...shipped.map(migration => migration.folderMillis));
-    const applied = yield* Effect.tryPromise({
-      try: async () => {
-        const exists = await client.query<{ present: boolean }>("select to_regclass($1) is not null as present", [`drizzle.${history.table}`]);
-        if (!exists.rows[0]?.present) return [];
-        const result = await client.query<{ row: AppliedMigration }>(`select to_jsonb(t) as row from drizzle."${history.table}" t`);
-        return result.rows.map(({ row }) => row);
-      },
-      catch: cause => new SchemaCompatibilityCheckFailure({ cause }),
-    });
-    const explained = (migration: AppliedMigration) =>
-      (migration.name ? names.has(migration.name) || RETIRED_MIGRATIONS.has(migration.name) : millis.has(Number(migration.created_at)))
-      || hashes.has(migration.hash)
-      || Number(migration.created_at) < oldest;
-    if (!applied.every(explained)) {
-      return yield* new UnsupportedDatabaseSchema({
-        message: `Ployz Cloud image ${imageVersion} does not ship all migrations recorded in drizzle.${history.table}. Use a newer Ployz Cloud image.`,
-      });
-    }
   }
 });

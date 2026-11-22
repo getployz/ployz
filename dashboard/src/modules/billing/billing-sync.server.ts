@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createOrganizationBillingSyncRequestedEvent } from "#/modules/inngest/events";
+import { organizationBillingSyncRequested } from "#/modules/billing/billing.events";
 
 /**
  * Asks the billing sync to bring the subscription's units in line with the Server count. A send that fails only waits for
@@ -11,7 +11,7 @@ export const requestBillingSync = Effect.fn("Billing.requestSync")(function* (
   organizationId: string,
   reason: "server-joined" | "server-removed",
 ) {
-  yield* sendInngestEvent(createOrganizationBillingSyncRequestedEvent({ organizationId, reason })).pipe(
+  yield* sendInngestEvent(organizationBillingSyncRequested.create({ organizationId, reason })).pipe(
     // Callers include the runtime recorder's uninterruptible writer; a stalled send must not hold it.
     Effect.timeoutOrElse({
       duration: "10 seconds",

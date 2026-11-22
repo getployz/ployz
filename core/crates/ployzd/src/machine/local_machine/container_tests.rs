@@ -900,11 +900,16 @@ mod settled {
     }
 
     async fn eventually(mut ready: impl FnMut() -> bool) {
-        while !ready() {
-            // real-wait: the daemon changes this state over the fake Docker's real TCP
-            // socket, or in work detached from the test, and neither signals it.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let wait = async {
+            while !ready() {
+                // real-wait: the daemon changes this state over the fake Docker's real TCP
+                // socket, or in work detached from the test, and neither signals it.
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .expect("the daemon's state change arrives");
     }
 
     async fn let_requests_land() {
@@ -1378,13 +1383,9 @@ mod settled {
             Some(format!("sha256:{}", "b".repeat(64))),
         );
         let admitted = local
-            .admit_spec(
-                &want,
-                crate::machine::Presented::Operator {
-                    rule: None,
-                    versions: &[],
-                },
-            )
+            .clone()
+            .at_operator_scope()
+            .admit_spec(&want, None, &[])
             .await
             .unwrap();
         assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
@@ -1445,13 +1446,9 @@ mod settled {
             new.resolved_spec.container.pull_policy = policy;
             let want = run(new);
             let admitted = local
-                .admit_spec(
-                    &want,
-                    crate::machine::Presented::Operator {
-                        rule: None,
-                        versions: &[],
-                    },
-                )
+                .clone()
+                .at_operator_scope()
+                .admit_spec(&want, None, &[])
                 .await
                 .unwrap();
             assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));

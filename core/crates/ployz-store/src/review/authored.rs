@@ -8,14 +8,13 @@ use crate::storage::Tx;
 use crate::trusted::Evidence;
 use crate::{Trusted, error, scope};
 use ployz_core::config::{
-    At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    EnvironmentNodeType, Place, PlainText, Replicas, ReviewComparisonRole, ReviewLifecycleKind,
+    At, AuthoredServiceConfig, ChangeKind, CompiledNodeConfig, ConfigAttachment,
+    EnvironmentNodeType, Place, PlainText, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableIntent, SavedVolumeIntent, ServiceBuildConfig,
-    ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
-    ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
-    ServiceUpdateOrder, Setting, ValuePart, VariableValue, VolumeAttachment, VolumeKind,
-    compare_service_settings, compile_environment_intent, render_variable_parts,
+    SavedServiceIntent, SavedVariableIntent, SavedVolumeIntent, ServiceGitAccess, ServiceGitBranch,
+    ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate, Setting, ValuePart,
+    VariableValue, VolumeAttachment, VolumeKind, compare_service_settings,
+    compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde_json::{Value, json};
@@ -89,22 +88,46 @@ enum ServiceField {
     Source(Delta<ServiceSource>),
     GitSource(Delta<GitSelection>),
     Branch(Delta<ServiceGitBranch>),
-    PreDeployCommand(Delta<Option<String>>),
-    StartCommand(Delta<Option<String>>),
-    Healthcheck(Delta<ServiceHealthcheck>),
-    RestartPolicy(Delta<ServiceRestartPolicy>),
-    MaxRetries(Delta<u8>),
-    UpdateOrder(Delta<Option<ServiceUpdateOrder>>),
-    Replicas(Delta<Replicas>),
-    CpuLimit(Delta<Option<f64>>),
-    MemLimit(Delta<Option<f64>>),
-    PrivateDns(Delta<ServiceName>),
-    BuildMethod(Delta<BuildMethod>),
-    DockerfilePath(Delta<Option<String>>),
-    BuildCommand(Delta<Option<String>>),
     Template(Delta<Option<ServiceTemplate>>),
-    ManagedHostnames(Delta<Vec<ServiceManagedHostname>>),
+    Compared(&'static Compared, Delta<Value>),
 }
+/// A Service Setting a review compares, shows and puts back as the value it serializes
+/// to.
+struct Compared {
+    setting: Setting,
+    read: fn(&AuthoredServiceConfig) -> Value,
+    restore: fn(&mut AuthoredServiceConfig, Value) -> Result<(), serde_json::Error>,
+}
+macro_rules! compared {
+    ($setting:ident, $($field:ident).+) => {
+        Compared {
+            setting: Setting::$setting,
+            read: |config| json!(config.$($field).+),
+            restore: |config, value| {
+                config.$($field).+ = serde_json::from_value(value)?;
+                Ok(())
+            },
+        }
+    };
+}
+/// In the order a Service's rows list them, but for managed hostnames, which list
+/// after its routes.
+const COMPARED: [Compared; 13] = [
+    compared!(PreDeployCommand, pre_deploy_command),
+    compared!(StartCommand, start_command),
+    compared!(Healthcheck, healthcheck),
+    compared!(RestartPolicy, restart_policy),
+    compared!(MaxRetries, max_retries),
+    compared!(UpdateOrder, update_order),
+    compared!(Replicas, replicas),
+    compared!(CpuLimit, cpu_limit),
+    compared!(MemLimit, mem_limit),
+    compared!(PrivateDns, private_dns),
+    compared!(BuildMethod, build.build_method),
+    compared!(DockerfilePath, build.dockerfile_path),
+    compared!(BuildCommand, build.command),
+];
+const MANAGED_HOSTNAMES: Compared = compared!(ManagedHostnames, managed_hostnames);
 enum VariableField {
     Id(Delta<String>),
     Value(Box<Delta<VersionedValue>>),
@@ -306,6 +329,21 @@ fn push_field<T: Clone + PartialEq>(
         effects.push(Effect::Service {
             id: id.to_owned(),
             field: wrap(delta),
+        });
+    }
+}
+
+fn compared_changes(
+    effects: &mut Vec<Effect>,
+    id: &str,
+    compared: &'static Compared,
+    before: &AuthoredServiceConfig,
+    after: &AuthoredServiceConfig,
+) {
+    if let Some(delta) = Delta::between(&(compared.read)(before), &(compared.read)(after)) {
+        effects.push(Effect::Service {
+            id: id.to_owned(),
+            field: ServiceField::Compared(compared, delta),
         });
     }
 }
@@ -685,22 +723,23 @@ fn service_changes(
         "History cannot change a Service's stable lineage",
     )?;
     push_field(effects, id, &before.slug, slug, ServiceField::Name);
+    // Every field named, so a new one cannot go unreviewed: the rest are `COMPARED`.
     let AuthoredServiceConfig {
         version,
         source,
-        pre_deploy_command,
-        start_command,
-        healthcheck,
-        restart_policy,
-        max_retries,
-        update_order,
-        replicas,
-        cpu_limit,
-        mem_limit,
-        private_dns,
+        pre_deploy_command: _,
+        start_command: _,
+        healthcheck: _,
+        restart_policy: _,
+        max_retries: _,
+        update_order: _,
+        replicas: _,
+        cpu_limit: _,
+        mem_limit: _,
+        private_dns: _,
         routes,
-        managed_hostnames,
-        build,
+        managed_hostnames: _,
+        build: _,
         template,
     } = config;
     invariant(
@@ -708,102 +747,9 @@ fn service_changes(
         "History cannot change a Service's setting schema",
     )?;
     source_changes(effects, id, &before.config.source, source);
-    push_field(
-        effects,
-        id,
-        &before.config.pre_deploy_command,
-        pre_deploy_command,
-        ServiceField::PreDeployCommand,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.start_command,
-        start_command,
-        ServiceField::StartCommand,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.healthcheck,
-        healthcheck,
-        ServiceField::Healthcheck,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.restart_policy,
-        restart_policy,
-        ServiceField::RestartPolicy,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.max_retries,
-        max_retries,
-        ServiceField::MaxRetries,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.update_order,
-        update_order,
-        ServiceField::UpdateOrder,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.replicas,
-        replicas,
-        ServiceField::Replicas,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.cpu_limit,
-        cpu_limit,
-        ServiceField::CpuLimit,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.mem_limit,
-        mem_limit,
-        ServiceField::MemLimit,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.private_dns,
-        private_dns,
-        ServiceField::PrivateDns,
-    );
-    let ServiceBuildConfig {
-        build_method,
-        dockerfile_path,
-        command,
-    } = build;
-    push_field(
-        effects,
-        id,
-        &before.config.build.build_method,
-        build_method,
-        ServiceField::BuildMethod,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.build.dockerfile_path,
-        dockerfile_path,
-        ServiceField::DockerfilePath,
-    );
-    push_field(
-        effects,
-        id,
-        &before.config.build.command,
-        command,
-        ServiceField::BuildCommand,
-    );
+    for compared in &COMPARED {
+        compared_changes(effects, id, compared, &before.config, config);
+    }
     push_field(
         effects,
         id,
@@ -834,13 +780,7 @@ fn service_changes(
             });
         }
     }
-    push_field(
-        effects,
-        id,
-        &before.config.managed_hostnames,
-        managed_hostnames,
-        ServiceField::ManagedHostnames,
-    );
+    compared_changes(effects, id, &MANAGED_HOSTNAMES, &before.config, config);
     // By key, so a History page over a large Environment stays linear in its variables.
     fn by_key(variables: &[SavedVariableIntent]) -> BTreeMap<&str, &SavedVariableIntent> {
         variables
@@ -1316,9 +1256,11 @@ impl Effect {
                 ..
             } => delta(name, |name| Some(Slot::Service(name))),
             Self::Service {
-                field: ServiceField::PrivateDns(dns),
+                field: ServiceField::Compared(compared, dns),
                 ..
-            } => delta(dns, |dns| Some(Slot::Service(dns.as_str()))),
+            } if compared.setting == Setting::PrivateDns => {
+                delta(dns, |dns| dns.as_str().map(Slot::Service))
+            }
             Self::VariableLifecycle {
                 service,
                 key,
@@ -1474,6 +1416,11 @@ impl Effect {
         match self {
             Self::Service { field: left, .. } => match other {
                 Self::Service { field: right, .. } => {
+                    if let (ServiceField::Compared(left, _), ServiceField::Compared(right, _)) =
+                        (left, right)
+                    {
+                        return left.setting == right.setting;
+                    }
                     std::mem::discriminant(left) == std::mem::discriminant(right)
                         || matches!(
                             (left, right),
@@ -1765,28 +1712,10 @@ impl ServiceField {
                     ));
                 }
             },
-            Self::PreDeployCommand(delta) => {
-                service.config.pre_deploy_command.clone_from(&delta.before)
-            }
-            Self::StartCommand(delta) => service.config.start_command.clone_from(&delta.before),
-            Self::Healthcheck(delta) => service.config.healthcheck.clone_from(&delta.before),
-            Self::RestartPolicy(delta) => service.config.restart_policy = delta.before,
-            Self::MaxRetries(delta) => service.config.max_retries = delta.before,
-            Self::UpdateOrder(delta) => service.config.update_order = delta.before,
-            Self::Replicas(delta) => service.config.replicas.clone_from(&delta.before),
-            Self::CpuLimit(delta) => service.config.cpu_limit = delta.before,
-            Self::MemLimit(delta) => service.config.mem_limit = delta.before,
-            Self::PrivateDns(delta) => service.config.private_dns.clone_from(&delta.before),
-            Self::BuildMethod(delta) => service.config.build.build_method = delta.before,
-            Self::DockerfilePath(delta) => service
-                .config
-                .build
-                .dockerfile_path
-                .clone_from(&delta.before),
-            Self::BuildCommand(delta) => service.config.build.command.clone_from(&delta.before),
             Self::Template(delta) => service.config.template.clone_from(&delta.before),
-            Self::ManagedHostnames(delta) => {
-                service.config.managed_hostnames.clone_from(&delta.before)
+            Self::Compared(compared, delta) => {
+                (compared.restore)(&mut service.config, delta.before.clone())
+                    .map_err(|_| error::corrupt("Service setting"))?;
             }
         }
         Ok(())
@@ -2054,20 +1983,7 @@ impl ServiceField {
             Self::Name(_) | Self::Template(_) => None,
             Self::Source(_) | Self::GitSource(_) => Some(Setting::Source),
             Self::Branch(_) => Some(Setting::Branch),
-            Self::PreDeployCommand(_) => Some(Setting::PreDeployCommand),
-            Self::StartCommand(_) => Some(Setting::StartCommand),
-            Self::Healthcheck(_) => Some(Setting::Healthcheck),
-            Self::RestartPolicy(_) => Some(Setting::RestartPolicy),
-            Self::MaxRetries(_) => Some(Setting::MaxRetries),
-            Self::UpdateOrder(_) => Some(Setting::UpdateOrder),
-            Self::Replicas(_) => Some(Setting::Replicas),
-            Self::CpuLimit(_) => Some(Setting::CpuLimit),
-            Self::MemLimit(_) => Some(Setting::MemLimit),
-            Self::PrivateDns(_) => Some(Setting::PrivateDns),
-            Self::BuildMethod(_) => Some(Setting::BuildMethod),
-            Self::DockerfilePath(_) => Some(Setting::DockerfilePath),
-            Self::BuildCommand(_) => Some(Setting::BuildCommand),
-            Self::ManagedHostnames(_) => Some(Setting::ManagedHostnames),
+            Self::Compared(compared, _) => Some(compared.setting),
         }
     }
     fn render(&self) -> (&'static str, Option<At>, Value, Value) {
@@ -2075,22 +1991,9 @@ impl ServiceField {
             Self::Name(delta) => (json!(delta.before), json!(delta.after)),
             Self::Source(delta) => (public_source(&delta.before), public_source(&delta.after)),
             Self::GitSource(delta) => (delta.before.shown(), delta.after.shown()),
-            Self::ManagedHostnames(delta) => (json!(delta.before), json!(delta.after)),
             Self::Branch(delta) => (json!(delta.before), json!(delta.after)),
-            Self::PreDeployCommand(delta) => (json!(delta.before), json!(delta.after)),
-            Self::StartCommand(delta) => (json!(delta.before), json!(delta.after)),
-            Self::Healthcheck(delta) => (json!(delta.before), json!(delta.after)),
-            Self::RestartPolicy(delta) => (json!(delta.before), json!(delta.after)),
-            Self::MaxRetries(delta) => (json!(delta.before), json!(delta.after)),
-            Self::UpdateOrder(delta) => (json!(delta.before), json!(delta.after)),
-            Self::Replicas(delta) => (json!(delta.before), json!(delta.after)),
-            Self::CpuLimit(delta) => (json!(delta.before), json!(delta.after)),
-            Self::MemLimit(delta) => (json!(delta.before), json!(delta.after)),
-            Self::PrivateDns(delta) => (json!(delta.before), json!(delta.after)),
-            Self::BuildMethod(delta) => (json!(delta.before), json!(delta.after)),
-            Self::DockerfilePath(delta) => (json!(delta.before), json!(delta.after)),
-            Self::BuildCommand(delta) => (json!(delta.before), json!(delta.after)),
             Self::Template(delta) => (json!(delta.before), json!(delta.after)),
+            Self::Compared(_, delta) => (delta.before.clone(), delta.after.clone()),
         };
         match self.setting() {
             Some(setting) => (
@@ -2771,7 +2674,10 @@ fn lifecycle_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::config::{ServiceGitAccess, ServiceImageCredentials};
+    use ployz_core::config::{
+        BuildMethod, Replicas, ServiceBuildConfig, ServiceHealthcheck, ServiceImageCredentials,
+        ServiceManagedHostname, ServiceRestartPolicy, ServiceUpdateOrder,
+    };
     use ployz_core::{RestartPolicy, ServiceTemplateId};
     use std::num::NonZeroU32;
 
@@ -2855,6 +2761,14 @@ mod tests {
             shown_after,
             restored,
         }
+    }
+    fn compared(setting: Setting, before: Value, after: Value) -> ServiceField {
+        let row = COMPARED
+            .iter()
+            .chain([&MANAGED_HOSTNAMES])
+            .find(|row| row.setting == setting)
+            .unwrap();
+        ServiceField::Compared(row, delta(before, after))
     }
     fn cases() -> Vec<Case> {
         let image = ServiceSource::Image {
@@ -2940,21 +2854,25 @@ mod tests {
                 )],
             ),
             case(
-                ServiceField::PreDeployCommand(delta(None, Some("migrate".to_owned()))),
+                compared(Setting::PreDeployCommand, json!(null), json!("migrate")),
                 "preDeployCommand",
                 Some(Setting::PreDeployCommand),
                 (json!(null), json!("migrate")),
                 vec![("/config/preDeployCommand", json!(null))],
             ),
             case(
-                ServiceField::StartCommand(delta(Some("old".to_owned()), Some("serve".to_owned()))),
+                compared(Setting::StartCommand, json!("old"), json!("serve")),
                 "startCommand",
                 Some(Setting::StartCommand),
                 (json!("old"), json!("serve")),
                 vec![("/config/startCommand", json!("old"))],
             ),
             case(
-                ServiceField::Healthcheck(delta(http, ServiceHealthcheck::None)),
+                compared(
+                    Setting::Healthcheck,
+                    json!(http),
+                    json!(ServiceHealthcheck::None),
+                ),
                 "healthcheck",
                 Some(Setting::Healthcheck),
                 (
@@ -2967,76 +2885,86 @@ mod tests {
                 )],
             ),
             case(
-                ServiceField::RestartPolicy(delta(
-                    ServiceRestartPolicy(RestartPolicy::Always),
-                    ServiceRestartPolicy(RestartPolicy::UnlessStopped),
-                )),
+                compared(
+                    Setting::RestartPolicy,
+                    json!(ServiceRestartPolicy(RestartPolicy::Always)),
+                    json!(ServiceRestartPolicy(RestartPolicy::UnlessStopped)),
+                ),
                 "restartPolicy",
                 Some(Setting::RestartPolicy),
                 (json!("always"), json!("unless-stopped")),
                 vec![("/config/restartPolicy", json!("always"))],
             ),
             case(
-                ServiceField::MaxRetries(delta(3, 10)),
+                compared(Setting::MaxRetries, json!(3), json!(10)),
                 "maxRetries",
                 Some(Setting::MaxRetries),
                 (json!(3), json!(10)),
                 vec![("/config/maxRetries", json!(3))],
             ),
             case(
-                ServiceField::UpdateOrder(delta(
-                    Some(ServiceUpdateOrder::Rolling),
-                    Some(ServiceUpdateOrder::StopFirst),
-                )),
+                compared(
+                    Setting::UpdateOrder,
+                    json!(ServiceUpdateOrder::Rolling),
+                    json!(ServiceUpdateOrder::StopFirst),
+                ),
                 "updateOrder",
                 Some(Setting::UpdateOrder),
                 (json!("rolling"), json!("stop-first")),
                 vec![("/config/updateOrder", json!("rolling"))],
             ),
             case(
-                ServiceField::Replicas(delta(Replicas::Count(3), Replicas::Count(1))),
+                compared(
+                    Setting::Replicas,
+                    json!(Replicas::Count(3)),
+                    json!(Replicas::Count(1)),
+                ),
                 "replicas",
                 Some(Setting::Replicas),
                 (json!(3), json!(1)),
                 vec![("/config/replicas", json!(3))],
             ),
             case(
-                ServiceField::CpuLimit(delta(Some(0.5), None)),
+                compared(Setting::CpuLimit, json!(0.5), json!(null)),
                 "cpuLimit",
                 Some(Setting::CpuLimit),
                 (json!(0.5), json!(null)),
                 vec![("/config/cpuLimit", json!(0.5))],
             ),
             case(
-                ServiceField::MemLimit(delta(None, Some(256.0))),
+                compared(Setting::MemLimit, json!(null), json!(256.0)),
                 "memLimit",
                 Some(Setting::MemLimit),
                 (json!(null), json!(256.0)),
                 vec![("/config/memLimit", json!(null))],
             ),
             case(
-                ServiceField::PrivateDns(delta(dns("api"), dns("web"))),
+                compared(Setting::PrivateDns, json!(dns("api")), json!(dns("web"))),
                 "privateDns",
                 Some(Setting::PrivateDns),
                 (json!("api"), json!("web")),
                 vec![("/config/privateDns", json!("api"))],
             ),
             case(
-                ServiceField::BuildMethod(delta(BuildMethod::Dockerfile, BuildMethod::Railpack)),
+                compared(
+                    Setting::BuildMethod,
+                    json!(BuildMethod::Dockerfile),
+                    json!(BuildMethod::Railpack),
+                ),
                 "buildMethod",
                 Some(Setting::BuildMethod),
                 (json!("dockerfile"), json!("railpack")),
                 vec![("/config/build/buildMethod", json!("dockerfile"))],
             ),
             case(
-                ServiceField::DockerfilePath(delta(Some("Dockerfile".to_owned()), None)),
+                compared(Setting::DockerfilePath, json!("Dockerfile"), json!(null)),
                 "dockerfilePath",
                 Some(Setting::DockerfilePath),
                 (json!("Dockerfile"), json!(null)),
                 vec![("/config/build/dockerfilePath", json!("Dockerfile"))],
             ),
             case(
-                ServiceField::BuildCommand(delta(None, Some("make".to_owned()))),
+                compared(Setting::BuildCommand, json!(null), json!("make")),
                 "buildCommand",
                 Some(Setting::BuildCommand),
                 (json!(null), json!("make")),
@@ -3050,7 +2978,7 @@ mod tests {
                 vec![("/config/template", json!({"id":"redis","version":3}))],
             ),
             case(
-                ServiceField::ManagedHostnames(delta(vec![hostname], Vec::new())),
+                compared(Setting::ManagedHostnames, json!([hostname]), json!([])),
                 "managedHostnames",
                 Some(Setting::ManagedHostnames),
                 (json!([{"prefix":"app","targetPort":8080}]), json!([])),
@@ -3128,19 +3056,6 @@ mod tests {
             .map(|(path, before, after)| (*path, *before, *after))
             .collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn every_setting_but_routes_has_a_service_field() {
-        let named: BTreeSet<Setting> = cases()
-            .iter()
-            .filter_map(|case| case.field.setting())
-            .collect();
-        let unnamed: Vec<Setting> = Setting::ALL
-            .into_iter()
-            .filter(|setting| !named.contains(setting))
-            .collect();
-        assert_eq!(unnamed, [Setting::Routes]);
     }
 
     #[test]

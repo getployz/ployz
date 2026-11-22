@@ -150,7 +150,7 @@ fn parse(command: &Command, args: &[std::ffi::OsString]) -> Result<ArgMatches, c
 /// the next `--help` would be stale, so fetch it now, after the command's own output.
 fn follow_cloud_revision() {
     let setup = crate::published::Setup::from_env();
-    let Some(seen) = crate::cloud_account::revision_seen(&setup.cloud) else {
+    let Some(seen) = crate::cloud::http::revision_seen(&setup.cloud) else {
         return;
     };
     if setup
@@ -357,7 +357,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            crate::cloud_origin::CloudOrigin::named_by_env(),
+            crate::cloud::origin::CloudOrigin::named_by_env(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
@@ -531,16 +531,13 @@ async fn connect_context_chosen(
         &ployz_core::MachineLayout::production().socket(),
     )?;
     let connections = selected.connections.clone();
-    let connector = crate::connect::SystemConnector::default()
-        .with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(
-        crate::connect::connect_selected_with(selected, std::sync::Arc::new(connector))
-            .await?
-            .with_full_routes(crate::cluster::FullRoutes::chosen(
-                connections,
-                direct.is_some(),
-            )),
-    )
+    let connector = crate::cli::connector(matches);
+    Ok(crate::connect::connect_selected_with(selected, connector)
+        .await?
+        .with_full_routes(crate::cluster::FullRoutes::chosen(
+            connections,
+            direct.is_some(),
+        )))
 }
 
 /// Re-establish a management connection after setup has already started.
@@ -658,7 +655,7 @@ where
 fn with_reader<F>(
     root: &ArgMatches,
     work: F,
-) -> Result<Option<crate::cloud_account::Credential>, Error>
+) -> Result<Option<crate::cloud::account::Credential>, Error>
 where
     F: for<'a> FnOnce(
         &'a mut crate::connect::Client,
@@ -672,7 +669,7 @@ fn with_lister<F>(
     root: &ArgMatches,
     empty: impl FnOnce() -> Result<(), Error>,
     work: F,
-) -> Result<Option<crate::cloud_account::Credential>, Error>
+) -> Result<Option<crate::cloud::account::Credential>, Error>
 where
     F: for<'a> FnOnce(
         &'a mut crate::connect::Client,
@@ -963,7 +960,7 @@ mod tests {
 
     #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
-        use crate::ui::progress::{Diagnostic, LogTail};
+        use crate::failure::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};
         let failed = MachineId::random();
         let original = MachineId::random();

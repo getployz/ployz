@@ -7,7 +7,8 @@ use ployz_core::{AdvertisedEndpoint, PublicIpDiscovery};
 use serde::Deserialize;
 
 use super::{
-    DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command,
+    DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked,
+    checked_command,
 };
 
 #[derive(Clone)]
@@ -114,17 +115,7 @@ fn skip_interface(name: &str) -> bool {
 /// lookup only through a NAT64 gateway, which answers with the gateway's address.
 fn has_ipv4_route() -> bool {
     // Ask the kernel, so policy tables and split routes count, not only a main-table default.
-    any_ipv4_route(|destination| {
-        let output = route_get_command(destination).output()?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            Err(NetworkError::Command {
-                program: "ip".into(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-            })
-        }
-    })
+    any_ipv4_route(|destination| checked(&mut route_get_command(destination)))
 }
 
 /// In the C locale, so [`ipv4_route`] can read the kernel's refusal.

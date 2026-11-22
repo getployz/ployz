@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, ImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion, Signed,
-    SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
+    Births, BuiltImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion,
+    Signed, SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -20,11 +20,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{TargetNode, now};
+use super::{TargetNode, organization};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
+use crate::storage::now;
 
 /// A signed version a client posts with a Deploy, and the image it pinned for it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -130,7 +131,7 @@ pub(crate) fn post(
             }
         })
         .collect();
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     let mut record = record_of(tx, id)?;
     let mut named = BTreeSet::new();
     let mut births = Births::new();
@@ -399,7 +400,7 @@ pub(crate) fn parents(
 ) -> Result<ParentView, RpcError> {
     let environment = crate::scope::environment(tx, who, &query.environment)?;
     trusted.writes(&environment.summary.name)?;
-    let namespace = super::namespace(tx, who, &environment.summary, false)?;
+    let namespace = super::namespace(tx, who, &environment.summary)?;
     let organization = who.organization.as_str();
     let records = ran_records(tx, &environment.summary)?;
     let applied = super::head(tx, &environment)?.applied;
@@ -487,7 +488,7 @@ pub(crate) fn running(
 ) -> Result<RunningView, RpcError> {
     let environment = crate::scope::environment(tx, who, &query.environment)?;
     trusted.writes(&environment.summary.name)?;
-    let namespace = super::namespace(tx, who, &environment.summary, false)?;
+    let namespace = super::namespace(tx, who, &environment.summary)?;
     let organization = who.organization.as_str();
     let records = ran_records(tx, &environment.summary)?;
     let mut services = BTreeMap::new();
@@ -604,7 +605,7 @@ pub struct VersionsQuery {
     /// stand in for a signed version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
-    pub image: Option<ImageDigest>,
+    pub image: Option<BuiltImageDigest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -688,7 +689,7 @@ pub(super) fn pinned(
     if record != recorded {
         write_record(tx, id, &record)?;
     }
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     record
         .services
         .into_iter()

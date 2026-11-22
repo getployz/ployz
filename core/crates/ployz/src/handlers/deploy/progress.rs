@@ -1,10 +1,10 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
-use crate::deploy::{Replica, service_row, starts, updates};
+pub(crate) mod rows;
+
 use crate::failure::Failure;
-use crate::ui::progress::{
-    Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
-};
+use crate::failure::{Detail, Diagnostic, LogTail};
+use crate::ui::progress::{Frame, Row, Run, State, Subject, Timing, Work};
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::error_chain;
 use ployz_core::{
@@ -16,6 +16,7 @@ use ployz_store::{
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
     ServerRow,
 };
+use rows::{Replica, service_row, starts, updates};
 use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -64,25 +65,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     .find(|entry| entry.service == *runtime)
                     .map(|entry| crate::ui::escaped(&entry.error.message))
             });
-            row.detail = blocked.or_else(|| {
-                build.map(|build| {
-                    let word = match build.status {
-                        BuildStatus::Failed if build.is_interrupted() => "build interrupted",
-                        BuildStatus::Pending => "build pending",
-                        BuildStatus::Building => "building",
-                        BuildStatus::Built => "built",
-                        BuildStatus::Reused => "build reused",
-                        BuildStatus::Failed => "build failed",
-                    };
-                    match (&build.server, build.status) {
-                        (
-                            Some(server),
-                            BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
-                        ) => format!("{word} on {server}"),
-                        _ => word.to_owned(),
-                    }
-                })
-            });
+            row.detail = blocked.or_else(|| build.map(build_word));
         }
         if let Some(waiting) = view
             .preview
@@ -137,31 +120,46 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             view.environment.name
         ),
         rows,
-        notices: view
-            .preview
-            .iter()
-            .flat_map(|preview| &preview.warnings)
-            .chain(
-                view.deployment
-                    .warnings
-                    .iter()
-                    .filter_map(|warning| match warning {
-                        DeploymentWarning::Deploy { warning } => Some(warning),
-                        DeploymentWarning::Fragile { .. }
-                        | DeploymentWarning::NotSet { .. }
-                        | DeploymentWarning::NotSetInFile { .. }
-                        | DeploymentWarning::IngressNotServing { .. }
-                        | DeploymentWarning::IngressUnchecked { .. } => None,
-                    }),
-            )
-            .map(|warning| by_service_name(view, warning.clone()))
-            .fold(Vec::new(), |mut notices, warning| {
-                if !notices.contains(&warning) {
-                    notices.push(warning);
-                }
-                notices
-            }),
+        notices: notices(view),
         held_back,
+    }
+}
+
+/// What the plan and the run warned of, once each, naming Services by their names.
+pub(super) fn notices(view: &DeploymentView) -> Vec<DeployWarning> {
+    view.preview
+        .iter()
+        .flat_map(|preview| &preview.warnings)
+        .chain(
+            view.deployment
+                .warnings
+                .iter()
+                .filter_map(DeploymentWarning::as_deploy),
+        )
+        .map(|warning| by_service_name(view, warning.clone()))
+        .fold(Vec::new(), |mut notices, warning| {
+            if !notices.contains(&warning) {
+                notices.push(warning);
+            }
+            notices
+        })
+}
+
+/// A build's state, and the Server it ran on once one took it.
+pub(super) fn build_word(build: &ployz_store::BuildView) -> String {
+    let word = match build.status {
+        BuildStatus::Failed if build.is_interrupted() => "build interrupted",
+        BuildStatus::Pending => "build pending",
+        BuildStatus::Building => "building",
+        BuildStatus::Built => "built",
+        BuildStatus::Reused => "build reused",
+        BuildStatus::Failed => "build failed",
+    };
+    match (&build.server, build.status) {
+        (Some(server), BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed) => {
+            format!("{word} on {server}")
+        }
+        _ => word.to_owned(),
     }
 }
 
@@ -283,7 +281,7 @@ fn replicas(count: u32) -> String {
 /// A node's state from its outcome. One still Pending reads as its build when that
 /// stopped it: Failed, or Interrupted when the Deployment ended before the build
 /// reported how it ended.
-fn node_state(node: &NodeOutcome, build: Option<&ployz_store::BuildView>) -> State {
+pub(super) fn node_state(node: &NodeOutcome, build: Option<&ployz_store::BuildView>) -> State {
     match node.outcome {
         NodeStatus::Pending if build.is_some_and(ployz_store::BuildView::is_interrupted) => {
             State::Interrupted
@@ -352,14 +350,7 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
     view.deployment
         .warnings
         .iter()
-        .filter_map(|warning| match warning {
-            DeploymentWarning::IngressUnchecked { cause } => Some(cause.as_str()),
-            DeploymentWarning::Fragile { .. }
-            | DeploymentWarning::NotSet { .. }
-            | DeploymentWarning::NotSetInFile { .. }
-            | DeploymentWarning::IngressNotServing { .. }
-            | DeploymentWarning::Deploy { .. } => None,
-        })
+        .filter_map(DeploymentWarning::ingress_unchecked)
 }
 
 /// Where each build ran, and why GitHub passed one on to the Servers.
@@ -726,8 +717,10 @@ pub(super) fn replaced(
     ])))
 }
 
-fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
-    let (reason, cause) = match &view.deployment.outcome {
+/// Why the Deployment failed, and what that came from, outermost first: none when it
+/// applied or a cancel stopped it.
+pub(super) fn failed_because(deployment: &DeploymentSummary) -> Option<(&str, &[String])> {
+    match &deployment.outcome {
         Some(
             ployz_store::Outcome::Executed {
                 reason: Some(reason),
@@ -736,7 +729,14 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
                 ..
             }
             | ployz_store::Outcome::NotExecuted { reason, cause, .. },
-        ) => (reason.clone(), cause.clone()),
+        ) => Some((reason, cause)),
+        _ => None,
+    }
+}
+
+fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
+    let (reason, cause) = match failed_because(&view.deployment) {
+        Some((reason, cause)) => (reason.to_owned(), cause.to_vec()),
         _ if view.deployment.status == DeploymentStatus::Cancelled => (
             format!("Deployment {} was cancelled.", view.deployment.label()),
             Vec::new(),

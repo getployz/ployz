@@ -755,7 +755,7 @@ impl DeployService {
         let observed = || {
             ContainerNow::Present(self.observed(machine_id, container_id, resolved_spec.clone()))
         };
-        match rotation::decide(&self.rotation(&container_id), want) {
+        match rotation::decide(&container_id, &self.rotation(&container_id), want) {
             Err(refusal) => Err(EnsuredContainer::Refused {
                 now: observed(),
                 refusal,

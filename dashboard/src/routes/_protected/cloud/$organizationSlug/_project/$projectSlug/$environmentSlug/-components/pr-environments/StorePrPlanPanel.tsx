@@ -17,7 +17,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams as Params,
-} from "../environment-route-paths";
+} from "#/lib/environment-routes";
 import { PickingViewProvider, usePickingView, type PickingView } from "../new-branch/branch-picking";
 import { ServicesSection } from "../new-branch/ServicesSection";
 import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";

@@ -6,7 +6,7 @@
 use ployz_core::config::{
     ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind,
 };
-use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError, ServiceName};
+use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -191,8 +191,7 @@ pub(crate) fn removals(
         Vec::new()
     } else {
         // Deployed Volumes mean a Deployment was admitted, which fixed the Namespace.
-        let namespace: Namespace =
-            crate::deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace: Namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
         removed(&held, &target, &namespace)?
     };
     Ok(RemovalsView {
@@ -268,8 +267,7 @@ fn mounts(working: &SavedEnvironmentIntent, volume: &str) -> Result<Vec<Mount>, 
                 .filter(|mount| mount.volume_resource_id == volume)
                 .map(move |mount| {
                     Ok(Mount {
-                        service: ServiceName::parse(service.slug.as_str())
-                            .map_err(|_| error::corrupt("Service name"))?,
+                        service: crate::scope::service_name(service)?,
                         path: mount.mount_path.clone(),
                     })
                 })

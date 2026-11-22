@@ -1,17 +1,20 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
 import { Cause, Clock, Effect, Schema } from "effect";
-import type { DialTiming } from "@ployz/sdk";
-import type { MachineId } from "#/db/tables";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { DialTiming, MachineId } from "@ployz/sdk";
+import type { StoreRefusal } from "#/lib/refusal";
 import { type Caller, callerCan } from "#/modules/identity/actor";
-import { member, organizationToken, session } from "#/modules/identity/tables";
-import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { organizationToken, session } from "#/modules/identity/tables";
+import { MANAGING_ROLES } from "#/modules/organization/permissions";
+import { member } from "#/modules/organization/tables";
+import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { managementClientCleared, type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -27,14 +30,11 @@ export function serverAccessLabel(credentialId: string) {
   return `cli-${credentialId.replaceAll("-", "").slice(0, 28)}`;
 }
 
-/** Provisioning and revoking one credential's holders take turns, so a revocation never misses a fresh holder. */
-const CREDENTIAL_LOCK = 1_349_603;
-
 const lockCredential = (credentialId: string, mode: "exclusive" | "shared") => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(mode === "shared"
-    ? sql`select pg_advisory_xact_lock_shared(${CREDENTIAL_LOCK}, hashtext(${credentialId}))`
-    : sql`select pg_advisory_xact_lock(${CREDENTIAL_LOCK}, hashtext(${credentialId}))`);
+    ? sql`select pg_advisory_xact_lock_shared(${ADVISORY_LOCK.credential}, hashtext(${credentialId}))`
+    : sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.credential}, hashtext(${credentialId}))`);
 });
 
 /**
@@ -199,7 +199,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const runLog = Effect.runForkWith(yield* Effect.context());
       const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
       const dialBudget = yield* timeLeft;
-      const sampled = sampleDialTiming();
+      const sampled = sampleDialTiming((yield* AppConfig).dialSampleRate);
       const correlation = dialCorrelation();
       let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
       const pendingNativeTimings: DialTiming[] = [];
@@ -343,7 +343,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
 const authorizedBy = (userId: SQLWrapper | string, organizationId: SQLWrapper | string, credentialKind: SQLWrapper | string, credentialId: SQLWrapper | string) =>
   sql`(exists (select 1 from ${member}
     where ${member.userId} = ${userId} and ${member.organizationId} = ${organizationId}
-      and ${member.role} in ('owner', 'admin'))
+      and ${inArray(member.role, [...MANAGING_ROLES])})
   and ((${credentialKind}::text = 'session' and exists (select 1 from ${session}
       where ${session.id} = ${credentialId} and ${session.expiresAt} > ${now}))
     or (${credentialKind}::text = 'token' and exists (select 1 from ${organizationToken}

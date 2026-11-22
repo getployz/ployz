@@ -648,15 +648,15 @@ impl FloorTurn<'_> {
         let name = name.to_string();
         self.store
             .run(move |connection| {
-            let floor = volume_floor(connection, &name)?;
-            if r#gen < floor {
-                return Ok(Err(floor));
-            }
+            let raised = match ployz_decide::volume_floor::admit(volume_floor(connection, &name)?, r#gen) {
+                Ok(raised) => raised,
+                Err(floor) => return Ok(Err(floor)),
+            };
             connection.execute(
                 "INSERT INTO volume_floors (name, floor) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET floor = max(floor, excluded.floor)",
                 // SQLite integers are signed. Cloud's gen is a Postgres bigint, so it
                 // fits; saturating keeps the order if one ever does not.
-                params![name, i64::try_from(r#gen.get()).unwrap_or(i64::MAX)],
+                params![name, i64::try_from(raised.get()).unwrap_or(i64::MAX)],
             )?;
             Ok(Ok(()))
         })
@@ -674,8 +674,10 @@ impl FloorTurn<'_> {
         let name = name.to_string();
         self.store
             .run(move |connection| {
-                let floor = volume_floor(connection, &name)?;
-                Ok(if r#gen < floor { Err(floor) } else { Ok(()) })
+                Ok(ployz_decide::volume_floor::check(
+                    volume_floor(connection, &name)?,
+                    r#gen,
+                ))
             })
             .await
             .map_err(super::Error::from)

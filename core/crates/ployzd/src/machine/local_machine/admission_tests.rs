@@ -192,13 +192,9 @@ async fn admit_ci(
     let versions = [Signed::sign(&body, &ci()).unwrap(), root.clone()];
     let admitted = fixture
         .machine
-        .admit_spec(
-            &want(spec),
-            Presented::Operator {
-                rule: None,
-                versions: &versions,
-            },
-        )
+        .clone()
+        .at_operator_scope()
+        .admit_spec(&want(spec), None, &versions)
         .await?;
     Ok(admitted.expect("a creation").by().clone())
 }
@@ -322,7 +318,7 @@ async fn a_container_kept_before_its_reach_starts_for_a_device_but_not_a_grant()
     assert_eq!(
         start(&fixture, &kept_by(ci().public())),
         Err(AuthorityRefusal::Mismatch {
-            field: field::KEPT_REACH
+            field: MismatchField::KeptReach
         })
     );
 }
@@ -338,13 +334,9 @@ async fn a_ci_edit_is_forgotten_with_the_version_it_edits_even_when_signed_after
     let forget = root(&fixture, &spec, at(30_000), true);
     fixture
         .machine
-        .admit_spec(
-            &want(&approved(&spec)),
-            Presented::Operator {
-                rule: None,
-                versions: std::slice::from_ref(&forget),
-            },
-        )
+        .clone()
+        .at_operator_scope()
+        .admit_spec(&want(&approved(&spec)), None, std::slice::from_ref(&forget))
         .await
         .unwrap();
 

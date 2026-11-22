@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Effect, Option } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { machineTokenCurrent, parseMachineToken } from "#/modules/observe-ingest/machine-token";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Unauthorized, Unavailable } from "#/server/public-error";
+import { machineRefusal, Unauthorized, Unavailable } from "#/server/public-error";
 
 export const OTLP_SIGNALS = ["logs", "metrics", "traces"] as const;
 export type OtlpSignal = (typeof OTLP_SIGNALS)[number];
@@ -18,7 +18,7 @@ export type OtlpSender = { readonly organizationId: string; readonly machineId: 
 const RETENTION_DAYS = "30";
 const FORWARD_TIMEOUT_MS = 20_000;
 /** OTLP exporters treat 400 as "do not retry this batch". */
-const badBody = (message: string) => Response.json({ error: message }, { status: 400, headers: { "cache-control": "no-store" } });
+const badBody = (message: string) => machineRefusal(400, message);
 const ENCODINGS = new Set(["gzip", "zstd", "identity"]);
 
 /** The Machine that signed this token and the Organization it is enrolled in. Everything Cloud stamps on a record comes from here. */

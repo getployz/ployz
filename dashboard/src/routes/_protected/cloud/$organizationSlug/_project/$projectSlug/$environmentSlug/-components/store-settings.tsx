@@ -1,11 +1,12 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { Navigate, useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Input } from "#/components/ui/input";
@@ -18,11 +19,11 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { rememberProjectRename } from "#/modules/config-store/renamed-projects";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
+import { StoreTeardownSection } from "./store-teardown-section";
 import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StoreRegionSection } from "./store-region-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -75,7 +76,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
   const writer = useStoreWriter(organizationSlug);
   const [checked, hold] = useCommitHold(saved);
-  const gate = useRoleGate(organizationSlug, "environments:protect", "Only an owner or admin can change this.");
+  const gate = useRoleGate(organizationSlug, "environments:protect", refusalFor("environments:protect", "change this"));
   return (
     <SettingsSection id="protected" title="Protected"
       description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">

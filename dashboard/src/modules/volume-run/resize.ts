@@ -1,9 +1,11 @@
 import type { MachineName } from "@ployz/sdk";
+import { Schema } from "effect";
 import { listNames } from "#/lib/plural";
-import { gigabytes } from "#/modules/config-store/store-volumes";
+import { GB, gigabytes } from "#/modules/config-store/store-volumes";
+import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { type Requirement, requirements } from "#/modules/runtime/daemon-compat";
 import type { Refusal } from "#/modules/volume-run/plan";
-import type { AnsweredMember, VolumeRunArgs } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type VolumeRunArgs, VolumeInput } from "#/modules/volume-run/volume-run";
 
 /** Whole bytes, as `ProvisionedVolumeMaximumBytes` crosses the SDK. */
 export type Bytes = number;
@@ -11,7 +13,7 @@ export type Bytes = number;
 export const gb = (bytes: Bytes) => `${gigabytes(bytes)} GB`;
 
 /** A copy's floor in whole GB, rounded up, so the size it names is one the copy accepts. */
-export const gbAtLeast = (bytes: Bytes) => `${Math.ceil(bytes / 1_000_000_000)} GB`;
+export const gbAtLeast = (bytes: Bytes) => `${Math.ceil(bytes / GB)} GB`;
 
 /** Which way a resize moves the Volume's bound; a settle asks every copy for the size the Store already records. */
 export type SizeDirection = "grow" | "shrink" | "settle";
@@ -55,8 +57,10 @@ export type ResizePhase = {
   readonly unheld?: Unheld;
 };
 
-/** What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`. */
-/** `looked_at`: Unix seconds when the run read the Deployments, before it looked for copies. */
+/**
+ * What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`.
+ * `looked_at`: Unix seconds when the run read the Deployments, before it looked for copies.
+ */
 export type Unheld = { readonly latest_deployment: number | null; readonly looked_at: number };
 
 /**
@@ -67,7 +71,6 @@ export type DeploymentsSeen = { readonly latest: number | null; readonly inFligh
 
 const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, message });
 
-/** The direction from the recorded size to the asked one. */
 export const sizeDirection = (from: Bytes, to: Bytes): SizeDirection => (to > from ? "grow" : to < from ? "shrink" : "settle");
 
 /**
@@ -192,3 +195,10 @@ export type PoolShortfall = { readonly code: string; readonly required_growth_by
 export function undoOnRefusal(stepsDone: readonly ("recorded" | "held")[]): boolean {
   return stepsDone.includes("recorded") && !stepsDone.includes("held");
 }
+
+/** The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. */
+export const ResizeVolumeInput = Schema.Struct({
+  ...VolumeInput.fields,
+  maximumBytes: MaximumBytes,
+  requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
+});

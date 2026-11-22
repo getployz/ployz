@@ -1,5 +1,6 @@
 //! Selection and wire contracts for waiting enrollment.
 use super::*;
+use crate::cloud;
 
 fn host(id: &str, name: &str, at: &str) -> Waiting {
     let mut host = super::super::super::waiting::tests::waiting("waiting", None);
@@ -163,7 +164,7 @@ fn enroll_waiting_storage_readiness_and_join_line_are_distinct() {
 
 #[tokio::test]
 async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survives() {
-    let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
+    let cloud = crate::cloud::account::testing::fake_cloud(|route, _| match route {
         "POST /api/cli/enrollments/plan" => (200, serde_json::to_value(plan()).unwrap()),
         "POST /api/cli/enrollments" => (
             409,
@@ -173,10 +174,10 @@ async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survi
     });
     let credential = Credential::Token {
         cloud,
-        token: crate::cloud_login::Secret::new("ployz_secret".into()),
-        from: crate::cloud_account::TokenFrom::Env,
+        token: crate::cloud::login::Secret::new("ployz_secret".into()),
+        from: crate::cloud::account::TokenFrom::Env,
     };
-    let _: Plan = cloud_account::refusable(
+    let _: Plan = cloud::account::refusable(
         &credential,
         Method::POST,
         "enrollments/plan",
@@ -184,7 +185,7 @@ async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survi
     )
     .await
     .unwrap();
-    let error = cloud_account::refusable::<Value>(
+    let error = cloud::account::refusable::<Value>(
         &credential,
         Method::POST,
         "enrollments",

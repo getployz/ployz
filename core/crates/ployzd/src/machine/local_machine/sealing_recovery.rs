@@ -7,8 +7,9 @@
 use std::io;
 
 use ployz_core::{
-    EnrollForRecoveryRequest, Enrolled, RecoverSealingKeyRequest, SealingKeyRecovered,
-    SealingKeyWrapped, SealingPublicKey, WrapSealingKeyRequest,
+    EnrollForRecoveryRequest, Enrolled, RecoverSealingKeyRequest, RecoveryCode, SealingKeyBackup,
+    SealingKeyRecovered, SealingKeyWrapped, SealingPublicKey, WrapSealingKeyRequest,
+    sealing_backup::{self, BackupError},
 };
 use thiserror::Error as ThisError;
 
@@ -16,7 +17,6 @@ use super::LocalMachine;
 use crate::{
     corrosion::ClusterSealing,
     sealing_key::{KeyFile, SealingKey},
-    sealing_recovery::{RestoreError, back_up, restore},
 };
 
 /// Why Wrap or Recover refused. The RPC adapter maps these once.
@@ -47,6 +47,31 @@ pub enum Error {
     },
 }
 
+/// The Sealing Key wrapped under a recovery code, so a Cluster that lost every holder can
+/// open its sealed values again.
+pub(crate) fn back_up(key: &SealingKey, code: &RecoveryCode) -> SealingKeyBackup {
+    sealing_backup::back_up(key.secret(), code)
+}
+
+/// Opens `backup` with `code`, only if it holds the key behind `expected`.
+fn restore(
+    backup: &SealingKeyBackup,
+    code: &RecoveryCode,
+    expected: SealingPublicKey,
+) -> Result<SealingKey, Error> {
+    let key = sealing_backup::open(backup, code)
+        .map(|secret| SealingKey::from_secret(*secret))
+        .map_err(|error| match error {
+            BackupError::Malformed => Error::Malformed,
+            BackupError::WrongCode => Error::WrongCode,
+        })?;
+    if key.public_key() == expected {
+        Ok(key)
+    } else {
+        Err(Error::OtherKey(expected))
+    }
+}
+
 impl LocalMachine {
     /// Found a Cluster whose Sealing Key comes from a recovery backup.
     ///
@@ -67,14 +92,13 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CloudRouted`] through the management tunnel and
-    /// [`Error::NotHeld`] without a key.
+    /// Returns [`super::Error::NeedsFullScope`] for an Operator, [`Error::CloudRouted`]
+    /// through the management tunnel and [`Error::NotHeld`] without a key.
     pub(crate) fn wrap_sealing_key(
         &self,
         WrapSealingKeyRequest { code }: WrapSealingKeyRequest,
-        cloud_routed: bool,
     ) -> Result<SealingKeyWrapped, super::Error> {
-        if cloud_routed {
+        if self.full_caller()?.cloud_routed() {
             return Err(Error::CloudRouted.into());
         }
         self.require_management_access()?;
@@ -103,8 +127,9 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CloudRouted`] through the management tunnel,
-    /// [`super::Error::NotParticipating`] before participation,
+    /// Returns [`super::Error::NeedsFullScope`] for an Operator, [`Error::CloudRouted`]
+    /// through the management tunnel, [`super::Error::NotParticipating`] before
+    /// participation,
     /// [`Error::NothingAwaited`] or [`Error::NoBackup`] without a key to recover or
     /// a backup to open, a restore refusal, [`Error::HeldAnother`] when this
     /// Machine holds a different key, [`Error::Unreadable`] when its key file
@@ -113,9 +138,8 @@ impl LocalMachine {
     pub(crate) async fn recover_sealing_key(
         &self,
         request: RecoverSealingKeyRequest,
-        cloud_routed: bool,
     ) -> Result<SealingKeyRecovered, super::Error> {
-        if cloud_routed {
+        if self.full_caller()?.cloud_routed() {
             return Err(Error::CloudRouted.into());
         }
         self.finish_mutation(move |local| async move { local.recover_admitted(request).await })
@@ -150,11 +174,7 @@ impl LocalMachine {
         let backup = backup
             .or_else(|| record.recovery_seed().and_then(|seed| seed.backup.clone()))
             .ok_or(Error::NoBackup)?;
-        let key = restore(&backup, &code, &expected).map_err(|error| match error {
-            RestoreError::Malformed => Error::Malformed,
-            RestoreError::OtherKey => Error::OtherKey(expected),
-            RestoreError::WrongCode => Error::WrongCode,
-        })?;
+        let key = restore(&backup, &code, expected)?;
         let data_dir = self.owner.data_dir();
         match SealingKey::read(data_dir).map_err(Error::Unreadable)? {
             KeyFile::Held(held) if held.public_key() != expected => {
@@ -188,5 +208,50 @@ impl LocalMachine {
         Ok(SealingKeyRecovered {
             public_key: expected,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_restores_with_its_code() {
+        let key = SealingKey::generate();
+        let public_key = key.public_key();
+        let code = RecoveryCode::generate();
+        let backup = back_up(&key, &code);
+
+        assert!(matches!(
+            restore(&backup, &RecoveryCode::generate(), public_key),
+            Err(Error::WrongCode)
+        ));
+        assert_eq!(restore(&backup, &code, public_key).unwrap(), key);
+    }
+
+    #[test]
+    fn backup_of_another_key_is_refused() {
+        let code = RecoveryCode::generate();
+        let backup = back_up(&SealingKey::generate(), &code);
+        let other = SealingKey::generate().public_key();
+
+        assert!(matches!(
+            restore(&backup, &code, other),
+            Err(Error::OtherKey(named)) if named == other
+        ));
+    }
+
+    #[test]
+    fn malformed_backup_is_refused() {
+        let key = SealingKey::generate();
+
+        assert!(matches!(
+            restore(
+                &SealingKeyBackup::from_bytes(Vec::new()),
+                &RecoveryCode::generate(),
+                key.public_key()
+            ),
+            Err(Error::Malformed)
+        ));
     }
 }

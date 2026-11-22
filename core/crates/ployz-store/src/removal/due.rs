@@ -154,7 +154,7 @@ pub(super) fn go_on(
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
             Standing::Due => {
-                let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+                let id = DeploymentId::fresh();
                 let admitting = (&environment, &id);
                 match admit_member(tx, who, admitting, mark, trusted, true) {
                     Ok(admitted) if !admitted.in_flight => continue,
@@ -191,9 +191,7 @@ fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
         .working
         .services
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
+        .map(crate::scope::service_name)
         .collect()
 }
 
@@ -412,7 +410,7 @@ fn admit_member(
     }
     let forget = deployment::forgettable(tx, id, trusted)?;
     let review = crate::review::review(tx, environment)?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let losses = match forget {
         Some(_) => Vec::new(),
@@ -471,10 +469,10 @@ fn admit_taking_everything_off(
         &who.organization,
         &scope::empty(&environment.working.environment_slug),
         &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All {
-            losses,
+        deployment::Scope {
+            targeting: deployment::Targeting::Full { prune: true },
             retire: &[],
-            prune: true,
+            losses,
         },
         namespace,
         None,
@@ -491,7 +489,7 @@ fn admit_taking_everything_off(
             None,
             None,
         ),
-        id,
+        environment,
         deployment::NOTHING,
         &frozen,
     )?;
@@ -724,7 +722,7 @@ pub(crate) fn shut_down(
     if let Some(version) = admit.version.as_deref() {
         crate::review::check(&review, Some(version))?;
     }
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let losses = match forget {
         Some(_) => Vec::new(),

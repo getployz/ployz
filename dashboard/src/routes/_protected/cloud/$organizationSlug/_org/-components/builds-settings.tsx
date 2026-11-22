@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
@@ -5,12 +6,12 @@ import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { CopyButton } from "#/components/copy-button";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { BuildOrder } from "@ployz/sdk";
-import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { buildOrderQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import {
   awaitsWorkflowCommit,
@@ -46,17 +47,16 @@ const BUILD_ORDER_LABELS = {
 } satisfies Record<BuildOrder, string>;
 const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github", "servers-only", "github-only"];
 
-export const BUILD_ORDER_REFUSED = "Only an owner or admin can change where builds run.";
+export const BUILD_ORDER_REFUSED = refusalFor("org:settings", "change where builds run");
 
 /** The Organization's Build Order, which the settings page prefetches. */
-export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
 
 /**
  * Takes effect on the next build; never staged. Never chosen, GitHub goes first, and a repository without the build
  * workflow skips it at once.
  */
 function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
-  const view = requireView(useStoreView(organizationSlug, BUILD_ORDER_QUERY));
+  const view = requireView(useStoreView(organizationSlug, buildOrderQuery()));
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");

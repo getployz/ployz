@@ -1,15 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
+import type { MailMessage } from "#/modules/mail/mail.events";
 import { AppConfig, type MailConfiguration } from "#/server/config.server";
-
-export type MailMessage = {
-  readonly to: string;
-  readonly subject: string;
-  readonly text: string;
-  readonly html?: string;
-  /** Extra headers such as List-Unsubscribe; PostShiba ignores the ones it reserves. */
-  readonly headers?: Readonly<Record<string, string>>;
-};
 
 export type MailSendResult =
   | { readonly status: "sent"; readonly messageId: string }

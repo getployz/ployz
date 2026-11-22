@@ -1,5 +1,6 @@
 //! Each closed risk of scoped keys, through the verifier a Machine runs.
 
+use crate::authority::MismatchField;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -448,7 +449,7 @@ fn a_key_step_refuses_a_ci_or_agent_scope_wider_than_its_kind() {
         assert_eq!(
             verify_key(&key_bundle(trust(key), &device(), NOW), &ci_in_app()),
             Err(AuthorityRefusal::Mismatch {
-                field: "a key scope"
+                field: MismatchField::KeyScope
             }),
         );
     }
@@ -563,7 +564,7 @@ fn a_join_carries_a_grant_only_as_this_machine_holds_it_now() {
         assert_eq!(
             admit_join(&sign(grants), &trusted),
             Err(AuthorityRefusal::Mismatch {
-                field: "approved grants"
+                field: MismatchField::ApprovedGrants
             }),
         );
     }
@@ -580,7 +581,7 @@ fn a_joiner_refuses_a_grant_that_holds_a_device_key() {
     assert_eq!(
         join::verify_as_joiner(&signed, None, &joiner(), Some(cluster()), at(NOW + 1)),
         Err(AuthorityRefusal::Mismatch {
-            field: "approved grants"
+            field: MismatchField::ApprovedGrants
         }),
     );
 }

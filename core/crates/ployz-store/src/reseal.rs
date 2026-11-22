@@ -935,15 +935,9 @@ mod tests {
     #[test]
     fn a_save_committed_while_a_reseal_waits_is_kept() {
         // SQLite runs one write at a time, so only Postgres can interleave them.
-        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+        let Some(url) = crate::storage::fresh_postgres("reseal") else {
             return;
         };
-        let database = format!("reseal_{}", Uuid::new_v4().simple());
-        postgres::Client::connect(&server, postgres::NoTls)
-            .unwrap()
-            .batch_execute(&format!("CREATE DATABASE {database}"))
-            .unwrap();
-        let url = format!("{server}/{database}");
         let (store, who) = shop_at(&url);
         plant_working(
             &store,

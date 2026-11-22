@@ -7,7 +7,7 @@ import { Inngest } from "inngest";
 import { afterEach, expect, vi } from "vitest";
 import { organizationMachine } from "#/modules/machines/tables";
 import { crashEvent } from "#/modules/observe-ingest/tables";
-import { operationOutbox } from "#/modules/operations/tables";
+import { operationOutbox } from "#/modules/inngest/outbox.tables";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleMachineOtlp } from "#/routes/api/machines/-handlers";

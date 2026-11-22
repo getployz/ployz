@@ -1,22 +1,23 @@
 import type { ComponentType } from "react";
-import { initializeAuthSession } from "./auth/auth-client";
-import type { AuthSession } from "./auth/auth";
-import { followPostHogNavigation, getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
+import type { DashboardSection } from "#/components/shell/dashboard-navigation-model";
+import { initializeAuthSession } from "#/auth/auth-client";
+import type { AuthSession } from "#/auth/auth";
+import { followPostHogNavigation, getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "#/modules/analytics/posthog";
 import {
   createRouter as createTanStackRouter,
   useHydrated,
   useRouterState,
 } from "@tanstack/react-router";
-import { routeTree } from "./routeTree.gen";
+import { routeTree } from "#/routeTree.gen";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { routerWithDbClient } from "@tanstack/react-router-with-db";
-import { getDbClient } from "./collections/scope";
-import { endCollectionsOnSsrCleanup } from "./collections/ssr-cleanup";
+import { getDbClient } from "#/collections/scope";
+import { endCollectionsOnSsrCleanup } from "#/collections/ssr-cleanup";
 import { environmentManager, QueryClient } from "@tanstack/react-query";
-import { ErrorPage } from "./components/error-page";
-import { NotFoundPage } from "./components/not-found-page";
-import { PloyzMark } from "./components/icons/ployz-logo";
-import { RouteContentSkeleton } from "./components/route-content-skeleton";
+import { ErrorPage } from "#/components/error-page";
+import { NotFoundPage } from "#/components/not-found-page";
+import { PloyzMark } from "#/components/icons/ployz-logo";
+import { RouteContentSkeleton } from "#/components/route-content-skeleton";
 
 function AppPending() {
   const hydrated = useHydrated();
@@ -104,5 +105,7 @@ declare module "@tanstack/react-router" {
     crumb?: ComponentType;
     /** The page's URL is itself a secret, so analytics never sees it (see modules/analytics/posthog.ts). */
     secret?: boolean;
+    /** The rail place the page belongs to. A page without one is a panel over the canvas, so it is Architecture. */
+    section?: DashboardSection;
   }
 }

@@ -1,18 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { deviceCode, member, verification } from "#/modules/identity/tables";
+import { deviceCode, verification } from "#/modules/identity/tables";
+import { isMember } from "#/modules/organization/membership.server";
 import { Database } from "#/server/database.server";
 
 const bindingIdentifier = (code: string) => `device-organization:${code}`;
-
-const isMember = Effect.fn("Identity.isMember")(function* (userId: string, organizationId: string) {
-  const { drizzle } = yield* Database;
-  const [membership] = yield* drizzle.select({ organizationId: member.organizationId }).from(member)
-    .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))
-    .limit(1);
-  return membership !== undefined;
-});
 
 /**
  * Records the Organization the `/device` page named for the pending code `userId` claimed, before better-auth approves

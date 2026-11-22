@@ -194,6 +194,13 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 impl ContainerRuntimeObservation {
+    /// True when Docker reports the container as running, whatever its health. A paused or
+    /// restarting container is not running here.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
     /// True when the container's process isn't running and can serve nothing.
     #[must_use]
     pub fn at_rest(&self) -> bool {
@@ -375,8 +382,7 @@ impl ContainerObservationParts {
     #[must_use]
     pub fn made_under(&self, run: &DeploymentLogId) -> bool {
         self.creation_key()
-            .and_then(|key| key.strip_prefix(run.as_str()))
-            .is_some_and(|slot| slot.starts_with(':'))
+            .is_some_and(|key| crate::CreationKey::made_under(key, run))
     }
 }
 

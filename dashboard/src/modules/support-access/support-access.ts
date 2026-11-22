@@ -1,9 +1,10 @@
 import { Schema } from "effect";
-
-/** What Ployz support may read inside an Organization beyond its shape. Each is off until a member turns it on. */
-export type SupportShows = { readonly variables: boolean; readonly configs: boolean; readonly logs: boolean };
+import type { SupportShows } from "#/modules/organization/permissions";
 
 export const SUPPORT_SHOWS_NONE: SupportShows = { variables: false, configs: false, logs: false };
+
+/** Support access off: not allowed, and so showing nothing. Turning `allowed` off writes exactly this. */
+export const NO_SUPPORT_ACCESS = { allowed: false, ...SUPPORT_SHOWS_NONE } as const;
 
 /** One switch under Settings > Support. Turning `allowed` off turns every other switch off with it. */
 export const SupportAccessChange = Schema.Struct({
@@ -23,6 +24,6 @@ export type SupportAccessRow = { readonly id: string; readonly allowed: boolean 
 
 /** `row` after `change`, as the server applies it: off for support access is off for everything it shows. */
 export const applySupportAccessChange = (row: SupportAccessRow, change: SupportAccessChange): SupportAccessRow => {
-  if (change.setting === "allowed") return change.on ? { ...row, allowed: true } : { id: row.id, allowed: false, ...SUPPORT_SHOWS_NONE };
+  if (change.setting === "allowed") return change.on ? { ...row, allowed: true } : { id: row.id, ...NO_SUPPORT_ACCESS };
   return row.allowed ? { ...row, [change.setting]: change.on } : row;
 };

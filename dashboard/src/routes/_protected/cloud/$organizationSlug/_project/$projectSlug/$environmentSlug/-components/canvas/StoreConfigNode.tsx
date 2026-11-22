@@ -5,7 +5,7 @@ import type { ConfigListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { chipWord, NO_MOUNTS_CONFIGURED, nodeLabel, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";

@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, arrayContains, eq, gt, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
-import { oauthAccessToken, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
+import { oauthAccessToken, oauthClient, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { session } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -122,4 +123,26 @@ export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(f
   ));
   yield* drizzle.delete(oauthAccessToken).where(inArray(oauthAccessToken.refreshId, stopped));
   yield* drizzle.delete(oauthRefreshToken).where(inArray(oauthRefreshToken.id, stopped));
+});
+
+/**
+ * What a grant needs besides `grantStands` or a browser standing: it keeps the `ployz` scope, its app isn't disabled,
+ * and the membership predates it. better-auth stamps a consent in whole seconds, so the membership is cut to the second.
+ * Query `oauthConsent` joined to `oauthClient` and to the user's `member` row in the grant's Organization.
+ */
+export const grantUsable = and(
+  arrayContains(oauthConsent.scopes, ["ployz"]),
+  or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
+  sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
+);
+
+/**
+ * Ends session `sessionId` of `userId` as signing out does: its agents are marked signed out, the row goes, and they are
+ * marked again for a link written in between. Run it inside `transactionWithAgentGrants`, with the row locked.
+ */
+export const endSession = Effect.fn("Identity.endSession")(function* (userId: string, sessionId: string) {
+  const { drizzle } = yield* Database;
+  yield* signOutSessionAgents(userId, sessionId);
+  yield* drizzle.delete(session).where(eq(session.id, sessionId));
+  yield* signOutSessionAgents(userId, sessionId);
 });

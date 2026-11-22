@@ -14,7 +14,7 @@ use super::{
     keys::{Approver, Purpose, Signed, SignerKey, SigningPublicKey, Statement},
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::{Ask, Reach},
     trusted_key::TrustedKeys,
 };
@@ -307,19 +307,22 @@ fn admits(
         .is_some_and(|key| !key.kind().whole_cluster());
     let creation = facts.creation;
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
-        (field::ENVIRONMENT, &body.namespace == facts.namespace),
+        (MismatchField::Cluster, body.cluster == cluster),
         (
-            field::SYSTEM,
+            MismatchField::Environment,
+            &body.namespace == facts.namespace,
+        ),
+        (
+            MismatchField::SystemNamespace,
             !body.forget_older || !body.namespace.is_system(),
         ),
-        ("a Service", &body.service == creation.service),
-        ("a payload", body.digest == requested.digest),
+        (MismatchField::Service, &body.service == creation.service),
+        (MismatchField::Payload, body.digest == requested.digest),
         (
-            field::FORGET_PARENT,
+            MismatchField::ForgetParent,
             !body.forget_older || body.parent.is_none(),
         ),
-        (field::PARENT, !scoped || body.parent.is_some()),
+        (MismatchField::Parent, !scoped || body.parent.is_some()),
     ])?;
     let floor_at = match body.parent {
         Some(parent) => parents
@@ -350,7 +353,7 @@ impl Parents<'_> {
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Overspent`] when the budget ran out before one was
-    /// found, and [`AuthorityRefusal::Mismatch`] naming [`field::PARENT`] when none is.
+    /// found, and [`AuthorityRefusal::Mismatch`] naming [`MismatchField::Parent`] when none is.
     fn signed_at(
         &mut self,
         digest: PayloadDigest,
@@ -387,7 +390,7 @@ impl Parents<'_> {
             }
         }
         Err(AuthorityRefusal::Mismatch {
-            field: field::PARENT,
+            field: MismatchField::Parent,
         })
     }
 }
@@ -398,7 +401,7 @@ impl Parents<'_> {
 ///
 /// # Errors
 /// Returns the opening's refusal, and [`AuthorityRefusal::Mismatch`] naming the Cluster
-/// for another Cluster's, or [`field::PARENT`] for one a CI or agent key signed or one
+/// for another Cluster's, or [`MismatchField::Parent`] for one a CI or agent key signed or one
 /// that names a parent.
 pub fn open_root(
     version: &Signed<ServiceVersion>,
@@ -410,8 +413,8 @@ pub fn open_root(
         .of(&by)
         .is_some_and(|key| key.kind().whole_cluster());
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
-        (field::PARENT, human && body.parent.is_none()),
+        (MismatchField::Cluster, body.cluster == cluster),
+        (MismatchField::Parent, human && body.parent.is_none()),
     ])?;
     Ok(body)
 }
@@ -442,10 +445,10 @@ pub fn verify_forget(
             budget.reserve(version, trusted)?;
             let (body, _, cluster) = open_approval(version, trusted, cluster)?;
             first_mismatch([
-                (field::CLUSTER, body.cluster == cluster),
-                ("a forget", body.forget_older),
-                (field::SYSTEM, !body.namespace.is_system()),
-                (field::FORGET_PARENT, body.parent.is_none()),
+                (MismatchField::Cluster, body.cluster == cluster),
+                (MismatchField::Forget, body.forget_older),
+                (MismatchField::SystemNamespace, !body.namespace.is_system()),
+                (MismatchField::ForgetParent, body.parent.is_none()),
             ])?;
             Ok(Forget {
                 service: QualifiedService::new(body.namespace, body.service),
@@ -466,25 +469,31 @@ struct Requested {
 /// version can cover, whether it reaches its Server's host, and what else it reaches.
 fn requested(namespace: &Namespace, creation: Creation<'_>) -> Result<Requested, AuthorityRefusal> {
     first_mismatch([
-        ("a Service", &creation.spec.name == creation.service),
         (
-            "a hook",
+            MismatchField::Service,
+            &creation.spec.name == creation.service,
+        ),
+        (
+            MismatchField::Hook,
             creation.kind != ContainerKind::PreDeployHook || creation.spec.pre_deploy.is_some(),
         ),
         (
-            "an image",
+            MismatchField::Image,
             content_addressed(&creation.spec.container.image),
         ),
         (
-            "a Volume's Environment",
+            MismatchField::VolumesEnvironment,
             creation.spec.volume_graph().born_in(namespace),
         ),
     ])?;
     let spec = creation.spec.to_requested();
-    let digest = PayloadDigest::of(&spec, namespace)
-        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
-    let reach = Reach::of(creation.kind, creation.spec)
-        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
+    let digest = PayloadDigest::of(&spec, namespace).map_err(|_| AuthorityRefusal::Mismatch {
+        field: MismatchField::Payload,
+    })?;
+    let reach =
+        Reach::of(creation.kind, creation.spec).map_err(|_| AuthorityRefusal::Mismatch {
+            field: MismatchField::Payload,
+        })?;
     Ok(Requested {
         digest,
         reaches_host: !host_reach(&spec).is_empty(),

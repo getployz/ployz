@@ -216,3 +216,18 @@ export const uptimeResultHourly = pgTable(
     index("uptime_result_hourly_brin").using("brin", table.hour),
   ],
 );
+
+/**
+ * Deleting a Service's Applied State row deletes its uptime check. The Config Store creates `config_applied` when it
+ * opens, after Cloud's migrations, so the Store's open attaches the trigger (`uptime_check_forget_services()` is the
+ * migration's function).
+ */
+export const uptimeForgetServicesTrigger = {
+  table: "config_applied",
+  name: "uptime_check_forget_services",
+  ifMissing: false,
+  create: sql`
+    create or replace trigger uptime_check_forget_services after delete on config_applied
+    referencing old table as old_rows for each statement execute function uptime_check_forget_services()
+  `,
+} as const;

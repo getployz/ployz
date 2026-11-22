@@ -30,7 +30,7 @@ use crate::{Actor, Trusted};
 mod change;
 mod status;
 
-pub use change::{DomainChange, DomainEdit};
+pub use change::DomainChange;
 use status::row;
 
 /// What Cloud or the Standalone CLI observed of the public traffic, passed in-process with
@@ -783,7 +783,7 @@ fn taken_prefixes<'t>(
         }
     }
     if let Some(cluster) = cluster {
-        let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
         let under = format!(".{cluster}");
         taken.extend(
             published_elsewhere(trusted, &namespace).filter_map(|published| {

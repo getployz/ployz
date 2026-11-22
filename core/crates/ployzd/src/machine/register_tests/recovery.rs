@@ -6,6 +6,7 @@ use ployz_core::{
 };
 use tonic::{Code, Request};
 
+use super::super::local_machine::back_up;
 use super::super::{
     LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError, SealingError,
 };
@@ -13,7 +14,6 @@ use super::harness::{approve_recipient, machine_service, open_store, participati
 use crate::corrosion::{AdminClient, ReplicatedStore, fake_cluster};
 use crate::machine_api::MachineApi;
 use crate::sealing_key::SealingKey;
-use crate::sealing_recovery::back_up;
 
 async fn awaiting(
     expected: SealingPublicKey,
@@ -83,7 +83,7 @@ async fn seeded(
 
 fn wrap(local: &LocalMachine, code: &RecoveryCode) -> ployz_core::SealingKeyWrapped {
     local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() })
         .unwrap()
 }
 
@@ -93,13 +93,10 @@ async fn recover(
     backup: Option<SealingKeyBackup>,
 ) -> Result<SealingPublicKey, LocalMachineError> {
     local
-        .recover_sealing_key(
-            RecoverSealingKeyRequest {
-                code: code.clone(),
-                backup,
-            },
-            false,
-        )
+        .recover_sealing_key(RecoverSealingKeyRequest {
+            code: code.clone(),
+            backup,
+        })
         .await
         .map(|recovered| recovered.public_key)
 }

@@ -4,7 +4,7 @@ import {
 } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
 import { InspectorPresentation, inspectorExit } from "./CanvasInspectorHeader";
 

@@ -9,19 +9,19 @@ use std::{io, sync::Arc};
 
 use ployz_core::{
     ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant,
-    DeviceCode, ManagementScope, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec,
-    RunTarget, Sealing, Start,
+    DeviceCode, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec, RunTarget, Sealing,
+    Start,
     authority::{
-        Approver, AuthorityRefusal, Budget, Reach, RuleId, RuleProof, ServiceVersion, Signed,
-        SigningPublicKey, Timestamp, TrustedKeys, ValueReach, VerifiedBuild, VersionFacts,
-        deploy::Creation, needs_signature, refusal::field, version,
+        Approver, AuthorityRefusal, Budget, MismatchField, Reach, RuleId, RuleProof,
+        ServiceVersion, Signed, SigningPublicKey, Timestamp, TrustedKeys, ValueReach,
+        VerifiedBuild, VersionFacts, deploy::Creation, needs_signature, version,
     },
 };
 use ployz_decide::service_floor::{self, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{Caller, ConsumptionLog, Error, LocalMachine, RecordOwner};
+use super::{Caller, ConsumptionLog, Error, FullCaller, LocalMachine, RecordOwner, Scope};
 use crate::docker::ContainerRuntime;
 
 /// Who admitted a Container, and when, kept with it for as long as it exists.
@@ -178,10 +178,10 @@ impl Standing {
                 _ if !signer.trusted(&trusted) => Err(signer.untrusted()),
                 Some(newest) if newest == *generation => stands(*issued_at, floor(service)?),
                 Some(_) => Err(AuthorityRefusal::Mismatch {
-                    field: "a generation",
+                    field: MismatchField::Generation,
                 }),
                 None => Err(AuthorityRefusal::Mismatch {
-                    field: "an admission",
+                    field: MismatchField::Admission,
                 }),
             },
             AdmittedBy::Local { service, at } => stands(*at, floor(service)?),
@@ -198,7 +198,7 @@ fn gone_key(refusal: AuthorityRefusal) -> AuthorityRefusal {
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey
     ) {
         return AuthorityRefusal::Mismatch {
-            field: field::KEPT_KEY,
+            field: MismatchField::KeptKey,
         };
     }
     refusal
@@ -209,7 +209,7 @@ pub(super) fn floor_refusal(refused: Refused) -> AuthorityRefusal {
     match refused {
         Refused::Forgotten { floor } => AuthorityRefusal::Forgotten { floor },
         Refused::Ahead => AuthorityRefusal::Mismatch {
-            field: field::AHEAD,
+            field: MismatchField::SigningTime,
         },
     }
 }
@@ -245,8 +245,10 @@ impl AdmittedSpec {
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
     ) -> Result<[u8; 32], AuthorityRefusal> {
-        let body = serde_json::to_vec(&(namespace, spec))
-            .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
+        let body =
+            serde_json::to_vec(&(namespace, spec)).map_err(|_| AuthorityRefusal::Mismatch {
+                field: MismatchField::Payload,
+            })?;
         Ok(Sha256::digest(&body).into())
     }
 
@@ -352,25 +354,14 @@ impl AdmittedSpec {
     }
 }
 
-/// What a caller brought with a Container change.
-#[derive(Clone, Copy)]
-pub(crate) enum Presented<'a> {
-    /// A call at Full access: this Server's own socket, or a Device's own connection,
-    /// with the versions it carries. A version that admits the spec records its signers,
-    /// so removing them stops a later start, as for an Operator's creation.
-    FullAccess {
-        versions: &'a [Signed<ServiceVersion>],
-    },
-    /// An Operator's call, with the statements it carries.
-    Operator {
-        rule: Option<&'a RuleProof>,
-        versions: &'a [Signed<ServiceVersion>],
-    },
-}
-
 impl LocalMachine {
-    /// Decide whether `want` may make its Container. `None` is the answer for a want that
-    /// makes none. A hook that already exists is never started again for an Operator.
+    /// Decide whether `want` may make its Container, under the `versions` and the
+    /// Operator's `rule` the caller brought. `None` is the answer for a want that makes
+    /// none. A hook that already exists is never started again for an Operator.
+    ///
+    /// A version that admits the spec records its signers, so removing them stops a later
+    /// start. Short of one, a Full caller's creation is kept under who asked, and `rule`
+    /// is read only for an Operator.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] naming what the
@@ -380,15 +371,17 @@ impl LocalMachine {
     pub(crate) async fn admit_spec(
         &self,
         want: &ContainerWant,
-        presented: Presented<'_>,
+        rule: Option<&RuleProof>,
+        versions: &[Signed<ServiceVersion>],
     ) -> Result<Option<AdmittedSpec>, Error> {
         let ContainerWant::Running { container, .. } = want else {
             return Ok(None);
         };
+        let scope = self.scope();
         let new = match container {
             RunTarget::New(new) => new,
             RunTarget::Existing(locator) => {
-                if matches!(presented, Presented::Operator { .. }) {
+                if matches!(scope, Scope::Operator) {
                     self.refuse_hook_start(locator).await?;
                 }
                 return Ok(None);
@@ -411,10 +404,6 @@ impl LocalMachine {
                 verified,
             }))
         };
-        let (rule, versions) = match presented {
-            Presented::FullAccess { versions } => (None, versions),
-            Presented::Operator { rule, versions } => (rule, versions),
-        };
         // One budget for every signature this attempt opens, whichever proof carries it.
         let mut budget = Budget::default();
         let mut unapproved = None;
@@ -431,10 +420,13 @@ impl LocalMachine {
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
-        if matches!(presented, Presented::FullAccess { .. }) {
-            let reach = Reach::of(new.slot.kind, &new.resolved_spec)
-                .map_err(|_| refused(AuthorityRefusal::Mismatch { field: "a payload" }))?;
-            return admitted(self.full_access(service, reach)?, None);
+        if let Scope::Full(full) = scope {
+            let reach = Reach::of(new.slot.kind, &new.resolved_spec).map_err(|_| {
+                refused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::Payload,
+                })
+            })?;
+            return admitted(self.full_access(full, service, reach)?, None);
         }
         if let Some(rule) = rule {
             let admitted_rule = self
@@ -540,11 +532,11 @@ impl LocalMachine {
         containers: &ContainerRuntime,
         id: &ContainerId,
     ) -> Result<(), Error> {
-        if self.scope == ManagementScope::Operator {
+        if let Scope::Operator = self.scope() {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
                 None => Some(AuthorityRefusal::Mismatch {
-                    field: "a kept admission",
+                    field: MismatchField::KeptAdmission,
                 }),
             };
             if let Some(refusal) = refusal {
@@ -565,7 +557,12 @@ impl LocalMachine {
     /// Returns [`Error::NeedsFullScope`] when the connection's key is no longer a Device
     /// here: it was removed after the call arrived, and [`Error::ApprovalRecord`] when the
     /// floor cannot be read.
-    fn full_access(&self, service: QualifiedService, reach: Reach) -> Result<AdmittedBy, Error> {
+    fn full_access(
+        &self,
+        full: FullCaller,
+        service: QualifiedService,
+        reach: Reach,
+    ) -> Result<AdmittedBy, Error> {
         let record = self.record();
         let at = match self.cluster_key(record.phase()) {
             Some(cluster) => {
@@ -579,7 +576,7 @@ impl LocalMachine {
             }
             None => Timestamp::now(),
         };
-        let Caller::Management(remote) = self.caller else {
+        let Caller::Management(remote) = full.caller() else {
             return Ok(AdmittedBy::Local { service, at });
         };
         record
@@ -603,40 +600,44 @@ impl LocalMachine {
     pub(crate) async fn admit_volume_start(
         &self,
         start: &Start,
-        operator: bool,
     ) -> Result<Option<AdmittedSpec>, Error> {
-        match start {
-            Start::Kept { container_id } => {
-                if operator {
+        match (start, self.scope()) {
+            (Start::Kept { container_id }, scope) => {
+                if let Scope::Operator = scope {
                     self.refuse_hook_start(&ContainerLocator::Id(*container_id))
                         .await?;
                 }
                 Ok(None)
             }
-            Start::Create { resolved_spec, .. } if operator => {
+            (Start::Create { resolved_spec, .. }, Scope::Operator) => {
                 tracing::warn!(
                     "Volume start refused for {}: it creates a Container nothing signed",
                     resolved_spec.name,
                 );
                 Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
-                    field: "a Volume start",
+                    field: MismatchField::VolumeStart,
                 }))
             }
-            Start::Create {
-                namespace,
-                resolved_spec,
-                ..
-            } => {
+            (
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    ..
+                },
+                Scope::Full(full),
+            ) => {
                 let spec =
                     AdmittedSpec::hash(namespace, resolved_spec).map_err(Error::DeployRefused)?;
                 let service = QualifiedService::new(namespace.clone(), resolved_spec.name.clone());
                 let reach =
                     Reach::of(ContainerKind::ServiceContainer, resolved_spec).map_err(|_| {
-                        Error::DeployRefused(AuthorityRefusal::Mismatch { field: "a payload" })
+                        Error::DeployRefused(AuthorityRefusal::Mismatch {
+                            field: MismatchField::Payload,
+                        })
                     })?;
                 Ok(Some(AdmittedSpec {
                     spec,
-                    by: self.full_access(service, reach)?,
+                    by: self.full_access(full, service, reach)?,
                     standing: Some(self.standing()),
                     verified: None,
                 }))
@@ -649,7 +650,7 @@ impl LocalMachine {
         match self.container_now(locator).await? {
             ContainerNow::Present(observed) if observed.kind == ContainerKind::PreDeployHook => {
                 Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
-                    field: "a hook run",
+                    field: MismatchField::HookRun,
                 }))
             }
             ContainerNow::Present(_) | ContainerNow::Absent { .. } => Ok(()),
@@ -671,9 +672,7 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
-        let admitted = self
-            .admit_spec(&want, Presented::FullAccess { versions: &[] })
-            .await?;
+        let admitted = self.admit_spec(&want, None, &[]).await?;
         self.ensure_container(want, admitted).await
     }
 }
@@ -696,6 +695,10 @@ fn creation(new: &NewContainer) -> Creation<'_> {
 /// What a refused deploy says to the person who ran it.
 pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
     let text = match refusal {
+        AuthorityRefusal::Mismatch { field } => match field.deploy_refusal() {
+            Some(text) => text,
+            None => return format!("This server can't check the deploy's approval: {refusal}."),
+        },
         AuthorityRefusal::NeedsSignature { reach } => {
             return format!(
                 "This service {reach}, so this server runs it only from a deploy an approved device signed."
@@ -703,42 +706,6 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
         AuthorityRefusal::Unsigned { .. } => {
             "This server runs only deploys an approved device signed."
-        }
-        AuthorityRefusal::Mismatch { field: "a payload" } => {
-            "This service's settings differ from what the device approved."
-        }
-        AuthorityRefusal::Mismatch { field: "an image" } => {
-            "This server runs only images pinned by digest."
-        }
-        AuthorityRefusal::Mismatch { field: "a Service" } => {
-            "The device didn't approve this service."
-        }
-        AuthorityRefusal::Mismatch { field: "a hook" } => {
-            "The device approved no pre-deploy command for this service."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "a hook run",
-        } => "This deploy already ran its pre-deploy command here.",
-        AuthorityRefusal::Mismatch {
-            field: "a Volume start",
-        } => {
-            "This server starts a service on a moved or restored Volume only from a deploy an approved device signed."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "the source Server",
-        } => "This server copies a volume's data only from another server of its cluster.",
-        AuthorityRefusal::Mismatch {
-            field: "an admission",
-        } => "This server kept no record of who approved this container. Deploy it again.",
-        AuthorityRefusal::Mismatch {
-            field: "a kept admission",
-        } => {
-            "This container was made before this server's upgrade, so the server starts it only from a deploy an approved device signed. Deploy the service again with a current CLI."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "a generation",
-        } => {
-            "A newer approval of the automatic deploy rule replaced the one this container ran under."
         }
         AuthorityRefusal::Overspent => {
             "This deploy carries more signatures than a server checks at once. Deploy again."
@@ -748,20 +715,6 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
                 "This version was approved before {}, when this service's older versions were forgotten. Deploy a version signed since.",
                 floor.utc()
             );
-        }
-        AuthorityRefusal::Mismatch {
-            field: field::AHEAD,
-        } => {
-            "This deploy was signed more than 10 minutes ahead of this server's clock. Check the clock of the device that signed it, and this server's."
-        }
-        AuthorityRefusal::Mismatch {
-            field: field::SYSTEM,
-        } => "Versions in the system namespace can't be forgotten.",
-        AuthorityRefusal::Mismatch {
-            field: "an Environment",
-        } => "The device approved a deploy to another environment.",
-        AuthorityRefusal::Mismatch { field: "a Cluster" } => {
-            "The device approved a deploy to another cluster."
         }
         AuthorityRefusal::Expired => "The device's approval expired. Deploy again.",
         AuthorityRefusal::RetiredBuilder { .. } => {
@@ -784,27 +737,8 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
                 "The {kind} key {code} that approved this deploy may not mount volume {volume}. A person adds the volume to the key's grant, or deploys this version themselves."
             );
         }
-        AuthorityRefusal::Mismatch {
-            field: field::KEPT_KEY,
-        } => "The key that approved this was rotated or removed; deploy again.",
-        AuthorityRefusal::Mismatch {
-            field: field::KEPT_REACH,
-        } => {
-            "A CI or agent key approved this container before this server kept what it reaches, so the server no longer starts it. Deploy it again."
-        }
-        AuthorityRefusal::Mismatch {
-            field: field::PARENT,
-        } => {
-            "This deploy edits an earlier version a person approved, but that version didn't arrive with it or isn't one this server trusts. Deploy the service once from a terminal."
-        }
-        AuthorityRefusal::Mismatch {
-            field: field::FORGET_PARENT,
-        } => {
-            "A deploy that only changes the last version a person approved can't forget older versions. Run --forget-older from a terminal."
-        }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }
-        | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::ProofReplayed => {
             return format!("This server can't check the deploy's approval: {refusal}.");

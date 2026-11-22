@@ -64,8 +64,8 @@ impl BuildFixture {
             // The destination now holds exactly the requested variant, as a
             // real pull of one platform leaves it: identity intact, other
             // variants absent.
-            let (repo_tags, id) = match pull.pull.image().rsplit_once('@') {
-                Some((_, digest)) => (
+            let (repo_tags, id) = match ployz_core::ImageRef::new(pull.pull.image()).digest {
+                Some(digest) => (
                     pull.pull.tag().into_iter().map(str::to_owned).collect(),
                     digest.to_owned(),
                 ),

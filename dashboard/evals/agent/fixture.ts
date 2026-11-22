@@ -8,9 +8,10 @@ import { vi } from "vitest";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { agentPersistence } from "#/modules/agent/persistence.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { configDeploymentAdmittedEvent, serviceActRequestedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
+import { serviceActRequested } from "#/modules/service-act/service-act.events";
 import { createActService } from "#/modules/service-act/service-act.inngest";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Caller } from "#/modules/identity/actor";
@@ -76,8 +77,8 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   vi.spyOn(inngest, "send").mockImplementation(async (payload) => {
     dispatched.push(payload);
     for (const event of [payload].flat()) {
-      if (event.name === configDeploymentAdmittedEvent) await settle(event.data.deploymentId);
-      if (event.name === serviceActRequestedEvent) {
+      if (event.name === configDeploymentAdmitted.name) await settle(event.data.deploymentId);
+      if (event.name === serviceActRequested.name) {
         await new InngestTestEngine({
           function: createActService(new Inngest({ id: "agent-eval-act" }), runEffect),
           events: [event],

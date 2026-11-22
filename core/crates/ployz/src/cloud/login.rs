@@ -1,0 +1,1236 @@
+//! Signing this device in to Cloud: RFC 8628 device authorization against Cloud's
+//! better-auth, and the one stored sign-in every Cloud command picks up.
+//!
+//! The sign-in lives next to the Ployz config as `cloud.json` (mode 0600). A pending
+//! code is stored too, so `ployz login --wait`, a repeated `ployz login`, or any
+//! other command can finish a sign-in a browser approved in the meantime.
+//!
+//! Every request goes out through [`crate::cloud::http::client`], whose User-Agent marks
+//! the sessions it starts as signed-in devices.
+
+use std::{
+    io,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use ployz_core::cloud_contract::CLIENT_ID;
+use ployz_core::{Hint, RpcErrorCode};
+
+use crate::coded::Coded;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+mod wire;
+
+use wire::{CodeReply, DeviceTokenError, Reply, SessionReply, TokenError, TokenReply};
+
+const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// RFC 8628 §3.5: a `slow_down` answer adds five seconds to the polling interval.
+const SLOW_DOWN: Duration = Duration::from_secs(5);
+
+/// Failures signing in to Cloud or reading the stored sign-in.
+#[derive(Debug, Error)]
+pub(crate) enum LoginError {
+    #[error("Could not reach Cloud at {cloud}.")]
+    Unreachable {
+        cloud: String,
+        #[source]
+        error: reqwest::Error,
+    },
+    #[error("Cloud at {cloud} stopped answering after it got this change, so it may have applied.")]
+    Unanswered {
+        cloud: String,
+        #[source]
+        error: reqwest::Error,
+    },
+    #[error("Cloud at {0} does not offer CLI access")]
+    Unsupported(String),
+    #[error("{}", crate::cloud::reply::answered("Cloud answered", *.status, .body))]
+    Status { status: u16, body: String },
+    #[error("Cloud sent an unexpected reply: {0}")]
+    Reply(String),
+    #[error("Could not use the sign-in stored at {}.", .path.display())]
+    Store { path: PathBuf, source: io::Error },
+    #[error("The sign-in stored at {} is unreadable.", .path.display())]
+    Corrupt {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error(
+        "The sign-in stored at {} is unreadable, so it cannot name the Cloud for PLOYZ_TOKEN. Set PLOYZ_CLOUD_URL, or forget the sign-in and sign in again.",
+        .0.display()
+    )]
+    TokenCloudUnreadable(PathBuf),
+    #[error("signed in to {signed_in}, not {requested}; run ployz logout first")]
+    OtherCloud {
+        signed_in: String,
+        requested: String,
+    },
+    #[error("Not signed in to Cloud.")]
+    SignedOut,
+    #[error("the sign-in code expired before it was approved")]
+    Expired,
+    #[error("the sign-in was denied in the browser")]
+    Denied,
+    #[error("Cloud ended this device's sign-in")]
+    Ended,
+    #[error("sign-in is waiting for approval at {url}")]
+    AwaitingApproval { url: String },
+    #[error(
+        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"
+    )]
+    TokenRefused,
+    #[error(
+        "Cloud refused the agent token `ployz mcp` acts with: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted. Run `ployz mcp login` to give it a new one."
+    )]
+    AgentTokenRefused,
+    #[error(
+        "PLOYZ_TOKEN is not a token: it holds a newline or other character a token never has. Copy it again from where it was made."
+    )]
+    TokenMalformed,
+    #[error("this sign-in's Organization {0} is no longer one of yours")]
+    NotMember(String),
+    #[error("PLOYZ_TOKEN acts only in the Organization it was made in")]
+    TokenBound,
+    #[error("no Organization {0} of yours")]
+    UnknownOrganization(String),
+    #[error("no token or signed-in device {0} in this Organization")]
+    UnknownCredential(String),
+    #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
+    AmbiguousCredential { name: String, ids: Vec<String> },
+}
+
+impl Coded for LoginError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Self::Unreachable { .. } | Self::Unanswered { .. } => RpcErrorCode::Unavailable,
+            Self::Unsupported(_) => RpcErrorCode::Unsupported,
+            Self::TokenBound => RpcErrorCode::InvalidArgument,
+            Self::Status { status, .. } => crate::cloud::reply::status_code(*status),
+            Self::Reply(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
+            Self::OtherCloud { .. } => RpcErrorCode::Conflict,
+            Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_) => RpcErrorCode::Unauthenticated,
+            Self::UnknownOrganization(_) | Self::UnknownCredential(_) => RpcErrorCode::NotFound,
+            Self::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
+        }
+    }
+
+    fn evidence(&self) -> Option<serde_json::Value> {
+        matches!(self, Self::Unanswered { .. }).then(|| serde_json::json!({ "writes": "unknown" }))
+    }
+
+    /// Sign-in failures name the command that fixes them.
+    fn hints(&self) -> Vec<Hint> {
+        let next = match self {
+            Self::Store { path, source } if source.kind() == io::ErrorKind::PermissionDenied => {
+                return vec![Hint::Next(format!(
+                    "chmod 600 {}",
+                    shell_words::quote(&path.to_string_lossy())
+                ))];
+            }
+            // Cloud binds every call to the acting Organization, `org ls` included: a
+            // sign-in left outside it can only start over.
+            Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::NotMember(_) => "ployz logout",
+            Self::SignedOut | Self::Expired | Self::Denied | Self::Ended => "ployz login",
+            Self::AwaitingApproval { .. } => "ployz login --wait",
+            Self::TokenRefused => crate::cloud::account::SIGN_IN_PAST_TOKEN,
+            Self::AgentTokenRefused => "ployz mcp login",
+            Self::UnknownOrganization(_) => "ployz org ls",
+            Self::UnknownCredential(_) | Self::AmbiguousCredential { .. } => "ployz token ls",
+            Self::Unreachable { .. }
+            | Self::Unanswered { .. }
+            | Self::Unsupported(_)
+            | Self::Status { .. }
+            | Self::Reply(_)
+            | Self::Store { .. }
+            | Self::TokenBound
+            | Self::TokenMalformed => return Vec::new(),
+        };
+        vec![Hint::Next(next.into())]
+    }
+}
+
+/// How far a failed Cloud call got, for a caller that must know whether Cloud may have acted.
+/// Each caller decides what to do with it: the answers differ on purpose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Delivery {
+    /// The request never left this device.
+    Unreached,
+    /// The request left and no answer came back.
+    Lost,
+    /// Cloud answered with this HTTP status.
+    Refused { status: u16 },
+    /// Cloud answered with something this build cannot read.
+    Reply,
+}
+
+impl LoginError {
+    /// Cloud answered `status` with `body`, which a refusal reader may still read.
+    pub(crate) fn status(status: reqwest::StatusCode, body: &[u8]) -> Self {
+        Self::Status {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(body).into_owned(),
+        }
+    }
+
+    /// How far the call got; `None` for a failure that is not about a call to Cloud.
+    pub(crate) fn delivery(&self) -> Option<Delivery> {
+        match self {
+            Self::Unreachable { .. } => Some(Delivery::Unreached),
+            Self::Unanswered { .. } => Some(Delivery::Lost),
+            Self::Status { status, .. } => Some(Delivery::Refused { status: *status }),
+            Self::Reply(_) => Some(Delivery::Reply),
+            Self::Unsupported(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_)
+            | Self::TokenBound
+            | Self::UnknownOrganization(_)
+            | Self::UnknownCredential(_)
+            | Self::AmbiguousCredential { .. } => None,
+        }
+    }
+}
+
+/// A bearer that never prints.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct Secret(String);
+
+impl Secret {
+    pub(crate) fn new(secret: String) -> Self {
+        Self(secret)
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Secret(..)")
+    }
+}
+
+/// The Cloud account a device signed in as.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Account {
+    pub(crate) id: String,
+    pub(crate) email: String,
+    pub(crate) name: String,
+}
+
+/// The Organization a device's sign-in acts in.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Organization {
+    pub(crate) id: String,
+    pub(crate) slug: String,
+}
+
+/// A code waiting for a signed-in browser to approve it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Pending {
+    pub(crate) cloud: String,
+    device_code: Secret,
+    pub(crate) code: String,
+    /// The approval page with the code filled in.
+    pub(crate) url: String,
+    /// Unix seconds.
+    expires_at: u64,
+    interval_secs: u64,
+}
+
+impl Pending {
+    /// Seconds until the code expires; zero once it has.
+    pub(crate) fn expires_in(&self) -> u64 {
+        self.expires_at.saturating_sub(now())
+    }
+}
+
+/// An approved sign-in: the device's Cloud session and who it acts as.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SignedIn {
+    pub(crate) cloud: String,
+    token: Secret,
+    pub(crate) account: Account,
+    pub(crate) organization: Organization,
+}
+
+impl SignedIn {
+    pub(crate) fn token(&self) -> &Secret {
+        &self.token
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum Stored {
+    Pending(Pending),
+    SignedIn(SignedIn),
+}
+
+/// Where this device keeps its Cloud sign-in: beside the Ployz config.
+#[derive(Clone, Debug)]
+pub(crate) struct CredentialStore {
+    path: PathBuf,
+}
+
+impl CredentialStore {
+    pub(crate) fn beside(config: &Path) -> Self {
+        Self {
+            path: crate::config_dir::ConfigDir::new(config).cloud(),
+        }
+    }
+
+    fn load(&self) -> Result<Option<Stored>, LoginError> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes)
+                    .map(Some)
+                    .map_err(|source| LoginError::Corrupt {
+                        path: self.path.clone(),
+                        source,
+                    })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(self.failed(source)),
+        }
+    }
+
+    /// The approved sign-in stored here, without asking Cloud about a pending one.
+    pub(crate) fn stored_sign_in(&self) -> Option<SignedIn> {
+        match self.load() {
+            Ok(Some(Stored::SignedIn(signed_in))) => Some(signed_in),
+            _ => None,
+        }
+    }
+
+    /// [`Self::load`], reading an unreadable sign-in as none, so a new one replaces it.
+    fn replaceable(&self) -> Result<Option<Stored>, LoginError> {
+        match self.load() {
+            Err(LoginError::Corrupt { .. }) => Ok(None),
+            stored => stored,
+        }
+    }
+
+    fn save(&self, stored: &Stored) -> Result<(), LoginError> {
+        let contents = serde_json::to_vec_pretty(stored)
+            .map_err(|source| self.failed(io::Error::other(source)))?;
+        crate::atomic_file::replace(&self.path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| self.failed(error.into()))
+    }
+
+    fn clear(&self) -> Result<(), LoginError> {
+        match std::fs::remove_file(&self.path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(self.failed(error)),
+            _ => Ok(()),
+        }
+    }
+
+    fn failed(&self, source: io::Error) -> LoginError {
+        LoginError::Store {
+            path: self.path.clone(),
+            source,
+        }
+    }
+
+    /// Record the Organization a signed-in device now acts in.
+    pub(crate) fn set_organization(
+        &self,
+        signed_in: &SignedIn,
+        organization: Organization,
+    ) -> Result<SignedIn, LoginError> {
+        let signed_in = SignedIn {
+            organization,
+            ..signed_in.clone()
+        };
+        self.save(&Stored::SignedIn(signed_in.clone()))?;
+        Ok(signed_in)
+    }
+
+    /// The Organization the stored sign-in acts in, without asking Cloud.
+    pub(crate) fn organization(&self) -> Result<Option<Organization>, LoginError> {
+        Ok(match self.load()? {
+            Some(Stored::SignedIn(signed_in)) => Some(signed_in.organization),
+            _ => None,
+        })
+    }
+
+    /// The Cloud the stored sign-in or pending code belongs to.
+    pub(crate) fn cloud(&self) -> Result<Option<String>, LoginError> {
+        Ok(self.load()?.map(|stored| match stored {
+            Stored::Pending(pending) => pending.cloud,
+            Stored::SignedIn(signed_in) => signed_in.cloud,
+        }))
+    }
+}
+
+/// The approved sign-in other commands act with. Never waits for a browser: a pending
+/// code is polled once, and is still pending → [`LoginError::AwaitingApproval`].
+///
+/// # Errors
+///
+/// Returns [`LoginError::SignedOut`], [`LoginError::Expired`] or [`LoginError::Denied`]
+/// when there is nothing to act with, or a Cloud or store failure.
+pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, LoginError> {
+    match store.load()? {
+        None => Err(LoginError::SignedOut),
+        Some(Stored::SignedIn(signed_in)) => Ok(signed_in),
+        Some(Stored::Pending(pending)) => {
+            let url = pending.url.clone();
+            poll_once(store, &crate::cloud::http::client()?, pending)
+                .await?
+                .ok_or(LoginError::AwaitingApproval { url })
+        }
+    }
+}
+
+/// Where `ployz login` starts from.
+pub(crate) enum Start {
+    /// Already signed in to this Cloud, and Cloud still honours the session.
+    SignedIn(SignedIn),
+    /// A code waiting for approval: resumed, or just requested.
+    Pending { pending: Pending, resumed: bool },
+}
+
+/// Resume this Cloud's sign-in or pending code, or request a new code.
+///
+/// A resumed code is polled once, so a sign-in approved since shows as signed in.
+///
+/// # Errors
+///
+/// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
+pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
+    let cloud = crate::cloud::origin::CloudOrigin::new(cloud).into_string();
+    let http = crate::cloud::http::client()?;
+    match store.replaceable()? {
+        Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
+            return Err(LoginError::OtherCloud {
+                signed_in: signed_in.cloud,
+                requested: cloud,
+            });
+        }
+        Some(Stored::SignedIn(signed_in)) => {
+            if let Some((account, organization)) = session(&http, &cloud, &signed_in.token).await? {
+                let signed_in = SignedIn {
+                    account,
+                    organization,
+                    ..signed_in
+                };
+                store.save(&Stored::SignedIn(signed_in.clone()))?;
+                return Ok(Start::SignedIn(signed_in));
+            }
+        }
+        Some(Stored::Pending(pending)) if pending.cloud == cloud && pending.expires_in() > 0 => {
+            return Ok(match poll_once(store, &http, pending.clone()).await {
+                Ok(Some(signed_in)) => Start::SignedIn(signed_in),
+                Ok(None) => Start::Pending {
+                    pending,
+                    resumed: true,
+                },
+                Err(LoginError::Denied | LoginError::Expired) => {
+                    request_code(store, &http, cloud).await?
+                }
+                Err(error) => return Err(error),
+            });
+        }
+        Some(Stored::Pending(_)) | None => {}
+    }
+    request_code(store, &http, cloud).await
+}
+
+/// Poll until the browser approves or denies `pending`, or it expires.
+///
+/// # Errors
+///
+/// Returns [`LoginError::Denied`] or [`LoginError::Expired`], or a Cloud or store failure.
+pub(crate) async fn wait(
+    store: &CredentialStore,
+    pending: Pending,
+) -> Result<SignedIn, LoginError> {
+    let http = crate::cloud::http::client()?;
+    let mut interval = Duration::from_secs(pending.interval_secs);
+    loop {
+        tokio::time::sleep(interval).await;
+        match poll(&http, &pending).await? {
+            Poll::Approved(token) => return finish(store, &http, &pending.cloud, token).await,
+            Poll::SlowDown => interval += SLOW_DOWN,
+            Poll::Pending => {}
+            Poll::Denied => return forget(store, LoginError::Denied),
+            Poll::Expired => return forget(store, LoginError::Expired),
+        }
+    }
+}
+
+/// A finished logout: the Cloud, and for an approved sign-in, the device Cloud signed out and
+/// which Servers confirmed clearing its key.
+#[derive(Debug)]
+pub(crate) struct SignedOut {
+    pub(crate) cloud: String,
+    pub(crate) device: Option<String>,
+    pub(crate) servers: crate::cloud::account::ServerClears,
+    /// Why Cloud could not end the sign-in, which this device only forgot.
+    pub(crate) unrevoked: Option<LoginError>,
+}
+
+/// End this device's sign-in: Cloud first (which also clears its key on each Server), then
+/// the stored credential. A sign-in Cloud already ended, that Cloud cannot be reached to
+/// end, or that left its Organization, is only forgotten.
+///
+/// Returns `None` when nothing readable was signed in.
+///
+/// # Errors
+///
+/// Returns a failure Cloud answered with, keeping the stored sign-in so logout can be
+/// retried, or a store failure.
+pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
+    let signed_out = match store.replaceable()? {
+        None => {
+            store.clear()?;
+            return Ok(None);
+        }
+        Some(Stored::Pending(pending)) => SignedOut {
+            cloud: pending.cloud,
+            device: None,
+            servers: Default::default(),
+            unrevoked: None,
+        },
+        Some(Stored::SignedIn(signed_in)) => {
+            let url = format!("{}/api/cli/logout", signed_in.cloud);
+            let sent = crate::cloud::http::client()?
+                .post(url)
+                .bearer_auth(&signed_in.token.0)
+                .send()
+                .await;
+            let (device, servers, unrevoked) = match sent {
+                Err(error) => (
+                    None,
+                    Default::default(),
+                    Some(unreachable(&signed_in.cloud, error)),
+                ),
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                    (None, Default::default(), None)
+                }
+                // Cloud refuses every call from a sign-in whose Organization is no longer
+                // the account's, logout included, so it can't end the sign-in either.
+                Ok(response) if response.status() == reqwest::StatusCode::FORBIDDEN => (
+                    None,
+                    Default::default(),
+                    Some(LoginError::NotMember(signed_in.organization.slug.clone())),
+                ),
+                Ok(response) => {
+                    let reply: Reply = decode(ensure_success(response).await?)?;
+                    (Some(reply.signed_out.id), reply.servers, None)
+                }
+            };
+            SignedOut {
+                cloud: signed_in.cloud,
+                device,
+                servers,
+                unrevoked,
+            }
+        }
+    };
+    store.clear()?;
+    Ok(Some(signed_out))
+}
+
+enum Poll {
+    Pending,
+    SlowDown,
+    Approved(Secret),
+    Denied,
+    Expired,
+}
+
+async fn request_code(
+    store: &CredentialStore,
+    http: &reqwest::Client,
+    cloud: String,
+) -> Result<Start, LoginError> {
+    let response = http
+        .post(format!("{cloud}/api/auth/device/code"))
+        .json(&serde_json::json!({ "client_id": CLIENT_ID }))
+        .send()
+        .await
+        .map_err(|error| unreachable(&cloud, error))?;
+    // Cloud answers 404 where CLI sign-in is not switched on.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(LoginError::Unsupported(cloud));
+    }
+    let reply: CodeReply = decode(ensure_success(response).await?)?;
+    let pending = Pending {
+        cloud,
+        device_code: Secret(reply.device_code),
+        code: reply.user_code,
+        url: reply.verification_uri_complete,
+        expires_at: now() + reply.expires_in,
+        interval_secs: reply.interval.max(1),
+    };
+    store.save(&Stored::Pending(pending.clone()))?;
+    Ok(Start::Pending {
+        pending,
+        resumed: false,
+    })
+}
+
+/// Poll `pending` once; `None` while it still waits for the browser.
+async fn poll_once(
+    store: &CredentialStore,
+    http: &reqwest::Client,
+    pending: Pending,
+) -> Result<Option<SignedIn>, LoginError> {
+    match poll(http, &pending).await? {
+        Poll::Approved(token) => finish(store, http, &pending.cloud, token).await.map(Some),
+        Poll::Pending | Poll::SlowDown => Ok(None),
+        Poll::Denied => forget(store, LoginError::Denied),
+        Poll::Expired => forget(store, LoginError::Expired),
+    }
+}
+
+async fn poll(http: &reqwest::Client, pending: &Pending) -> Result<Poll, LoginError> {
+    if pending.expires_in() == 0 {
+        return Ok(Poll::Expired);
+    }
+    let response = http
+        .post(format!("{}/api/auth/device/token", pending.cloud))
+        .json(&serde_json::json!({
+            "grant_type": GRANT_TYPE,
+            "device_code": pending.device_code.0,
+            "client_id": CLIENT_ID,
+        }))
+        .send()
+        .await
+        .map_err(|error| unreachable(&pending.cloud, error))?;
+    if response.status() != reqwest::StatusCode::BAD_REQUEST {
+        let reply: TokenReply = decode(ensure_success(response).await?)?;
+        return Ok(Poll::Approved(Secret(reply.access_token)));
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| unreachable(&pending.cloud, error))?;
+    let reply: TokenError = decode(body.to_vec())?;
+    Ok(match DeviceTokenError::from_wire(&reply.error) {
+        DeviceTokenError::Pending => Poll::Pending,
+        DeviceTokenError::SlowDown => Poll::SlowDown,
+        DeviceTokenError::Denied => Poll::Denied,
+        DeviceTokenError::Expired => Poll::Expired,
+        DeviceTokenError::Unknown(other) => {
+            return Err(LoginError::Reply(format!("device token error {other}")));
+        }
+    })
+}
+
+/// Store an approved session with the account and Organization Cloud reports for it.
+async fn finish(
+    store: &CredentialStore,
+    http: &reqwest::Client,
+    cloud: &str,
+    token: Secret,
+) -> Result<SignedIn, LoginError> {
+    let (account, organization) = session(http, cloud, &token)
+        .await?
+        .ok_or(LoginError::Ended)?;
+    let signed_in = SignedIn {
+        cloud: cloud.to_owned(),
+        token,
+        account,
+        organization,
+    };
+    store.save(&Stored::SignedIn(signed_in.clone()))?;
+    Ok(signed_in)
+}
+
+/// The account and Organization behind `token`; `None` once Cloud no longer honours it.
+async fn session(
+    http: &reqwest::Client,
+    cloud: &str,
+    token: &Secret,
+) -> Result<Option<(Account, Organization)>, LoginError> {
+    let response = http
+        .get(format!("{cloud}/api/auth/get-session"))
+        .bearer_auth(&token.0)
+        .send()
+        .await
+        .map_err(|error| unreachable(cloud, error))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(None);
+    }
+    let Some(reply): Option<SessionReply> = decode(ensure_success(response).await?)? else {
+        return Ok(None);
+    };
+    // Cloud gives every account a personal Organization when its session starts.
+    let (Some(id), Some(slug)) = (
+        reply.session.active_organization_id,
+        reply.session.active_organization_slug,
+    ) else {
+        return Err(LoginError::Reply(
+            "the session has no active Organization".to_owned(),
+        ));
+    };
+    Ok(Some((reply.user, Organization { id, slug })))
+}
+
+fn forget<T>(store: &CredentialStore, error: LoginError) -> Result<T, LoginError> {
+    store.clear()?;
+    Err(error)
+}
+
+async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginError> {
+    let status = response.status();
+    let cloud = response.url().origin().ascii_serialization();
+    let body =
+        crate::cloud::http::read_body(&cloud, response, crate::cloud::http::Effect::Read).await?;
+    if status.is_success() {
+        Ok(body)
+    } else {
+        Err(LoginError::status(status, &body))
+    }
+}
+
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T, LoginError> {
+    serde_json::from_slice(&body).map_err(|error| LoginError::Reply(error.to_string()))
+}
+
+pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
+    LoginError::Unreachable {
+        cloud: cloud.to_owned(),
+        error: error.without_url(),
+    }
+}
+
+/// Why a write to `cloud` failed in flight: one that was never built or never
+/// connected is unreachable, and one that left this device may have applied though
+/// its answer never came.
+pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
+    if error.is_connect() || error.is_builder() {
+        return unreachable(cloud, error);
+    }
+    LoginError::Unanswered {
+        cloud: cloud.to_owned(),
+        error: error.without_url(),
+    }
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::cloud::account::testing::fake_cloud;
+
+    /// Cloud's device flow for one code, approved once `approved` is set.
+    fn device_cloud(approved: Arc<Mutex<Option<&'static str>>>) -> String {
+        fake_cloud(move |route, _| match route {
+            "POST /api/auth/device/code" => (
+                200,
+                serde_json::json!({
+                    "device_code": "device-secret",
+                    "user_code": "ABCD2345",
+                    "verification_uri": "http://cloud/device",
+                    "verification_uri_complete": "http://cloud/device?user_code=ABCD2345",
+                    "expires_in": 1800,
+                    "interval": 1,
+                }),
+            ),
+            "POST /api/auth/device/token" => match *approved.lock().unwrap() {
+                None => (400, serde_json::json!({ "error": "authorization_pending" })),
+                Some("denied") => (400, serde_json::json!({ "error": "access_denied" })),
+                Some(_) => (200, serde_json::json!({ "access_token": "session-token" })),
+            },
+            "GET /api/auth/get-session" => (
+                200,
+                serde_json::json!({
+                    "user": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                    "session": { "activeOrganizationId": "o1", "activeOrganizationSlug": "acme" },
+                }),
+            ),
+            "POST /api/cli/logout" => (
+                200,
+                serde_json::json!({
+                    "signed_out": { "id": "d1" },
+                    "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
+                }),
+            ),
+            other => panic!("unexpected {other}"),
+        })
+    }
+
+    fn store() -> (tempfile::TempDir, CredentialStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn other_commands_pick_up_an_approved_sign_in_without_waiting() {
+        let approved = Arc::new(Mutex::new(None));
+        let cloud = device_cloud(approved.clone());
+        let (_dir, store) = store();
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        let waiting = signed_in(&store).await.unwrap_err();
+        assert!(
+            matches!(&waiting, LoginError::AwaitingApproval { url } if *url == pending.url),
+            "{waiting}"
+        );
+
+        *approved.lock().unwrap() = Some("approved");
+        let picked = signed_in(&store).await.unwrap();
+        assert_eq!(picked.account.email, "dev@example.test");
+        assert_eq!(picked.organization.slug, "acme");
+        // Stored: the next command needs no Cloud round trip.
+        assert_eq!(signed_in(&store).await.unwrap().account, picked.account);
+        let stored = std::fs::read_to_string(&store.path).unwrap();
+        assert!(stored.contains("session-token"));
+        assert!(!format!("{picked:?}").contains("session-token"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&store.path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_reports_servers_still_to_clear_and_forgets_the_sign_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        let out = logout(&store).await.unwrap().unwrap();
+        assert_eq!(out.device.as_deref(), Some("d1"));
+        assert_eq!(
+            out.servers.unconfirmed,
+            [ployz_core::MachineId::parse("2".repeat(32)).unwrap()]
+        );
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+        assert!(logout(&store).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_a_sign_in_whose_cloud_cannot_be_reached() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let gone = "http://127.0.0.1:1";
+        std::fs::write(
+            &store.path,
+            serde_json::json!({
+                "state": "signed_in",
+                "cloud": gone,
+                "token": "session-token",
+                "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                "organization": { "id": "o1", "slug": "acme" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = logout(&store).await.unwrap().unwrap();
+        assert_eq!(out.cloud, gone);
+        assert!(out.device.is_none());
+        assert!(
+            matches!(out.unrevoked, Some(LoginError::Unreachable { .. })),
+            "{:?}",
+            out.unrevoked
+        );
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+        assert!(matches!(
+            start(&store, &cloud).await,
+            Ok(Start::Pending { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_a_sign_in_cloud_refuses_and_keeps_one_cloud_failed_on() {
+        for status in [401, 403, 500] {
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/cli/logout" => (status, serde_json::json!({})),
+                other => panic!("unexpected {other}"),
+            });
+            let (_dir, store) = store();
+            std::fs::write(
+                &store.path,
+                serde_json::json!({
+                    "state": "signed_in",
+                    "cloud": cloud,
+                    "token": "session-token",
+                    "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                    "organization": { "id": "o1", "slug": "acme" },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let out = logout(&store).await;
+            if status == 500 {
+                assert!(
+                    matches!(out, Err(LoginError::Status { status: 500, .. })),
+                    "{out:?}"
+                );
+                assert!(signed_in(&store).await.is_ok());
+                continue;
+            }
+            let out = out.unwrap().unwrap();
+            assert!(out.device.is_none());
+            if status == 401 {
+                // Cloud already ended it: nothing is left to revoke.
+                assert!(out.unrevoked.is_none(), "{:?}", out.unrevoked);
+            } else {
+                assert!(
+                    matches!(&out.unrevoked, Some(LoginError::NotMember(slug)) if slug == "acme"),
+                    "{:?}",
+                    out.unrevoked
+                );
+            }
+            assert!(matches!(
+                signed_in(&store).await,
+                Err(LoginError::SignedOut)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_and_login_replace_an_unreadable_sign_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        std::fs::write(&store.path, "{not json").unwrap();
+        assert!(logout(&store).await.unwrap().is_none());
+        assert!(!store.path.exists());
+
+        std::fs::write(&store.path, "{not json").unwrap();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        assert_eq!(signed_in(&store).await.unwrap().organization.slug, "acme");
+    }
+
+    #[tokio::test]
+    async fn a_denied_code_is_forgotten() {
+        let approved = Arc::new(Mutex::new(Some("denied")));
+        let cloud = device_cloud(approved);
+        let (_dir, store) = store();
+        start(&store, &cloud).await.unwrap();
+        assert!(matches!(signed_in(&store).await, Err(LoginError::Denied)));
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_device_token_route_reads_as_one_poll_outcome_or_one_refusal() {
+        let table: [(u16, serde_json::Value, &str); 22] = [
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down" }),
+                "slow_down",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "access_denied" }),
+                "denied",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "expired_token" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "invalid_grant" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending", "error_description": "x" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "nope" }),
+                "reply: device token error nope",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "" }),
+                "reply: device token error ",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "Authorization_Pending" }),
+                "reply: device token error Authorization_Pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down " }),
+                "reply: device token error slow_down ",
+            ),
+            (
+                400,
+                serde_json::json!({}),
+                "reply: missing field `error` at line 1 column 2",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": 7 }),
+                "reply: invalid type: integer `7`, expected a string at line 1 column 10",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": null }),
+                "reply: invalid type: null, expected a string at line 1 column 13",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": { "code": "x" } }),
+                "reply: invalid type: map, expected a string at line 1 column 9",
+            ),
+            (200, serde_json::json!({ "access_token": "t" }), "approved"),
+            (
+                200,
+                serde_json::json!({ "access_token": "t", "token_type": "Bearer" }),
+                "approved",
+            ),
+            (
+                200,
+                serde_json::json!({}),
+                "reply: missing field `access_token` at line 1 column 2",
+            ),
+            (
+                200,
+                serde_json::json!({ "access_token": null }),
+                "reply: invalid type: null, expected a string at line 1 column 20",
+            ),
+            (
+                200,
+                serde_json::json!({ "error": "access_denied" }),
+                "reply: missing field `access_token` at line 1 column 25",
+            ),
+            (
+                401,
+                serde_json::json!({ "error": "authorization_pending" }),
+                r#"status 401: {"error":"authorization_pending"}"#,
+            ),
+            (
+                404,
+                serde_json::json!({ "error": "expired_token" }),
+                r#"status 404: {"error":"expired_token"}"#,
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "slow_down" }),
+                r#"status 500: {"error":"slow_down"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/token" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let pending = Pending {
+                cloud,
+                device_code: Secret("device-secret".to_owned()),
+                code: "ABCD2345".to_owned(),
+                url: "http://cloud/device".to_owned(),
+                expires_at: now() + 600,
+                interval_secs: 1,
+            };
+            let http = reqwest::Client::new();
+            let read = match poll(&http, &pending).await {
+                Ok(Poll::Pending) => "pending".to_owned(),
+                Ok(Poll::SlowDown) => "slow_down".to_owned(),
+                Ok(Poll::Denied) => "denied".to_owned(),
+                Ok(Poll::Expired) => "expired".to_owned(),
+                Ok(Poll::Approved(token)) => {
+                    assert_eq!(token.expose(), "t");
+                    "approved".to_owned()
+                }
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_code_that_has_run_out_is_expired_without_asking_cloud() {
+        let pending = Pending {
+            cloud: "http://127.0.0.1:1".to_owned(),
+            device_code: Secret("device-secret".to_owned()),
+            code: "ABCD2345".to_owned(),
+            url: "http://cloud/device".to_owned(),
+            expires_at: 0,
+            interval_secs: 1,
+        };
+        assert!(matches!(
+            poll(&reqwest::Client::new(), &pending).await,
+            Ok(Poll::Expired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_device_code_reply_decodes_only_what_cloud_must_send() {
+        let full = serde_json::json!({
+            "device_code": "d", "user_code": "U", "verification_uri_complete": "http://c/d?u=U",
+            "expires_in": 60, "interval": 0,
+        });
+        let without = |field: &str| {
+            let mut body = full.clone();
+            body.as_object_mut().unwrap().remove(field);
+            body
+        };
+        let with = |field: &str, value: serde_json::Value| {
+            let mut body = full.clone();
+            body.as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), value);
+            body
+        };
+        let table = [
+            (404, serde_json::json!({}), "unsupported"),
+            (200, full.clone(), "ok interval 1"),
+            (
+                200,
+                with("verification_uri", serde_json::json!("http://c/d")),
+                "ok interval 1",
+            ),
+            (200, with("interval", serde_json::json!(5)), "ok interval 5"),
+            (
+                200,
+                without("device_code"),
+                "reply: missing field `device_code` at line 1 column 91",
+            ),
+            (
+                200,
+                without("user_code"),
+                "reply: missing field `user_code` at line 1 column 93",
+            ),
+            (
+                200,
+                without("verification_uri_complete"),
+                "reply: missing field `verification_uri_complete` at line 1 column 64",
+            ),
+            (
+                200,
+                without("expires_in"),
+                "reply: missing field `expires_in` at line 1 column 93",
+            ),
+            (
+                200,
+                without("interval"),
+                "reply: missing field `interval` at line 1 column 96",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!(-1)),
+                "reply: invalid value: integer `-1`, expected u64 at line 1 column 48",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!("5")),
+                "reply: invalid type: string \"5\", expected u64 at line 1 column 49",
+            ),
+            (
+                200,
+                with("expires_in", serde_json::json!(null)),
+                "reply: invalid type: null, expected u64 at line 1 column 36",
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "down" }),
+                r#"status 500: {"error":"down"}"#,
+            ),
+            (
+                403,
+                serde_json::json!({ "error": "no" }),
+                r#"status 403: {"error":"no"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/code" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let (_dir, store) = store();
+            let read = match start(&store, &cloud).await {
+                Ok(Start::Pending { pending, .. }) => {
+                    assert!(pending.expires_in() <= 60);
+                    format!("ok interval {}", pending.interval_secs)
+                }
+                Ok(_) => "other start".to_owned(),
+                Err(LoginError::Unsupported(_)) => "unsupported".to_owned(),
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn login_refuses_to_switch_clouds_while_signed_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        let error = start(&store, "http://127.0.0.1:1").await.err().unwrap();
+        assert!(matches!(error, LoginError::OtherCloud { .. }), "{error}");
+    }
+}

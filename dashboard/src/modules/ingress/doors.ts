@@ -1,19 +1,6 @@
 import type { OwnedNamespace, PublishedHostname } from "@ployz/sdk";
 import { Schema } from "effect";
-
-/** Which Door the Cluster ends up behind: its public ports, or the Cloudflare tunnel. */
-export const DOORS_WANTS = ["tunnel", "public"] as const;
-export type DoorsWant = (typeof DOORS_WANTS)[number];
-
-export const DOORS_STATES = ["pending", "running", "finished", "failed"] as const;
-export type DoorsState = (typeof DOORS_STATES)[number];
-
-/**
- * Where a switch is, for the progress the page shows: both Doors open on every Server, generated names moving to the
- * other source, then the old Door closing.
- */
-export const DOORS_STAGES = ["opening", "moving", "closing"] as const;
-export type DoorsStage = (typeof DOORS_STAGES)[number];
+import { DOORS_WANTS, type DoorsStage, type DoorsWant } from "#/modules/ingress/doors.states";
 
 /** A request no run picked up in this long never starts; the hourly sweep closes it. */
 export const DOORS_PENDING_LIMIT_MS = 15 * 60_000;
@@ -22,7 +9,12 @@ export const DOORS_RUNNING_LIMIT_MS = 10 * 60_000;
 /** Cloudflare setup's steps after it reserved the Cluster take at most this long each way: doing, then undoing. */
 export const SETUP_RUNNING_LIMIT_MS = 5 * 60_000;
 /** A setup reservation older than this belongs to a setup that died; the next setup takes it over. */
-export const SETUP_STALE_MS = 2 * SETUP_RUNNING_LIMIT_MS;
+const SETUP_STALE_MS = 2 * SETUP_RUNNING_LIMIT_MS;
+
+/** Reservations last touched at or before this belong to a setup that died. The SQL form of `setupIsStale`. */
+export const setupStaleCutoff = (now: number = Date.now()) => new Date(now - SETUP_STALE_MS);
+
+export const setupIsStale = (reservedAt: Date, now: number = Date.now()) => reservedAt.getTime() <= setupStaleCutoff(now).getTime();
 
 export const SwitchDoorsInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isNonEmpty()),
@@ -48,9 +40,6 @@ export type LatestDoorsChange =
   | { readonly attemptId: string; readonly want: DoorsWant; readonly state: "running"; readonly startedAt: string; readonly stage: DoorsStage | null }
   | { readonly attemptId: string; readonly want: DoorsWant; readonly state: "finished"; readonly endedAt: string }
   | { readonly attemptId: string; readonly want: DoorsWant; readonly state: "failed"; readonly endedAt: string; readonly failure: string };
-
-export const CLOUDFLARE_SETUP_STATES = ["setting_up", "set_up", "active", "left"] as const;
-export type CloudflareSetupState = (typeof CLOUDFLARE_SETUP_STATES)[number];
 
 /**
  * The Cluster's Cloudflare setup. `setting_up`: a setup reserved the Cluster and is creating the tunnel; no switch
@@ -213,7 +202,6 @@ export function switchProgress(change: LatestDoorsChange | null): { readonly lab
   }
 }
 
-/** How many of `servers` hold `door` open. */
 export const holdingCount = (servers: ClusterIngressObservation["servers"], door: DoorName) => servers.filter((server) => server.doors.includes(door)).length;
 
 /**

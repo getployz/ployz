@@ -5,29 +5,19 @@ use crate::sdk::test_support as support;
 #[test]
 fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
     let failure = || crate::failure::Failure::unavailable("down");
-    let init = crate::handlers::server::init::ingress_incomplete(failure(), String::new());
-    assert_eq!(
-        init.report().message,
-        "Server initialized; ingress deployment incomplete."
-    );
     let cloud = crate::handlers::cloud::ingress_incomplete(
-        crate::cloud_enroll::Command::ServerAdd,
+        crate::cloud::enroll::Command::ServerAdd,
         failure(),
     );
     assert_eq!(
         cloud.report().message,
-        "Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."
+        "Server initialized; the Ingress Proxy did not follow."
     );
-    let enrolled = crate::handlers::cloud::ingress_incomplete(
-        crate::cloud_enroll::Command::ServerEnroll,
+    let set = crate::handlers::server::ingress_incomplete(
+        "Server updated",
         failure(),
+        ployz_core::Hint::Next(String::new()),
     );
-    assert_eq!(
-        enrolled.report().message,
-        "Server initialized; Ingress deployment incomplete. Run ployz server enroll again, or use Enroll in Servers > Waiting to join, to reconcile it."
-    );
-    let set =
-        crate::handlers::server::ingress_incomplete("Server updated", failure(), String::new());
     assert_eq!(
         set.report().message,
         "Server updated; the Ingress Proxy did not follow."

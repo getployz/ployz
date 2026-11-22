@@ -1,6 +1,8 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useEffect, useState } from "react";
+import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLoaderData } from "@tanstack/react-router";
+import { useOrganizationContext } from "#/collections/use-organization-context";
 import { toast } from "sonner";
 import { getServerUpgradeSettingsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -14,24 +16,23 @@ import {
   setServerUpgradeSettingsServerFn,
 } from "./server-upgrade.functions";
 
-export const UPGRADE_REFUSED = "Only an owner or admin can upgrade servers.";
+export const UPGRADE_REFUSED = refusalFor("servers:operate", "upgrade servers");
 
-/** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
-const PENDING_MS = 60_000;
-
-/** A click on Upgrade reads as Upgrading until a newer attempt than `newestAttemptId` is recorded, or for a minute. */
+/**
+ * A click on Upgrade reads as Upgrading until a newer attempt than the one it was clicked from is recorded, or for a
+ * minute: a Busy Server records none.
+ */
 function usePendingUpgrade(newestAttemptId: string | null) {
-  const [from, setFrom] = useState<PendingFrom>(undefined);
-  const recorded = from !== undefined && newestAttemptId !== from;
-  useEffect(() => {
-    if (recorded) setFrom(undefined);
-  }, [recorded]);
-  useEffect(() => {
-    if (from === undefined) return;
-    const timer = setTimeout(() => setFrom(undefined), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [from]);
-  return { from, start: () => setFrom(newestAttemptId), cancel: () => setFrom(undefined) };
+  const [clicked, setClicked] = usePendingAttempt<{ readonly from: string | null }, string | null>(
+    newestAttemptId,
+    ({ from }, newest) => newest !== from,
+  );
+  const from: PendingFrom = clicked?.from;
+  return {
+    from,
+    start: () => setClicked((current) => (current?.from === newestAttemptId ? current : { from: newestAttemptId })),
+    cancel: () => setClicked(null),
+  };
 }
 
 /**
@@ -75,7 +76,7 @@ type Change = { readonly automatic: boolean } | { readonly channel: ReleaseChann
 export function useServerUpgradeSettings(organizationSlug: string) {
   const collection = getServerUpgradeSettingsCollection(organizationSlug, useCollectionScope());
   const { data: rows } = useLiveSuspenseQuery(collection);
-  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const { organizationId } = useOrganizationContext();
   const settings = serverUpgradeSettings(rows);
   const set = createOptimisticAction<Change>({
     onMutate: (change) => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { controlPlaneStatements, editUptimeCheckStatement } from "#/modules/uptime/incident-fence";
+import { editUptimeCheckStatement } from "#/modules/uptime/incident-fence";
+import { controlPlaneStatements } from "#/modules/uptime/incident-fence.test-fixture";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-0000000a0001";

@@ -97,40 +97,36 @@ impl FullRoutes {
             .collect()
     }
 
-    /// Whether `machine` is reached with Full scope: over SSH or the local socket, or over
-    /// a Management connection dialled as a Device when `device` says one is held. The entry
-    /// is reached over `entry_connection`; any other Machine over its own connection.
-    /// Whether `machine` answers for itself: reached over SSH or the local socket on a
-    /// route the person chose, so what it reports is its own word and not Cloud's.
+    /// Whether `machine` answers for itself: reached on a route the person chose, over a
+    /// transport `own` holds as their own Full access, so what it reports is its own word
+    /// and not Cloud's.
     pub(crate) fn answers_for_itself(
         &self,
         machine: &MachineId,
         entry: Option<&MachineId>,
         entry_connection: &Connection,
+        own: impl Fn(&Transport) -> bool,
     ) -> bool {
-        self.origin == Origin::Chosen && self.reach(machine, false, entry, entry_connection)
+        self.origin == Origin::Chosen && self.reach(machine, entry, entry_connection, own)
     }
 
+    /// Whether `machine` is reached over a transport `full` accepts. The entry is reached
+    /// over `entry_connection`; any other Machine over its own connection.
     pub(crate) fn reach(
         &self,
         machine: &MachineId,
-        device: bool,
         entry: Option<&MachineId>,
         entry_connection: &Connection,
+        full: impl Fn(&Transport) -> bool,
     ) -> bool {
-        let full = |connection: &Connection| match connection.transport() {
-            Transport::Ssh { .. } | Transport::Unix(_) => true,
-            Transport::Management(_) => device,
-            Transport::Tcp(_) => false,
-        };
         if self.connections.is_empty() {
             return false;
         }
         if entry == Some(machine) {
-            return full(entry_connection);
+            return full(entry_connection.transport());
         }
-        self.connections
-            .iter()
-            .any(|connection| connection.machine_id() == Some(machine) && full(connection))
+        self.connections.iter().any(|connection| {
+            connection.machine_id() == Some(machine) && full(connection.transport())
+        })
     }
 }

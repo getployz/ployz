@@ -7,21 +7,24 @@ use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryN
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{
-    AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, ImageDigest, RuleEvidence, RuleProof,
-    Signed, VerifiedBuild,
+    AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, RuleEvidence,
+    RuleProof, Signed, VerifiedBuild,
 };
-use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
+use ployz_core::config::{BuildMethod, SavedServiceIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
-use ployz_decide::github_build::{EndKind, Hold, Target, github_end_holds};
+use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
-use crate::deployment::{self, Stored};
+use crate::deployment::{self, Stored, clipped};
 use crate::error;
-use crate::id::DeploymentId;
-use crate::storage::{Param, Tx, name_of};
+use crate::id::{DeploymentId, EnvironmentId};
+use crate::storage::{Param, Tx, json_text, name_of};
+
+/// What a GitHub build id that names no build is refused with.
+const NO_GITHUB_BUILD: &str = "No GitHub build has this id";
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -137,8 +140,7 @@ pub(crate) const INTERRUPTED: &str =
     "The deployment ended or lost its runner before this build reported how it ended.";
 
 /// A build's `status` column with its `interrupted` one: only a failed build can be
-/// interrupted. Compares equal to the [`BuildStatus`] its `status` column holds, which
-/// is all a writer of the row reads.
+/// interrupted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RowStatus {
     /// As its last Builder, or the Store, left it.
@@ -172,22 +174,19 @@ impl From<RowStatus> for BuildStatus {
     }
 }
 
-impl PartialEq<BuildStatus> for RowStatus {
-    fn eq(&self, other: &BuildStatus) -> bool {
-        BuildStatus::from(*self) == *other
-    }
-}
-
 /// Settle each build of Deployment `id` its Servers still hold Building, now that
 /// the Deployment can't run any more and shows that it ended at `ended`: Failed,
 /// marked interrupted, finished at `ended` unless it already finished. A build
 /// GitHub holds stays Building, so Cloud still finds its run to cancel
 /// ([`github_outstanding`]). Settling again changes nothing.
 pub(crate) fn settle(tx: &mut dyn Tx, id: &DeploymentId, ended: i64) -> Result<(), RpcError> {
+    let (failed, building) = (name_of(BuildStatus::Failed), name_of(BuildStatus::Building));
     tx.execute(
-        "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+        &format!(
+            "UPDATE config_build SET status = '{failed}', interrupted = 1, message = ?2, \
          finished = COALESCE(finished, ?3) \
-         WHERE deployment_id = ?1 AND status = 'building' AND github IS NULL",
+         WHERE deployment_id = ?1 AND status = '{building}' AND github IS NULL"
+        ),
         &[id.as_str().into(), INTERRUPTED.into(), ended.into()],
     )?;
     Ok(())
@@ -249,20 +248,76 @@ pub(crate) fn pin(
                 json!({ "service": service, "commit": commit }),
             ));
         }
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
-             FROM config_deployment WHERE id = ?1 \
-             ON CONFLICT (deployment_id, service) DO NOTHING",
-            &[
-                id.as_str().into(),
-                service.as_str().into(),
-                commit.as_str().into(),
-            ],
-        )?;
+        pending(tx, id, service, Some(commit))?;
     }
     Ok(())
+}
+
+/// Add a pending build of `service` to Deployment `id`, of `commit` or of an upload,
+/// unless it has one.
+fn pending(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    service: &ServiceName,
+    commit: Option<&CommitSha>,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
+         FROM config_deployment WHERE id = ?1 \
+         ON CONFLICT (deployment_id, service) DO NOTHING",
+        &[
+            id.as_str().into(),
+            service.as_str().into(),
+            commit.map(CommitSha::as_str).into(),
+        ],
+    )
+    .map(drop)
+}
+
+/// Give retry `id` a pending build of each commit its `source` pinned, which may reuse
+/// the image `source` built, with that image's token and verified build.
+pub(crate) fn retried(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    source: &DeploymentId,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log, \
+          receipt, image_token, verified) \
+         SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
+          image_token, verified \
+         FROM config_build WHERE deployment_id = ?2",
+        &[id.as_str().into(), source.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
+/// Deployment that put it in Applied State. A Service without a Git source has no
+/// build to pin. Builds go by the runtime name, which a rename keeps.
+pub(crate) fn pin_running(
+    tx: &mut dyn Tx,
+    (environment, id): (&EnvironmentId, &DeploymentId),
+    service: &SavedServiceIntent,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
+         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
+         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
+         AND b.commit_sha IS NOT NULL",
+        &[
+            id.as_str().into(),
+            environment.as_str().into(),
+            service.id.as_str().into(),
+            service.config.private_dns.as_str().into(),
+        ],
+    )
+    .map(drop)
 }
 
 /// Record a runner's report on one pinned or uploaded build of `stored`, which it
@@ -274,14 +329,7 @@ pub(crate) fn record(
 ) -> Result<(), RpcError> {
     let id = &stored.summary.id;
     if uploads_of(tx, stored)?.contains_key(&report.service) {
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, NULL, 'pending', NULL, '' \
-             FROM config_deployment WHERE id = ?1 \
-             ON CONFLICT (deployment_id, service) DO NOTHING",
-            &[id.as_str().into(), report.service.as_str().into()],
-        )?;
+        pending(tx, id, &report.service, None)?;
     }
     let Some(row) = rows(tx, id)?
         .into_iter()
@@ -302,7 +350,7 @@ pub(crate) fn record(
     }
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = report.message.as_deref().map(trimmed);
+    let message = report.message.as_deref().map(clipped);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = NULL, \
          server = COALESCE(?6, server) \
@@ -331,11 +379,12 @@ fn clock(
     let (set, now) = match status {
         BuildStatus::Building => (
             "started = COALESCE(started, ?3), finished = NULL",
-            Some(deployment::now()),
+            Some(crate::storage::now()),
         ),
-        BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => {
-            ("finished = COALESCE(finished, ?3)", Some(deployment::now()))
-        }
+        BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => (
+            "finished = COALESCE(finished, ?3)",
+            Some(crate::storage::now()),
+        ),
         BuildStatus::Pending => ("started = NULL, finished = NULL", None),
     };
     let mut params: Vec<Param<'_>> = vec![id.as_str().into(), service.as_str().into()];
@@ -424,7 +473,7 @@ pub struct VerifiedClaim {
 }
 
 impl VerifiedClaim {
-    fn image(&self) -> Option<ImageDigest> {
+    fn image(&self) -> Option<BuiltImageDigest> {
         match self.claim.stage {
             BuildStage::Built { image, .. } => Some(image),
             BuildStage::Grant { .. } => None,
@@ -566,10 +615,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let github = row
-            .optional_text(5)?
-            .map(|github| serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build")))
-            .transpose()?;
+        let github = row.optional_json(5, "GitHub build")?;
         Ok(BuildRow {
             service: row.parse::<ServiceName>(0, "build")?,
             commit: row.parse_optional(1, "build commit")?,
@@ -584,20 +630,12 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             started: row.optional_int(7)?,
             finished: row.optional_int(8)?,
             github_skipped: row.optional_text(10)?.map(str::to_owned),
-            receipt: json_column(row.optional_text(12)?, "build receipt")?,
-            image_token: json_column(row.optional_text(13)?, "image token")?,
-            verified: json_column(row.optional_text(14)?, "verified build")?,
+            receipt: row.optional_json(12, "build receipt")?,
+            image_token: row.optional_json(13, "image token")?,
+            verified: row.optional_json(14, "verified build")?,
         })
     })
     .collect()
-}
-
-fn json_column<T: serde::de::DeserializeOwned>(
-    text: Option<&str>,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    text.map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
 }
 
 /// The Services `stored` targets that have no source of their own: they build from
@@ -633,7 +671,7 @@ pub(crate) fn routed(
     stored: &Stored,
     saved: &ployz_core::config::SavedEnvironmentIntent,
 ) -> Result<Vec<GitSource>, RpcError> {
-    let organization = organization(tx, &stored.summary.id)?;
+    let organization = deployment::organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for (id, mut source) in git_sources(tx, stored, saved)? {
         (source.builders, source.preferred_machine) = builders::walk(
@@ -697,10 +735,7 @@ fn source_of(
         repository: RepositoryName::parse(repository.as_str()).ok()?,
         repository_id: RepositoryId::parse(*repository_id).ok()?,
         access: access.clone(),
-        branch: match branch {
-            ServiceGitBranch::Connected { name } => BranchName::parse(name.as_str()).ok(),
-            ServiceGitBranch::Disconnected { .. } => None,
-        },
+        branch: crate::git::branch_name(branch).and_then(|name| BranchName::parse(name).ok()),
         root_dir: root_dir.clone(),
         dockerfile_path: (config.build.build_method == BuildMethod::Dockerfile).then(|| {
             config
@@ -717,16 +752,6 @@ fn source_of(
     })
 }
 
-pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
-    tx.query(
-        "SELECT organization_id FROM config_deployment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?
-    .first()
-    .ok_or_else(|| error::corrupt("Deployment"))?
-    .parse(0, "Deployment")
-}
-
 fn append(log: &mut String, more: &str) {
     log.push_str(more);
     if log.len() > LOG_LIMIT {
@@ -736,10 +761,6 @@ fn append(log: &mut String, more: &str) {
             .unwrap_or(log.len());
         log.drain(..cut);
     }
-}
-
-fn trimmed(message: &str) -> String {
-    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -756,7 +777,7 @@ impl GithubBuildId {
     /// # Errors
     /// Returns `not_found` for anything else, as no build has that ID.
     pub fn parse(value: &str) -> Result<Self, RpcError> {
-        let unknown = || error::not_found("No GitHub build has this id", json!({}));
+        let unknown = || error::not_found(NO_GITHUB_BUILD, json!({}));
         let (deployment, service) = value.split_once('.').ok_or_else(unknown)?;
         Ok(Self {
             deployment: DeploymentId::parse(deployment).map_err(|_| unknown())?,
@@ -844,6 +865,14 @@ struct Started {
 }
 
 impl GithubHold {
+    const fn hold(&self) -> Hold {
+        match self {
+            Self::Dispatched { .. } => Hold::Dispatched,
+            Self::CheckedIn { .. } => Hold::CheckedIn,
+            Self::Reported { .. } => Hold::Reported,
+        }
+    }
+
     const fn run(&self) -> &GithubRun {
         match self {
             Self::Dispatched { run } | Self::CheckedIn { run, .. } | Self::Reported { run, .. } => {
@@ -1007,7 +1036,7 @@ fn github_row(tx: &mut dyn Tx, stored: &Stored, id: &GithubBuildId) -> Result<Bu
     rows(tx, &stored.summary.id)?
         .into_iter()
         .find(|row| row.service == id.service)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))
 }
 
 fn no_longer_wanted() -> RpcError {
@@ -1026,8 +1055,7 @@ fn save_github(
     github: Option<&GithubHold>,
 ) -> Result<(), RpcError> {
     let status = status.into();
-    let github =
-        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
+    let github = github.map(json_text);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
@@ -1103,7 +1131,7 @@ pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<Github
     }
     row.github_skipped
         .map(|why| GithubHandOff::PassedOn { why })
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))
 }
 
 /// Check a runner's verified OIDC claims against GitHub build `id`: its repository,
@@ -1116,11 +1144,11 @@ pub(crate) fn github_authorize(
     let stored = deployment::load(tx, &id.deployment)?;
     let build = github_row(tx, &stored, id)?
         .github(id)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))?;
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))?;
     let source = unrouted(tx, &stored)?
         .into_iter()
         .find(|source| source.service == id.service)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))?;
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))?;
     let refused =
         |message: &str| Err(RpcError::unauthenticated(message.to_owned()).with_details(json!({})));
     if claims.repository_id != source.repository_id.to_string() {
@@ -1156,9 +1184,7 @@ pub(crate) fn github_rule(
     }
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     Ok(rule.filter(|signed| {
-        signed
-            .open()
-            .is_ok_and(|rule| rule.service(&id.service).is_some())
+        crate::auto_rule::opened(signed).is_some_and(|rule| rule.service(&id.service).is_some())
     }))
 }
 
@@ -1265,7 +1291,7 @@ pub(crate) fn keep_verified(
         ));
     }
     for (service, verified) in kept {
-        let verified = serde_json::to_string(verified).expect("a verified build is JSON");
+        let verified = json_text(verified);
         tx.execute(
             "UPDATE config_build SET verified = ?3 WHERE deployment_id = ?1 AND service = ?2",
             &[
@@ -1289,7 +1315,7 @@ pub(crate) fn verified_proof(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&ployz_core::Namespace, &ServiceName),
-    image: ImageDigest,
+    image: BuiltImageDigest,
 ) -> Result<Option<RuleProof>, RpcError> {
     // The claim names its image in hex, so this narrows the rows; the decode below
     // confirms each.
@@ -1323,7 +1349,7 @@ pub(crate) fn verified_proof(
     Ok(None)
 }
 
-fn hex_of(image: &ImageDigest) -> String {
+fn hex_of(image: &BuiltImageDigest) -> String {
     let text = image.to_string();
     text.strip_prefix("sha256:").unwrap_or(&text).to_owned()
 }
@@ -1398,19 +1424,19 @@ pub(crate) fn github_check_in(
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    let Some(GithubHold::Dispatched { run }) = row.building_on(run_id) else {
+    let held = row.building_on(run_id);
+    let in_flight = stored.summary.status.in_flight();
+    let (Some(held), true) = (
+        held,
+        github_check_in_holds(held.map(GithubHold::hold), in_flight),
+    ) else {
         return Err(no_longer_wanted());
     };
-    if !stored.summary.status.in_flight() {
-        return Err(no_longer_wanted());
-    }
     let github = GithubHold::CheckedIn {
-        run: run.clone(),
+        run: held.run().clone(),
         started: Started {
             grant: grant.clone(),
-            at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.as_secs()),
+            at: crate::storage::now().unsigned_abs(),
             received: 0,
         },
     };
@@ -1504,11 +1530,7 @@ pub(crate) fn github_end(
     };
     let target = match run_id {
         Some(run_id) => Target::Run {
-            building_on: row.building_on(run_id).map(|hold| match hold {
-                GithubHold::Dispatched { .. } => Hold::Dispatched,
-                GithubHold::CheckedIn { .. } => Hold::CheckedIn,
-                GithubHold::Reported { .. } => Hold::Reported,
-            }),
+            building_on: row.building_on(run_id).map(GithubHold::hold),
         },
         None => Target::BeforeGithub {
             waiting_unskipped: matches!(row.stage, Stage::Waiting) && row.github_skipped.is_none(),
@@ -1537,14 +1559,14 @@ pub(crate) fn github_end(
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                Some(trimmed(message)),
+                Some(clipped(message)),
                 row.stage.github(),
             )
         }
         // The next Builder starts it afresh: the run holds it no more.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, Some(trimmed(message)), None)
+            (BuildStatus::Pending, Some(clipped(message)), None)
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
@@ -1580,7 +1602,10 @@ fn built_token(
     else {
         return Ok(None);
     };
-    let Some(Ok(rule)) = github_rule(tx, id)?.map(|rule| rule.open()) else {
+    let Some(rule) = github_rule(tx, id)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened)
+    else {
         return Ok(None);
     };
     Ok(Some(ImageToken {
@@ -1599,7 +1624,7 @@ fn keep_built(
     token: Option<&ImageToken>,
 ) -> Result<(), RpcError> {
     let receipt = receipt.to_string();
-    let token = token.map(|token| serde_json::to_string(token).expect("an image token is JSON"));
+    let token = token.map(json_text);
     tx.execute(
         "UPDATE config_build SET receipt = ?3, image_token = ?4 \
          WHERE deployment_id = ?1 AND service = ?2",
