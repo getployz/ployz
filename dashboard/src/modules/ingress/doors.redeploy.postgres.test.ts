@@ -91,7 +91,8 @@ it.live("a switch redeploys the moving Service as it runs, and leaves every stag
     yield* applied(admitted.id);
     expect(yield* Fiber.join(switching)).toMatchObject({ state: "finished" });
 
-    expect({ saved: admitted.saved, ships: admitted.ships }).toEqual({ saved: 1, ships: ["web"] });
+    // web reads worker, so the Deployment carries worker too, as it runs at revision 1.
+    expect({ saved: admitted.saved, ships: admitted.ships }).toEqual({ saved: 1, ships: ["web", "worker"] });
     const after = yield* readStore(ORG, { query: "diff", environment: production });
     expect({ saved: after.saved, changes: after.changes }).toEqual({ saved: staged.saved, changes: staged.changes });
     const routes = (yield* readStore(ORG, { query: "namespace", environment: production })).routes?.map(({ hostname }) => hostname).sort();

@@ -431,7 +431,9 @@ pub(crate) fn freeze(
         organization,
     )?;
     if !full {
-        // The planner also ships, at its Saved snapshot, each Service the named ones reference.
+        // The planner also ships, at its Saved snapshot, each Service the named ones
+        // reference. Each is a node, changed or not, so the version a Device signs for
+        // it is the one that runs and the one Applied State records.
         let shipped = &lowered.shipped;
         let referenced: Vec<TargetNode> = saved
             .services
@@ -439,7 +441,6 @@ pub(crate) fn freeze(
             .filter(|service| {
                 shipped.contains(&service.config.private_dns)
                     && !nodes.iter().any(|node| node.id() == service.id)
-                    && changed(service)
             })
             .map(TargetNode::ships)
             .collect::<Result<_, _>>()?;

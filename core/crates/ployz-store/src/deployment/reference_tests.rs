@@ -390,7 +390,7 @@ fn a_narrowed_deploy_records_the_saved_change_of_a_service_it_references() {
 }
 
 #[test]
-fn a_narrowed_deploy_leaves_out_a_referenced_service_without_a_saved_change() {
+fn a_narrowed_deploy_records_a_referenced_service_without_a_saved_change() {
     let (store, who) = store();
     create(&store, &who, 3, "client");
     create(&store, &who, 4, "web");
@@ -407,7 +407,10 @@ fn a_narrowed_deploy_leaves_out_a_referenced_service_without_a_saved_change() {
     let narrowed = deploy(&store, &who, 2, &["client"]);
     assert_eq!(
         services(&store, &who, &narrowed),
-        [("client".to_owned(), NodeStatus::Pending)]
+        [
+            ("client".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Pending),
+        ]
     );
 }
 
@@ -609,7 +612,10 @@ fn a_retry_is_refused_for_shared_writes_on_a_volume_a_referenced_service_mounts(
     let narrowed = deploy(&store, &who, 2, &["client"]);
     assert_eq!(
         services(&store, &who, &narrowed),
-        [("client".to_owned(), NodeStatus::Pending)]
+        [
+            ("client".to_owned(), NodeStatus::Pending),
+            ("web".to_owned(), NodeStatus::Pending),
+        ]
     );
     // How a revision saved before the pause looks.
     store
