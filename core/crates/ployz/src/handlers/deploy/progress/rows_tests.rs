@@ -1,5 +1,6 @@
 //! How a Deploy graph's Service rows read, by depth.
 use super::*;
+use crate::deploy::{ServiceGroup, depths};
 use crate::ui::progress::{Frame, Run};
 use ployz_core::{MachineId, Namespace};
 use ployz_store::RowPhase;
@@ -170,35 +171,6 @@ fn a_chain_starts_one_depth_after_another() {
             "depth 2",
             "  · web  waiting 0/1",
         ]
-    );
-}
-
-#[test]
-fn dependencies_pair_each_deployed_dependency_with_its_dependent() {
-    let groups = [
-        group("db", &[]),
-        group("cache", &["redis"]),
-        group("queue", &["db"]),
-        group("api", &["queue", "cache"]),
-        ServiceGroup {
-            service: None,
-            ..group("unused", &["db"])
-        },
-    ];
-    let pair = |dependency: &str, dependent: &str| {
-        (
-            ServiceName::parse(dependency).unwrap(),
-            ServiceName::parse(dependent).unwrap(),
-        )
-    };
-    assert_eq!(
-        dependencies(&groups),
-        [
-            pair("db", "queue"),
-            pair("queue", "api"),
-            pair("cache", "api")
-        ],
-        "redis is not deployed, so cache waits on nothing here"
     );
 }
 
