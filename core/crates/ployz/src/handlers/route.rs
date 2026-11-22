@@ -13,7 +13,7 @@ use crate::{
     cloud::account::{Credential, StoreCallError},
     cloud::login::{CredentialStore, LoginError},
     cluster::{Call, FullRoutes},
-    connect::{Client, ConnectError, Connector, SystemConnector},
+    connect::{Client, ConnectError, Connector},
     context::{Connection, ConnectionSource, ContextError, SelectedConnections},
     failure::ConnectFailure,
 };
@@ -51,9 +51,8 @@ pub(super) async fn connect_full(
             .map(|direct| direct.parse())
             .collect::<Result<Vec<Connection>, _>>()
             .map_err(ConnectError::from)?;
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        return connect_each(connections, Arc::new(connector)).await;
+        let connector = crate::cli::connector(matches);
+        return connect_each(connections, connector).await;
     }
     let direct = direct.first().copied();
     let access = access(matches, context).await?;
@@ -65,10 +64,9 @@ pub(super) async fn connect_full(
     ) {
         Ok(mut selected) => {
             selected.connections = as_device(selected.connections, &key)?;
-            let connector =
-                SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+            let connector = crate::cli::connector(matches);
             let connections = selected.connections.clone();
-            crate::connect::connect_selected_with(selected, Arc::new(connector))
+            crate::connect::connect_selected_with(selected, connector)
                 .await
                 .map(|client| {
                     client.with_full_routes(FullRoutes::chosen(connections, direct.is_some()))
@@ -273,10 +271,8 @@ pub(super) async fn connect_avoiding(
         .connections
         .retain(|connection| connection.machine_id() != Some(&leaving.id));
     if !selected.connections.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut client =
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
+        let connector = crate::cli::connector(matches);
+        let mut client = crate::connect::connect_selected_with(selected, connector).await?;
         let entry = client
             .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
@@ -318,13 +314,12 @@ pub(super) async fn connect_full_avoiding(
         .collect();
     let via = client.connection_source().clone();
     if !others.is_empty() {
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        let connector = crate::cli::connector(matches);
         let selected = SelectedConnections {
             source: via.clone(),
             connections: others,
         };
-        let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
+        let mut client = crate::connect::connect_selected_with(selected, connector)
             .await?
             .with_full_routes(routes);
         let entry = client
@@ -364,9 +359,9 @@ pub(super) async fn connect_only(
     if selected.connections.is_empty() {
         return Ok(None);
     }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+    let connector = crate::cli::connector(matches);
     Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
+        crate::connect::connect_selected_with(selected, connector).await?,
     ))
 }
 
@@ -650,8 +645,8 @@ async fn dial_connections(
         source: ConnectionSource::Cloud,
         connections,
     };
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+    let connector = crate::cli::connector(matches);
+    crate::connect::connect_selected_with(selected, connector).await
 }
 
 pub(super) fn no_servers() -> Error {

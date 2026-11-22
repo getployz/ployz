@@ -530,16 +530,13 @@ async fn connect_context_chosen(
         &ployz_core::MachineLayout::production().socket(),
     )?;
     let connections = selected.connections.clone();
-    let connector = crate::connect::SystemConnector::default()
-        .with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(
-        crate::connect::connect_selected_with(selected, std::sync::Arc::new(connector))
-            .await?
-            .with_full_routes(crate::cluster::FullRoutes::chosen(
-                connections,
-                direct.is_some(),
-            )),
-    )
+    let connector = crate::cli::connector(matches);
+    Ok(crate::connect::connect_selected_with(selected, connector)
+        .await?
+        .with_full_routes(crate::cluster::FullRoutes::chosen(
+            connections,
+            direct.is_some(),
+        )))
 }
 
 /// Re-establish a management connection after setup has already started.

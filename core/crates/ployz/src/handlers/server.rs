@@ -3,7 +3,6 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
@@ -25,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, TARGET_RPC_TIMEOUT},
     context::Config,
     ui::progress::StartFailure,
 };
@@ -239,9 +238,8 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             confirm_ingress_off(&machines, &doors, &selector)?;
         }
         let entries = route::entries(matches, context).await?;
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut seeding = endpoint::seed(&entries, Arc::new(connector), &selector, address).await;
+        let connector = crate::cli::connector(matches);
+        let mut seeding = endpoint::seed(&entries, connector, &selector, address).await;
         if let Some(sentence) = seeding.sentence() {
             crate::ui::stream(sentence);
         }
