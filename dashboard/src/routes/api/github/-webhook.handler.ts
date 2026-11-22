@@ -6,7 +6,7 @@ import {
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
-import { verifyWebhookSignature } from "#/modules/github/github.server";
+import { verifyWebhookSignature } from "#/modules/github/github.api";
 import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
 import {
   createGithubBuildRunCompletedEvent,

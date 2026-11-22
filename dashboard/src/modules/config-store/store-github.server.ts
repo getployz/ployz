@@ -10,11 +10,11 @@ import {
   isGithubObservationNotFound,
   resolveGithubBranchHead,
   resolveGithubRepository,
-  type GithubResolvedRepository,
 } from "#/modules/github/github-observation.api";
 import type {
   GithubCheckSuiteReceivedEventData,
   GithubPushReceivedEventData,
+  GithubResolvedRepository,
 } from "#/modules/github/github-ingestion.contracts";
 import { installationAccess, organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
