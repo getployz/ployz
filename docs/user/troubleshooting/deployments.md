@@ -810,7 +810,10 @@ deployment that failed.
 Your servers can't open a sealed value. Usually this happens after you lose every server and add
 one again.
 
-- The first message: the server shows **Needs recovery**. Give it your recovery code with
+- The first message, and the server shows **Needs access**: another of your servers still has
+  the key. Open the **Servers** page in Ployz Cloud. Ployz Cloud has that server give the key
+  to this one within a few seconds. Then deploy again.
+- The first message, and the server shows **Needs recovery**. Give it your recovery code with
   `ployz recover`, then deploy again. See
   [When a server shows Needs recovery](../servers/recovery-code.md#when-a-server-shows-needs-recovery).
 - The second message names a variable sealed with a key no server has any more. Delete the
