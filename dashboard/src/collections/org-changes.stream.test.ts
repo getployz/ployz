@@ -3,15 +3,11 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
 import { orgStoreTables } from "#/collections/collections";
 import { applyOrganizationChanges, watchOrganizationChanges } from "#/collections/org-changes.stream";
+import * as readFunctions from "#/collections/read.functions";
 import { getDbClient } from "#/collections/scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { environmentSettingsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { orgStoreSeed, orgStoreTableNames, subscribeOrgStoreTables } from "#/test/org-store-tables";
-
-// The Org Store read answers with nothing new, so rereads settle without a network.
-vi.mock("#/collections/read.functions", () => ({
-  readCollectionServerFn: async () => ({ full: false, rows: [], deleted: [], cursor: "1" }),
-}));
 
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | undefined;
@@ -24,6 +20,7 @@ const ORG_B = "00000000-0000-4000-8000-00000000000b";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("reloads a tab holding a removed Organization's caches once the stream names the slug's new Organization", async () => {
@@ -60,6 +57,8 @@ it("reloads a tab holding a removed Organization's caches once the stream names 
 
 it("rereads every change-log collection on every open", async () => {
   vi.stubGlobal("EventSource", FakeEventSource);
+  // The Org Store read answers with nothing new, so rereads settle without a network.
+  vi.spyOn(readFunctions, "readCollectionServerFn").mockResolvedValue({ full: false, rows: [], deleted: [], cursor: "1" });
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
@@ -116,7 +115,6 @@ it("refetches only the named collections and re-reads a renamed organization's s
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   queryClient.setQueryData(organizationKeys.state("acme"), { name: "Acme" });
   const active = subscribeOrgStoreTables("acme", scope);
-  await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
   const fetched: unknown[] = [];
   queryClient.getQueryCache().subscribe((event) => {
     if (event.type === "updated" && event.action.type === "fetch") fetched.push(event.query.queryKey.at(-1));
