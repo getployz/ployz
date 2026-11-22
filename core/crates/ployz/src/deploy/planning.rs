@@ -97,20 +97,26 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    facts: Facts,
+}
+
+/// What the executor reads of the plan's snapshot and removals, never in the preview.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Facts {
     /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
-    machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
+    pub(super) machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
     /// The Services this Deploy takes out wherever they run: each named removal the
     /// snapshot observed, and each Service it prunes.
-    retiring: BTreeSet<QualifiedService>,
+    pub(super) retiring: BTreeSet<QualifiedService>,
     /// Machines whose Containers the plan's snapshot did not list.
-    unobserved_containers: BTreeSet<MachineId>,
+    pub(super) unobserved_containers: BTreeSet<MachineId>,
     /// Machines whose Container listing went unanswered while the entry's path probes
     /// found large packets to them dropped, so a notice can give that cause.
-    dropped_large_packets: BTreeSet<MachineId>,
+    pub(super) dropped_large_packets: BTreeSet<MachineId>,
     /// The removals of copies ended runs left Pending, by operation, with each copy's
     /// Service. Each removes its copy only while it is still Pending or Out, and one
     /// that fails fails nothing else.
-    strays: BTreeMap<usize, ServiceName>,
+    pub(super) strays: BTreeMap<usize, ServiceName>,
 }
 
 impl DeployPlan {
@@ -137,23 +143,11 @@ impl DeployPlan {
     }
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
-        &self.machine_names
+        &self.facts.machine_names
     }
 
-    pub(super) const fn unobserved_containers(&self) -> &BTreeSet<MachineId> {
-        &self.unobserved_containers
-    }
-
-    pub(super) const fn dropped_large_packets(&self) -> &BTreeSet<MachineId> {
-        &self.dropped_large_packets
-    }
-
-    pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
-        &self.retiring
-    }
-
-    pub(super) const fn strays(&self) -> &BTreeMap<usize, ServiceName> {
-        &self.strays
+    pub(super) const fn facts(&self) -> &Facts {
+        &self.facts
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -198,11 +192,7 @@ impl DeployPlan {
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
-            machine_names: BTreeMap::new(),
-            retiring: BTreeSet::new(),
-            unobserved_containers: BTreeSet::new(),
-            dropped_large_packets: BTreeSet::new(),
-            strays: BTreeMap::new(),
+            facts: Facts::default(),
         }
     }
 
@@ -216,20 +206,20 @@ impl DeployPlan {
     /// This Deploy removes `services`, by name or by pruning.
     #[cfg(test)]
     pub(super) fn with_retiring(mut self, services: &[QualifiedService]) -> Self {
-        self.retiring = services.iter().cloned().collect();
+        self.facts.retiring = services.iter().cloned().collect();
         self
     }
 
     /// The entry's path probes found large packets to `machines` dropped.
     #[cfg(test)]
     pub(super) fn with_dropped_large_packets(mut self, machines: &[MachineId]) -> Self {
-        self.dropped_large_packets = machines.iter().copied().collect();
+        self.facts.dropped_large_packets = machines.iter().copied().collect();
         self
     }
 
     #[cfg(test)]
     pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
-        self.machine_names = machines
+        self.facts.machine_names = machines
             .iter()
             .map(|id| {
                 let hex = id.to_string().chars().next().expect("a machine id");
@@ -243,7 +233,7 @@ impl DeployPlan {
     /// The plan's snapshot listed no Containers on `machines`, as for a Down Machine.
     #[cfg(test)]
     pub(super) fn with_unobserved(mut self, machines: &[MachineId]) -> Self {
-        self.unobserved_containers.extend(machines);
+        self.facts.unobserved_containers.extend(machines);
         self
     }
 }
@@ -721,15 +711,17 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         groups: planned.groups,
         preview,
         registry_auth: std::collections::BTreeMap::new(),
-        machine_names: super::progress::machine_names(snapshot),
-        retiring: planned.retiring.into_iter().collect(),
-        unobserved_containers: snapshot.listing_gaps().map(|gap| gap.machine).collect(),
-        dropped_large_packets: snapshot
-            .listing_gaps()
-            .filter(|gap| gap.large_packets)
-            .map(|gap| gap.machine)
-            .collect(),
-        strays: planned.strays,
+        facts: Facts {
+            machine_names: super::progress::machine_names(snapshot),
+            retiring: planned.retiring.into_iter().collect(),
+            unobserved_containers: snapshot.listing_gaps().map(|gap| gap.machine).collect(),
+            dropped_large_packets: snapshot
+                .listing_gaps()
+                .filter(|gap| gap.large_packets)
+                .map(|gap| gap.machine)
+                .collect(),
+            strays: planned.strays,
+        },
     }
 }
 

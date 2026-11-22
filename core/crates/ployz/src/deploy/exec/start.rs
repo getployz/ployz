@@ -1,9 +1,10 @@
 use super::cleanup;
 use super::machine_ops::CopyLifecycle;
 use super::machine_ops::MachineOperations;
+use super::report::{Left, left_by};
 use super::stop_first::{Withdrawn, leave_unstopped};
 use super::transport::{Outstanding, RESTART_WAIT, RestartTolerant};
-use super::{Left, Rows, SlotPolicy, left_by, machine_error, stop};
+use super::{Shared, SlotPolicy, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
 use crate::deploy::progress::Progress;
@@ -23,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) async fn discard_new<C: MachineOperations>(
     client: &C,
     progress: &Progress,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     (service, machine_id, container_id): (Option<&QualifiedService>, &MachineId, ContainerId),
     hold: Option<&DeploymentLogId>,
     cancellation: &CancellationToken,
@@ -44,7 +45,9 @@ pub(super) async fn discard_new<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
-                rows.leave_unrouted(progress, service, *machine_id, container_id, error);
+                shared
+                    .report
+                    .leave_unrouted(progress, service, *machine_id, container_id, error);
             }
             return running();
         }
@@ -79,18 +82,18 @@ pub(super) async fn discard_new<C: MachineOperations>(
             match stop(client, machine_id, &container_id, Drain::DEFAULT, None).await {
                 Ok(()) => Withdrawn::Held(Box::new(spec), copy),
                 Err(error) => {
-                    leave_unstopped(client, progress, &copy, &spec, rows, left_by(error)).await;
+                    leave_unstopped(client, progress, &copy, &spec, shared, left_by(error)).await;
                     running()
                 }
             }
         }
         (None, Some(left)) => {
-            rows.leave_running(progress, &copy, left);
+            shared.report.leave_running(progress, &copy, left);
             running()
         }
         (Some(run), Some(left)) => {
             copy.rotation = CopyRotation::Held(run.clone());
-            leave_unstopped(client, progress, &copy, &spec, rows, left).await;
+            leave_unstopped(client, progress, &copy, &spec, shared, left).await;
             running()
         }
     }
@@ -103,7 +106,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
 pub(super) async fn remove_stray<C: MachineOperations>(
     client: &C,
     progress: &Progress,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
@@ -128,14 +131,14 @@ pub(super) async fn remove_stray<C: MachineOperations>(
             ))
         }),
         () = cancellation.cancelled() => {
-            rows.name_left(progress, service, *machine_id, container_id, "interrupted".into());
+            shared.report.name_left(progress, service, *machine_id, container_id, "interrupted".into());
             return;
         }
     };
     let error = match answer {
         Ok(cleanup::Gone::Removed) => return,
         Ok(cleanup::Gone::InRotation { .. }) => {
-            rows.name_left(
+            shared.report.name_left(
                 progress,
                 service,
                 *machine_id,
@@ -147,7 +150,9 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
-    rows.leave_unrouted(progress, service, *machine_id, container_id, error);
+    shared
+        .report
+        .leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
 /// Why a move's replacement never served, and whether none of it is left on its

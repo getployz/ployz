@@ -445,7 +445,7 @@ mod tests {
         let plan = crate::deploy::plan_deploy(&intent, &snapshot).expect("a plan");
 
         assert_eq!(
-            plan.dropped_large_packets(),
+            &plan.facts().dropped_large_packets,
             &std::collections::BTreeSet::from([machines[1].id])
         );
     }
@@ -557,11 +557,11 @@ mod tests {
         );
 
         assert_eq!(
-            plan.dropped_large_packets(),
+            &plan.facts().dropped_large_packets,
             &std::collections::BTreeSet::from([named('2')])
         );
         assert_eq!(
-            plan.unobserved_containers(),
+            &plan.facts().unobserved_containers,
             &std::collections::BTreeSet::from([
                 named('1'),
                 named('2'),

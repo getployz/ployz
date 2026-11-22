@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use futures_util::{
     StreamExt,
@@ -10,12 +7,12 @@ use futures_util::{
 };
 use ployz_core::{
     AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerObservation, ContainerRefusal, ContainerUpdateOperation, ContainerWant, CopyRotation,
-    CreationKey, DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, Drain,
-    ExecutionError, ExposedPort, FailedOperation, Gen, HealthFailure, HealthVerdict, InPlaceChange,
-    MachineAction, MachineId, MachineName, Namespace, OperationPhase, PortPublication, PullPolicy,
-    QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
+    DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
+    FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
+    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService,
+    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
+    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -28,39 +25,39 @@ use super::{
     schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind, creates_container},
 };
 
-use super::cleanup::{self, ACK_WAIT, RotationFailure};
+use super::cleanup::{self, ACK_WAIT};
 pub(super) use super::progress::Progress;
 
+mod gens;
 mod health;
 mod hooks;
 mod machine_ops;
 mod publish;
+mod report;
 mod set_each;
 mod start;
 mod stop_first;
 mod transport;
 
+use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
 pub(crate) use machine_ops::MachineOperations;
-use machine_ops::Unanswered;
 pub(crate) use machine_ops::{CopyLifecycle, ProxyPlacement};
 #[cfg(test)]
 pub(crate) use machine_ops::{RedialFailure, Session};
 use publish::{
-    Done, GroupCopies, Published, ack_tick, gaps_still_routing, old_copies, publish_group,
+    Done, GappedPublishes, GroupCopies, Published, ack_tick, old_copies, publish_group,
     rolling_step, route_new,
 };
+use report::Report;
 pub(crate) use set_each::{Answer, set_each};
 use start::{Attempt, FailedStart, Row, SlotRun, answer_when, out_of_memory, remove_stray, start};
 pub(crate) use start::{MoveEnd, MoveError, move_container};
 use stop_first::{
-    leave_unstopped, remove_container, replace_stop_first, restore_group, stop_old_copy, withdraw,
+    StopFirstSteps, remove_container, replace_stop_first, restore_group, stop_old_copy,
 };
 pub(crate) use transport::RestartTolerant;
-
-/// How long a Deploy waits on the entry Machine's store for its gen floor.
-const STORED_GENS_WAIT: Duration = Duration::from_secs(5);
 
 struct Stop {
     index: usize,
@@ -305,12 +302,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         Err((index, error)) => return untouched(&progress, &schedule, operations, index, error),
     }
 
-    let rows = Rows::new(plan, run);
+    let shared = Shared::new(plan, run);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
     let mut blocked_since: Option<Instant> = None;
     let mut blocked_before = Vec::new();
-    let (progress, client, slots, rows) = (&progress, &client, &slots, &rows);
+    let (progress, client, slots, shared) = (&progress, &client, &slots, &shared);
     let mut inflight = FuturesUnordered::new();
 
     loop {
@@ -326,7 +323,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             client,
                             cancellation,
                             slots,
-                            rows,
+                            shared,
                         )
                         .await
                     };
@@ -345,9 +342,15 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             new,
                             old,
                         };
-                        let published =
-                            publish_group(client, operations, progress, rows, copies, cancellation)
-                                .await;
+                        let published = publish_group(
+                            client,
+                            operations,
+                            progress,
+                            shared,
+                            copies,
+                            cancellation,
+                        )
+                        .await;
                         Done::Publish(group, service.name, published)
                     })
                 }
@@ -411,7 +414,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 match route_new(
                                     client,
                                     operations,
-                                    rows,
+                                    shared,
                                     &service,
                                     &new,
                                     cancellation,
@@ -465,7 +468,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         record.unread = true;
                         let error = machine_error(
                             MachineAction::ReadRoutes,
-                            RpcError::unavailable(rows.not_confirmed(&machines)),
+                            RpcError::unavailable(shared.report.not_confirmed(&machines)),
                         );
                         ledger.fail(group, last, error, None, Event::PublishUnconfirmed(group));
                     }
@@ -527,14 +530,18 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
         for group in schedule.failed_groups() {
-            rows.restore_unclaimed(client, progress, |task| schedule.group_of(task) == group)
+            shared
+                .stop_first
+                .restore_unclaimed(client, progress, shared, |task| {
+                    schedule.group_of(task) == group
+                })
                 .await;
             let service = schedule
                 .group(group)
                 .service()
                 .map(|name| QualifiedService::new(plan.namespace.clone(), name.clone()));
             let record = records.remove(&group).unwrap_or_default();
-            restore_group(client, progress, service.as_ref(), record, rows).await;
+            restore_group(client, progress, service.as_ref(), record, shared).await;
         }
     }
 
@@ -616,19 +623,6 @@ fn lost_to_newer(
                 ..
             })
         )
-}
-
-fn left_by(error: ExecutionError) -> Left {
-    match error {
-        ExecutionError::Machine { error, .. } => Left::Failed(error),
-        error @ (ExecutionError::Health { .. }
-        | ExecutionError::DependencyHealth { .. }
-        | ExecutionError::Hook { .. }
-        | ExecutionError::NewerServing { .. }
-        | ExecutionError::Cancelled) => {
-            Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
-        }
-    }
 }
 
 /// The Deploy ends at `index` before any Container changed.
@@ -777,97 +771,43 @@ fn strength(policy: PullPolicy) -> u8 {
     }
 }
 
-struct Rows<'a> {
+/// What every task of one Deploy shares.
+struct Shared<'a> {
+    plan: PlanFacts<'a>,
+    report: Report<'a>,
+    gens: Gens<'a>,
+    gapped: GappedPublishes,
+    stop_first: StopFirstSteps<'a>,
+}
+
+impl<'a> Shared<'a> {
+    fn new(plan: &'a super::DeployPlan, run: &'a DeploymentLogId) -> Self {
+        let facts = plan.facts();
+        Self {
+            plan: PlanFacts::new(plan, run),
+            report: Report::new(&facts.machine_names, &facts.dropped_large_packets),
+            gens: Gens::new(&facts.unobserved_containers, &facts.retiring),
+            gapped: GappedPublishes::default(),
+            stop_first: StopFirstSteps::new(plan.operations(), plan.groups()),
+        }
+    }
+}
+
+/// Who runs this Deploy, and the Services its removals take copies of.
+struct PlanFacts<'a> {
     namespace: &'a Namespace,
-    /// Each Service whose publish ended with only gap Servers' proxies unconfirmed.
-    /// Those proxies may still route any of its old copies, so none is retired.
-    gapped: std::sync::Mutex<BTreeMap<QualifiedService, cleanup::Unconfirmed>>,
     run: &'a DeploymentLogId,
-    names: BTreeMap<MachineId, MachineName>,
     /// The Service each rollout removal retires a copy of, so one that cannot
     /// inspect its copy can still name it.
-    services: BTreeMap<usize, &'a ServiceName>,
+    removals: BTreeMap<usize, &'a ServiceName>,
     /// The removals of copies ended runs left Pending, with each copy's Service.
     strays: &'a BTreeMap<usize, ServiceName>,
-    gens: std::sync::Mutex<
-        BTreeMap<QualifiedService, std::sync::Arc<tokio::sync::OnceCell<Numbered>>>,
-    >,
-    stored: tokio::sync::OnceCell<Result<Vec<ContainerObservation>, RpcError>>,
-    /// Machines whose Containers the plan's snapshot did not list.
-    unobserved: BTreeSet<MachineId>,
-    /// The Services this Deploy takes out wherever they run.
-    retiring: &'a BTreeSet<QualifiedService>,
-    /// Machines the plan's listing found unanswered over a path dropping large packets.
-    dropped_large_packets: &'a BTreeSet<MachineId>,
-    /// Copies on those Machines a removal already left to the next full Deploy,
-    /// so a Service losing several live copies names each one once.
-    unreached: std::sync::Mutex<BTreeSet<ContainerId>>,
-    stop_first: Vec<StopFirstStep<'a>>,
 }
 
-struct StopFirstStep<'a> {
-    tasks: Vec<(usize, &'a ployz_core::ReplacementOperation)>,
-    ready: tokio::sync::OnceCell<Inspected>,
-}
-
-struct Inspected {
-    old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
-    /// A withdrawal that failed, so no task of the step creates a copy.
-    failed: Option<ExecutionError>,
-    withdrawn: std::sync::Mutex<BTreeMap<usize, StepCopy>>,
-}
-
-/// An old copy the step withdrew before any of its tasks created a copy:
-/// a new copy left Pending would keep every proxy routing the copies not
-/// yet withdrawn.
-enum StepCopy {
-    /// The copy and the spec it ran.
-    Unclaimed(cleanup::Copy, Box<ResolvedServiceSpec>),
-    /// The Service failed before the task claimed it, so it was brought back.
-    Restored,
-}
-
-enum Claim {
-    Withdrawn(cleanup::Copy),
-    Restored,
-    /// Not withdrawn for a step: the task withdraws it itself.
-    Own,
-}
-
-impl<'a> Rows<'a> {
+impl<'a> PlanFacts<'a> {
     fn new(plan: &'a super::DeployPlan, run: &'a DeploymentLogId) -> Self {
         let operations = plan.operations();
-        let stop_first = plan
-            .groups()
-            .iter()
-            .flat_map(|group| &group.steps)
-            .map(|step| {
-                step.tasks()
-                    .iter()
-                    .copied()
-                    .filter_map(|index| {
-                        let DeployOperation::ReplaceContainer(replacement) =
-                            operation_at(operations, index)
-                        else {
-                            return None;
-                        };
-                        replacement
-                            .spec
-                            .update
-                            .order
-                            .stops_first()
-                            .then_some((index, replacement))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .filter(|tasks| !tasks.is_empty())
-            .map(|tasks| StopFirstStep {
-                tasks,
-                ready: tokio::sync::OnceCell::new(),
-            })
-            .collect();
-        let names = plan.machine_names().clone();
-        let services = plan
+        let removals = plan
             .groups()
             .iter()
             .filter_map(|group| match &group.role {
@@ -892,643 +832,28 @@ impl<'a> Rows<'a> {
             .collect();
         Self {
             namespace: &plan.namespace,
-            gapped: std::sync::Mutex::new(BTreeMap::new()),
             run,
-            names,
-            services,
-            gens: std::sync::Mutex::new(BTreeMap::new()),
-            stored: tokio::sync::OnceCell::new(),
-            unobserved: plan.unobserved_containers().clone(),
-            retiring: plan.retiring(),
-            strays: plan.strays(),
-            dropped_large_packets: plan.dropped_large_packets(),
-            unreached: std::sync::Mutex::new(BTreeSet::new()),
-            stop_first,
+            removals,
+            strays: &plan.facts().strays,
         }
     }
 
-    async fn inspect_step<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        index: usize,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<ContainerObservation>, ExecutionError> {
-        let step = self
-            .stop_first
-            .iter()
-            .find(|step| step.tasks.iter().any(|(task, _)| *task == index))
-            .expect("stop-first tasks belong to a step");
-        let inspected = step
-            .ready
-            .get_or_init(|| async {
-                let mut old = BTreeMap::new();
-                for (task, operation) in &step.tasks {
-                    let observed =
-                        match inspect(client, &operation.machine_id, &operation.old_container_id)
-                            .await
-                        {
-                            Ok(details) => Ok(Some(details.container)),
-                            Err(ExecutionError::Machine { error, .. })
-                                if error.code == RpcErrorCode::NotFound =>
-                            {
-                                Ok(None)
-                            }
-                            Err(error) => Err(error),
-                        };
-                    old.insert(*task, observed);
-                }
-                self.withdraw_step(client, progress, old, cancellation)
-                    .await
-            })
-            .await;
-        if let Some(error) = &inspected.failed {
-            return Err(error.clone());
-        }
-        inspected
-            .old
-            .get(&index)
-            .cloned()
-            .expect("every task of the step was inspected")
+    fn run(&self) -> &'a DeploymentLogId {
+        self.run
     }
 
-    /// Withdraw every old copy of a stop-first step together. If one is not
-    /// withdrawn, bring back each one this run Held, before any copy starts.
-    async fn withdraw_step<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        mut old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
-        cancellation: &CancellationToken,
-    ) -> Inspected {
-        // A dead run's Pending copies were never routed, so when the step
-        // withdraws a routed copy, they go first with no proxy wait.
-        let withdraws = old
-            .values()
-            .filter_map(|observed| observed.as_ref().ok()?.as_ref())
-            .any(|observed| {
-                !observed.is_system_ingress()
-                    && matches!(
-                        observed.rotation(),
-                        CopyRotation::In | CopyRotation::Held(_)
-                    )
-            });
-        let pending = join_all(
-            old.iter()
-                .filter(|_| withdraws)
-                .filter_map(|(task, observed)| Some((*task, observed.as_ref().ok()?.as_ref()?)))
-                .filter(|(_, observed)| {
-                    *observed.rotation() == CopyRotation::Pending && !observed.is_system_ingress()
-                })
-                .map(|(task, observed)| async move {
-                    let copy = cleanup::Copy::observed(observed);
-                    let removed = cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
-                    (task, removed)
-                }),
-        )
-        .await;
-        for (task, removed) in pending {
-            let error = match removed {
-                Ok(cleanup::Removal::Removed) => {
-                    old.insert(task, Ok(None));
-                    continue;
-                }
-                Ok(cleanup::Removal::Refused(refusal)) => {
-                    machine_error(MachineAction::RemoveContainer, refusal.into_error())
-                }
-                Err(error) => machine_error(MachineAction::RemoveContainer, error),
-            };
-            return Inspected {
-                old,
-                failed: Some(error),
-                withdrawn: std::sync::Mutex::new(BTreeMap::new()),
-            };
-        }
-        let withdrawals = join_all(old.iter().filter_map(|(task, observed)| {
-            let observed = observed.as_ref().ok()?.as_ref()?;
-            Some(async move {
-                let (copy, step) = withdraw(client, observed, self, cancellation).await?;
-                Some((*task, observed, copy, step))
-            })
-        }))
-        .await;
-        let mut failed = None;
-        let mut withdrawn = Vec::new();
-        for (task, observed, mut copy, step) in withdrawals.into_iter().flatten() {
-            let (left, error) = match step.map(cleanup::Rotated::failure) {
-                Ok(Ok(())) => (None, None),
-                Ok(Err(failure)) => {
-                    // A refusal came before the Machine acted, so the copy is as observed.
-                    if matches!(failure, RotationFailure::Refused(_)) {
-                        copy.rotation = observed.rotation().clone();
-                    }
-                    let (left, error) = self.failed(failure, MachineAction::StopContainer);
-                    (Some(left), Some(error))
-                }
-                Err(error) => (
-                    Some(Left::Failed(error.clone())),
-                    Some(machine_error(MachineAction::StopContainer, error)),
-                ),
-            };
-            if let Some(error) = error {
-                failed.get_or_insert(error);
-            }
-            withdrawn.push((task, observed, copy, left));
-        }
-        if failed.is_some() {
-            join_all(withdrawn.iter().map(|(_, observed, copy, left)| {
-                let left = left.clone().unwrap_or(Left::Interrupted);
-                leave_unstopped(client, progress, copy, &observed.resolved_spec, self, left)
-            }))
-            .await;
-            withdrawn.clear();
-        }
-        let withdrawn = withdrawn
-            .into_iter()
-            .map(|(task, observed, copy, _)| {
-                (
-                    task,
-                    StepCopy::Unclaimed(copy, Box::new(observed.resolved_spec.clone())),
-                )
-            })
-            .collect();
-        Inspected {
-            old,
-            failed,
-            withdrawn: std::sync::Mutex::new(withdrawn),
-        }
+    fn service(&self, name: &ServiceName) -> QualifiedService {
+        QualifiedService::new(self.namespace.clone(), name.clone())
     }
 
-    fn claim(&self, index: usize) -> Claim {
-        let Some(inspected) = self
-            .stop_first
-            .iter()
-            .find(|step| step.tasks.iter().any(|(task, _)| *task == index))
-            .and_then(|step| step.ready.get())
-        else {
-            return Claim::Own;
-        };
-        let mut withdrawn = inspected.withdrawn.lock().expect("withdrawn copies lock");
-        match withdrawn.remove(&index) {
-            Some(StepCopy::Unclaimed(copy, _)) => Claim::Withdrawn(copy),
-            Some(StepCopy::Restored) => {
-                withdrawn.insert(index, StepCopy::Restored);
-                Claim::Restored
-            }
-            None => Claim::Own,
-        }
+    /// The Service rollout removal `index` retires a copy of.
+    fn removed_by(&self, index: usize) -> Option<QualifiedService> {
+        self.removals.get(&index).map(|name| self.service(name))
     }
 
-    /// Bring back each old copy a failed group's steps withdrew that no task claimed.
-    async fn restore_unclaimed<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        in_group: impl Fn(usize) -> bool,
-    ) {
-        let mut unclaimed = Vec::new();
-        for step in &self.stop_first {
-            let Some(inspected) = step.ready.get() else {
-                continue;
-            };
-            let mut withdrawn = inspected.withdrawn.lock().expect("withdrawn copies lock");
-            for (task, entry) in withdrawn.iter_mut() {
-                if !in_group(*task) {
-                    continue;
-                }
-                if let StepCopy::Unclaimed(copy, spec) =
-                    std::mem::replace(entry, StepCopy::Restored)
-                {
-                    unclaimed.push((copy, spec));
-                }
-            }
-        }
-        join_all(unclaimed.iter().map(|(copy, spec)| {
-            leave_unstopped(client, progress, copy, spec, self, Left::Interrupted)
-        }))
-        .await;
-    }
-
-    fn service(&self, spec: &ResolvedServiceSpec) -> QualifiedService {
-        QualifiedService::new(self.namespace.clone(), spec.name.clone())
-    }
-
-    /// The gen a new copy of `service` on `destination` takes. A Machine that left the
-    /// listing unanswered is a gap the Deploy goes on without, never a destination.
-    async fn gen_for<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        service: &QualifiedService,
-        destination: &MachineId,
-        cancellation: &CancellationToken,
-    ) -> Result<Gen, ExecutionError> {
-        let numbered = self
-            .numbered(client, progress, service, cancellation)
-            .await?;
-        match numbered
-            .silent
-            .iter()
-            .find(|silent| silent.failure.machine_id == *destination)
-        {
-            Some(silent) => Err(machine_error(
-                MachineAction::ListContainers,
-                naming_machine(
-                    crate::cluster::unanswered_by(&silent.name, silent.failure.error.clone()),
-                    destination,
-                ),
-            )),
-            None => Ok(numbered.r#gen),
-        }
-    }
-
-    async fn numbered<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        service: &QualifiedService,
-        cancellation: &CancellationToken,
-    ) -> Result<Numbered, ExecutionError> {
-        // One cell per Service, so a silent Machine's deadline is paid by each
-        // Service at once rather than one Service after another.
-        let cell = std::sync::Arc::clone(
-            self.gens
-                .lock()
-                .expect("gens lock")
-                .entry(service.clone())
-                .or_default(),
-        );
-        cell.get_or_try_init(|| async {
-            let listed = client
-                .listed_copies(service)
-                .await
-                .map_err(|error| machine_error(MachineAction::ListContainers, error))?;
-            for silent in &listed.unanswered {
-                silent.warn(progress);
-            }
-            // A silent Machine's copies count only through the store's rows, so a new
-            // copy that could not be numbered above them would never replace them.
-            let stored = match (
-                self.stored(client, cancellation).await?,
-                listed.unanswered.first(),
-            ) {
-                (Ok(stored), _) => stored.as_slice(),
-                (Err(_), None) => &[],
-                (Err(unread), Some(silent)) => return Err(unfloored(silent, unread)),
-            };
-            let highest = listed
-                .copies
-                .iter()
-                .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-                .chain(stored.iter().filter(|copy| copy.identity() == *service))
-                .map(|copy| copy.copy_gen())
-                .max();
-            Ok(Numbered {
-                r#gen: highest.map_or(Gen::FIRST, |highest| Gen::new(highest.get() + 1)),
-                silent: std::sync::Arc::new(listed.unanswered),
-            })
-        })
-        .await
-        .cloned()
-    }
-
-    /// What a removal knows of `service`'s copies on the Machines this Deploy did
-    /// not observe. Every proxy reads the entry Machine's store too, so while a row
-    /// there is In or Pending, a copy sent Out beside it stays routed and its drain
-    /// never confirms. Only a Service this Deploy removes must reach them. One it
-    /// keeps owns its other copies, so they are [`Unreached::None`] to its cleanup.
-    async fn unreached<C: MachineOperations>(
-        &self,
-        client: &C,
-        service: &QualifiedService,
-        cancellation: &CancellationToken,
-    ) -> Result<Unreached, ExecutionError> {
-        if self.unobserved.is_empty() || !self.retiring.contains(service) {
-            return Ok(Unreached::None);
-        }
-        let Ok(stored) = self.stored(client, cancellation).await? else {
-            return Ok(Unreached::Unknown);
-        };
-        let copies: Vec<_> = stored
-            .iter()
-            .filter(|copy| {
-                copy.identity() == *service
-                    && self.unobserved.contains(&copy.machine_id)
-                    && copy.rotation().keeps_route()
-            })
-            .map(cleanup::Copy::observed)
-            .collect();
-        Ok(if copies.is_empty() {
-            Unreached::None
-        } else {
-            Unreached::Copies(copies)
-        })
-    }
-
-    /// Names each copy a removal leaves on a Machine it could not reach, once.
-    fn leave_unreached(&self, progress: &Progress, copies: &[cleanup::Copy]) {
-        let mut named = self.unreached.lock().expect("unreached copies lock");
-        for copy in copies {
-            if named.insert(copy.container_id) {
-                self.leave_running(progress, copy, Left::Unreached);
-            }
-        }
-    }
-
-    /// The Service Containers in the entry Machine's store, read once per Deploy,
-    /// or why the read failed or outlasted [`STORED_GENS_WAIT`]. The store keeps the
-    /// rows of a Machine that did not answer, and a new copy at or below one of those
-    /// gens is refused In or never replaces it. Without the read, gens and removals
-    /// follow the live answers.
-    async fn stored<C: MachineOperations>(
-        &self,
-        client: &C,
-        cancellation: &CancellationToken,
-    ) -> Result<&Result<Vec<ContainerObservation>, RpcError>, ExecutionError> {
-        self.stored
-            .get_or_try_init(|| async {
-                let read = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => return Err(ExecutionError::Cancelled),
-                    read = tokio::time::timeout(STORED_GENS_WAIT, client.replicated_containers()) => read,
-                };
-                let containers = match read {
-                    Ok(Ok(containers)) => containers,
-                    Ok(Err(error)) => {
-                        tracing::warn!(
-                            code = error.code.as_str(),
-                            error = error.message.as_str(),
-                            "couldn't read the entry Machine's store; new gens follow the live answers only"
-                        );
-                        return Ok(Err(error));
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            wait = ?STORED_GENS_WAIT,
-                            "the entry Machine's store didn't answer in time; new gens follow the live answers only"
-                        );
-                        return Ok(Err(RpcError::unavailable(format!("the store didn't answer in {STORED_GENS_WAIT:?}"))));
-                    }
-                };
-                Ok(Ok(containers
-                    .into_iter()
-                    .filter(|copy| copy.kind == ContainerKind::ServiceContainer)
-                    .collect()))
-            })
-            .await
-    }
-
-    /// What a rotation that did not finish leaves its copy as, and the Deploy's error
-    /// for `action`.
-    fn failed(&self, failure: RotationFailure, action: MachineAction) -> (Left, ExecutionError) {
-        let error = match &failure {
-            RotationFailure::Refused(refusal) => {
-                machine_error(action, refusal.clone().into_error())
-            }
-            RotationFailure::NotConfirmed(unconfirmed) => machine_error(
-                action,
-                RpcError::unavailable(self.not_confirmed(unconfirmed)),
-            ),
-            RotationFailure::Cancelled => ExecutionError::Cancelled,
-        };
-        (Left::from(failure), error)
-    }
-
-    /// The Machines `service`'s listing left unanswered whose proxy acks nothing, so
-    /// no publish waits on them. A Suspect Machine still turns Down, and one behind a
-    /// path dropping large packets still acks.
-    fn gaps(&self, service: &QualifiedService) -> BTreeSet<MachineId> {
-        let cell = self.gens.lock().expect("gens lock").get(service).cloned();
-        cell.and_then(|cell| {
-            cell.get().map(|numbered| {
-                numbered
-                    .silent
-                    .iter()
-                    .filter(|silent| silent.acks_unwritten)
-                    .map(|silent| silent.failure.machine_id)
-                    .collect()
-            })
-        })
-        .unwrap_or_default()
-    }
-
-    /// The gap Servers, as in [`Self::gaps`], whose proxy may still route `copy`, as
-    /// in [`gaps_still_routing`]. None when `copy`'s Service could not be listed, so the
-    /// removal goes on as it would without a gap.
-    async fn gaps_routing<C: MachineOperations>(
-        &self,
-        client: &C,
-        progress: &Progress,
-        copy: &cleanup::Copy,
-        cancellation: &CancellationToken,
-    ) -> Option<cleanup::Unconfirmed> {
-        let numbered = self
-            .numbered(client, progress, &copy.service, cancellation)
-            .await
-            .ok()?;
-        let gaps = numbered
-            .silent
-            .iter()
-            .filter(|silent| silent.acks_unwritten)
-            .map(|silent| silent.failure.machine_id);
-        gaps_still_routing(client, copy, gaps).await
-    }
-
-    /// The proxies that never confirmed `service`'s publish, when only gap Servers'
-    /// did not.
-    fn gapped(&self, service: &QualifiedService) -> Option<cleanup::Unconfirmed> {
-        self.gapped
-            .lock()
-            .expect("gapped lock")
-            .get(service)
-            .cloned()
-    }
-
-    fn not_confirmed(&self, unconfirmed: &cleanup::Unconfirmed) -> String {
-        let causes: String = unconfirmed
-            .machines
-            .iter()
-            .filter(|id| self.dropped_large_packets.contains(id))
-            .map(|id| crate::deploy::dropped_note(self.machine_name(id)))
-            .collect();
-        format!(
-            "{}{causes}",
-            unconfirmed.left_reason(|id| self.machine_name(id))
-        )
-    }
-
-    fn machine_name(&self, id: &MachineId) -> String {
-        self.names
-            .get(id)
-            .map_or_else(|| id.to_string(), |name| name.to_string())
-    }
-
-    /// A copy this run couldn't remove that never went In: its own new one, or one an
-    /// ended run left. No proxy routes it once its Machine is back, and the next
-    /// Deploy removes it.
-    fn leave_unrouted(
-        &self,
-        progress: &Progress,
-        service: &QualifiedService,
-        machine_id: MachineId,
-        container_id: ContainerId,
-        error: RpcError,
-    ) {
-        let (reason, _) = self.failed_on(machine_id, error);
-        self.name_left(progress, service, machine_id, container_id, reason);
-    }
-
-    /// A copy this run couldn't remove, for `reason`, which keeps running.
-    fn name_left(
-        &self,
-        progress: &Progress,
-        service: &QualifiedService,
-        machine_id: MachineId,
-        container_id: ContainerId,
-        reason: String,
-    ) {
-        progress.warn(DeployWarning::LeftRunning {
-            service: service.clone(),
-            container_id,
-            machine: self.machine_name(&machine_id),
-            reason,
-        });
-    }
-
-    /// A Machine that was cut off or powered off can route the copy again once
-    /// it is back, so the report names each one.
-    fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
-        let (reason, away) = self.explain(copy, left);
-        progress.warn(DeployWarning::LeftRunning {
-            service: copy.service.clone(),
-            container_id: copy.container_id,
-            machine: self.machine_name(&copy.machine_id),
-            reason,
-        });
-        for machine in away {
-            progress.warn(DeployWarning::MixedAfterReturn {
-                machine: self.machine_name(&machine),
-            });
-        }
-    }
-
-    fn explain(&self, copy: &cleanup::Copy, left: Left) -> (String, Vec<MachineId>) {
-        match left {
-            Left::NotConfirmed(unconfirmed) => {
-                (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
-            }
-            Left::Interrupted => ("interrupted".into(), Vec::new()),
-            Left::Unread(error) => (
-                format!(
-                    "the routes could not be read through the Machine this Deploy connects to: {}",
-                    error.message
-                ),
-                Vec::new(),
-            ),
-            Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
-            Left::Unreached => (
-                format!(
-                    "{} didn't answer, the next full deploy removes its copy once it is back",
-                    self.machine_name(&copy.machine_id)
-                ),
-                Vec::new(),
-            ),
-            Left::NotListed => (
-                format!(
-                    "{} did not see the new copies listed",
-                    self.machine_name(&copy.machine_id)
-                ),
-                Vec::new(),
-            ),
-            Left::Refused(refusal) => (refusal.message, Vec::new()),
-            Left::Failed(error) => self.failed_on(copy.machine_id, error),
-            Left::NotRestored(left, why) => {
-                let (reason, away) = self.explain(copy, *left);
-                (
-                    format!("{reason}, and it could not go back In: {why}"),
-                    away,
-                )
-            }
-            Left::OlderNotRemoved(left) => {
-                let (reason, away) = self.explain(copy, *left);
-                let newer = ExecutionError::NewerServing {
-                    service: copy.service.clone(),
-                };
-                (format!("{newer}, and removing it failed: {reason}"), away)
-            }
-        }
-    }
-
-    /// A call the client saw go unanswered names its target as away. So does an
-    /// unavailable call to the copy's own owner, which covers this client's own
-    /// deadline. Any other error says nothing about which Machine is cut off.
-    fn failed_on(&self, machine_id: MachineId, error: RpcError) -> (String, Vec<MachineId>) {
-        match cleanup::did_not_answer(&self.machine_name(&machine_id), &error) {
-            Some(reason) => (reason, vec![machine_id]),
-            None => (error.message, Vec::new()),
-        }
-    }
-}
-
-/// A removal's copies of its Service on the Machines this Deploy did not observe.
-enum Unreached {
-    /// None keeps the route: every Machine was observed, the store lists no In or
-    /// Pending copy there, or the Service stays and its other copies are its own.
-    None,
-    /// The entry Machine's store lists these there, each In or Pending.
-    Copies(Vec<cleanup::Copy>),
-    /// The store could not be read, so a copy there may keep the route.
-    Unknown,
-}
-
-impl Unreached {
-    /// Whether a proxy may keep routing the Service once its live copy is Out, so
-    /// that the drain could never confirm.
-    fn may_keep_route(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    fn copies(&self) -> &[cleanup::Copy] {
-        match self {
-            Self::Copies(copies) => copies,
-            Self::None | Self::Unknown => &[],
-        }
-    }
-}
-
-#[derive(Clone)]
-enum Left {
-    NotConfirmed(cleanup::Unconfirmed),
-    Interrupted,
-    /// The entry Machine could not read the routes, so no copy was seen unlisted.
-    Unread(RpcError),
-    /// The owner's view never listed a new copy, so it would refuse the Out.
-    NotListed,
-    Refused(ContainerRefusal),
-    /// A call to the copy's owner failed.
-    Failed(RpcError),
-    /// This run Held the copy and could not bring it back In, for this reason.
-    NotRestored(Box<Left>, String),
-    OlderNotRemoved(Box<Left>),
-    DeployFailed,
-    /// A removal could not reach the copy's Machine. It stays until the next full
-    /// Deploy prunes it, and its store row keeps the live copies' drain unconfirmed.
-    Unreached,
-}
-
-impl From<RotationFailure> for Left {
-    fn from(failure: RotationFailure) -> Self {
-        match failure {
-            RotationFailure::Refused(refusal) => Left::Refused(refusal),
-            RotationFailure::NotConfirmed(unconfirmed) => Left::NotConfirmed(unconfirmed),
-            RotationFailure::Cancelled => Left::Interrupted,
-        }
-    }
-}
-
-impl From<cleanup::Rotated> for Option<Left> {
-    fn from(rotated: cleanup::Rotated) -> Self {
-        rotated.failure().err().map(Left::from)
+    /// The Service of the copy an ended run left Pending that removal `index` removes.
+    fn stray(&self, index: usize) -> Option<QualifiedService> {
+        self.strays.get(&index).map(|name| self.service(name))
     }
 }
 
@@ -1538,7 +863,7 @@ async fn execute_operation<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
     slots: &Slots<'_>,
-    rows: &Rows<'_>,
+    shared: &Shared<'_>,
 ) -> Result<Ran, OperationFailure> {
     let Row { progress, index } = row;
     row.running(match operation {
@@ -1571,23 +896,29 @@ async fn execute_operation<C: MachineOperations>(
                 )
                 .into()
             }),
-        DeployOperation::WaitHealthy { dependency, .. } => {
-            wait_healthy(client, index, progress, dependency, rows.run, cancellation)
-                .await
-                .map(|()| Ran::default())
-                .map_err(Into::into)
-        }
+        DeployOperation::WaitHealthy { dependency, .. } => wait_healthy(
+            client,
+            index,
+            progress,
+            dependency,
+            shared.plan.run(),
+            cancellation,
+        )
+        .await
+        .map(|()| Ran::default())
+        .map_err(Into::into),
         DeployOperation::RunContainer {
             machine_id,
             spec,
             skip_health_monitor,
         } => {
             let slot = slots.slot(ContainerKind::ServiceContainer, spec, index, None);
-            let r#gen = rows
+            let r#gen = shared
+                .gens
                 .gen_for(
                     client,
                     progress,
-                    &rows.service(spec),
+                    &shared.plan.service(&spec.name),
                     machine_id,
                     cancellation,
                 )
@@ -1596,7 +927,7 @@ async fn execute_operation<C: MachineOperations>(
                 machine_id,
                 slot,
                 spec,
-                deploy: Some(rows.run),
+                deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(*skip_health_monitor),
             };
@@ -1615,12 +946,12 @@ async fn execute_operation<C: MachineOperations>(
                 index,
                 progress,
                 &details.container,
-                rows,
+                shared,
                 cancellation,
             )
             .await
             .map(|copy| Ran {
-                held_old: (copy.rotation == CopyRotation::Held(rows.run.clone()))
+                held_old: (copy.rotation == CopyRotation::Held(shared.plan.run().clone()))
                     .then(|| Box::new((details.container.resolved_spec.clone(), copy))),
                 ..Ran::default()
             })
@@ -1634,12 +965,11 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
             ..
-        } if let Some(service) = rows.strays.get(&index) => {
-            let service = QualifiedService::new(rows.namespace.clone(), service.clone());
+        } if let Some(service) = shared.plan.stray(index) => {
             remove_stray(
                 client,
                 progress,
-                rows,
+                shared,
                 (&service, machine_id, *container_id),
                 cancellation,
             )
@@ -1656,7 +986,7 @@ async fn execute_operation<C: MachineOperations>(
                 index,
                 progress,
                 (machine_id, container_id, *purpose),
-                rows,
+                shared,
                 cancellation,
             )
             .await
@@ -1668,29 +998,39 @@ async fn execute_operation<C: MachineOperations>(
                 index,
                 Some(replacement.old_container_id),
             );
-            let r#gen = rows
+            let r#gen = shared
+                .gens
                 .gen_for(
                     client,
                     progress,
-                    &rows.service(&replacement.spec),
+                    &shared.plan.service(&replacement.spec.name),
                     &replacement.machine_id,
                     cancellation,
                 )
                 .await?;
             if replacement.spec.update.order.stops_first() {
-                let old = rows
-                    .inspect_step(client, progress, index, cancellation)
+                let old = shared
+                    .stop_first
+                    .inspect(client, progress, shared, index, cancellation)
                     .await?;
                 let run = SlotRun {
                     machine_id: &replacement.machine_id,
                     slot,
                     spec: &replacement.spec,
-                    deploy: Some(rows.run),
+                    deploy: Some(shared.plan.run()),
                     r#gen,
                     answer: answer_when(replacement.skip_health_monitor),
                 };
-                return replace_stop_first(client, row, replacement, old, run, rows, cancellation)
-                    .await;
+                return replace_stop_first(
+                    client,
+                    row,
+                    replacement,
+                    old,
+                    run,
+                    shared,
+                    cancellation,
+                )
+                .await;
             }
             // The old Container keeps serving until every new copy of the
             // Service is In and listed; it retires in the group's cleanup.
@@ -1698,7 +1038,7 @@ async fn execute_operation<C: MachineOperations>(
                 machine_id: &replacement.machine_id,
                 slot,
                 spec: &replacement.spec,
-                deploy: Some(rows.run),
+                deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(replacement.skip_health_monitor),
             };
@@ -1752,7 +1092,7 @@ async fn execute_operation<C: MachineOperations>(
                 client,
                 row,
                 (machine_id, slot),
-                (spec, rows.run),
+                (spec, shared.plan.run()),
                 old_hook_containers,
                 cancellation,
             )
@@ -1867,31 +1207,6 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
-}
-
-/// A Service's next gen, and the Machines that left its listing unanswered.
-#[derive(Clone)]
-struct Numbered {
-    r#gen: Gen,
-    silent: std::sync::Arc<Vec<Unanswered>>,
-}
-
-/// A new copy cannot start while `silent` may run copies the store could not number.
-fn unfloored(silent: &Unanswered, unread: &RpcError) -> ExecutionError {
-    let error = RpcError::unavailable(format!(
-        "Machine '{}' did not answer and the entry Machine's store could not be read, \
-             so a new copy might not replace that Machine's copies",
-        silent.name
-    ))
-    .with_causes(
-        std::iter::once(unread.message.clone())
-            .chain(unread.cause.iter().cloned())
-            .collect(),
-    );
-    machine_error(
-        MachineAction::ListContainers,
-        naming_machine(error, &silent.failure.machine_id),
-    )
 }
 
 /// The Machine that answered `error`, for a failure sentence that names the Server.
