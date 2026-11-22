@@ -9,7 +9,7 @@ import { drainEndMessage } from "#/modules/machines/server-drain.server";
 import { machineEnrollmentToken, machineRemoveAttempt, namespaceCleanup, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
-import { outlivedObservation } from "#/modules/server-upgrade/server-upgrade";
+import { attemptState } from "#/modules/server-upgrade/server-upgrade";
 import { serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { Database } from "#/server/database.server";
@@ -145,7 +145,7 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     ...upgrades.map(({ row, at }) => ({ at, operation: operation({
       attempt: dashedAttempt(row.attemptId),
       run: `upgrade ${name(row)}`,
-      state: row.outcome === "running" && outlivedObservation(row.startedAt, now) ? "unknown" : row.outcome,
+      state: attemptState(row, now),
       requestedAt: row.startedAt,
       endedAt: row.endedAt,
       reason: row.error,

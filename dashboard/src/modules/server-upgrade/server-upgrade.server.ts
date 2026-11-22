@@ -21,7 +21,7 @@ import {
   type FinalOutcome,
   isBehind,
   type LatestUpgrade,
-  outlivedObservation,
+  attemptState,
   type ReleaseChannel,
   releaseFromPointer,
   releaseLine,
@@ -347,7 +347,7 @@ export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (in
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
-  if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return { kind: "expired" } as const;
+  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, Date.now()) !== "running") return { kind: "expired" } as const;
   const attempt = yield* resendUpgradeOnServer(input);
   return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
@@ -558,7 +558,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     } as const satisfies { ok: false; refusal: StoreRefusal };
   }
   const { drizzle } = yield* Database;
-  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, startedAt: serverUpgradeAttempt.startedAt })
+  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt })
     .from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.organizationId, caller.organizationId),
@@ -567,7 +567,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     ))
     .orderBy(desc(serverUpgradeAttempt.startedAt))
     .limit(1);
-  if (running !== undefined && !outlivedObservation(running.startedAt, Date.now())) {
+  if (running !== undefined && attemptState(running, Date.now()) === "running") {
     return () => Effect.succeed({ ok: true, id: running.attemptId } as const);
   }
   const unavailable = (message: string) =>
@@ -602,11 +602,11 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
       message: "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade.",
     } as const;
   }
-  const outlived = row.outcome === "running" && outlivedObservation(row.startedAt, Date.now());
-  if (row.outcome === "running" && !outlived) return { state: "running" } as const;
+  const outcome = attemptState(row, Date.now());
+  if (outcome === "running") return { state: "running" } as const;
   return {
     state: "finished",
-    outcome: outlived ? "unknown" : row.outcome,
+    outcome,
     from_version: row.fromVersion,
     target_version: row.targetVersion,
     message: row.error ?? row.stage,
