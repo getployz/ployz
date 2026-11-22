@@ -295,7 +295,7 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
     // Cloud relays this body, so it can name a Cluster of its own; only a route the person
     // chose, or the Cluster this computer pinned for the Organization, vouches for it.
     if let crate::sealing_pin::SealTo::Pinned(pin) =
-        pin::seal_to(&config_path(leaf)?, &client).await?
+        pin::join_seal_to(&config_path(leaf)?, &client).await?
     {
         refuse_unpinned(body, pin.as_ref())?;
     }
@@ -374,7 +374,7 @@ impl JoinEntry {
     /// can't be read.
     pub(super) async fn relayed(config: &Path) -> Result<Self, Error> {
         Ok(Self::Relayed {
-            pin: pin::organization_pin(config).await?,
+            pin: pin::join_pin(config).await?,
         })
     }
 }

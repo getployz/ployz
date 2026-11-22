@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use clap::{ArgMatches, Command};
-use ployz_core::SealingPublicKey;
+use ployz_core::{RpcErrorCode, SealingPublicKey};
 use serde::Serialize;
 
 use super::super::{Error, config_path, leaf_matches, recovery, route, runtime};
@@ -133,6 +133,39 @@ pub(in crate::handlers) async fn organization_pin(config: &Path) -> Result<Optio
     let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
     let organization = cloud::account::acting_in(&credential).await?;
     Ok(Pins::beside(config).get(&organization.id)?)
+}
+
+/// [`seal_to`] for signing a join: the Organization must come from this computer's own
+/// sign-in, never from Cloud's answer, since this Device may be pinned in several.
+///
+/// # Errors
+///
+/// Refuses under an Organization Token, and fails as [`seal_to`] does.
+pub(in crate::handlers) async fn join_seal_to(
+    config: &Path,
+    client: &Client,
+) -> Result<SealTo, Error> {
+    SealTo::of(client, async || join_pin(config).await).await
+}
+
+/// [`organization_pin`] for signing a join, refused under an Organization Token: with a
+/// token, Cloud's answer names the Organization, and Cloud could pick another one this
+/// Device is pinned in.
+///
+/// # Errors
+///
+/// Refuses under an Organization Token, and fails as [`organization_pin`] does.
+pub(in crate::handlers) async fn join_pin(config: &Path) -> Result<Option<Pin>, Error> {
+    let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
+    if matches!(credential, Credential::Token { .. }) {
+        return Err(Error::coded(
+            RpcErrorCode::Unsupported,
+            "A Server join relayed through Ployz Cloud is approved only from this computer's \
+             own sign-in, not with PLOYZ_TOKEN. Unset PLOYZ_TOKEN and run ployz login, or \
+             approve over --connect ssh://<server>. Nothing was approved.",
+        ));
+    }
+    organization_pin(config).await
 }
 
 #[cfg(test)]
