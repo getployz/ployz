@@ -21,7 +21,7 @@ import { deploymentDestination } from "#/modules/config-store/deployments/run-se
 import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
-import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
+import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import type { DeployChoice } from "./useStoreChangeActions";
 
 /**

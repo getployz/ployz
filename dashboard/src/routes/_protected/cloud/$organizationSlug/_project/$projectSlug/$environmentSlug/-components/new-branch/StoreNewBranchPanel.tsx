@@ -15,7 +15,7 @@ import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
+import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
