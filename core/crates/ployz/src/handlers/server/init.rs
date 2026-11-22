@@ -6,6 +6,7 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, helpers};
+use crate::enrollment::machine;
 use crate::{
     context::{Connection, Context, Transport},
     handlers::{Error, leaf_matches},
@@ -50,7 +51,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let requested_name = helpers::requested_name(matches)?;
     let cluster_name = founding_name(matches)?;
     let token_request = helpers::token_request(matches)?;
-    let pinned = helpers::pinned(&token_request);
+    let pinned = machine::pinned(&token_request);
     let cluster_network = *matches
         .get_one::<ipnet::Ipv4Net>("network")
         .expect("Cluster network has a default");
@@ -77,15 +78,15 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             helpers::connect_direct(matches, &connection).await?
         };
         let (details, mut token) =
-            helpers::inspect_token(&mut target, token_request.clone()).await?;
+            machine::inspect_token(&mut target, token_request.clone()).await?;
         if details.phase != LocalMachinePhase::Uninitialized {
-            helpers::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
-            helpers::leave(&mut target, &details).await?;
+            machine::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
+            machine::leave(&mut target, &details).await?;
             target = helpers::reconnect_direct(matches, &connection).await?;
-            token = helpers::inspect_token(&mut target, token_request).await?.1;
+            token = machine::inspect_token(&mut target, token_request).await?.1;
         }
-        let name = helpers::machine_name(requested_name, &token);
-        let machine = helpers::enroll(
+        let name = machine::machine_name(requested_name, &token);
+        let machine = machine::enroll(
             &mut target,
             EnrollRequest {
                 role: EnrollAs::Founder {
@@ -145,22 +146,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .context("Server initialized; startup incomplete.")
                 .hint(Hint::Inspect(inspect_recovery.clone()))
         })?;
-        if let Some(name) = cluster_name {
-            let next = super::super::recovery_command(
-                matches,
-                &context_name,
-                &["cluster", "name", name.as_str()],
-            );
-            named = Some(
-                crate::handlers::cluster::set(&ready, name)
-                    .await
-                    .map_err(|error| {
-                        error
-                            .context("Server initialized; the Cluster has no name yet.")
-                            .hint(Hint::Next(next))
-                    }),
-            );
-        }
+        named = crate::enrollment::founding::name_cluster(&ready, cluster_name, |args| {
+            super::super::recovery_command(matches, &context_name, args)
+        })
+        .await;
         if on_server {
             crate::ui::note(format_args!(
                 "{} trusts no device yet. From your computer, run:\n  ployz device approve --this-device --connect ssh://root@{}",
@@ -184,30 +173,17 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         let closed = matches.get_flag("ingress-closed");
-        let incomplete = |error: crate::failure::Failure| {
-            super::ingress_incomplete(
-                "Server initialized",
-                super::super::ingress_hints(error, |args| {
-                    super::super::recovery_command(matches, &context_name, args)
-                }),
-                Hint::Next(ingress_recovery.clone()),
-            )
-        };
-        if closed {
-            crate::ingress::declare_founding_closed(&mut ready)
-                .await
-                .map_err(&incomplete)?;
-        }
-        if machine.accepts_ingress {
-            let followed = if closed {
-                crate::ingress::found_closed(&mut ready).await
-            } else {
-                crate::ingress::follow_roles(&mut ready).await
-            }
-            .map_err(|error| incomplete(error.into()))?;
-            return Ok(Some(followed));
-        }
-        Ok::<_, Error>(None)
+        crate::enrollment::founding::open_ingress(&mut ready, &machine, closed)
+            .await
+            .map_err(|error| {
+                super::ingress_incomplete(
+                    "Server initialized",
+                    super::super::ingress_hints(error.into(), |args| {
+                        super::super::recovery_command(matches, &context_name, args)
+                    }),
+                    Hint::Next(ingress_recovery.clone()),
+                )
+            })
     });
     // The Machine and its context are committed: print them before a follow-up failure.
     let named = named.unwrap_or(Ok(Default::default()));

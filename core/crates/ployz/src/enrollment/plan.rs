@@ -18,8 +18,9 @@ use ployz_core::{
 };
 
 use crate::checkin::{EnrollInstruction, EnrollStorage};
+use crate::cli::{leaf_matches, string_values};
 use crate::connect::Client;
-use crate::handlers::{Error, leaf_matches, string_values};
+use crate::failure::Failure as Error;
 use crate::provisioning::RemoteTarget;
 
 /// The flags of `server add` that shape the Server.
@@ -149,19 +150,22 @@ impl Shaping {
     }
 
     pub(crate) fn name(&self) -> Result<Option<MachineName>, Error> {
-        super::helpers::machine_name_requested(self.name.as_deref())
+        super::machine::machine_name_requested(self.name.as_deref())
     }
 
     pub(crate) fn cluster_name(&self) -> Result<Option<ClusterName>, Error> {
-        super::enroll::parse_cluster_name(self.cluster_name.as_deref())
+        parse_cluster_name(self.cluster_name.as_deref())
     }
 
     pub(crate) fn storage(&self) -> StoragePreparation {
-        super::enroll::storage_or_default(self.storage.clone())
+        // The Cloud path never prompts for storage.
+        self.storage
+            .clone()
+            .unwrap_or(StoragePreparation::Zfs { device: None })
     }
 
     pub(crate) fn token_request(&self) -> Result<InspectRequest, Error> {
-        super::helpers::token_request_for(self.public_ip.as_deref(), &self.wg_endpoints)
+        super::machine::token_request_for(self.public_ip.as_deref(), &self.wg_endpoints)
     }
 
     pub(crate) fn wg_mtu(&self) -> Option<u32> {
@@ -188,7 +192,7 @@ impl Shaping {
     /// read it.
     pub(crate) fn pasted_args(self) -> Result<Vec<String>, Error> {
         self.policy()?;
-        super::helpers::checked_token_request_for(self.public_ip.as_deref(), &self.wg_endpoints)?;
+        super::machine::checked_token_request_for(self.public_ip.as_deref(), &self.wg_endpoints)?;
         self.name()?;
         self.cluster_name()?;
         Ok(self.pasted)
@@ -424,7 +428,7 @@ impl Reach {
     /// The Cluster entry that signs a join waiting for approval.
     pub(crate) async fn entry(&self) -> Result<Client, Error> {
         match self {
-            Self::CommandLine(matches) => super::super::route::connect(matches, None).await,
+            Self::CommandLine(matches) => crate::handlers::route::connect(matches, None).await,
             Self::ThisHost { config } => Ok(crate::connect::connect_with_ssh_timeout(
                 config,
                 Some(&this_host()),
@@ -439,4 +443,21 @@ impl Reach {
 /// This host's daemon socket, as a `--connect` value.
 fn this_host() -> String {
     format!("unix://{}", MachineLayout::production().socket().display())
+}
+
+/// The `--cluster-name` value given, as a Cluster Name.
+pub(crate) fn parse_cluster_name(name: Option<&str>) -> Result<Option<ClusterName>, Error> {
+    name.map(crate::handlers::cluster::parse).transpose()
+}
+
+pub(crate) fn joined_open() {
+    crate::ui::warn(
+        "--ingress-closed is ignored when joining a Cluster. The Server opens the Cluster's Doors.",
+    );
+}
+
+pub(crate) fn joined_unnamed() {
+    crate::ui::warn(
+        "--cluster-name is ignored when joining a Cluster. Rename it with ployz cluster name.",
+    );
 }

@@ -27,7 +27,7 @@ fn carried(matches: &ArgMatches) -> impl Iterator<Item = &str> + Clone {
 }
 
 /// `args` as the same Cluster would run them, under the context this command was given.
-pub(in crate::handlers) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
+pub(crate) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let context = matches.try_get_one::<String>("context").ok().flatten();
     shell_words::join(
         carried(matches).chain(args.iter().copied()).chain(

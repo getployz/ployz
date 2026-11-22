@@ -1,9 +1,6 @@
 use crate::cluster::{Call, Deadline};
-use std::{
-    collections::BTreeMap,
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-};
+use crate::enrollment::machine;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
@@ -12,10 +9,10 @@ use crate::cli::{
 };
 use crate::env;
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors,
-    InspectRequest, ListContainersRequest, Machine, MachineId, MachineName, MachineObservation,
-    MachineTarget, MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint,
-    UpdateMachineRequest, op,
+    BuildConcurrencyUpdate, EnvironmentValues, Hint, IngressDoors, InspectRequest,
+    ListContainersRequest, Machine, MachineId, MachineName, MachineObservation, MachineTarget,
+    MachineUpdate, PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest,
+    op,
 };
 
 use ployz_store::region_key;
@@ -32,13 +29,11 @@ use crate::{
 use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
-mod asked_policy;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
 mod endpoint;
 pub(super) mod enroll;
-mod enroll_plan;
 mod fence;
 pub(super) mod forget;
 mod helpers;
@@ -52,13 +47,7 @@ pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;
-pub(super) use asked_policy::AskedPolicy;
-pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
-pub(crate) use enroll_plan::{EnrollPlan, Shaping};
-pub(super) use helpers::{
-    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct_within, enroll,
-    enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned,
-};
+pub(super) use enroll::founding_cluster_name;
 use init::init;
 pub(super) use remove::remove;
 pub(super) use show::{list, show};
@@ -175,7 +164,7 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
 
 /// The command that takes out a Server that never joined. By ID, since a rerun of its add
 /// can list a second Server under the same name.
-pub(super) fn forget_unarrived(id: MachineId) -> String {
+pub(crate) fn forget_unarrived(id: MachineId) -> String {
     shell_words::join([
         "ployz",
         "server",
@@ -201,7 +190,7 @@ pub(super) fn machine_json(machine: &Machine) -> Value {
 
 /// A Server as `server add`, `init`, `set` and `rm` print it: the `server ls` and
 /// `server show` shape, its Machine under `machine`.
-pub(super) fn server_json(machine: &Machine) -> Value {
+pub(crate) fn server_json(machine: &Machine) -> Value {
     json!({ "machine": machine_json(machine) })
 }
 
@@ -724,7 +713,7 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let public_ip = match matches.get_one::<String>("public-ip").map(String::as_str) {
         None => PublicIpUpdate::Keep,
         Some("") | Some("none") => PublicIpUpdate::Remove,
-        Some(value) => PublicIpUpdate::Set(helpers::public_ip(value)?),
+        Some(value) => PublicIpUpdate::Set(machine::public_ip(value)?),
     };
     let build_concurrency = match matches
         .get_one::<String>("build-concurrency")
@@ -735,7 +724,9 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
         Some(value) => BuildConcurrencyUpdate::Set(value.parse()?),
     };
     let advertised_endpoints = if matches.get_many::<String>("wg-endpoint").is_some() {
-        Some(parse_endpoints(&string_values(matches, "wg-endpoint"))?)
+        Some(crate::enrollment::machine::parse_endpoints(
+            &string_values(matches, "wg-endpoint"),
+        )?)
     } else {
         None
     };
@@ -799,29 +790,13 @@ fn parse_label_add(
     std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
     Error,
 > {
-    parse_labels(&string_values(matches, "label-add"))
+    crate::enrollment::asked_policy::parse_labels(&string_values(matches, "label-add"))
 }
 
-fn parse_labels(
-    given: &[String],
-) -> Result<
-    std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
-    Error,
-> {
-    let mut labels = std::collections::BTreeMap::new();
-    for label in given {
-        let (key, value) = label
-            .split_once('=')
-            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
-        if labels.insert(key.parse()?, value.parse()?).is_some() {
-            return Err(Error::usage(format!("duplicate label key {key:?}")));
-        }
-    }
-    Ok(labels)
-}
-
-pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<AskedPolicy, Error> {
-    AskedPolicy::parse(
+pub(super) fn enrollment_policy(
+    matches: &ArgMatches,
+) -> Result<crate::enrollment::AskedPolicy, Error> {
+    crate::enrollment::AskedPolicy::parse(
         &string_values(matches, "label-add"),
         matches.get_one::<String>("region").map(String::as_str),
         [
@@ -830,23 +805,6 @@ pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<AskedPolicy, Err
             matches.get_one::<bool>("accepts-ingress").copied(),
         ],
     )
-}
-
-pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoint>, Error> {
-    values
-        .iter()
-        .map(|value| {
-            value
-                .parse::<SocketAddr>()
-                .or_else(|_| {
-                    value
-                        .parse::<IpAddr>()
-                        .map(|address| SocketAddr::new(address, ployz_core::WIREGUARD_PORT))
-                })
-                .map(AdvertisedEndpoint)
-                .map_err(|_| Error::usage(format!("invalid WireGuard endpoint {value:?}")))
-        })
-        .collect()
 }
 
 pub(super) fn group(command: Command) -> Command {
@@ -1474,18 +1432,6 @@ mod tests {
     }
 
     #[test]
-    fn endpoints_accept_socket_or_ip_and_apply_the_default_port() {
-        assert_eq!(
-            parse_endpoints(&["192.0.2.1".into(), "[2001:db8::1]:6000".into()]).unwrap(),
-            [
-                AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap()),
-                AdvertisedEndpoint("[2001:db8::1]:6000".parse().unwrap()),
-            ]
-        );
-        assert!(parse_endpoints(&["not-an-address".into()]).is_err());
-    }
-
-    #[test]
     fn server_json_never_carries_the_sealing_state() {
         let mut machine = crate::global_fixtures::machine('a', "node-a");
         machine.runtime.sealing = Some(ployz_core::Sealing::Held {
@@ -1518,7 +1464,7 @@ mod tests {
                         .chain(flags),
                 )
                 .unwrap();
-            helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
+            machine::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
         };
         let pins = |public_ip, advertised_endpoints| ployz_core::PinnedAddresses {
             public_ip,

@@ -122,6 +122,22 @@ pub(crate) fn typed_with(extra: &[&str]) -> String {
         .join(" ")
 }
 
+/// The values given for `id` on the command line or from the environment, not its default.
+pub(crate) fn string_values(matches: &clap::ArgMatches, id: &str) -> Vec<String> {
+    if matches.try_contains_id(id).ok() != Some(true) {
+        return Vec::new();
+    }
+    if matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue) {
+        return Vec::new();
+    }
+    matches
+        .try_get_many::<String>(id)
+        .ok()
+        .flatten()
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
+}
+
 /// SSH setup budget shared by every CLI connection path.
 pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
     std::time::Duration::from_secs(u64::from(

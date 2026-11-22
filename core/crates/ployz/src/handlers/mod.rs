@@ -12,7 +12,7 @@ use ployz_core::MachineId;
 pub(crate) mod account;
 pub(crate) mod build;
 pub(crate) mod catalog;
-pub(crate) mod cloud;
+mod cloud;
 mod cloud_read;
 pub(crate) mod cluster;
 pub(crate) mod config;
@@ -40,13 +40,14 @@ pub(crate) mod project;
 pub(crate) mod recovery;
 pub(crate) mod region;
 pub(crate) mod review;
-mod route;
+pub(crate) mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
-use crate::cli::{command_path, config_path, leaf_matches, typed_with};
+use crate::cli::{command_path, config_path, leaf_matches, string_values, typed_with};
 pub(super) use shared::rerun::config_flag;
-use shared::rerun::{recovery_command, rerun};
+use shared::rerun::recovery_command;
+pub(crate) use shared::rerun::rerun;
 mod status;
 mod status_servers;
 pub(crate) mod store;
@@ -58,7 +59,7 @@ pub(crate) mod volume;
 #[doc(hidden)]
 pub use crate::provisioning::Installation;
 #[doc(hidden)]
-pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
+pub use server::enroll::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
@@ -449,21 +450,6 @@ pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
-    if matches.try_contains_id(id).ok() != Some(true) {
-        return Vec::new();
-    }
-    if matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue) {
-        return Vec::new();
-    }
-    matches
-        .try_get_many::<String>(id)
-        .ok()
-        .flatten()
-        .map(|values| values.cloned().collect())
-        .unwrap_or_default()
 }
 
 fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
