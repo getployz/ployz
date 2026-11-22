@@ -92,38 +92,96 @@ enum Command {
         systemd_dir: PathBuf,
     },
     /// Install or replace this Machine's daemon release.
-    Install {
-        /// Release channel (stable or beta) or exact published version.
-        #[arg(long, default_value = "stable")]
-        version: MachineRelease,
-        /// Prepare ZFS storage, or leave this Machine stateless.
-        #[arg(long, default_value = "none")]
-        storage: StoragePreparation,
-        /// Replace daemon software only; do not install Docker, OS packages, or prepare storage.
-        #[arg(long)]
-        software_only: bool,
-        /// Write files and units but do not contact or start systemd.
-        #[arg(long)]
-        install_only: bool,
-        /// Add this existing operator to the Ployz service group during host preparation.
-        #[arg(long, value_name = "USER")]
-        group_user: Option<String>,
-        /// Print what this host is and what blocks Ployz on it, without changing anything.
-        #[arg(long, requires = "json", conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version"])]
-        probe: bool,
-        /// Print the probe as JSON.
-        #[arg(long, requires = "probe")]
-        json: bool,
-        /// Install Docker and build ZFS ahead of enroll, without starting Ployz or creating a pool.
-        #[arg(long, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe"])]
-        prepare: bool,
-        /// Build no ZFS during `--prepare`.
-        #[arg(long, requires = "prepare")]
-        skip_zfs: bool,
-        /// Remove what `--prepare` built for ZFS.
-        #[arg(long, hide = true, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe", "prepare"])]
-        discard_zfs_build: bool,
-    },
+    Install(InstallArgs),
+}
+
+#[derive(clap::Args)]
+struct InstallArgs {
+    /// Release channel (stable or beta) or exact published version.
+    #[arg(long, default_value = "stable")]
+    version: MachineRelease,
+    /// Prepare ZFS storage, or leave this Machine stateless.
+    #[arg(long, default_value = "none")]
+    storage: StoragePreparation,
+    /// Replace daemon software only; do not install Docker, OS packages, or prepare storage.
+    #[arg(long)]
+    software_only: bool,
+    /// Write files and units but do not contact or start systemd.
+    #[arg(long)]
+    install_only: bool,
+    /// Add this existing operator to the Ployz service group during host preparation.
+    #[arg(long, value_name = "USER")]
+    group_user: Option<String>,
+    /// Print what this host is and what blocks Ployz on it, without changing anything.
+    #[arg(long, requires = "json", conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version"])]
+    probe: bool,
+    /// Print the probe as JSON.
+    #[arg(long, requires = "probe")]
+    json: bool,
+    /// Install Docker and build ZFS ahead of enroll, without starting Ployz or creating a pool.
+    #[arg(long, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe"])]
+    prepare: bool,
+    /// Build no ZFS during `--prepare`.
+    #[arg(long, requires = "prepare")]
+    skip_zfs: bool,
+    /// Remove what `--prepare` built for ZFS.
+    #[arg(long, hide = true, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe", "prepare"])]
+    discard_zfs_build: bool,
+}
+
+/// What `ployzd install` was asked to do.
+enum InstallAction {
+    Probe,
+    Prepare { skip_zfs: bool },
+    DiscardZfsBuild,
+    Install(InstallRequest),
+}
+
+impl InstallArgs {
+    fn action(self) -> io::Result<InstallAction> {
+        if self.prepare {
+            return Ok(InstallAction::Prepare {
+                skip_zfs: self.skip_zfs,
+            });
+        }
+        if self.discard_zfs_build {
+            return Ok(InstallAction::DiscardZfsBuild);
+        }
+        if self.probe {
+            return Ok(InstallAction::Probe);
+        }
+        let mode = if self.install_only {
+            self.refuse_host_options("--install-only")?;
+            InstallMode::InstallationOnly
+        } else if self.software_only {
+            self.refuse_host_options("--software-only")?;
+            InstallMode::SoftwareOnly
+        } else {
+            InstallMode::PrepareHost {
+                storage: self.storage,
+                group_user: self.group_user,
+            }
+        };
+        Ok(InstallAction::Install(InstallRequest {
+            release: self.version,
+            mode,
+        }))
+    }
+
+    /// Refuses the host preparation options a mode that skips host preparation takes.
+    fn refuse_host_options(&self, flag: &str) -> io::Result<()> {
+        let option = if self.storage != StoragePreparation::None {
+            "--storage"
+        } else if self.group_user.is_some() {
+            "--group-user"
+        } else {
+            return Ok(());
+        };
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{flag} cannot be combined with {option}"),
+        ))
+    }
 }
 
 fn main() -> ExitCode {
@@ -202,35 +260,24 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         ployzd::installer::write_units(bin_dir, run_dir, systemd_dir).map_err(io::Error::other)?;
         return Ok(ExitCode::SUCCESS);
     }
-    if let Some(Command::Install {
-        version,
-        storage,
-        software_only,
-        install_only,
-        group_user,
-        probe,
-        json: _,
-        prepare,
-        skip_zfs,
-        discard_zfs_build,
-    }) = args.command
-    {
-        if prepare {
-            ployzd::installer::prepare(skip_zfs)
-                .await
-                .map_err(io::Error::other)?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        if discard_zfs_build {
-            ployzd::installer::discard_zfs_build().map_err(io::Error::other)?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        if probe {
-            println!("{}", ployzd::installer::probe().map_err(io::Error::other)?);
-            return Ok(ExitCode::SUCCESS);
-        }
-        let request = install_request(version, storage, software_only, install_only, group_user)
-            .map_err(Error::from)?;
+    if let Some(Command::Install(install)) = args.command {
+        let request = match install.action()? {
+            InstallAction::Prepare { skip_zfs } => {
+                ployzd::installer::prepare(skip_zfs)
+                    .await
+                    .map_err(io::Error::other)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            InstallAction::DiscardZfsBuild => {
+                ployzd::installer::discard_zfs_build().map_err(io::Error::other)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            InstallAction::Probe => {
+                println!("{}", ployzd::installer::probe().map_err(io::Error::other)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            InstallAction::Install(request) => request,
+        };
         let outcome = ployzd::installer::install(request, &args.data_dir, &args.socket)
             .await
             .map_err(io::Error::other)?;
@@ -282,50 +329,6 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     .await?;
     daemon.wait().await?;
     Ok(ExitCode::SUCCESS)
-}
-
-fn install_request(
-    release: MachineRelease,
-    storage: StoragePreparation,
-    software_only: bool,
-    install_only: bool,
-    group_user: Option<String>,
-) -> io::Result<InstallRequest> {
-    if install_only && storage != StoragePreparation::None {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--install-only cannot be combined with --storage",
-        ));
-    }
-    if install_only && group_user.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--install-only cannot be combined with --group-user",
-        ));
-    }
-    let mode = if install_only {
-        InstallMode::InstallationOnly
-    } else if software_only {
-        if storage != StoragePreparation::None {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--software-only cannot be combined with --storage",
-            ));
-        }
-        if group_user.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--software-only cannot be combined with --group-user",
-            ));
-        }
-        InstallMode::SoftwareOnly
-    } else {
-        InstallMode::PrepareHost {
-            storage,
-            group_user,
-        }
-    };
-    Ok(InstallRequest { release, mode })
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
@@ -587,80 +590,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn install_cli_rejects_host_options_for_software_only_replacement() {
-        let storage = install_request(
-            release("stable"),
-            StoragePreparation::Zfs { device: None },
-            true,
-            false,
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(
-            storage.to_string(),
-            "--software-only cannot be combined with --storage"
-        );
-
-        let group = install_request(
-            release("stable"),
-            StoragePreparation::None,
-            true,
-            false,
-            Some("operator".into()),
-        )
-        .unwrap_err();
-        assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(
-            group.to_string(),
-            "--software-only cannot be combined with --group-user"
-        );
+    fn install(
+        version: &str,
+        storage: StoragePreparation,
+        software_only: bool,
+        install_only: bool,
+        group_user: Option<&str>,
+    ) -> io::Result<InstallRequest> {
+        let action = InstallArgs {
+            version: release(version),
+            storage,
+            software_only,
+            install_only,
+            group_user: group_user.map(str::to_owned),
+            probe: false,
+            json: false,
+            prepare: false,
+            skip_zfs: false,
+            discard_zfs_build: false,
+        }
+        .action()?;
+        let InstallAction::Install(request) = action else {
+            panic!("an install with no other action installs");
+        };
+        Ok(request)
     }
 
     #[test]
-    fn install_cli_rejects_host_options_for_installation_only() {
-        let storage = install_request(
-            release("stable"),
-            StoragePreparation::Zfs { device: None },
-            false,
-            true,
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(
-            storage.to_string(),
-            "--install-only cannot be combined with --storage"
-        );
-
-        let group = install_request(
-            release("stable"),
-            StoragePreparation::None,
-            false,
-            true,
-            Some("operator".into()),
-        )
-        .unwrap_err();
-        assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(
-            group.to_string(),
-            "--install-only cannot be combined with --group-user"
-        );
+    fn install_cli_rejects_host_options_for_modes_that_skip_host_preparation() {
+        let zfs = || StoragePreparation::Zfs { device: None };
+        for (software_only, install_only, flag) in [
+            (true, false, "--software-only"),
+            (false, true, "--install-only"),
+        ] {
+            let storage = install("stable", zfs(), software_only, install_only, None).unwrap_err();
+            assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                storage.to_string(),
+                format!("{flag} cannot be combined with --storage")
+            );
+            let group = install(
+                "stable",
+                StoragePreparation::None,
+                software_only,
+                install_only,
+                Some("operator"),
+            )
+            .unwrap_err();
+            assert_eq!(group.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                group.to_string(),
+                format!("{flag} cannot be combined with --group-user")
+            );
+        }
     }
 
     #[test]
     fn install_cli_builds_one_explicit_mode() {
-        let replacement =
-            install_request(release("1.2.3"), StoragePreparation::None, true, true, None).unwrap();
+        let replacement = install("1.2.3", StoragePreparation::None, true, true, None).unwrap();
         assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
-        let host = install_request(
-            release("1.2.3"),
+        let host = install(
+            "1.2.3",
             StoragePreparation::Zfs { device: None },
             false,
             false,
-            Some("operator".into()),
+            Some("operator"),
         )
         .unwrap();
         assert!(matches!(
@@ -670,5 +665,34 @@ mod tests {
                 group_user: Some(_)
             }
         ));
+    }
+
+    #[test]
+    fn install_flags_keep_their_spelling() {
+        for argv in [
+            &["ployzd", "install", "--probe", "--json"][..],
+            &["ployzd", "install", "--prepare", "--skip-zfs"],
+            &["ployzd", "install", "--discard-zfs-build"],
+            &["ployzd", "install", "--software-only", "--version", "beta"],
+            &["ployzd", "install", "--install-only"],
+            &[
+                "ployzd",
+                "install",
+                "--storage",
+                "none",
+                "--group-user",
+                "me",
+            ],
+        ] {
+            assert!(Args::try_parse_from(argv).is_ok(), "{argv:?}");
+        }
+        for argv in [
+            &["ployzd", "install", "--probe"][..],
+            &["ployzd", "install", "--probe", "--json", "--prepare"],
+            &["ployzd", "install", "--skip-zfs"],
+            &["ployzd", "install", "--discard-zfs-build", "--prepare"],
+        ] {
+            assert!(Args::try_parse_from(argv).is_err(), "{argv:?}");
+        }
     }
 }
