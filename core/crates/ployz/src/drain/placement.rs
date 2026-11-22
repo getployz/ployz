@@ -20,7 +20,7 @@ use futures_util::future::{BoxFuture, ready};
 use ployz_core::authority::deploy::content_addressed;
 use ployz_core::{
     AnonymousVolumes, Claim, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRefusalReason, ContainerRuntimeObservation, CopyRotation,
+    ContainerRefusalReason, ContainerRuntimeObservation, CopyRotation, CreationKey,
     ENSURE_PINNED_CONTAINER_CAPABILITY, HealthObservation, ImageDigest, InspectContainerRequest,
     Machine, MachineId, MachineName, MachineTarget, Namespace, QualifiedService, RawVolumeSource,
     Region, RequestedServiceSpec, ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility,
@@ -556,16 +556,13 @@ fn promoted<'a>(
     service: &'a QualifiedService,
     old: &ContainerObservation,
 ) -> Option<&'a ContainerObservation> {
-    let key = format!("move:{}", old.container_id);
-    let made_by_move = |made: &str| {
-        made.strip_prefix(key.as_str())
-            .is_some_and(|nonce| nonce.is_empty() || nonce.starts_with(':'))
-    };
     let stranded = stranded(snapshot, service);
     in_rotation(snapshot, service).find(|copy| {
         *copy.rotation() == CopyRotation::In
             && copy.machine_id != old.machine_id
-            && copy.creation_key().is_some_and(made_by_move)
+            && copy
+                .creation_key()
+                .is_some_and(|key| CreationKey::made_by_move(key, &old.container_id))
             && copy.resolved_spec.serving_shape() == old.resolved_spec.serving_shape()
             && serves_healthy(&copy.runtime)
             && !stranded
