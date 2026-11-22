@@ -2,11 +2,14 @@
 //! enrollment the check-in loop runs too. Bounded enrollment after the caller has durably saved
 //! its allocation sits here as well.
 pub(crate) mod asked_policy;
+pub(crate) mod catch_up;
 pub(crate) mod cloud;
 pub(crate) mod founding;
 pub mod local;
 pub(crate) mod machine;
+pub(crate) mod output;
 pub(crate) mod plan;
+pub(crate) mod recovery;
 
 pub(crate) use asked_policy::AskedPolicy;
 pub(crate) use plan::EnrollPlan;

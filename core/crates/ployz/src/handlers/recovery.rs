@@ -6,7 +6,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::{
     DescribeContractRequest, Hint, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
     RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
-    SealingKeyWrapped, SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
+    SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -14,15 +14,14 @@ use serde_json::json;
 use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, switch};
 use crate::cloud::account::Credential;
-use crate::cloud::enroll::RecoveryBackup;
 use crate::cloud::login::LoginError;
 use crate::connect::{Client, ConnectError};
 use crate::context::Transport;
+use crate::enrollment::recovery::{
+    KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, shows_code, wrap_sealing_key,
+};
 use crate::ui::{self, Fields};
 
-pub(crate) const RECOVERY_CODE_NOT_SAVED: &str =
-    "Recovery code not saved. Run ployz recovery rotate now to make one.";
-pub(crate) const KEEP_THE_CODE: &str = "Keep the recovery code safe; ployz recover needs it.";
 const CODE_LIMIT: usize = 256;
 const NOT_AVAILABLE: &str = "Sealing Key recovery isn't available for this organization.";
 const ROTATE_AGAIN: &str =
@@ -54,11 +53,6 @@ pub(super) fn rotate_command(command: Command) -> Command {
          never through Cloud.",
         )
         .arg(switch("show-recovery-code", None).help("Print the recovery code under --json"))
-}
-
-/// Whether a person sees a fresh recovery code: on a terminal, or under `--json` only on request.
-pub(crate) fn shows_code(requested: bool, json: bool, stdout_is_terminal: bool) -> bool {
-    if json { requested } else { stdout_is_terminal }
 }
 
 pub(super) fn recover(root: &ArgMatches) -> Result<(), Error> {
@@ -200,26 +194,6 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
         Ok((wrapped.public_key, code))
     })?;
     print_code(public_key, &code, KEEP_THE_CODE)
-}
-
-pub(crate) async fn wrap_sealing_key(
-    client: &mut Client,
-    code: &RecoveryCode,
-) -> Result<RecoveryBackup, Error> {
-    let wrapped = wrap(client, code).await?;
-    Ok(RecoveryBackup {
-        public_key: wrapped.public_key,
-        backup: wrapped.backup,
-    })
-}
-
-async fn wrap(client: &mut Client, code: &RecoveryCode) -> Result<SealingKeyWrapped, Error> {
-    Ok(client
-        .call::<op::WrapSealingKey>(
-            WrapSealingKeyRequest { code: code.clone() },
-            Call::keyed().waiting(Wait::standard()),
-        )
-        .await?)
 }
 
 pub(crate) fn print_code(
@@ -440,6 +414,7 @@ fn rotate_failure(error: LoginError) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::cloud::enroll::RecoveryBackup;
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};

@@ -27,7 +27,7 @@ use ployz_store::{
     Admit, Cancel, Change, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentQuery,
     EnvironmentRef, EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath,
-    Start, UploadBase, UploadedSource, VolumeName,
+    Start, Unresolved, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Store, environment, mint, next, scoped, store};
@@ -1417,14 +1417,14 @@ fn waits(
 
 /// The plan's line for what only the Servers decide, as people read it. A plan
 /// that is `placed` already says where each Service runs.
-fn undecided(unresolved: &[String], placed: bool) -> Option<String> {
+fn undecided(unresolved: &[Unresolved], placed: bool) -> Option<String> {
     let unresolved: Vec<_> = unresolved
         .iter()
-        .filter(|item| !(placed && item.as_str() == "operations"))
-        .map(|item| match item.as_str() {
-            "operations" => "which containers start and stop",
-            "volume data" => "which volume data is deleted",
-            other => other,
+        .filter(|item| !(placed && **item == Unresolved::Operations))
+        .map(|item| match item {
+            Unresolved::Operations => "which containers start and stop",
+            Unresolved::VolumeData => "which volume data is deleted",
+            Unresolved::Other(other) => other,
         })
         .collect();
     if unresolved.is_empty() {
@@ -2152,7 +2152,8 @@ mod tests {
 
     #[test]
     fn the_plan_says_what_the_servers_decide_in_plain_words() {
-        let both = ["operations".to_owned(), "volume data".to_owned()];
+        let both: [ployz_store::Unresolved; 2] =
+            serde_json::from_value(serde_json::json!(["operations", "volume data"])).unwrap();
         assert_eq!(undecided(&[], false), None);
         assert_eq!(undecided(&both[..1], true), None);
         assert_eq!(

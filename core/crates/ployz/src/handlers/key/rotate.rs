@@ -24,7 +24,6 @@ use ployz_store::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::super::device::{DeviceSigning, key};
 use super::super::store::{Store, mint, store};
 use super::super::{Error, config_path, deploy, leaf_matches, route, runtime};
 use super::members::{Bundle, Member, Roster};
@@ -33,6 +32,7 @@ use super::{
     remove_everywhere, results, typed_code,
 };
 use crate::cli::base;
+use crate::device::{DeviceSigning, key};
 use crate::ui;
 
 pub(crate) fn rotate_command(command: Command) -> Command {

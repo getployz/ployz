@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use ployz_agent_tools::{Accept, Confirmation};
 use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentView, DestructiveEffect, DestructiveKind,
-    EnvironmentName, EnvironmentRef, EnvironmentSummary, EnvironmentsQuery, Left, ProjectName,
-    ProjectsQuery, Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName,
-    VolumesQuery, Waiting,
+    EnvironmentName, EnvironmentRef, EnvironmentSummary, EnvironmentsQuery, GoesFirst, Left,
+    ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery,
+    VolumeName, VolumesQuery, Waiting,
 };
 use serde_json::json;
 
@@ -763,16 +763,11 @@ fn goes_first(error: &StoreCallError, project: &ProjectName) -> Option<String> {
     if refusal.code != RpcErrorCode::Unsupported {
         return None;
     }
-    let details = &refusal.details;
-    let branch = details
-        .get("branches")
-        .and_then(|branches| branches.get(0))
-        .and_then(serde_json::Value::as_str);
-    let protected = details.get("protected").and_then(serde_json::Value::as_str);
-    let words: &[&str] = match (branch, protected) {
-        (Some(branch), _) => &["env", "rm", branch],
-        (None, Some(protected)) => &["env", "protect", protected, "--off"],
-        (None, None) => &["env", "default", "ENV"],
+    let first = GoesFirst::of(&refusal.details);
+    let words: &[&str] = match &first {
+        Some(GoesFirst::Branch(branch)) => &["env", "rm", branch.as_str()],
+        Some(GoesFirst::Protection(protected)) => &["env", "protect", protected.as_str(), "--off"],
+        None => &["env", "default", "ENV"],
     };
     let project = ["--project", project.as_str()];
     Some(shell_words::join(

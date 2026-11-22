@@ -25,10 +25,10 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-use super::super::device::DeviceSigning;
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::approve::DeviceApproval;
+use crate::device::DeviceSigning;
 use crate::image::pin_public;
 
 /// One `--image SERVICE=IMAGE`: the one change a silent deploy makes, and the

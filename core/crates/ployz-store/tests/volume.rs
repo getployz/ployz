@@ -1008,7 +1008,10 @@ fn a_deploy_of_named_services_asks_to_accept_a_staged_volume_removal() {
             },
         )
         .unwrap();
-    assert_eq!(plan.unresolved, ["operations", "volume data"]);
+    assert_eq!(
+        serde_json::to_value(&plan.unresolved).unwrap(),
+        json!(["operations", "volume data"])
+    );
 
     let named = |accept: &[&str], version| {
         admit_named(

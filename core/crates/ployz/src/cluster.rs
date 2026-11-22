@@ -45,6 +45,7 @@ mod call;
 mod capacity;
 mod container_health;
 mod fan_out;
+pub(crate) mod name;
 #[cfg(test)]
 mod retry;
 mod routes;

@@ -3990,7 +3990,10 @@ fn a_targeted_deploy_and_its_plan_cover_only_the_named_services() {
             .collect::<Vec<_>>(),
         ["web"]
     );
-    assert_eq!(plan.unresolved, ["operations"]);
+    assert_eq!(
+        serde_json::to_value(&plan.unresolved).unwrap(),
+        json!(["operations"])
+    );
     assert_eq!(plan.namespace.as_str(), "shop-production");
     assert_eq!(
         code(admit(&store, &who, 1, &["nope"], None)),

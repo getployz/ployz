@@ -17,11 +17,12 @@ use ployz_core::{
 };
 use serde::Serialize;
 
-use super::device::{self, DeviceSigning, Reach};
+use super::device::Reach;
 use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, many, positional, switch, value, yes};
 use crate::cluster::Call;
 use crate::connect::Client;
+use crate::device::{self, DeviceSigning};
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 
 mod members;

@@ -186,8 +186,8 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
 
 /// This CLI's Device signer. Only a Device signs a rule: it stands for every future push.
 pub(super) fn signer(root: &ArgMatches) -> Result<Signer, Error> {
-    let key = super::device::key::path(&super::config_path(root)?);
-    match super::device::key::load(&key)? {
+    let key = crate::device::key::path(&super::config_path(root)?);
+    match crate::device::key::load(&key)? {
         Some(secret) => Ok(Signer::from_seed(&secret)),
         None => Err(Error::coded(
             RpcErrorCode::Unauthenticated,

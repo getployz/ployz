@@ -979,7 +979,7 @@ pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Resul
                 summary.name,
                 names(&running)
             ),
-            show(&summary.project, first).within(json!({ "branches": running })),
+            show(&summary.project, first).within(GoesFirst::branches(&running)),
         ));
     }
     if summary.id != project.default_environment {
@@ -1001,6 +1001,42 @@ pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Resul
         ));
     }
     Ok(())
+}
+
+const BRANCHES: &str = "branches";
+const PROTECTED: &str = "protected";
+
+/// What goes before an Environment the Store won't remove alone, as its refusal's
+/// `details` name it. A refusal naming neither is about a Default Environment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GoesFirst {
+    /// Its first Branch.
+    Branch(EnvironmentName),
+    /// Its protection.
+    Protection(EnvironmentName),
+}
+
+impl GoesFirst {
+    fn branches(branches: &[EnvironmentName]) -> Value {
+        json!({ BRANCHES: branches })
+    }
+
+    fn protection(environment: &EnvironmentName) -> Value {
+        json!({ PROTECTED: environment })
+    }
+
+    /// What `details` name to go first, if they name one.
+    #[must_use]
+    pub fn of(details: &Value) -> Option<Self> {
+        let name = |value: Option<&Value>| {
+            value
+                .and_then(Value::as_str)
+                .and_then(|name| EnvironmentName::parse(name).ok())
+        };
+        name(details.get(BRANCHES).and_then(|branches| branches.get(0)))
+            .map(Self::Branch)
+            .or_else(|| name(details.get(PROTECTED)).map(Self::Protection))
+    }
 }
 
 fn names(names: &[EnvironmentName]) -> String {
@@ -1047,7 +1083,7 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
             FollowUp::UnprotectEnvironment {
                 place: Place::of(summary),
             }
-            .within(json!({ "protected": summary.name })),
+            .within(GoesFirst::protection(&summary.name)),
         ));
     }
     let branches = tx
@@ -1067,7 +1103,7 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
                 summary.name,
                 names(&branches)
             ),
-            show(&summary.project, first).within(json!({ "branches": branches })),
+            show(&summary.project, first).within(GoesFirst::branches(&branches)),
         ));
     }
     Ok(())

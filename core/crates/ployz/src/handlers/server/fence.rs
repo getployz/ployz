@@ -61,7 +61,7 @@ pub(super) fn already_forgotten(selected: &Machine) -> Result<(), Error> {
         selected.name
     ));
     crate::ui::emit(&json!({
-        "server": super::server_json(selected),
+        "server": crate::enrollment::output::server_json(selected),
         "already_forgotten": true,
     }))?;
     Ok(())

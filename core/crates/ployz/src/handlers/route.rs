@@ -38,7 +38,7 @@ pub(super) async fn connect_full(
     context: Option<&str>,
 ) -> Result<Client, Error> {
     let config = super::config_path(matches)?;
-    let key = super::device::key::path(&config);
+    let key = crate::device::key::path(&config);
     let direct: Vec<&str> = matches
         .get_many::<String>("connect")
         .into_iter()
@@ -142,7 +142,7 @@ pub(super) async fn connect_each(
 fn as_device(
     connections: Vec<Connection>,
     key: &std::path::Path,
-) -> Result<Vec<Connection>, super::device::key::KeyError> {
+) -> Result<Vec<Connection>, crate::device::key::KeyError> {
     let management = |connection: &Connection| {
         matches!(
             connection.transport(),
@@ -152,7 +152,7 @@ fn as_device(
     if !connections.iter().any(management) {
         return Ok(connections);
     }
-    Ok(match super::device::key::load(key)? {
+    Ok(match crate::device::key::load(key)? {
         Some(secret) => connections
             .into_iter()
             .map(|connection| connection.with_device(secret))

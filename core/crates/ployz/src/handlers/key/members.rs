@@ -15,9 +15,10 @@ use ployz_core::{
 };
 
 use super::super::Error;
-use super::super::device::{DeviceSigning, Reach};
+use super::super::device::Reach;
 use crate::cluster::{Call, fan_out_entry_last};
 use crate::connect::Client;
+use crate::device::DeviceSigning;
 use crate::ui::Gaps;
 
 /// What every Member must speak before a key change goes out.

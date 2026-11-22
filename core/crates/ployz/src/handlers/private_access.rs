@@ -94,14 +94,14 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
         ask_key()?
     };
     let config = super::config_path(root)?;
-    let device_key = super::device::key::path(&config);
+    let device_key = crate::device::key::path(&config);
     with_client(root, |client| {
         Box::pin(async move {
             let seal_to = super::device::seal_to(&config, client).await?;
             let observed = observe_access(client).await?;
             let seal_for = seal_to.key(client, observed.sealing).await?;
             let sealed = seal_key(&seal_for, &key)?;
-            let approval = match super::device::key::load(&device_key)? {
+            let approval = match crate::device::key::load(&device_key)? {
                 Some(secret) => Some(device_approval(
                     &Signer::from_seed(&secret),
                     seal_for,
