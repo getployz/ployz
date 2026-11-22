@@ -4075,15 +4075,11 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
 struct SendsToAll;
 
 impl crate::volume_send::Recipients for SendsToAll {
-    async fn sends(
+    async fn accepts(
         &self,
         _: std::net::IpAddr,
-        _: &ployz_core::DockerVolumeName,
-        _: Option<&ployz_core::SnapshotName>,
-    ) -> std::result::Result<crate::volume_send::Sends, String> {
-        Ok(crate::volume_send::Sends::Member(
-            ployz_core::MachineId::random(),
-        ))
+    ) -> std::result::Result<bool, crate::machine::LocalMachineError> {
+        Ok(true)
     }
 }
 
