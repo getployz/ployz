@@ -18,7 +18,7 @@ import { createOrganizationToken } from "#/modules/identity/organization-token.s
 import { invitation, member, organizationToken, user } from "#/modules/identity/tables";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { createInvite } from "#/modules/organization/invitation.server";
-import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
+import { cliReply } from "#/routes/api/cli/-cli.handler";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { githubConnectResponse } from "#/routes/api/github/-connect.handler";
 import { Auth, AuthLive, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
@@ -59,7 +59,7 @@ const shop = Effect.fn(function* (anonymous: boolean, env?: Readonly<Record<stri
   const send = (path: string, method: string, body?: ConfigCommand | ConfigQuery | CliBody) => provided(Effect.gen(function* () {
     const init: RequestInit = { method, headers: { "content-type": "application/json", authorization: `Bearer ${secret}` } };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const response = yield* (path.startsWith("config/") ? handleConfigRequest : handleCliRequest)(new Request(`http://localhost:3000/api/${path}`, init));
+    const response = yield* (path.startsWith("config/") ? handleConfigRequest : cliReply)(new Request(`http://localhost:3000/api/${path}`, init));
     const reply = response instanceof Response ? response : Response.json(response);
     return { status: reply.status, json: (yield* Effect.promise(() => reply.json())) as Reply };
   }));
