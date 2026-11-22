@@ -24,8 +24,7 @@ use ployz_core::{
 };
 use zeroize::Zeroizing;
 
-use super::ingress_doors::reserved::{self, Retiree, Step, newest, retirees, usable};
-use super::ingress_doors::{Effects, Gate};
+use super::reserved::{self, Effects, Gate, Retiree, Step, newest, retirees, usable};
 use super::{Error, LocalMachine, Scope};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
@@ -428,40 +427,15 @@ impl LocalMachine {
         effects: &mut Effects,
     ) -> Result<Option<DoorOutcome>, Error> {
         for retiree in &plan.retire {
-            self.reserved_effect(Gate::Router)?;
-            match containers.lifecycle().stop(&retiree.id, None, None).await {
-                Ok(()) => {
-                    if retiree.running {
-                        effects.stopped.push(retiree.id);
-                    }
-                }
-                Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
+            self.stop_retiree(containers, retiree, Gate::Router, effects)
+                .await?;
         }
         let (Some(step), Some(wanted)) = (&plan.step, wanted) else {
             return Ok(None);
         };
-        let (id, change) = match step {
-            Step::Keep(id) => (*id, DoorChange::Unchanged),
-            Step::Start(id) => {
-                effects.started.push(*id);
-                self.start_door(containers, id, Gate::Router).await?;
-                (*id, DoorChange::Started)
-            }
-            Step::Create(replacing) => {
-                let id = self
-                    .create_door(&wanted.spec, *replacing, effects, Gate::Router)
-                    .await?;
-                self.start_door(containers, &id, Gate::Router).await?;
-                (id, DoorChange::Created)
-            }
-        };
-        let now = containers
-            .observation()
-            .inspect_managed(&id, &self.record().id())
-            .await?;
-        Ok(Some(DoorOutcome { now, change }))
+        self.place(containers, &wanted.spec, step, Gate::Router, effects)
+            .await
+            .map(Some)
     }
 
     /// Watch a placed router until it has joined the tailnet, has died, or the settle

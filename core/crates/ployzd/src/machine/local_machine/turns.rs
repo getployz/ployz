@@ -109,6 +109,19 @@ impl LocalMachine {
         drop(self.exclusive_turn().await);
     }
 
+    /// Release the data directory once no admitted work holds a turn, waiting at most
+    /// `within`. `None` when work still runs then: the record stays claimed until exit
+    /// rather than failing that work halfway through.
+    pub(crate) async fn close_when_idle(
+        &self,
+        within: std::time::Duration,
+    ) -> Option<Result<(), crate::machine::RecordOwnerStopped>> {
+        let _turn = tokio::time::timeout(within, self.exclusive_turn())
+            .await
+            .ok()?;
+        Some(self.owner.close().await)
+    }
+
     /// The exclusive turn and the installation itself, taken only when both are free now,
     /// for an upgrade that replaces this daemon.
     ///

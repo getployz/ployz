@@ -80,6 +80,7 @@ mod forget;
 mod ingress_doors;
 mod private_access;
 mod register;
+mod reserved;
 pub(crate) use admission::{AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Scope};
@@ -98,6 +99,8 @@ mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+#[cfg(test)]
+pub(crate) use sealing_recovery::back_up;
 mod turns;
 mod upgrade;
 

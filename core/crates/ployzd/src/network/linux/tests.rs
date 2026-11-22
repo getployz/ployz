@@ -38,13 +38,21 @@ fn reconcile(
     planned: &[Peer],
     set: PeerSet,
 ) -> BTreeSet<IpNet> {
-    reconcile_keeping(installed, planned, set, |_| set == PeerSet::Bootstrap).0
+    let keeps = !set.replaces();
+    reconcile_keeping(installed, planned, &set, |_| keeps).0
+}
+
+/// A snapshot whose store answered for no Machine.
+fn snapshot() -> PeerSet {
+    PeerSet::Snapshot {
+        answered: BTreeSet::new(),
+    }
 }
 
 fn reconcile_keeping(
     installed: &mut HashMap<Key, Peer>,
     planned: &[Peer],
-    set: PeerSet,
+    set: &PeerSet,
     keeps_unlisted: impl Fn(&Key) -> bool,
 ) -> (BTreeSet<IpNet>, bool) {
     let PeerChanges {
@@ -110,7 +118,7 @@ fn snapshot_updates_adds_and_prunes_peers_and_routes() {
     let routes = reconcile(
         &mut installed,
         &[changed.clone(), added.clone()],
-        PeerSet::Snapshot,
+        snapshot(),
     );
     assert_eq!(
         installed,
@@ -126,13 +134,13 @@ fn snapshot_updates_adds_and_prunes_peers_and_routes() {
     live.last_handshake = Some(SystemTime::now());
     live.rx_bytes = 99;
     installed.insert(live.public_key.clone(), live.clone());
-    reconcile(&mut installed, &[changed, added], PeerSet::Snapshot);
+    reconcile(&mut installed, &[changed, added], snapshot());
     assert_eq!(
         installed.get(&live.public_key),
         Some(&live),
         "runtime telemetry does not replace a matching peer"
     );
-    assert!(reconcile(&mut installed, &[], PeerSet::Snapshot).is_empty());
+    assert!(reconcile(&mut installed, &[], snapshot()).is_empty());
     assert!(
         installed.is_empty(),
         "a complete empty observation permits removal"
@@ -256,7 +264,7 @@ fn first_snapshot_preserves_kernel_endpoint_and_updates_allowed_ips() {
                     .collect::<Vec<_>>(),
                 PeerSet::Bootstrap,
             );
-            let (planned, _) =
+            let planned =
                 snapshot_peers(&observer.id, &snapshot, &bootstrap, joining, true).unwrap();
             let mut previous = Vec::new();
             seed_retained_selections(&planned, &mut previous, &installed, now);
@@ -265,7 +273,7 @@ fn first_snapshot_preserves_kernel_endpoint_and_updates_allowed_ips() {
             assert_eq!(peer.selected(), Some(selected));
             assert_eq!(peer.selection.status(now, Some(now)), PeerStatus::Up);
             let wg = wireguard_peer(peer, peer.selected());
-            reconcile(&mut installed, std::slice::from_ref(&wg), PeerSet::Snapshot);
+            reconcile(&mut installed, std::slice::from_ref(&wg), self::snapshot());
             let retained = installed.get(&live.public_key).unwrap();
             assert_eq!(retained.endpoint, live.endpoint);
             assert_eq!(retained.allowed_ips, wg.allowed_ips);
@@ -361,11 +369,11 @@ fn incomplete_snapshot_holds_peers_and_joining_keeps_bootstrap() {
             true,
             true
         ),
-        Some((vec![bootstrap.clone()], PeerSet::Snapshot))
+        Some(vec![bootstrap.clone()])
     );
     assert_eq!(
         snapshot_peers(&machine_id, &snapshot, &[bootstrap], false, true),
-        Some((Vec::new(), PeerSet::Snapshot))
+        Some(Vec::new())
     );
 }
 
@@ -382,7 +390,7 @@ fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
     };
     let live = installed_peer(3);
     for joining in [false, true] {
-        let (planned, set) =
+        let planned =
             snapshot_peers(&observer.id, &own_row_only, &bootstrap, joining, false).unwrap();
         assert_eq!(planned, bootstrap);
         let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
@@ -392,16 +400,15 @@ fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
                 .iter()
                 .map(|peer| wireguard_peer(peer, peer.selected()))
                 .collect::<Vec<_>>(),
-            set,
+            PeerSet::Bootstrap,
         );
         assert!(installed.contains_key(&live.public_key));
         assert!(installed.contains_key(&Key::new(remote.public_key.0)));
     }
     // Once the store has held another Machine, its snapshot is the whole Cluster again.
-    let (planned, set) =
-        snapshot_peers(&observer.id, &own_row_only, &bootstrap, false, true).unwrap();
+    let planned = snapshot_peers(&observer.id, &own_row_only, &bootstrap, false, true).unwrap();
     let mut installed = HashMap::from([(live.public_key.clone(), live)]);
-    reconcile(&mut installed, &[], set);
+    reconcile(&mut installed, &[], snapshot());
     assert!(planned.is_empty());
     assert!(installed.is_empty());
 }
@@ -451,9 +458,8 @@ fn installed_for(machines: &[Machine]) -> HashMap<Key, Peer> {
 fn apply_record(
     installed: &mut HashMap<Key, Peer>,
     planned: &[MeshPeer],
-    set: PeerSet,
+    set: &PeerSet,
     record: &crate::machine::LocalMachineRecord,
-    answered: Option<&BTreeSet<MachineId>>,
 ) -> (BTreeSet<IpNet>, bool) {
     reconcile_keeping(
         installed,
@@ -462,7 +468,7 @@ fn apply_record(
             .map(|peer| wireguard_peer(peer, peer.selected()))
             .collect::<Vec<_>>(),
         set,
-        |key| record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), answered),
+        |key| record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), set.answered()),
     )
 }
 
@@ -478,9 +484,8 @@ fn startup_removes_an_installed_peer_enforcement_refuses() {
     let (routes, _) = apply_record(
         &mut installed,
         &peers_for(&own.id, &record.bootstrap()),
-        PeerSet::Bootstrap,
+        &PeerSet::Bootstrap,
         &record,
-        None,
     );
     assert_eq!(installed, installed_for(&[founder]));
     assert_eq!(routes, peer_routes(installed.values()).unwrap());
@@ -500,12 +505,10 @@ fn a_rebuild_from_a_fresh_store_removes_only_peers_enforcement_refuses() {
             incomplete_ids: Vec::new(),
         };
         let bootstrap = peers_for(&own.id, &record.bootstrap());
-        let (planned, set) =
-            snapshot_peers(&own.id, &own_row_only, &bootstrap, false, false).unwrap();
-        assert_eq!(set, PeerSet::Bootstrap);
+        let planned = snapshot_peers(&own.id, &own_row_only, &bootstrap, false, false).unwrap();
         let before = installed_for(&[founder.clone(), unsigned.clone()]);
         let mut installed = before.clone();
-        let (routes, _) = apply_record(&mut installed, &planned, set, &record, None);
+        let (routes, _) = apply_record(&mut installed, &planned, &PeerSet::Bootstrap, &record);
         let kept = if enforced {
             installed_for(std::slice::from_ref(&founder))
         } else {
@@ -553,7 +556,7 @@ impl RecreatedStore {
         if self.settled.as_ref() == Some(&snapshot) {
             return;
         }
-        let (planned, set) = snapshot_peers(&own.id, &snapshot, &[], false, true).unwrap();
+        let planned = snapshot_peers(&own.id, &snapshot, &[], false, true).unwrap();
         let mut answered = snapshot
             .observations
             .iter()
@@ -563,7 +566,12 @@ impl RecreatedStore {
             .record
             .unlisted_trusted_machines(|key| installed.contains_key(&Key::new(key.0)), &answered);
         answered.extend(unlisted.into_iter().filter(|id| self.removed.contains(id)));
-        let (_, settled) = apply_record(installed, &planned, set, &self.record, Some(&answered));
+        let (_, settled) = apply_record(
+            installed,
+            &planned,
+            &PeerSet::Snapshot { answered },
+            &self.record,
+        );
         self.settled = settled.then_some(snapshot);
     }
 }

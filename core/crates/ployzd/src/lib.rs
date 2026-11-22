@@ -54,7 +54,6 @@ pub(crate) mod runtime_watch_probe;
 pub(crate) mod sealed_compat;
 pub mod sealed_env;
 pub mod sealing_key;
-mod sealing_recovery;
 pub(crate) mod socket_activation;
 mod storage;
 pub(crate) mod systemd_timeout;

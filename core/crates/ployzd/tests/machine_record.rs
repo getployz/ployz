@@ -9,8 +9,8 @@ use ployz_core::{
     SetManagementClientRequest,
 };
 use ployzd::machine::{
-    EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
-    LocalMachineRecord, LocalMachineStore, ParticipationOrigin, RecordOwner, StoreError,
+    LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior, LocalMachineRecord,
+    LocalMachineStore, ParticipationOrigin, RecordOwner, StoreError,
 };
 use ployzd::management::ManagementSecret;
 use ployzd::network::WireGuardPrivateKey;
@@ -84,10 +84,12 @@ async fn initialize_commits_policy_in_the_first_participating_record() {
     assert_eq!(reopened.record().machine(), Some(&initialized));
 }
 
-#[test]
-fn initialize_and_join_persist_the_only_supported_transitions() {
+#[tokio::test]
+async fn initialize_and_join_persist_the_only_supported_transitions() {
     let first_dir = TestDir::new("ployzd-initialize");
-    let mut first = LocalMachineStore::open(&first_dir.0).unwrap();
+    let first = LocalMachine::new(
+        RecordOwner::spawn(LocalMachineStore::open(&first_dir.0).unwrap()).unwrap(),
+    );
     first
         .enroll(EnrollRequest {
             role: EnrollAs::Founder {
@@ -101,6 +103,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             wireguard_mtu: Some(1400),
             pinned: Default::default(),
         })
+        .await
         .unwrap();
     let initialized = first.record().machine().unwrap().clone();
     assert_eq!(first.record().phase(), LocalMachinePhase::Participating);
@@ -119,44 +122,52 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
     };
     assert!(!first.record().has_management_clients());
     assert!(matches!(
-        first.enroll(EnrollRequest {
-            role: EnrollAs::Founder {
-                initial_policy: Default::default(),
-                name: MachineName::parse("again").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
-                grant: None,
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        }),
-        Ok(EnrollPlan::Conflict(_))
+        first
+            .enroll(EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("again").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.2:51820".parse().unwrap()
+                    )],
+                    grant: None,
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .await,
+        Ok(Enrolled::Refused { .. })
     ));
 
     let second_dir = TestDir::new("ployzd-join");
-    let mut second = LocalMachineStore::open(&second_dir.0).unwrap();
+    let second = LocalMachine::new(
+        RecordOwner::spawn(LocalMachineStore::open(&second_dir.0).unwrap()).unwrap(),
+    );
     let original = second.record().clone();
     let assigned = sample_machine(original.id(), original.private_key().public_key());
     assert!(matches!(
-        second.enroll(EnrollRequest {
-            role: EnrollAs::Member {
-                pin: None,
-                registration: Registered {
-                    assigned_machine: assigned,
-                    visible_peers: vec![initialized],
-                    target_versions: BTreeMap::from([("actor".into(), 4)]),
-                    sealing_key: None,
-                    devices: Vec::new(),
-                    grants: Vec::new(),
+        second
+            .enroll(EnrollRequest {
+                role: EnrollAs::Member {
+                    pin: None,
+                    registration: Registered {
+                        assigned_machine: assigned,
+                        visible_peers: vec![initialized],
+                        target_versions: BTreeMap::from([("actor".into(), 4)]),
+                        sealing_key: None,
+                        devices: Vec::new(),
+                        grants: Vec::new(),
+                    },
                 },
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        }),
-        Err(StoreError::JoinRefused(_))
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .await,
+        Err(LocalMachineError::Store(StoreError::JoinRefused(_)))
     ));
-    assert_eq!(second.record(), &original);
+    assert_eq!(second.record(), original);
 }
 
 fn cloud() -> ManagementClientLabel {
@@ -340,11 +351,12 @@ async fn set_management_client_before_initialize_is_not_participating() {
     }
 }
 
-#[test]
-fn reopening_a_participating_machine_refreshes_runtime_metadata() {
+#[tokio::test]
+async fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     let dir = TestDir::new("ployzd-runtime-refresh");
-    let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    store
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
+    local
         .enroll(EnrollRequest {
             role: EnrollAs::Founder {
                 initial_policy: Default::default(),
@@ -357,8 +369,9 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
             wireguard_mtu: None,
             pinned: Default::default(),
         })
+        .await
         .unwrap();
-    drop(store);
+    drop(local);
 
     let path = dir.0.join("machine.json");
     let mut stale: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -390,11 +403,12 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
     assert_eq!(persisted.machine().unwrap().runtime, expected);
 }
 
-#[test]
-fn machine_update_is_atomic_and_durable() {
+#[tokio::test]
+async fn machine_update_is_atomic_and_durable() {
     let dir = TestDir::new("ployzd-update");
-    let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    store
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
+    local
         .enroll(EnrollRequest {
             role: EnrollAs::Founder {
                 initial_policy: Default::default(),
@@ -407,7 +421,10 @@ fn machine_update_is_atomic_and_durable() {
             wireguard_mtu: None,
             pinned: Default::default(),
         })
+        .await
         .unwrap();
+    drop(local);
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
     let original = store.record().machine().unwrap().clone();
     let endpoints = vec![AdvertisedEndpoint("198.51.100.2:6000".parse().unwrap())];
     let updated = store
@@ -975,11 +992,12 @@ fn local_record_decoding_rejects_incoherent_identity_and_empty_join_payloads() {
     }
 }
 
-#[test]
-fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
+#[tokio::test]
+async fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     let dir = TestDir::new("ployzd-empty-join-endpoints");
-    let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let original = store.record().clone();
+    let local =
+        LocalMachine::new(RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap());
+    let original = local.record();
     let mut assigned = sample_machine(original.id(), original.private_key().public_key());
     let peer = sample_machine(
         MachineId::random(),
@@ -987,24 +1005,26 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
     );
     assigned.advertised_endpoints.clear();
     assert!(matches!(
-        store.enroll(EnrollRequest {
-            role: EnrollAs::Member {
-                pin: None,
-                registration: Registered {
-                    assigned_machine: assigned,
-                    visible_peers: vec![peer],
-                    target_versions: BTreeMap::new(),
-                    sealing_key: None,
-                    devices: Vec::new(),
-                    grants: Vec::new(),
+        local
+            .enroll(EnrollRequest {
+                role: EnrollAs::Member {
+                    pin: None,
+                    registration: Registered {
+                        assigned_machine: assigned,
+                        visible_peers: vec![peer],
+                        target_versions: BTreeMap::new(),
+                        sealing_key: None,
+                        devices: Vec::new(),
+                        grants: Vec::new(),
+                    },
                 },
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        }),
-        Err(StoreError::MissingEndpoints)
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .await,
+        Err(LocalMachineError::Store(StoreError::MissingEndpoints))
     ));
-    assert_eq!(store.record(), &original);
+    assert_eq!(local.record(), original);
 }
 
 #[test]
@@ -1106,8 +1126,8 @@ fn local_record_without_management_clients_fails_to_load() {
     assert!(serde_json::from_value::<LocalMachineRecord>(earlier).is_err());
 }
 
-#[test]
-fn a_founding_keeps_what_granted_it_across_reopens() {
+#[tokio::test]
+async fn a_founding_keeps_what_granted_it_across_reopens() {
     let claim = ployz_core::FoundingClaim::of_pairing("ppair_fake");
     for (grant, expected) in [
         (
@@ -1122,8 +1142,10 @@ fn a_founding_keeps_what_granted_it_across_reopens() {
         (None, ployz_core::Founding::Unrecorded),
     ] {
         let dir = TestDir::new("ployzd-founding-grant");
-        let mut store = LocalMachineStore::open(&dir.0).unwrap();
-        store
+        let local = LocalMachine::new(
+            RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap(),
+        );
+        local
             .enroll(EnrollRequest {
                 role: EnrollAs::Founder {
                     initial_policy: Default::default(),
@@ -1138,9 +1160,10 @@ fn a_founding_keeps_what_granted_it_across_reopens() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             })
+            .await
             .unwrap();
-        assert_eq!(store.record().founding(), expected);
-        drop(store);
+        assert_eq!(local.record().founding(), expected);
+        drop(local);
         assert_eq!(
             LocalMachineStore::open(&dir.0).unwrap().record().founding(),
             expected

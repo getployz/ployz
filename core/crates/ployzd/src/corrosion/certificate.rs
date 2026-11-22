@@ -422,8 +422,31 @@ impl CertificateRow {
     }
 
     pub(crate) fn encode(&self) -> Result<String, Error> {
+        Ok(serde_json::to_string(&self.body())?)
+    }
+
+    /// The failure fields of this row as JSON paths into its stored body and their values.
+    /// A failed renewal writes only these over the stored row, so material or a challenge
+    /// written since it read the row survives.
+    pub(crate) fn failure_patch(&self) -> [(&'static str, serde_json::Value); 4] {
+        let CertificateBody {
+            last_error,
+            next_attempt_at,
+            failures,
+            last_failure,
+            ..
+        } = self.body();
+        [
+            ("$.last_error", last_error.into()),
+            ("$.next_attempt_at", next_attempt_at.into()),
+            ("$.failures", failures.into()),
+            ("$.last_failure", last_failure.into()),
+        ]
+    }
+
+    fn body(&self) -> CertificateBody {
         let clock = self.clock();
-        Ok(serde_json::to_string(&CertificateBody {
+        CertificateBody {
             certificate: self
                 .material()
                 .map_or("", CertificateMaterial::certificate)
@@ -448,7 +471,7 @@ impl CertificateRow {
             last_failure: encode_failure(clock.map(|clock| clock.last_failure())),
             published: self.published().is_some(),
             route: self.route(),
-        })?)
+        }
     }
 }
 
@@ -746,6 +769,22 @@ mod tests {
         assert_eq!(material.certificate(), issued.certificate());
         assert_eq!(material.private_key(), issued.private_key());
         assert_eq!(row.last_error(), Some("refused"));
+    }
+
+    #[test]
+    fn a_failure_patch_names_the_stored_fields_it_replaces() {
+        let clock = IssuanceClock::new(
+            3,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60),
+            IssuanceFailure::Authority,
+        );
+        let failed = CertificateRow::issued(issued_material(), ClusterRoute::Direct)
+            .with_backoff("ACME request failed", clock);
+        let stored: serde_json::Value = serde_json::from_str(&failed.encode().unwrap()).unwrap();
+        for (path, value) in failed.failure_patch() {
+            let field = path.strip_prefix("$.").unwrap();
+            assert_eq!(stored.get(field), Some(&value), "{path}");
+        }
     }
 
     #[test]

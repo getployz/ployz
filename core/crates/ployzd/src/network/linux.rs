@@ -109,7 +109,7 @@ impl NetworkPlane {
         };
         if let Err(error) = plane
             .configure_device(&private_key, initialize)
-            .and_then(|()| plane.apply_peers(&peers, PeerSet::Bootstrap, record, None))
+            .and_then(|()| plane.apply_peers(&peers, &PeerSet::Bootstrap, record))
         {
             plane
                 .rollback_start(docker_created, wireguard_created)

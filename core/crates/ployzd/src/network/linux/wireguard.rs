@@ -83,10 +83,26 @@ pub(super) fn owns_routes(
         .all(|route| owners.get(route) == Some(&machine_id))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum PeerSet {
+    /// Adds to the installed peers, which stay unless Device enforcement refuses them.
     Bootstrap,
-    Snapshot,
+    /// Replaces the installed peers. `answered` holds the Machines the store answered for,
+    /// listed or removed; a trusted Member it doesn't answer for stays.
+    Snapshot { answered: BTreeSet<MachineId> },
+}
+
+impl PeerSet {
+    pub(super) fn answered(&self) -> Option<&BTreeSet<MachineId>> {
+        match self {
+            Self::Bootstrap => None,
+            Self::Snapshot { answered } => Some(answered),
+        }
+    }
+
+    pub(super) fn replaces(&self) -> bool {
+        matches!(self, Self::Snapshot { .. })
+    }
 }
 
 pub(super) fn read_retained_device(
@@ -218,18 +234,18 @@ pub(super) fn seed_retained_selections(
     }
 }
 
-/// The peers a snapshot plans, and whether they replace the installed set. A store that
-/// never held a row for another Machine, such as one recreated after its `store.db` was
-/// lost, can't say who left: it only adds, so the peers that carry its gossip stay, unless
-/// Device enforcement refuses them. A removed Machine's row leaves its key behind, so a
-/// removal still prunes.
+/// The peers a snapshot plans. A store that never held a row for another Machine, such as
+/// one recreated after its `store.db` was lost, can't say who left: it plans the bootstrap
+/// peers too, and its plan only adds (a [`PeerSet::Bootstrap`]), so the peers that carry
+/// its gossip stay, unless Device enforcement refuses them. A removed Machine's row leaves
+/// its key behind, so a removal still prunes.
 pub(super) fn snapshot_peers(
     machine_id: &MachineId,
     snapshot: &ReplicatedObservations<Machine, MachineId>,
     bootstrap: &[MeshPeer],
     joining: bool,
     held_another_machine: bool,
-) -> Option<(Vec<MeshPeer>, PeerSet)> {
+) -> Option<Vec<MeshPeer>> {
     if !snapshot.incomplete_ids.is_empty() {
         return None;
     }
@@ -246,12 +262,7 @@ pub(super) fn snapshot_peers(
                 .cloned(),
         );
     }
-    let set = if held_another_machine {
-        PeerSet::Snapshot
-    } else {
-        PeerSet::Bootstrap
-    };
-    Some((peers, set))
+    Some(peers)
 }
 
 pub(super) struct PeerChanges<'peers> {
@@ -266,7 +277,7 @@ pub(super) struct PeerChanges<'peers> {
 pub(super) fn peer_changes<'peers>(
     installed: &'peers HashMap<Key, Peer>,
     planned: &'peers [Peer],
-    set: PeerSet,
+    set: &PeerSet,
     keeps_unlisted: impl Fn(&Key) -> bool,
 ) -> Result<PeerChanges<'peers>, NetworkError> {
     let updates = planned
@@ -275,7 +286,7 @@ pub(super) fn peer_changes<'peers>(
             let Some(current) = installed.get(&peer.public_key) else {
                 return true;
             };
-            set == PeerSet::Snapshot
+            set.replaces()
                 && (current.allowed_ips.len() != peer.allowed_ips.len()
                     || !peer
                         .allowed_ips
@@ -291,8 +302,7 @@ pub(super) fn peer_changes<'peers>(
         .keys()
         .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key))
         .partition(|key| keeps_unlisted(key));
-    let settled =
-        kept.is_empty() && (set == PeerSet::Snapshot || installed.is_empty() && planned.is_empty());
+    let settled = kept.is_empty() && (set.replaces() || installed.is_empty() && planned.is_empty());
     let routes = peer_routes(
         installed
             .values()
@@ -552,7 +562,7 @@ impl NetworkPlane {
             .collect();
         self.bootstrap_peers
             .retain(|peer| accepted.contains(&peer.machine_id));
-        let Some((planned, set)) = snapshot_peers(
+        let Some(planned) = snapshot_peers(
             &self.machine.id,
             snapshot,
             &self.bootstrap_peers,
@@ -562,9 +572,9 @@ impl NetworkPlane {
             return Ok(true);
         };
         let host = self.wireguard.read_interface_data()?;
-        let answered = match set {
-            PeerSet::Bootstrap => None,
-            PeerSet::Snapshot => {
+        let set = match held_another_machine {
+            false => PeerSet::Bootstrap,
+            true => {
                 let mut answered = snapshot
                     .observations
                     .iter()
@@ -584,7 +594,7 @@ impl NetworkPlane {
                         return Ok(false);
                     }
                 }
-                Some(answered)
+                PeerSet::Snapshot { answered }
             }
         };
         let selected = &record.selected_endpoints;
@@ -592,7 +602,7 @@ impl NetworkPlane {
         let mut previous = std::mem::take(&mut self.endpoint_peers);
         seed_retained_selections(&planned, &mut previous, &host.peers, now);
         let (planned, _) = attach_peer_selections(planned, previous, selected, now);
-        let settled = self.apply_peers(&planned, set, &record, answered.as_ref())?;
+        let settled = self.apply_peers(&planned, &set, &record)?;
         self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
         for peer in &self.endpoint_peers {
@@ -656,9 +666,8 @@ impl NetworkPlane {
     pub(super) fn apply_peers(
         &mut self,
         peers: &[MeshPeer],
-        set: PeerSet,
+        set: &PeerSet,
         record: &LocalMachineRecord,
-        answered: Option<&BTreeSet<MachineId>>,
     ) -> Result<bool, NetworkError> {
         let wg_peers = peers
             .iter()
@@ -666,7 +675,7 @@ impl NetworkPlane {
             .collect::<Vec<_>>();
         let host = self.wireguard.read_interface_data()?;
         let changes = peer_changes(&host.peers, &wg_peers, set, |key| {
-            record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), answered)
+            record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), set.answered())
         })?;
         for peer in changes.updates {
             self.wireguard.configure_peer(peer)?;

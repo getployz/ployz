@@ -119,7 +119,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
                 pinned: Default::default()
             })
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert_eq!(
         joiner.record().devices().collect::<Vec<_>>(),
@@ -1377,10 +1377,12 @@ async fn an_approval_that_closes_before_the_install_commits_installs_nothing() {
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let now = Timestamp::now();
-    let (plan, installation) = joiner
+    let EnrollPlan::Fresh(installation) = joiner
         .plan_enrollment(member(registration), None, now)
-        .unwrap();
-    assert_eq!(plan, EnrollPlan::Fresh);
+        .unwrap()
+    else {
+        panic!("an approved registration enrolls fresh");
+    };
 
     let closed = now.plus(24 * 60 * 60 * 1000);
     assert!(matches!(
