@@ -4,7 +4,7 @@ import type { ReviewLifecycleKind } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreDangerSection, type StoreService } from "./StoreServiceDrawer";
-import * as deletes from "./useDeleteService";
+import * as deletes from "./useRemoveStoreService";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 

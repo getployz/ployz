@@ -14,10 +14,6 @@ import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";
 import type { SealedControls, VariableAddInput } from "#/components/variables/variables-panel";
 
-type VariableAddFormDefaults = {
-  defaultExported: boolean;
-};
-
 type VariableAddFormState = {
   key: string;
   value: string;
@@ -34,16 +30,14 @@ type VariableAddFormAction =
   | { type: "exportedChanged"; checked: boolean }
   | { type: "overwriteRequested" }
   | { type: "overwriteCleared" }
-  | { type: "reset"; defaults: VariableAddFormDefaults };
+  | { type: "reset" };
 
-function createVariableAddFormState({
-  defaultExported,
-}: VariableAddFormDefaults, draft?: VariableAddInput): VariableAddFormState {
+function createVariableAddFormState(draft?: VariableAddInput): VariableAddFormState {
   return {
     key: draft?.key ?? "",
     value: draft?.value ?? "",
     sealed: draft?.sealed ?? false,
-    exported: draft?.exported ?? defaultExported,
+    exported: draft?.exported ?? false,
     confirmingOverwrite: false,
   };
 }
@@ -73,7 +67,7 @@ function variableAddFormReducer(
     case "overwriteCleared":
       return { ...state, confirmingOverwrite: false };
     case "reset":
-      return createVariableAddFormState(action.defaults);
+      return createVariableAddFormState();
   }
 }
 
@@ -82,8 +76,6 @@ export function VariableAddForm({
   onCreateVariable,
   onCancel,
   sealing,
-  defaultExported,
-  supportsExport,
   valueTargets,
   serviceNames,
   initial,
@@ -96,21 +88,18 @@ export function VariableAddForm({
   initial?: VariableAddInput;
   /** Offers Sealed; none: the form adds plain variables only. */
   sealing?: SealedControls;
-  defaultExported: boolean;
-  supportsExport: boolean;
   valueTargets?: ReferenceTarget[];
   /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
   serviceNames?: readonly string[];
 }) {
-  const defaults = { defaultExported };
   const [state, dispatch] = useReducer(
     variableAddFormReducer,
-    defaults,
-    (initialDefaults) => createVariableAddFormState(initialDefaults, initial),
+    initial,
+    createVariableAddFormState,
   );
 
   function closeForm() {
-    dispatch({ type: "reset", defaults });
+    dispatch({ type: "reset" });
     onCancel();
   }
 
@@ -204,54 +193,50 @@ export function VariableAddForm({
           )}
           {valueError ? <FieldError>{valueError}</FieldError> : null}
         </Field>
-        {sealing || supportsExport ? (
-          <FieldGroup>
-            {sealing ? (
-              <Field orientation="horizontal" data-disabled={sealing.state === "no_server" && !state.sealed ? true : undefined}>
-                <Checkbox
-                  id="new-variable-sealed"
-                  checked={state.sealed}
-                  // A Sealed draft back from a refusal can still be unticked.
-                  disabled={sealing.state === "no_server" && !state.sealed}
-                  onCheckedChange={(checked) => {
-                    warmSealing();
-                    dispatch({
-                      type: "sealedChanged",
-                      checked: Boolean(checked),
-                    });
-                  }}
-                />
-                <FieldContent>
-                  <FieldLabel htmlFor="new-variable-sealed">
-                    Sealed
-                  </FieldLabel>
-                  {sealing.state === "no_server" ? (
-                    <FieldDescription>Needs a server. {sealing.addServer}</FieldDescription>
-                  ) : null}
-                </FieldContent>
-              </Field>
-            ) : null}
-            {supportsExport ? (
-              <Field orientation="horizontal">
-                <Checkbox
-                  id="new-variable-exported"
-                  checked={state.exported}
-                  onCheckedChange={(checked) =>
-                    dispatch({
-                      type: "exportedChanged",
-                      checked: Boolean(checked),
-                    })
-                  }
-                />
-                <FieldLabel
-                  htmlFor="new-variable-exported"
-                >
-                  Exported
+        <FieldGroup>
+          {sealing ? (
+            <Field orientation="horizontal" data-disabled={sealing.state === "no_server" && !state.sealed ? true : undefined}>
+              <Checkbox
+                id="new-variable-sealed"
+                checked={state.sealed}
+                // A Sealed draft back from a refusal can still be unticked.
+                disabled={sealing.state === "no_server" && !state.sealed}
+                onCheckedChange={(checked) => {
+                  warmSealing();
+                  dispatch({
+                    type: "sealedChanged",
+                    checked: Boolean(checked),
+                  });
+                }}
+              />
+              <FieldContent>
+                <FieldLabel htmlFor="new-variable-sealed">
+                  Sealed
                 </FieldLabel>
-              </Field>
-            ) : null}
-          </FieldGroup>
-        ) : null}
+                {sealing.state === "no_server" ? (
+                  <FieldDescription>Needs a server. {sealing.addServer}</FieldDescription>
+                ) : null}
+              </FieldContent>
+            </Field>
+          ) : null}
+          <Field orientation="horizontal">
+            <Checkbox
+              id="new-variable-exported"
+              checked={state.exported}
+              onCheckedChange={(checked) =>
+                dispatch({
+                  type: "exportedChanged",
+                  checked: Boolean(checked),
+                })
+              }
+            />
+            <FieldLabel
+              htmlFor="new-variable-exported"
+            >
+              Exported
+            </FieldLabel>
+          </Field>
+        </FieldGroup>
         <div className="flex items-center gap-2">
           <Button
             type="submit"

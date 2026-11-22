@@ -38,15 +38,15 @@ import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeade
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
-import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
+import { RegistryCredentialsField } from "./RegistryCredentialsField";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckSettings } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef, useSourceLock } from "./StoreGitFields";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
-import { useRemoveStoreService } from "./useDeleteService";
+import { useRemoveStoreService } from "./useRemoveStoreService";
 import { ConfirmDialog } from "#/components/confirm-dialog";
-import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
+import { StoreServiceVariablesTab } from "./StoreServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { CappedHint, StoreReplicasRows } from "./StoreReplicasRows";
 import { deployedServiceIdentity, useServiceRuntime } from "./useServiceRuntime";

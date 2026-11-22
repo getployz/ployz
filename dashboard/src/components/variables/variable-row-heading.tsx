@@ -4,21 +4,19 @@ export function VariableRowHeading({
   variableKey,
   exported,
   neverSynced,
-  showMetadata,
   warnings,
 }: {
   variableKey: string;
   exported: boolean;
   /** Sync never carries it in or out of this Environment. */
   neverSynced: boolean;
-  showMetadata: boolean;
   warnings: Array<string | null | undefined>;
 }) {
   return (
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate font-mono text-sm" title={variableKey}>{variableKey}</span>
-        {showMetadata && exported ? (
+        {exported ? (
           <span className="shrink-0 text-xs text-muted-foreground">Exported</span>
         ) : null}
         {neverSynced ? (

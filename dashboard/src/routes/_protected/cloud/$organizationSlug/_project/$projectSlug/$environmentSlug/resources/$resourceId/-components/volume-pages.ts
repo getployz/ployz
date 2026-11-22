@@ -5,8 +5,6 @@ export const VOLUME_PAGES = [
   { id: "settings", label: "Settings" },
 ] as const;
 
-export type VolumePage = (typeof VOLUME_PAGES)[number]["id"];
-
 export const volumePageSchema = Schema.Literals(VOLUME_PAGES.map((page) => page.id));
 
 /** The open tab. A tab this drawer doesn't have, say one carried over from another drawer, opens Copies. */

@@ -1,14 +1,23 @@
 import { useReducer, useRef } from "react";
-import { Result } from "effect";
+import { Result, Schema } from "effect";
+import { LayersIcon, LockIcon } from "lucide-react";
+import { CopyButton } from "#/components/copy-button";
+import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { Button } from "#/components/ui/button";
+import { Checkbox } from "#/components/ui/checkbox";
+import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
+import { VariableValueTextarea } from "#/components/variables/VariableValueTextarea";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
 import type { Write } from "#/modules/config-store/store-write";
-import { sealedValueProblem } from "#/modules/variables/seal-value";
+import { sealedValueProblem, warmSealing } from "#/modules/variables/seal-value";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableRecord } from "#/modules/variables/variables";
 import {
@@ -27,12 +36,12 @@ import {
   serializeVariablesToJson,
   type ParsedEntry,
 } from "#/modules/variables/variable-raw-editor";
-import { ServiceVariablesRawEditorAlerts } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorAlerts";
-import { ServiceVariablesRawEditorSealed } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorSealed";
-import { ServiceVariablesRawEditorFooter } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorFooter";
-import { ServiceVariablesRawEditorTabs } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTabs";
-import type { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
 import { toErrorMessage } from "#/lib/error-message";
+
+const RawEditorMode = Schema.Literals(["env", "json"]);
+type RawEditorMode = typeof RawEditorMode.Type;
+
+const isRawEditorMode = Schema.is(RawEditorMode);
 
 const EMPTY_REFERENCE_TARGETS: ReferenceTarget[] = [];
 
@@ -80,6 +89,201 @@ function parseForMode(
   mode: RawEditorMode,
 ): Result.Result<ParsedEntry[], RawEditorParseError> {
   return mode === "env" ? parseEnv(text) : parseJson(text);
+}
+
+function ServiceVariablesRawEditorAlerts({
+  duplicateKeys,
+  parseError,
+  sealedCount,
+  submitError,
+}: {
+  duplicateKeys: string[];
+  parseError: string | null;
+  sealedCount: number;
+  submitError: string | null;
+}) {
+  const shownDuplicateKeys = duplicateKeys.slice(0, 6);
+  const extraDuplicateCount = duplicateKeys.length - shownDuplicateKeys.length;
+
+  return (
+    <>
+      {sealedCount > 0 ? (
+        <Alert>
+          <LockIcon />
+          <AlertDescription>
+            {sealedCount} sealed variable{sealedCount === 1 ? "" : "s"} omitted
+            from the editor. The value{sealedCount === 1 ? " is" : "s are"}{" "}
+            retained as-is.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {parseError ? (
+        <Alert variant="destructive">
+          <AlertTitle>Couldn’t parse</AlertTitle>
+          <AlertDescription>{parseError}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {submitError ? (
+        <Alert variant="destructive">
+          <AlertTitle>Couldn’t update variables</AlertTitle>
+          <AlertDescription>{submitError}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {duplicateKeys.length > 0 && !parseError && !submitError ? (
+        <Alert>
+          <LayersIcon />
+          <AlertDescription>
+            {duplicateKeys.length === 1
+              ? "Duplicate key will be merged, keeping the last value: "
+              : `${duplicateKeys.length} duplicate keys will be merged, keeping the last value: `}
+            <span className="font-mono">{shownDuplicateKeys.join(", ")}</span>
+            {extraDuplicateCount > 0 ? ` +${extraDuplicateCount} more` : null}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </>
+  );
+}
+
+function ServiceVariablesRawEditorTabs({
+  mode,
+  envText,
+  jsonText,
+  valueTargets,
+  onEnvTextChange,
+  onJsonTextChange,
+  onModeChange,
+}: {
+  mode: RawEditorMode;
+  envText: string;
+  jsonText: string;
+  valueTargets: ReferenceTarget[];
+  onEnvTextChange: (value: string) => void;
+  onJsonTextChange: (value: string) => void;
+  onModeChange: (mode: RawEditorMode) => void;
+}) {
+  return (
+    <Tabs
+      className="min-w-0"
+      value={mode}
+      onValueChange={(value) => {
+        if (isRawEditorMode(value)) onModeChange(value);
+      }}
+    >
+      <TabsList variant="line">
+        <TabsTrigger value="env">ENV</TabsTrigger>
+        <TabsTrigger value="json">JSON</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="env" className="mt-3 min-w-0">
+        <VariableValueTextarea
+          aria-label="Service variables in ENV format"
+          value={envText}
+          onValueChange={onEnvTextChange}
+          targets={valueTargets}
+          className="h-[40dvh] min-h-40 max-h-72 max-w-full field-sizing-fixed overflow-auto font-mono text-xs"
+          placeholder='KEY="value"'
+        />
+      </TabsContent>
+
+      <TabsContent value="json" className="mt-3 min-w-0">
+        <VariableValueTextarea
+          aria-label="Service variables in JSON format"
+          value={jsonText}
+          onValueChange={onJsonTextChange}
+          targets={valueTargets}
+          className="h-[40dvh] min-h-40 max-h-72 max-w-full field-sizing-fixed overflow-auto font-mono text-xs"
+          placeholder="{}"
+        />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+/**
+ * While sealing is ready, or a new key is ticked: the sealed variables, which the text never holds and a save never removes, and a Sealed
+ * choice for each new key.
+ */
+function ServiceVariablesRawEditorSealed({ sealedKeys, newKeys, sealing, problems, onSealingChange }: {
+  sealedKeys: readonly string[];
+  newKeys: readonly string[];
+  /** The new keys ticked Sealed. */
+  sealing: readonly string[];
+  /** Why a ticked value can't be sealed, by key. */
+  problems: ReadonlyMap<string, string>;
+  onSealingChange: (key: string, sealed: boolean) => void;
+}) {
+  if (sealedKeys.length === 0 && newKeys.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      {sealedKeys.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {sealedKeys.map((key) => (
+            <li key={key} className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <LockIcon className="size-3.5" />
+              <span className="font-mono text-xs">{key}</span> · Sealed
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {newKeys.length > 0 ? (
+        <FieldGroup className="gap-2">
+          {newKeys.map((key) => (
+            <Field key={key} orientation="horizontal">
+              <Checkbox
+                id={`raw-sealed-${key}`}
+                checked={sealing.includes(key)}
+                onCheckedChange={(checked) => {
+                  warmSealing();
+                  onSealingChange(key, Boolean(checked));
+                }}
+              />
+              <FieldLabel htmlFor={`raw-sealed-${key}`}>
+                Seal <span className="font-mono text-xs">{key}</span>
+              </FieldLabel>
+              {problems.has(key) ? <FieldError>{problems.get(key)}</FieldError> : null}
+            </Field>
+          ))}
+        </FieldGroup>
+      ) : null}
+    </div>
+  );
+}
+
+function ServiceVariablesRawEditorFooter({
+  text,
+  mode,
+  onCancel,
+  onSubmit,
+}: {
+  text: string;
+  mode: RawEditorMode;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <DialogFooter className="min-w-0 sm:flex-wrap sm:justify-between">
+      <CopyButton value={text} label={`Copy ${mode.toUpperCase()}`} showLabel variant="outline" />
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          onClick={onSubmit}
+        >
+          Update variables
+        </Button>
+      </div>
+    </DialogFooter>
+  );
 }
 
 export function ServiceVariablesRawEditor({
