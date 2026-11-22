@@ -889,6 +889,17 @@ fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
     );
 }
 
+#[test]
+fn a_failure_sent_to_cloud_keeps_the_next_step() {
+    let error = crate::handlers::Error::conflict("This Server already used its First Key.")
+        .hint(ployz_core::Hint::Next("ployz server add --command".into()));
+
+    assert_eq!(
+        failure_message(&error),
+        "This Server already used its First Key.; next: ployz server add --command"
+    );
+}
+
 fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
     record(
         &LocalCheckin {

@@ -156,10 +156,7 @@ fn confirm(held: &FirstKey, line: &LineKey) -> Result<(), Failure> {
 fn holds(held: &FirstKey) -> String {
     match held {
         FirstKey::Waiting { key } => format!("This Server waits to trust {}.", key.describe()),
-        FirstKey::Spent { .. } => {
-            "This Server already used its First Key, so an install command can't set a new one."
-                .to_owned()
-        }
+        FirstKey::Spent { .. } => "This Server already used its First Key.".to_owned(),
     }
 }
 

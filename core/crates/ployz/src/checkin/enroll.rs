@@ -292,6 +292,12 @@ fn failure_message(error: &crate::handlers::Error) -> String {
         message.push_str("; cause: ");
         message.push_str(&cause);
     }
+    for hint in error.hints() {
+        if let ployz_core::Hint::Next(next) = hint {
+            message.push_str("; next: ");
+            message.push_str(&next);
+        }
+    }
     message
 }
 

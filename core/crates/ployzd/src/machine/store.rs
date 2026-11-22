@@ -604,7 +604,7 @@ impl LocalMachineStore {
             Some(sealing_key.public_key()),
             now,
         )
-        .map_err(StoreError::JoinRefused)?;
+        .map_err(|refusal| not_first_key(refusal, first_key))?;
         let Some(trust) = trust else {
             return Err(StoreError::JoinTrustMissing {
                 admitting: body.admitting_machines.first().copied(),
@@ -1459,6 +1459,21 @@ fn join_anchor(
     Ok(anchor)
 }
 
+/// A join approval no trusted key signed, named against the key the install line armed, so
+/// the person sees which key to approve with.
+fn not_first_key(
+    refusal: ployz_core::authority::AuthorityRefusal,
+    first_key: Option<&FirstKey>,
+) -> StoreError {
+    use ployz_core::authority::AuthorityRefusal::{UnknownKey, UnknownPasskey};
+    match (&refusal, first_key.and_then(FirstKey::waiting)) {
+        (UnknownKey { .. } | UnknownPasskey, Some(line)) => StoreError::NotFirstKey {
+            expected: line.describe(),
+        },
+        _ => StoreError::JoinRefused(refusal),
+    }
+}
+
 /// The keys a joiner trusts from the trust its admitting Machine sealed, and the ones it
 /// holds removed. A sealed list that trusts a key it also removed, or lists one key twice
 /// under two kinds, is refused whole.
@@ -1569,6 +1584,10 @@ pub enum StoreError {
         "This Server has no key to check its join approval against: its install line named none, or its disk already used one."
     )]
     JoinUnanchored,
+    #[error(
+        "This Server's join was approved by a key it doesn't trust. Approve it with {expected}, the key its install line named."
+    )]
+    NotFirstKey { expected: String },
     #[error("{}", join_trust_missing_text(.admitting.as_ref()))]
     JoinTrustMissing { admitting: Option<MachineId> },
     #[error(

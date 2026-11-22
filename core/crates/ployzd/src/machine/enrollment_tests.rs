@@ -119,7 +119,10 @@ fn a_join_refuses_a_cluster_neither_its_pin_nor_its_first_key_signed() {
     };
     first_key.lock().unwrap().arm(&line).unwrap();
     let refused = store.enroll(member(forged, None));
-    assert!(unknown(&refused), "{refused:?}");
+    assert!(
+        matches!(&refused, Err(StoreError::NotFirstKey { expected }) if *expected == line.describe()),
+        "{refused:?}"
+    );
     assert_eq!(store.record(), &original);
     assert_eq!(
         first_key.lock().unwrap().read().unwrap(),

@@ -1447,7 +1447,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &Gate::new(ployz_core::JOIN_TRUST_CAPABILITY),
         )),
         LocalMachineError::JoinRefused(_)
-        | LocalMachineError::Store(StoreError::JoinRefused(_)) => Err(gated(
+        | LocalMachineError::Store(StoreError::JoinRefused(_) | StoreError::NotFirstKey { .. }) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY)
@@ -1690,6 +1690,7 @@ fn finish(
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::JoinRefused(_)
+        | StoreError::NotFirstKey { .. }
         | StoreError::FirstKeySpent
         | StoreError::JoinUnanchored
         | StoreError::JoinTrustMissing { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),

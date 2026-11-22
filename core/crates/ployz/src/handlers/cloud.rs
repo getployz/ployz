@@ -853,6 +853,8 @@ where
             };
             let machine = match enrolled {
                 Err(error) if first_key_spent(&error) => {
+                    // The storage it set up stands; the enroll is what was refused.
+                    progress(EnrollStage::Enrolling);
                     return Err(refuse_spent(cloud_url, token, details.id, &pairing).await);
                 }
                 enrolled => enrolled?,
