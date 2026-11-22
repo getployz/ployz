@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { Effect } from "effect";
 import { InngestClient, InngestEventSendError, type InngestSendableEvent, type PloyzInngest } from "#/modules/inngest/client";
-import { operationOutbox } from "#/modules/operations/tables";
+import { operationOutbox } from "#/modules/inngest/outbox.tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 

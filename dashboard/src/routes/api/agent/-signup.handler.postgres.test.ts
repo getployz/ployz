@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationToken, user } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
-import { rateLimitEvent } from "#/modules/machines/waiting/tables";
+import { rateLimitEvent } from "#/server/rate-limit.tables";
 import { handleAgentSignup, signupMethodNotAllowed } from "#/routes/api/agent/-signup.handler";
 import { observedIp } from "#/server/client-ip";
 import { AuthLive } from "#/modules/identity/auth.server";
