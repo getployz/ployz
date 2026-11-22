@@ -11,8 +11,8 @@ use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
     ServiceName,
     authority::{
-        ImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed, VerifiedBuild,
-        version::MAX_PRESENTED,
+        BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
+        VerifiedBuild, version::MAX_PRESENTED,
     },
 };
 use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
@@ -138,9 +138,9 @@ impl KeptVersions {
 }
 
 /// The content digest `image` names, when it names one.
-fn image_of(image: &str) -> Option<ImageDigest> {
+fn image_of(image: &str) -> Option<BuiltImageDigest> {
     let digest = image.rsplit_once('@').map_or(image, |(_, digest)| digest);
-    ImageDigest::parse(digest).ok()
+    BuiltImageDigest::parse(digest).ok()
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in

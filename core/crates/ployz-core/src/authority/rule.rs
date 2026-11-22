@@ -62,7 +62,7 @@ hex_newtype!(
 );
 hex_newtype!(
     /// The content digest of a built image, `sha256:<64 hex>`.
-    ImageDigest, "image digest", 32, "sha256:"
+    BuiltImageDigest, "image digest", 32, "sha256:"
 );
 hex_newtype!(
     /// The X25519 key a builder makes for one build, which its build secrets are sealed to.
@@ -514,7 +514,7 @@ pub enum BuildStage {
     },
     /// `image` was built, with its secrets sealed from `attest`.
     Built {
-        image: ImageDigest,
+        image: BuiltImageDigest,
         attest: AttestKey,
     },
 }
@@ -659,7 +659,7 @@ impl AutoDeployRule {
         claim: &BuildClaim,
         facts: &RuleFacts<'_>,
         creation: Creation<'_>,
-    ) -> Result<ImageDigest, AuthorityRefusal> {
+    ) -> Result<BuiltImageDigest, AuthorityRefusal> {
         let mismatch = |field| AuthorityRefusal::Mismatch { field };
         if creation.service != facts.service || &creation.spec.name != facts.service {
             return Err(mismatch("a Service"));
@@ -710,7 +710,7 @@ impl AutoDeployRule {
         let digest = running
             .rsplit_once('@')
             .map_or(running.as_str(), |(_, digest)| digest);
-        if !content_addressed(running) || ImageDigest::parse(digest) != Ok(image) {
+        if !content_addressed(running) || BuiltImageDigest::parse(digest) != Ok(image) {
             return Err(mismatch("an image"));
         }
         if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {

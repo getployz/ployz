@@ -7,8 +7,8 @@ use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryN
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{
-    AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, ImageDigest, RuleEvidence, RuleProof,
-    Signed, VerifiedBuild,
+    AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, RuleEvidence,
+    RuleProof, Signed, VerifiedBuild,
 };
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
@@ -427,7 +427,7 @@ pub struct VerifiedClaim {
 }
 
 impl VerifiedClaim {
-    fn image(&self) -> Option<ImageDigest> {
+    fn image(&self) -> Option<BuiltImageDigest> {
         match self.claim.stage {
             BuildStage::Built { image, .. } => Some(image),
             BuildStage::Grant { .. } => None,
@@ -1276,7 +1276,7 @@ pub(crate) fn verified_proof(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&ployz_core::Namespace, &ServiceName),
-    image: ImageDigest,
+    image: BuiltImageDigest,
 ) -> Result<Option<RuleProof>, RpcError> {
     // The claim names its image in hex, so this narrows the rows; the decode below
     // confirms each.
@@ -1310,7 +1310,7 @@ pub(crate) fn verified_proof(
     Ok(None)
 }
 
-fn hex_of(image: &ImageDigest) -> String {
+fn hex_of(image: &BuiltImageDigest) -> String {
     let text = image.to_string();
     text.strip_prefix("sha256:").unwrap_or(&text).to_owned()
 }

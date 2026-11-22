@@ -1433,7 +1433,7 @@ mod tests {
             deploy::PayloadDigest,
             keys::SigningPublicKey,
             proposal::StepDigest,
-            rule::{AttestKey, ImageDigest, RuleId},
+            rule::{AttestKey, BuiltImageDigest, RuleId},
         };
         use crate::{Ciphertext, FoundingClaim, SealedSealingKey, SealingKeyBackup};
         use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1460,7 +1460,7 @@ mod tests {
         wire(&AttestKey::parse(&hex32).unwrap(), &hex32);
         wire(&RuleId::parse(&"07".repeat(16)).unwrap(), &"07".repeat(16));
         wire(
-            &ImageDigest::parse(&format!("sha256:{hex32}")).unwrap(),
+            &BuiltImageDigest::parse(&format!("sha256:{hex32}")).unwrap(),
             &format!("sha256:{hex32}"),
         );
         assert_eq!(
@@ -1480,12 +1480,12 @@ mod tests {
             r#"invalid rule ID "zz": lowercase hex of 16 bytes"#
         );
         assert_eq!(
-            refused(ImageDigest::parse("zz").unwrap_err()),
+            refused(BuiltImageDigest::parse("zz").unwrap_err()),
             r#"invalid image digest "zz": sha256:lowercase hex of 32 bytes"#
         );
         assert!(PayloadDigest::parse(&"ab".repeat(32)).is_ok());
         assert!(PayloadDigest::parse(&"AB".repeat(32)).is_err());
-        assert!(ImageDigest::parse(&hex32).is_err());
+        assert!(BuiltImageDigest::parse(&hex32).is_err());
 
         let sealing: crate::SealingPublicKey =
             serde_json::from_value(serde_json::json!(STANDARD.encode([7; 32]))).unwrap();
