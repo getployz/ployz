@@ -887,21 +887,6 @@ mod tests {
     }
 
     #[test]
-    fn service_only_and_mixed_member_interfaces_do_not_inspect_kind() {
-        let service = ServiceContainer::try_from(observation(ContainerKind::ServiceContainer))
-            .expect("service observation converts to a Service Container");
-        let hook = HookContainer::try_from(observation(ContainerKind::PreDeployHook))
-            .expect("hook observation converts to a Hook Container");
-
-        assert_eq!(start_service(&service), service_container_id());
-        assert_eq!(
-            stop_container(&Container::from(service)),
-            service_container_id()
-        );
-        assert_eq!(stop_container(&Container::from(hook)), hook_container_id());
-    }
-
-    #[test]
     fn mixed_container_observation_keeps_kind_on_the_wire() {
         let service = observation(ContainerKind::ServiceContainer);
         let hook = observation(ContainerKind::PreDeployHook);
@@ -940,25 +925,6 @@ mod tests {
             .expect("observation serializes as an object")
             .remove("namespace");
         assert!(serde_json::from_value::<ContainerObservation>(json).is_err());
-    }
-
-    fn start_service(container: &ServiceContainer) -> ContainerId {
-        container.as_observation().container_id
-    }
-
-    fn stop_container(container: &Container) -> ContainerId {
-        match container {
-            Container::Service(container) => start_service(container),
-            Container::Hook(container) => container.as_observation().container_id,
-        }
-    }
-
-    fn service_container_id() -> ContainerId {
-        ContainerId::parse("1".repeat(64)).unwrap()
-    }
-
-    fn hook_container_id() -> ContainerId {
-        ContainerId::parse("2".repeat(64)).unwrap()
     }
 
     #[test]

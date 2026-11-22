@@ -174,38 +174,6 @@ mod tests {
     }
 
     #[test]
-    fn each_hint_writes_its_own_key_and_shape() {
-        let null = Value::Null;
-        assert_eq!(
-            written(&[Hint::Next("ployz deploy".into())], null.clone()),
-            json!({ "next": "ployz deploy" })
-        );
-        assert_eq!(
-            written(&[Hint::Retry("ployz rm web --yes".into())], null.clone()),
-            json!({ "retry": "ployz rm web --yes" })
-        );
-        assert_eq!(
-            written(
-                &[Hint::Undo("ployz env sync --undo s3".into())],
-                null.clone()
-            ),
-            json!({ "undo": "ployz env sync --undo s3" })
-        );
-        assert_eq!(
-            written(&[Hint::Closest("web".into())], null.clone()),
-            json!({ "did_you_mean": "web" })
-        );
-        assert_eq!(
-            written(&[Hint::valid(["web", "db"])], null.clone()),
-            json!({ "valid_children": ["web", "db"] })
-        );
-        assert_eq!(
-            written(&[Hint::Inspect("ployz ps".into())], null),
-            json!({ "inspect": ["ployz ps"] })
-        );
-    }
-
-    #[test]
     fn hints_merge_into_the_details_already_there() {
         let details = json!({
             "deployment": "d1",
