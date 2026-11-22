@@ -8,9 +8,9 @@ use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY, MachineId,
-    MachineName, MachineTarget, Rpc, RpcError, RpcErrorCode, SET_DEVICE_CAPABILITY,
-    SetDeviceRequest,
+    CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY,
+    MachineFailure, MachineId, MachineName, MachineTarget, Rpc, RpcError, RpcErrorCode,
+    SET_DEVICE_CAPABILITY, SetDeviceRequest,
     authority::{KeyRef, PasskeyAccount, PasskeyApprover, SignerKey},
     op,
 };
@@ -183,7 +183,7 @@ pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<Device
 }
 
 /// This computer's Device key beside `config`, made now if it has none.
-fn own_key(config: &Path) -> Result<DeviceKey, Error> {
+pub(in crate::handlers) fn own_key(config: &Path) -> Result<DeviceKey, Error> {
     let path = key::path(config);
     let secret = match key::load(&path)? {
         Some(secret) => secret,
@@ -287,6 +287,13 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
             )
         });
     };
+    // Cloud relays this body, so it can name a Cluster of its own; only a route the person
+    // chose, or a Cluster this computer pinned, vouches for it.
+    if !crate::sealing_pin::SealTo::direct(&client)
+        && !crate::sealing_pin::Pins::beside(&config_path(leaf)?).knows(body.cluster)?
+    {
+        return Err(unpinned_relay(body));
+    }
     show_join(body);
     let approval = sign_join(&signing, body)?;
     client
@@ -324,8 +331,8 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
         .map(|endpoint| endpoint.0.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let summary = format!(
-        "Approving Server {} on {} with endpoints {} (join code {}).",
+    format!(
+        "Approving Server {} on {} with endpoints {} (join code {}). It will trust the same devices, passkeys and CI or agent keys as the Server that admits it, and none that Server removed.",
         body.machine.name,
         body.machine.subnet,
         if endpoints.is_empty() {
@@ -334,71 +341,6 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
             &endpoints
         },
         body.code()
-    );
-    let devices = body
-        .devices
-        .iter()
-        .map(|device| device.code().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut summary = format!("{summary} The Server will trust device {devices}.");
-    if !body.passkeys.is_empty() {
-        let passkeys = body
-            .passkeys
-            .iter()
-            .map(|passkey| format!("{} for {}", passkey.code(), passkey.account))
-            .collect::<Vec<_>>()
-            .join(", ");
-        summary = format!(
-            "{summary} The Server will also trust passkey {passkeys}. A passkey approves workflows, automatic deploy rules, volume changes, Release Channels, and Server joins and key changes in a bundle."
-        );
-    }
-    if !body.grants.is_empty() {
-        let grants = body
-            .grants
-            .iter()
-            .map(grant_summary)
-            .collect::<Vec<_>>()
-            .join("; ");
-        summary = format!(
-            "{summary} The Server will also trust {grants}. These keys sign service deploys only, in the places named."
-        );
-    }
-    summary
-}
-
-/// One CI or agent key as a person reads it before they sign: its kind, code, places and
-/// the volumes it may mount.
-fn grant_summary(grant: &ployz_core::authority::Grant) -> String {
-    let places = match &grant.scope.places {
-        ployz_core::authority::KeyPlaces::Cluster => "every environment".to_owned(),
-        ployz_core::authority::KeyPlaces::Only(places) => places
-            .iter()
-            .map(|place| match &place.service {
-                Some(service) => format!(
-                    "service {} in {} (environment {})",
-                    service.name, place.namespace, place.environment
-                ),
-                None => format!("{} (environment {})", place.namespace, place.environment),
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    let kind = ployz_core::authority::KeyKind::from(grant.kind);
-    let volumes = if grant.volumes.is_empty() {
-        "no volumes".to_owned()
-    } else {
-        let names = grant
-            .volumes
-            .iter()
-            .map(|volume| volume.name.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("volumes {names}")
-    };
-    format!(
-        "{kind} key {} for {places}, with {volumes}",
-        grant.key.code()
     )
 }
 
@@ -438,13 +380,10 @@ pub(super) async fn sign_waiting_join(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
     }
-    let left_out = narrow_pinned_join(&mut body, signing.device_key(), entry, |cluster| {
+    check_waiting_join(&body, signing.device_key(), entry, |cluster| {
         crate::sealing_pin::Pins::beside(config).knows(cluster)
     })?;
     show_join(&body);
-    if !left_out.is_empty() {
-        ui::note(left_out_summary(&left_out));
-    }
     let approval = sign_join(&signing, &mut body)?;
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
@@ -452,57 +391,40 @@ pub(super) async fn sign_waiting_join(
     Ok(true)
 }
 
-/// Narrow a pinned join's `body` to what its joiner installs, answering the Devices left out.
-/// The joiner trusts no passkey or grant, and only the pinned Devices the body names. A
-/// relayed body is signed only for a Cluster this computer pinned.
-fn narrow_pinned_join(
-    body: &mut ployz_core::authority::JoinApproval,
+/// Refuse to sign a join this computer can't vouch for: a body relayed through Cloud for a
+/// Cluster this computer never pinned, or one whose admitting Server doesn't trust this
+/// computer's Device. The joiner trusts what its admitting Server seals, not the body's lists.
+fn check_waiting_join(
+    body: &ployz_core::authority::JoinApproval,
     own: DeviceKey,
     entry: JoinEntry,
     pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
-) -> Result<Vec<DeviceKey>, Error> {
-    body.passkeys.clear();
-    body.grants.clear();
+) -> Result<(), Error> {
     if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
-        return Err(Error::conflict(format!(
-            "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
-            body.machine.name
-        ))
-        .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned())));
+        return Err(unpinned_relay(body));
     }
     if entry
-        == (JoinEntry::Chosen {
+        != (JoinEntry::Chosen {
             pins_its_devices: true,
         })
+        && !body.devices.contains(&own)
     {
-        return Ok(Vec::new());
-    }
-    if !body.devices.contains(&own) {
         return Err(Error::conflict(format!(
             "The Server admitting {} doesn't list this computer's device {}, so this computer can't approve the join. Nothing was approved.",
             body.machine.name,
             own.code()
         )));
     }
-    let left_out = body
-        .devices
-        .iter()
-        .copied()
-        .filter(|device| *device != own)
-        .collect();
-    body.devices = vec![own];
-    Ok(left_out)
+    Ok(())
 }
 
-fn left_out_summary(left_out: &[DeviceKey]) -> String {
-    let codes = left_out
-        .iter()
-        .map(|device| device.code().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Not trusting device {codes} on the new Server: only this computer's device is pinned for the join. Approve them there afterwards with ployz device approve <code>."
-    )
+/// A join relayed through Cloud for a Cluster this computer never pinned.
+fn unpinned_relay(body: &ployz_core::authority::JoinApproval) -> Error {
+    Error::conflict(format!(
+        "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
+        body.machine.name
+    ))
+    .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned()))
 }
 
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -663,10 +585,21 @@ where
     Fut: Future<Output = Result<Option<O>, RpcError>> + Send + 'static,
     O: Into<Outcome> + Send + 'static,
 {
-    let reach = Reach::full(client).await?;
-    let (answers, gaps) = reach
+    let mut reach = Reach::full(client).await?;
+    let (mut answers, mut gaps) = reach
         .fan_out(|machine_id| set(client.clone(), machine_id))
         .await;
+    // A Server that joined while this ran was sealed what its admitting Server held then, so
+    // ask each Server that answered which Members it lists now, and reach the new ones too.
+    let joined = reach
+        .joined_since(client, answers.iter().map(|(machine_id, _)| *machine_id))
+        .await;
+    let (later, later_gaps) = joined
+        .fan_out(|machine_id| set(client.clone(), machine_id))
+        .await;
+    answers.extend(later);
+    gaps.extend(&later_gaps.failures, &later_gaps.omitted);
+    reach.names.extend(joined.names);
     Ok(Settled {
         answers: answers
             .into_iter()
@@ -903,6 +836,8 @@ pub(super) struct Reach {
     silent: Vec<MachineId>,
     entry: Option<MachineId>,
     names: BTreeMap<MachineId, MachineName>,
+    /// Servers that answered but couldn't list the Members they know of.
+    unlisted: Vec<MachineFailure<RpcError>>,
 }
 
 impl Reach {
@@ -934,11 +869,61 @@ impl Reach {
             asked: asked.iter().map(|observed| observed.machine.id).collect(),
             silent: silent.iter().map(|observed| observed.machine.id).collect(),
             entry: client.entry_machine(),
+            unlisted: Vec::new(),
             names: machines
                 .iter()
                 .map(|observed| (observed.machine.id, observed.machine.name.clone()))
                 .collect(),
         })
+    }
+
+    /// The Members the `answered` Servers list now that this reach never named. A Server
+    /// that can't list them leaves a gap, since one it knows of may then go unreached.
+    async fn joined_since(
+        &self,
+        client: &Client,
+        answered: impl Iterator<Item = MachineId>,
+    ) -> Self {
+        let listed = fan_out_entry_last(answered, None, |machine_id| {
+            let client = client.clone();
+            async move {
+                client
+                    .call_shared::<op::ListMachines>(
+                        ployz_core::ListMachinesRequest {},
+                        Call::once().to(&MachineTarget::from(&machine_id)),
+                    )
+                    .await
+                    .map(|list| Some(list.machines))
+                    .map_err(crate::connect::rpc_error)
+            }
+        })
+        .await;
+        let direct = client.full_machines();
+        let known = |id: &MachineId| self.asked.contains(id) || self.silent.contains(id);
+        let mut joined = Self {
+            asked: Vec::new(),
+            silent: Vec::new(),
+            entry: None,
+            names: BTreeMap::new(),
+            unlisted: listed.failures,
+        };
+        for observed in listed
+            .successes
+            .into_iter()
+            .flat_map(|success| success.value)
+        {
+            let id = observed.machine.id;
+            if known(&id) || joined.names.contains_key(&id) {
+                continue;
+            }
+            joined.names.insert(id, observed.machine.name.clone());
+            if observed.invites_rpc() && (direct.is_empty() || direct.contains(&id)) {
+                joined.asked.push(id);
+            } else {
+                joined.silent.push(id);
+            }
+        }
+        joined
     }
 
     pub(super) async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
@@ -949,6 +934,7 @@ impl Reach {
         let entry = self.entry.filter(|id| self.asked.contains(id));
         let result = fan_out_entry_last(self.asked.iter().copied(), entry, call).await;
         let mut gaps = Gaps::default();
+        gaps.failures.extend(self.unlisted.iter().cloned());
         gaps.omitted.extend(&self.silent);
         gaps.omitted.extend(result.omissions);
         gaps.failures.extend(result.failures);

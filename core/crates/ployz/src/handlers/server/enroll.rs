@@ -58,6 +58,11 @@ pub(crate) fn command(command: Command) -> Command {
             .conflicts_with_all(["destination", "wait", "standalone"]),
     )
     .arg(
+        value("key", None)
+            .help("Trust this key, from the line --command printed, when this Server joins")
+            .conflicts_with_all(["destination", "command", "wait", "standalone"]),
+    )
+    .arg(
         value("wait", None)
             .value_name("ENROLLMENT")
             .help("Wait for the Server that runs a printed command to join")
@@ -137,7 +142,10 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let shape = Shaping::from_matches(matches).pasted_args()?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        return runtime.block_on(paste(&acting, &minted, &shape));
+        let key = ployz_core::first_key::LineKey::Device {
+            key: super::super::device::own_key(&config_path(matches)?)?,
+        };
+        return runtime.block_on(paste(&acting, &minted, &shape, &key));
     }
     drop(runtime);
     super::super::cloud::enroll(
@@ -303,8 +311,13 @@ struct PendingReport<'a> {
     next: String,
 }
 
-async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(), Error> {
-    let line = pasted_command(acting.credential.cloud(), shape);
+async fn paste(
+    acting: &Acting,
+    minted: &Minted,
+    shape: &[String],
+    key: &ployz_core::first_key::LineKey,
+) -> Result<(), Error> {
+    let line = pasted_command(acting.credential.cloud(), shape, key);
     if crate::ui::json() {
         return crate::ui::emit(&PendingReport {
             status: "pending",
@@ -327,8 +340,9 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 /// One line that installs exactly this CLI's release, so the Server speaks the same
 /// enrollment, keeping every flag that shapes the Server. It carries no token: `server add`
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
-/// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
-fn pasted_command(cloud: &str, shape: &[String]) -> String {
+/// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop. It carries `key`, this
+/// computer's Device, for the Server to trust when it joins.
+fn pasted_command(cloud: &str, shape: &[String], key: &ployz_core::first_key::LineKey) -> String {
     let cloud_flag = if CloudOrigin::is_default(cloud) {
         String::new()
     } else {
@@ -339,7 +353,7 @@ fn pasted_command(cloud: &str, shape: &[String]) -> String {
         .map(|arg| format!(" {}", shell_words::quote(arg)))
         .collect();
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo --preserve-env={} ployz server add{cloud_flag}{shape_flags}",
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo --preserve-env={} ployz server add{cloud_flag} --key {key}{shape_flags}",
         env!("CARGO_PKG_VERSION"),
         env::ENROLL_TOKEN
     )
@@ -554,18 +568,28 @@ mod tests {
         );
     }
 
+    /// The Device key a `--command` line carries in these tests.
+    fn device_line() -> ployz_core::first_key::LineKey {
+        ployz_core::first_key::LineKey::Device {
+            key: ployz_core::DeviceKey::from_bytes([4; 32]),
+        }
+    }
+
     #[test]
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            pasted_command("https://ployz.dev", &[]),
+            pasted_command("https://ployz.dev", &[], &device_line()),
             format!(
-                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add"
+                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --key {}",
+                device_line()
             )
         );
         assert!(
-            pasted_command("http://localhost:3000", &[])
-                .ends_with("ployz server add --cloud-url 'http://localhost:3000'")
+            pasted_command("http://localhost:3000", &[], &device_line()).ends_with(&format!(
+                "ployz server add --cloud-url 'http://localhost:3000' --key {}",
+                device_line()
+            ))
         );
     }
 
@@ -581,11 +605,12 @@ mod tests {
             "",
         ] {
             assert!(
-                pasted_command(cloud, &[]).contains(&format!(" --cloud-url '{cloud}'")),
+                pasted_command(cloud, &[], &device_line())
+                    .contains(&format!(" --cloud-url '{cloud}'")),
                 "{cloud}"
             );
         }
-        assert!(!pasted_command("https://ployz.dev", &[]).contains("--cloud-url"));
+        assert!(!pasted_command("https://ployz.dev", &[], &device_line()).contains("--cloud-url"));
     }
 
     #[test]
@@ -634,7 +659,11 @@ mod tests {
         let original =
             add_matches(&[["ployz", "server", "add", "--command"].as_slice(), &given].concat());
         let original = leaf_matches(&original);
-        let line = pasted_command("https://ployz.dev", &shaping_args(original).unwrap());
+        let line = pasted_command(
+            "https://ployz.dev",
+            &shaping_args(original).unwrap(),
+            &device_line(),
+        );
         let argv = shell_words::split(line.split_once(" && ").unwrap().1).unwrap();
         let replayed = crate::cli::command()
             .try_get_matches_from(argv.iter().skip_while(|arg| *arg != "ployz"))
@@ -642,6 +671,10 @@ mod tests {
         let replayed = leaf_matches(&replayed);
 
         assert!(!replayed.get_flag("command"));
+        assert_eq!(
+            replayed.get_one::<String>("key"),
+            Some(&device_line().to_string())
+        );
         let raw = |matches: &ArgMatches, id: &str| -> Vec<String> {
             matches
                 .get_raw(id)
@@ -676,7 +709,7 @@ mod tests {
         let argv = [&["ployz", "server", "add", "--command"][..], extra].concat();
         let root = add_matches(&argv);
         shaping_args(leaf_matches(&root))
-            .map(|shape| pasted_command("https://ployz.dev", &shape))
+            .map(|shape| pasted_command("https://ployz.dev", &shape, &device_line()))
             .map_err(|error| format!("{error} {:?}", error.hints()))
     }
 
@@ -774,7 +807,8 @@ mod tests {
             ])
             .unwrap(),
             format!(
-                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --name web-1 --storage 'zfs:/dev/x y' --label-add 'k=a b' --version 0.3.0 --yes --ingress-closed"
+                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --key {} --name web-1 --storage 'zfs:/dev/x y' --label-add 'k=a b' --version 0.3.0 --yes --ingress-closed",
+                device_line()
             )
         );
     }

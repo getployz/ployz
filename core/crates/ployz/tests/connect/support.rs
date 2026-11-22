@@ -793,6 +793,7 @@ impl FakeMachine for DiscoveryService {
             sealing_key: None,
             devices: Vec::new(),
             grants: Vec::new(),
+            restrictions: None,
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),

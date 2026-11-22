@@ -1,18 +1,21 @@
-//! A Member enrolls only under an approved capsule, and a record from before that rule
-//! awaits its Cluster's activation.
+//! A Member enrolls only under an approval its pin or First Key signed, trusts only what its
+//! admitting Server sealed, and participates only once that Server's restrictions arrive.
 
 use ployz_core::{
-    DeviceKey, Enrolled, LocalMachinePhase, MachineId, ManagementScope, Registered,
-    authority::{AuthorityRefusal, Purpose},
+    DeviceKey, Enrolled, JoinRestrictionSet, LocalMachinePhase, MachineId, ManagementScope,
+    Registered,
+    authority::{AuthorityRefusal, KeyRef, Purpose, Signed},
+    first_key::{FirstKey, FirstKeyFile, LineKey},
 };
 
-use super::test_support::{ApprovingCluster, member, passkey};
+use super::test_support::{ApprovingCluster, member, passkey, trust_of};
 use super::{EnrollPlan, LocalMachine, LocalMachineStore, RecordOwner, StoreError};
 use crate::network::WireGuardPrivateKey;
+use crate::sealing_key::JoinTrust;
 
 fn fresh() -> (tempfile::TempDir, LocalMachineStore) {
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalMachineStore::open(dir.path()).unwrap();
+    let store = LocalMachineStore::open(&dir.path().join("data")).unwrap();
     (dir, store)
 }
 
@@ -23,6 +26,26 @@ fn refused_unsigned(result: Result<EnrollPlan, StoreError>) -> bool {
             purpose: Purpose::Join
         }))
     )
+}
+
+/// A registration whose capsule carries `cluster`'s signed approval for `joiner` beside
+/// `trust`, or no trust at all, as an admitting Server from before keys.2 seals it.
+fn sealed(
+    cluster: &ApprovingCluster,
+    joiner: &super::LocalMachineRecord,
+    trust: Option<&JoinTrust>,
+) -> Registered {
+    let approval = Signed::sign(&cluster.approval(joiner), &cluster.signer).unwrap();
+    let recipient = joiner.private_key().public_key();
+    Registered {
+        sealing_key: Some(
+            cluster
+                .sealing_key
+                .seal_join(&recipient, &approval, None, trust)
+                .unwrap(),
+        ),
+        ..cluster.registration(joiner)
+    }
 }
 
 #[test]
@@ -37,12 +60,12 @@ fn a_fresh_daemon_refuses_a_join_without_an_approval() {
         ..cluster.registration(&original)
     };
 
-    let refused = store.enroll(member(registration, None));
+    let refused = store.enroll(member(registration, Some(cluster.pin())));
 
     assert!(refused_unsigned(refused));
     assert_eq!(store.record(), &original);
     drop(store);
-    let reopened = LocalMachineStore::open(dir.path()).unwrap();
+    let reopened = LocalMachineStore::open(&dir.path().join("data")).unwrap();
     let record = reopened.record();
     assert_eq!(record, &original);
     assert_eq!(record.phase(), LocalMachinePhase::Uninitialized);
@@ -56,53 +79,92 @@ fn a_fresh_daemon_refuses_a_capsule_with_no_approval() {
     let original = store.record().clone();
     let cluster = ApprovingCluster::new(1);
 
-    let refused = store.enroll(member(cluster.registration_with(&original, None), None));
+    let refused = store.enroll(member(
+        cluster.registration_with(&original, None),
+        Some(cluster.pin()),
+    ));
 
     assert!(refused_unsigned(refused));
     assert_eq!(store.record(), &original);
 }
 
+/// Cloud can seal a capsule under a Cluster of its own and sign it with a Device of its own.
+/// Only the request's pin or the install line's First Key says which signer to believe, and a
+/// join with neither is refused rather than trusting whoever sealed it.
 #[test]
-fn a_pinned_join_refuses_a_forged_approval() {
-    let (_dir, mut store) = fresh();
+fn a_join_refuses_a_cluster_neither_its_pin_nor_its_first_key_signed() {
+    let (dir, mut store) = fresh();
     let original = store.record().clone();
     let cluster = ApprovingCluster::new(1);
     let forger = ApprovingCluster::new(9);
     let forged = forger.registration(&original);
 
-    let refused = store.enroll(member(forged.clone(), Some(cluster.pin())));
-
-    assert!(
+    let unknown = |refused: &Result<EnrollPlan, StoreError>| {
         matches!(
             refused,
             Err(StoreError::JoinRefused(AuthorityRefusal::UnknownKey { .. }))
-        ),
+        )
+    };
+    let refused = store.enroll(member(forged.clone(), Some(cluster.pin())));
+    assert!(unknown(&refused), "{refused:?}");
+    let refused = store.enroll(member(forged.clone(), None));
+    assert!(
+        matches!(refused, Err(StoreError::JoinUnanchored)),
         "{refused:?}"
     );
-    assert_eq!(store.record(), &original);
 
-    // The install line's residual: unpinned, a capsule the forger sealed under its own key
-    // and Device opens, and joins the forger's Cluster, not this one.
+    let first_key = FirstKeyFile::beside(&dir.path().join("data"));
+    let line = LineKey::Device {
+        key: cluster.device(),
+    };
+    first_key.lock().unwrap().arm(&line).unwrap();
+    let refused = store.enroll(member(forged, None));
+    assert!(unknown(&refused), "{refused:?}");
+    assert_eq!(store.record(), &original);
     assert_eq!(
-        store.enroll(member(forged, None)).unwrap(),
+        first_key.lock().unwrap().read().unwrap(),
+        Some(FirstKey::Waiting { key: line })
+    );
+
+    let genuine = cluster.registration(&original);
+    assert_eq!(
+        store.enroll(member(genuine, None)).unwrap(),
         EnrollPlan::Fresh
     );
-    assert_eq!(
-        store.record().devices().collect::<Vec<_>>(),
-        [forger.device()]
-    );
-    assert_eq!(
-        store.record().membership_cluster,
-        Some(forger.sealing_key.public_key())
-    );
+    assert!(matches!(
+        first_key.lock().unwrap().read().unwrap(),
+        Some(FirstKey::Spent { .. })
+    ));
 }
 
+/// Cloud relays the body a person signs, so its lists can name a Device or passkey of
+/// Cloud's own. The joiner installs exactly what its admitting Server sealed beside it.
 #[test]
-fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_devices() {
+fn a_join_trusts_what_its_admitting_server_sealed_and_not_the_approvals_lists() {
+    use ployz_core::authority::PasskeyApprover;
     let (dir, mut store) = fresh();
     let cluster = ApprovingCluster::new(1);
     let clouds_device = DeviceKey::from_bytes([7; 32]);
+    let mut approval = cluster.approval(store.record());
+    let sealed_trust = JoinTrust {
+        passkeys: vec![passkey(5)],
+        ..trust_of(&approval)
+    };
+    approval.devices.push(clouds_device);
+    approval.passkeys.push(passkey(8));
+    let recipient = store.record().private_key().public_key();
     let registration = Registered {
+        sealing_key: Some(
+            cluster
+                .sealing_key
+                .seal_join(
+                    &recipient,
+                    &Signed::sign(&approval, &cluster.signer).unwrap(),
+                    None,
+                    Some(&sealed_trust),
+                )
+                .unwrap(),
+        ),
         devices: vec![clouds_device],
         ..cluster.registration(store.record())
     };
@@ -115,7 +177,7 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
     );
 
     drop(store);
-    let reopened = LocalMachineStore::open(dir.path()).unwrap();
+    let reopened = LocalMachineStore::open(&dir.path().join("data")).unwrap();
     let record = reopened.record();
     assert_eq!(record.phase(), LocalMachinePhase::Joining);
     assert_eq!(record.bootstrap(), [cluster.admitting.clone()].as_slice());
@@ -126,103 +188,40 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
         Some(ManagementScope::Full)
     );
     assert_eq!(record.management_scope(&clouds_device.into()), None);
+    assert_eq!(
+        record
+            .passkeys()
+            .iter()
+            .map(|trusted| (trusted.passkey.clone(), trusted.approved_by))
+            .collect::<Vec<_>>(),
+        [(
+            passkey(5),
+            PasskeyApprover::Device {
+                code: cluster.device().code()
+            }
+        )]
+    );
     assert!(record.filters_peers());
 }
 
-/// Cloud relays the body a person signs, so it can name a Device of its own beside theirs.
-/// The joiner installs only Devices both the pin and the signed body name.
+/// An admitting Server from before keys.2 seals no trust, and its approval's lists are
+/// Cloud's to rewrite, so the joiner refuses rather than fall back to them.
 #[test]
-fn a_pinned_join_trusts_no_device_the_pin_leaves_out_even_when_the_approval_names_it() {
-    let (dir, mut store) = fresh();
-    let cluster = ApprovingCluster::new(1);
-    let clouds_device = DeviceKey::from_bytes([7; 32]);
-    let unsigned_pin = DeviceKey::from_bytes([8; 32]);
-    let mut approval = cluster.approval(store.record());
-    approval.devices.push(clouds_device);
-    let registration = cluster.registration_with(store.record(), Some(&approval));
-    let mut pin = cluster.pin();
-    pin.devices.push(unsigned_pin);
-
-    assert_eq!(
-        store.enroll(member(registration, Some(pin))).unwrap(),
-        EnrollPlan::Fresh
-    );
-
-    drop(store);
-    let reopened = LocalMachineStore::open(dir.path()).unwrap();
-    let record = reopened.record();
-    assert_eq!(record.devices().collect::<Vec<_>>(), [cluster.device()]);
-    assert_eq!(record.management_scope(&clouds_device.into()), None);
-    assert_eq!(record.management_scope(&unsigned_pin.into()), None);
-}
-
-#[test]
-fn a_pinned_join_refuses_an_approval_that_leaves_out_its_own_signer() {
+fn a_join_refuses_a_capsule_its_admitting_server_sealed_without_trust() {
     let (_dir, mut store) = fresh();
     let original = store.record().clone();
     let cluster = ApprovingCluster::new(1);
-    let mut approval = cluster.approval(&original);
-    approval.devices = vec![DeviceKey::from_bytes([7; 32])];
-    let registration = cluster.registration_with(&original, Some(&approval));
 
-    let refused = store.enroll(member(registration, Some(cluster.pin())));
+    let refused = store.enroll(member(
+        sealed(&cluster, &original, None),
+        Some(cluster.pin()),
+    ));
 
     assert!(
-        matches!(
-            refused,
-            Err(StoreError::JoinRefused(AuthorityRefusal::Mismatch {
-                field: "approved Devices"
-            }))
-        ),
+        matches!(refused, Err(StoreError::JoinTrustMissing { .. })),
         "{refused:?}"
     );
     assert_eq!(store.record(), &original);
-}
-
-/// The install line already runs Cloud's script, so an unpinned joiner may trust the
-/// passkeys its approval carries. A pinned join must not: Cloud can relay the person a body
-/// under a Sealing Key of its own, and a passkey of its own would then approve workflows here.
-#[test]
-fn only_an_unpinned_joiner_trusts_the_passkeys_its_approval_carries() {
-    use ployz_core::authority::{PasskeyApprover, TrustedPasskey};
-    let approved = |cluster: &ApprovingCluster, joiner: &super::LocalMachineRecord, passkeys| {
-        let mut approval = cluster.approval(joiner);
-        approval.passkeys = passkeys;
-        cluster.registration_with(joiner, Some(&approval))
-    };
-    let cluster = ApprovingCluster::new(1);
-    let clouds_cluster = ApprovingCluster::new(1);
-
-    let (_dir, mut pinned) = fresh();
-    let relayed = approved(&clouds_cluster, &pinned.record().clone(), vec![passkey(8)]);
-    assert_eq!(
-        pinned.enroll(member(relayed, Some(cluster.pin()))).unwrap(),
-        EnrollPlan::Fresh
-    );
-    assert_eq!(
-        pinned.record().membership_cluster,
-        Some(clouds_cluster.sealing_key.public_key())
-    );
-    assert!(pinned.record().passkeys().is_empty());
-
-    let (_dir, mut unpinned) = fresh();
-    let genuine = approved(
-        &cluster,
-        &unpinned.record().clone(),
-        vec![passkey(5), passkey(6)],
-    );
-    assert_eq!(
-        unpinned.enroll(member(genuine, None)).unwrap(),
-        EnrollPlan::Fresh
-    );
-    let device = cluster.device().code();
-    assert_eq!(
-        unpinned.record().passkeys(),
-        [passkey(5), passkey(6)].map(|passkey| TrustedPasskey {
-            passkey,
-            approved_by: PasskeyApprover::Device { code: device },
-        })
-    );
 }
 
 #[test]
@@ -231,7 +230,9 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
     let cluster = ApprovingCluster::new(1);
     let registration = cluster.registration(store.record());
     assert_eq!(
-        store.enroll(member(registration.clone(), None)).unwrap(),
+        store
+            .enroll(member(registration.clone(), Some(cluster.pin())))
+            .unwrap(),
         EnrollPlan::Fresh
     );
 
@@ -241,7 +242,9 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
     };
 
     assert!(matches!(
-        store.enroll(member(other_issuer, None)).unwrap(),
+        store
+            .enroll(member(other_issuer, Some(cluster.pin())))
+            .unwrap(),
         EnrollPlan::Replay(_)
     ));
     assert_eq!(
@@ -250,15 +253,97 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
     );
 }
 
+/// A key removed on the admitting Server after it sealed the join reaches the joiner through
+/// the restrictions it MACs on confirmation. The joiner won't participate until a set with a
+/// valid tag arrives, and a set Cloud forged or widened is refused.
+#[tokio::test]
+async fn a_joiner_participates_only_under_its_admitting_servers_restrictions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = LocalMachineStore::open(&dir.path().join("data")).unwrap();
+    let cluster = ApprovingCluster::new(1);
+    let removed = DeviceKey::from_bytes([6; 32]);
+    let mut approval = cluster.approval(store.record());
+    approval.devices.push(removed);
+    let signed = Signed::sign(&approval, &cluster.signer).unwrap();
+    let recipient = store.record().private_key().public_key();
+    let registration = Registered {
+        sealing_key: Some(
+            cluster
+                .sealing_key
+                .seal_join(&recipient, &signed, None, Some(&trust_of(&approval)))
+                .unwrap(),
+        ),
+        ..cluster.registration(store.record())
+    };
+    assert_eq!(
+        store
+            .enroll(member(registration, Some(cluster.pin())))
+            .unwrap(),
+        EnrollPlan::Fresh
+    );
+    assert!(store.record().management_scope(&removed.into()).is_some());
+    assert!(matches!(
+        store.complete_catch_up(),
+        Err(StoreError::JoinRestrictionsPending)
+    ));
+    let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
+
+    let confirmation = cluster.sealing_key.confirm_join(&signed);
+    let set = JoinRestrictionSet {
+        removed_keys: vec![KeyRef::Signing { key: removed }],
+        removed_members: Vec::new(),
+        floors: Default::default(),
+    };
+    let genuine = cluster
+        .sealing_key
+        .restrict_join(&signed, &confirmation, set.clone());
+    let widened = ployz_core::JoinRestrictions {
+        set: JoinRestrictionSet {
+            removed_keys: vec![KeyRef::Signing {
+                key: cluster.device(),
+            }],
+            ..set.clone()
+        },
+        tag: genuine.tag,
+    };
+    let forger = ApprovingCluster::new(9)
+        .sealing_key
+        .restrict_join(&signed, &confirmation, set);
+    for refused in [widened, forger] {
+        assert!(
+            local
+                .confirm_join(ployz_core::ConfirmJoinRequest {
+                    restrictions: refused
+                })
+                .await
+                .is_err()
+        );
+        assert!(local.record().management_scope(&removed.into()).is_some());
+    }
+
+    local
+        .confirm_join(ployz_core::ConfirmJoinRequest {
+            restrictions: genuine,
+        })
+        .await
+        .unwrap();
+    let record = local.record();
+    assert_eq!(record.management_scope(&removed.into()), None);
+    assert_eq!(record.removed_keys(), [KeyRef::Signing { key: removed }]);
+    assert_eq!(record.devices().collect::<Vec<_>>(), [cluster.device()]);
+}
+
 #[tokio::test]
 async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_response() {
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalMachineStore::open(dir.path()).unwrap();
+    let data = dir.path().join("data");
+    let store = LocalMachineStore::open(&data).unwrap();
     let id = store.record().id();
-    let registration = ApprovingCluster::new(1).registration(store.record());
+    let cluster = ApprovingCluster::new(1);
+    let registration = cluster.registration(store.record());
     let with_mtu = |registration: Registered, wireguard_mtu| ployz_core::EnrollRequest {
         wireguard_mtu,
-        ..member(registration, None)
+        ..member(registration, Some(cluster.pin()))
     };
     let request = with_mtu(registration.clone(), Some(1380));
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
@@ -280,7 +365,14 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     assert_eq!(local.enroll(request.clone()).await.unwrap(), enrolled);
     assert!(!restart_observation.has_changed().unwrap());
     drop(local);
-    let mut reopened = LocalMachineStore::open(dir.path()).unwrap();
+    let mut reopened = LocalMachineStore::open(&data).unwrap();
+    reopened
+        .apply_join_restrictions(&JoinRestrictionSet {
+            removed_keys: Vec::new(),
+            removed_members: Vec::new(),
+            floors: Default::default(),
+        })
+        .unwrap();
     reopened.complete_catch_up().unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(reopened).unwrap());
     assert_eq!(local.enroll(request).await.unwrap(), enrolled);
@@ -289,4 +381,43 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         Enrolled::Refused { .. }
     ));
     assert_eq!(local.record().id(), id);
+}
+
+/// A crash between the enrollment commit and the First Key write, or a disk enrolled before
+/// keys.2, must not leave a key waiting to found or join again: the daemon spends it on start,
+/// and a reset spends it before it deletes the record.
+#[test]
+fn an_enrolled_disk_leaves_no_first_key_waiting_after_a_crash_or_a_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let mut store = LocalMachineStore::open(&data).unwrap();
+    let cluster = ApprovingCluster::new(1);
+    let line = LineKey::Device {
+        key: cluster.device(),
+    };
+    let first_key = FirstKeyFile::beside(&data);
+    first_key.lock().unwrap().arm(&line).unwrap();
+    store
+        .enroll(member(cluster.registration(store.record()), None))
+        .unwrap();
+    drop(store);
+    let spent = || {
+        matches!(
+            first_key.lock().unwrap().read().unwrap(),
+            Some(FirstKey::Spent { .. })
+        )
+    };
+
+    first_key.lock().unwrap().rearm(&line).unwrap();
+    let store = LocalMachineStore::open(&data).unwrap();
+    assert!(spent());
+    drop(store);
+    std::fs::remove_file(first_key.path()).unwrap();
+    let mut store = LocalMachineStore::open(&data).unwrap();
+    assert!(spent());
+
+    store.begin_reset().unwrap();
+    first_key.lock().unwrap().rearm(&line).unwrap();
+    store.complete_reset().unwrap();
+    assert!(spent());
 }

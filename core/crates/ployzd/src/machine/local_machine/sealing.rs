@@ -230,6 +230,7 @@ impl LocalMachine {
             super::consumption::JoinResult {
                 approval: approval.clone(),
                 reply: super::consumption::JoinReply::Share(sealed.clone()),
+                sealed_trust: false,
             },
         )?;
         tracing::info!(

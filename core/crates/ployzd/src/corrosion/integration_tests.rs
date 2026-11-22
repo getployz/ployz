@@ -161,6 +161,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
                 machine: published.clone(),
                 bootstrap: vec![machine("bootstrap", 8)],
                 min_store_version: store.version().await.unwrap(),
+                awaits_restrictions: false,
             },
             WireGuardPrivateKey::from_bytes([3; 32]),
         )
@@ -203,6 +204,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
                 machine: machine("interrupted", 4),
                 bootstrap: vec![machine("bootstrap", 8)],
                 min_store_version: target.clone(),
+                awaits_restrictions: false,
             },
             WireGuardPrivateKey::from_bytes([4; 32]),
         )

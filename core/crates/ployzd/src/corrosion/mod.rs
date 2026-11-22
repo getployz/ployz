@@ -33,7 +33,7 @@ pub use service::{
 };
 pub(crate) use store::{
     AcmeWrite, ClusterSealing, DeclaredDoors, IngressRouteAck, IngressRouteChange, IngressRouteRow,
-    LocalContainerSnapshot, LocalVolumeSnapshot,
+    LocalContainerSnapshot, LocalVolumeSnapshot, MachinePublicationGuard,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
 pub(crate) use watch::{ChangeWatch, Debounce, Retry, Wake, WatchPolicy};

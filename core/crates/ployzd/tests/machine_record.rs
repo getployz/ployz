@@ -149,6 +149,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                     sealing_key: None,
                     devices: Vec::new(),
                     grants: Vec::new(),
+                    restrictions: None,
                 },
             },
             wireguard_mtu: None,
@@ -666,6 +667,7 @@ fn completing_catch_up_persists_participation_and_clears_the_target() {
                 WireGuardPrivateKey::generate().public_key(),
             )],
             min_store_version: BTreeMap::from([("actor".to_owned(), 4)]),
+            awaits_restrictions: false,
         },
         key,
     )
@@ -813,6 +815,7 @@ fn legal_bodies_round_trip() {
                 machine: machine.clone(),
                 bootstrap: vec![peer.clone()],
                 min_store_version: BTreeMap::from([("actor".into(), 4)]),
+                awaits_restrictions: false,
             },
             key.clone(),
         )
@@ -997,6 +1000,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
                     sealing_key: None,
                     devices: Vec::new(),
                     grants: Vec::new(),
+                    restrictions: None,
                 },
             },
             wireguard_mtu: None,

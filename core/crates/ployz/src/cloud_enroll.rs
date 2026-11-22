@@ -273,6 +273,11 @@ impl EnrollIdentity {
         }
     }
 
+    /// Whether this joiner claims `capability` in the Register Cloud relays.
+    pub(crate) fn claims(&self, capability: &str) -> bool {
+        self.capabilities.contains(&capability)
+    }
+
     /// The same identity, carrying the joiner's confirmation of its approved capsule for Cloud
     /// to relay in Register.
     pub(crate) fn confirming(
@@ -1391,6 +1396,7 @@ mod tests {
             sealing_key: None,
             devices: Vec::new(),
             grants: Vec::new(),
+            restrictions: None,
         }
     }
 

@@ -668,29 +668,6 @@ async fn sign_relayed(
     (signed, sent)
 }
 
-/// Cloud relays the body a person signs, so it can name a Device of its own. The CLI signs
-/// only for itself, so even a joiner that ignores its pin installs nothing else.
-#[tokio::test]
-async fn a_relayed_join_signs_for_this_device_alone_and_no_passkey() {
-    let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.yaml");
-    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
-    let own = super::key::public(&[1; 32]);
-    let cluster = ployz_core::SealingPublicKey::from_bytes([2; 32]);
-    pin_cluster(&config, cluster);
-
-    let (signed, sent) = sign_relayed(&config, vec![key(40), own], cluster).await;
-
-    assert!(signed.unwrap());
-    let [approval] = sent.as_slice() else {
-        panic!("one approval, got {}", sent.len());
-    };
-    let body = approval.open().unwrap();
-    assert_eq!(body.devices, [own]);
-    assert_eq!(body.signer, own.into());
-    assert!(body.passkeys.is_empty());
-}
-
 #[tokio::test]
 async fn a_relayed_join_to_a_cluster_this_computer_never_pinned_is_refused_unsigned() {
     let directory = tempfile::tempdir().unwrap();
@@ -729,57 +706,6 @@ async fn a_relayed_join_that_leaves_out_this_device_is_refused_unsigned() {
 
     assert!(signed.is_err());
     assert!(sent.is_empty());
-}
-
-#[test]
-fn a_join_from_an_entry_the_person_chose_keeps_its_devices_and_drops_its_passkeys() {
-    let joiner = machine('a', "joiner");
-    let own = key(1);
-    let (_, mut body) = relayed_join(
-        &joiner,
-        vec![own, key(40)],
-        ployz_core::SealingPublicKey::from_bytes([2; 32]),
-    );
-
-    let left_out = narrow_pinned_join(
-        &mut body,
-        own,
-        JoinEntry::Chosen {
-            pins_its_devices: true,
-        },
-        |_| panic!("an entry the person chose vouches for its own Cluster"),
-    )
-    .unwrap();
-
-    assert!(left_out.is_empty());
-    assert_eq!(body.devices, [own, key(40)]);
-    assert!(body.passkeys.is_empty());
-}
-
-/// A Cloud-token join run over the person's own route pins only this computer's Device, so
-/// it needs no Cluster pin, and signs for that Device alone.
-#[test]
-fn a_join_whose_pin_is_this_device_alone_signs_for_it_alone_over_a_chosen_route() {
-    let joiner = machine('a', "joiner");
-    let own = key(1);
-    let (_, mut body) = relayed_join(
-        &joiner,
-        vec![own, key(40)],
-        ployz_core::SealingPublicKey::from_bytes([2; 32]),
-    );
-
-    let left_out = narrow_pinned_join(
-        &mut body,
-        own,
-        JoinEntry::Chosen {
-            pins_its_devices: false,
-        },
-        |_| panic!("an entry the person chose vouches for its own Cluster"),
-    )
-    .unwrap();
-
-    assert_eq!(left_out, [key(40)]);
-    assert_eq!(body.devices, [own]);
 }
 
 #[tokio::test]
@@ -828,9 +754,8 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
     assert_eq!(
         join_summary(&body),
         format!(
-            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}). The Server will trust device {}.",
-            body.code(),
-            key(1).code()
+            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}). It will trust the same devices, passkeys and CI or agent keys as the Server that admits it, and none that Server removed.",
+            body.code()
         )
     );
 }
@@ -940,6 +865,18 @@ async fn removal_fleet(
     std::sync::Arc<std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>>,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
+    fleet(lists, false).await
+}
+
+/// [`removal_fleet`], where machine 3 joins once the first SetDevice lands when `late`.
+async fn fleet(
+    lists: Lists,
+    late: bool,
+) -> (
+    Client,
+    std::sync::Arc<std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
     let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = sent.clone();
     let (client, server) =
@@ -958,13 +895,15 @@ async fn removal_fleet(
                     RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                         enrollment: None,
                         machines: ['1', '2', '3']
+                            .into_iter()
+                            .filter(|hex| *hex != '3' || !late || !seen.lock().unwrap().is_empty())
                             .map(|hex| {
                                 MachineObservation::new(
                                     machine(hex, &format!("machine-{hex}")),
                                     MembershipObservation::Up,
                                 )
                             })
-                            .into(),
+                            .collect(),
                     }),
                     RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
                         attest: None,
@@ -1067,6 +1006,25 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
             (id('3'), SetDeviceRequest::Remove { code }),
         ]
     );
+    server.abort();
+}
+
+/// Machine 3 joins while `device rm` runs, sealed the keys its admitting Server held before
+/// the removal landed there. The run lists the Members again after its writes and removes
+/// the Device on machine 3 too.
+#[tokio::test]
+async fn rm_reaches_a_server_that_joined_while_it_ran() {
+    let (mut client, sent, server) = fleet(|_| (vec![key(1)], Vec::new()), true).await;
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1'), id('2'), id('3')]
+    );
+    assert!(settled.gaps.is_complete());
     server.abort();
 }
 
@@ -1309,6 +1267,7 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
         asked: Vec::new(),
         silent: Vec::new(),
         entry: None,
+        unlisted: Vec::new(),
         names: [(id('1'), MachineName::parse("machine-1").unwrap())].into(),
     };
     let [device, passkey] = roster.as_slice() else {

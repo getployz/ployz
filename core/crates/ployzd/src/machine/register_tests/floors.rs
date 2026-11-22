@@ -38,7 +38,7 @@ async fn a_register_that_claims_the_floors_gets_them_though_it_carries_no_runtim
         cloud_register(&[SET_CLUSTER_DOORS_CAPABILITY, FORGET_VERSIONS_CAPABILITY]).await;
 
     let sealed = registered.sealing_key.expect("the entry seals its key");
-    let (_, _, floors) = SealingKey::open_join(&sealed, &joiner).unwrap();
+    let floors = SealingKey::open_join(&sealed, &joiner).unwrap().floors;
     assert!(floors.contains_key(&service), "{floors:?}");
 }
 

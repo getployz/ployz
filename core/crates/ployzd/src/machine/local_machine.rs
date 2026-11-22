@@ -959,9 +959,13 @@ impl LocalMachine {
         let now = self
             .approvals
             .observed_now(ployz_core::authority::Timestamp::now())?;
+        // Held from the read to the spend, so no re-arm lands between them.
+        let first_key = ployz_core::first_key::FirstKeyFile::beside(self.owner.data_dir());
+        let held = first_key.lock().map_err(StoreError::from)?;
+        let armed = held.read().map_err(StoreError::from)?;
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request, recovery, now))
+            .mutate(move |store| store.plan_enrollment(request, recovery, armed.as_ref(), now))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {
@@ -984,6 +988,8 @@ impl LocalMachine {
                     });
                 }
                 self.install(installation).await?;
+                held.spend(ployz_core::authority::Timestamp::now())
+                    .map_err(StoreError::from)?;
                 self.owner.request_restart();
                 machine
             }
@@ -1069,45 +1075,9 @@ impl LocalMachine {
         })? {
             join_approval::Entered::Fresh(fresh) => fresh,
             join_approval::Entered::Replayed(stored) => {
-                let consumption::JoinReply::Register(registration) = stored.reply else {
-                    return Err(Error::JoinConsumed(request.machine_id));
-                };
-                if let Some(confirmation) = &request.join_confirmation {
-                    let confirmed = SealingKey::load(self.owner.data_dir())
-                        .map_err(Error::JoinRecord)?
-                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
-                    if !confirmed {
-                        return Err(Error::JoinRefused(
-                            ployz_core::authority::AuthorityRefusal::Mismatch {
-                                field: "a join confirmation",
-                            },
-                        ));
-                    }
-                    // The approval must still hold here: its window on the floored clock,
-                    // its signer and every key it lists. Once it lapses, a resend of a row
-                    // already out changes nothing and still answers.
-                    let machine = &registration.assigned_machine;
-                    let body = stored.approval.open().map_err(Error::JoinRefused)?;
-                    if let Err(refused) =
-                        self.verify_join(&stored.approval, &body.machine, body.network)
-                    {
-                        let published = replicated
-                            .machine(machine.id.as_str())
-                            .await?
-                            .is_some_and(|row| row.public_key == machine.public_key);
-                        return if published {
-                            Ok(*registration)
-                        } else {
-                            Err(refused)
-                        };
-                    }
-                    publication.register(machine.clone()).await?;
-                    if replicated.machine(machine.id.as_str()).await?.is_none() {
-                        self.refuse_removed(machine.id, None).await?;
-                        return Err(Error::MemberRemoved(machine.id));
-                    }
-                }
-                return Ok(*registration);
+                return self
+                    .replay_join(stored, &request, replicated, &publication)
+                    .await;
             }
         };
         let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
@@ -1125,25 +1095,22 @@ impl LocalMachine {
             &fresh,
             &assignment.machine,
             snapshot.network,
-            request.join_approval,
+            request.join_approval.clone(),
             &snapshot.machines,
         )?;
         assignment.machine.join_approval = Some(approval.clone());
         assignment.machine.runtime.management_identity = None;
-        let sealing_key = match SealingKey::load(self.owner.data_dir())
-            .map_err(Error::JoinRecord)?
-        {
-            Some(key) => {
-                // The joiner's claim, not the row: Cloud's Register carries no runtime.
-                let opens_floors = request
-                    .capabilities
-                    .iter()
-                    .any(|claimed| claimed == ployz_core::FORGET_VERSIONS_CAPABILITY);
-                let floors = self.floors_for(&key, opens_floors)?;
-                Some(key.seal_join(&assignment.machine.public_key, &approval, floors.as_ref())?)
-            }
-            None => None,
-        };
+        let seals_trust = claims(&request, ployz_core::JOIN_TRUST_CAPABILITY);
+        let sealing_key =
+            match SealingKey::load(self.owner.data_dir()).map_err(Error::JoinRecord)? {
+                Some(key) => Some(self.seal_capsule(
+                    &key,
+                    &assignment.machine.public_key,
+                    &approval,
+                    &request,
+                )?),
+                None => None,
+            };
         let registration = registered(
             assignment.machine,
             snapshot.machines,
@@ -1161,8 +1128,112 @@ impl LocalMachine {
             consumption::JoinResult {
                 approval,
                 reply: consumption::JoinReply::Register(Box::new(registration.clone())),
+                sealed_trust: seals_trust,
             },
         )?;
+        Ok(registration)
+    }
+
+    /// The capsule for a joiner: the Sealing Key and `approval`, then this Machine's floors
+    /// for a joiner that opens them, then for one that claims `join-trust.v1` the keys this
+    /// Machine trusts and removed, read from its record under this same admission.
+    fn seal_capsule(
+        &self,
+        key: &SealingKey,
+        recipient: &ployz_core::WireGuardPublicKey,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+        request: &RegisterRequest,
+    ) -> Result<ployz_core::SealedSealingKey, Error> {
+        // The joiner's claim, not the row: Cloud's Register carries no runtime.
+        let trust =
+            claims(request, ployz_core::JOIN_TRUST_CAPABILITY).then(|| join_trust(&self.record()));
+        let floors = self.floors_for(
+            key,
+            trust.is_some() || claims(request, ployz_core::FORGET_VERSIONS_CAPABILITY),
+        )?;
+        Ok(key.seal_join(recipient, approval, floors.as_ref(), trust.as_ref())?)
+    }
+
+    /// Answer a Register for a join this Machine already answered. A confirmation of the
+    /// capsule publishes the joiner's row, and the answer then carries this Machine's
+    /// restrictions as they stand now, read after the row went out, so a removal either
+    /// lands before them or finds the joiner listed. A stored answer from before
+    /// `join-trust.v1` is sealed again with current trust for a joiner that now claims it and
+    /// has not confirmed, so a refused legacy capsule never blocks the join for good.
+    async fn replay_join(
+        &self,
+        stored: consumption::JoinResult,
+        request: &RegisterRequest,
+        replicated: &ReplicatedStore,
+        publication: &crate::corrosion::MachinePublicationGuard<'_>,
+    ) -> Result<Registered, Error> {
+        let consumption::JoinReply::Register(registration) = &stored.reply else {
+            return Err(Error::JoinConsumed(request.machine_id));
+        };
+        let mut registration = registration.as_ref().clone();
+        let Some(confirmation) = &request.join_confirmation else {
+            if stored.sealed_trust || !claims(request, ployz_core::JOIN_TRUST_CAPABILITY) {
+                return Ok(registration);
+            }
+            let Some(key) = SealingKey::load(self.owner.data_dir()).map_err(Error::JoinRecord)?
+            else {
+                return Ok(registration);
+            };
+            registration.sealing_key = Some(self.seal_capsule(
+                &key,
+                &registration.assigned_machine.public_key,
+                &stored.approval,
+                request,
+            )?);
+            self.approvals
+                .replace_join_result(consumption::JoinResult {
+                    approval: stored.approval,
+                    reply: consumption::JoinReply::Register(Box::new(registration.clone())),
+                    sealed_trust: true,
+                })?;
+            return Ok(registration);
+        };
+        let key = SealingKey::load(self.owner.data_dir()).map_err(Error::JoinRecord)?;
+        let confirmed = key
+            .as_ref()
+            .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+        if !confirmed {
+            return Err(Error::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Mismatch {
+                    field: "a join confirmation",
+                },
+            ));
+        }
+        // The approval must still hold here: its window on the floored clock, its signer
+        // and every key it lists. Once it lapses, a resend of a row already out changes
+        // nothing and still answers.
+        let machine = registration.assigned_machine.clone();
+        let body = stored.approval.open().map_err(Error::JoinRefused)?;
+        if let Err(refused) = self.verify_join(&stored.approval, &body.machine, body.network) {
+            let published = replicated
+                .machine(machine.id.as_str())
+                .await?
+                .is_some_and(|row| row.public_key == machine.public_key);
+            if !published {
+                return Err(refused);
+            }
+        } else {
+            publication.register(machine.clone()).await?;
+            if replicated.machine(machine.id.as_str()).await?.is_none() {
+                self.refuse_removed(machine.id, None).await?;
+                return Err(Error::MemberRemoved(machine.id));
+            }
+        }
+        if let Some(key) = key {
+            let record = self.record();
+            let set = ployz_core::JoinRestrictionSet {
+                removed_keys: record.removed_keys().to_vec(),
+                removed_members: record.removed_members().to_vec(),
+                floors: self.approvals.floors_in(key.public_key())?,
+            };
+            registration.restrictions =
+                Some(key.restrict_join(&stored.approval, confirmation, set));
+        }
         Ok(registration)
     }
 
@@ -1575,6 +1646,33 @@ fn admit_joiner(declared: &DeclaredDoors, request: &RegisterRequest) -> Result<(
     }
 }
 
+/// Whether the joiner `request` registers claims `capability`.
+fn claims(request: &RegisterRequest, capability: &str) -> bool {
+    request
+        .capabilities
+        .iter()
+        .any(|claimed| claimed == capability)
+}
+
+/// The trust this Machine seals for a joiner: the keys it trusts and the ones it removed.
+fn join_trust(record: &LocalMachineRecord) -> crate::sealing_key::JoinTrust {
+    crate::sealing_key::JoinTrust {
+        devices: record.devices().collect(),
+        passkeys: record
+            .passkeys()
+            .iter()
+            .map(|held| held.passkey.clone())
+            .collect(),
+        grants: record
+            .grants()
+            .iter()
+            .map(|held| held.grant.clone())
+            .collect(),
+        removed_keys: record.removed_keys().to_vec(),
+        removed_members: record.removed_members().to_vec(),
+    }
+}
+
 fn registered(
     assigned_machine: Machine,
     machines: Vec<Machine>,
@@ -1594,6 +1692,7 @@ fn registered(
         sealing_key,
         devices,
         grants,
+        restrictions: None,
     }
 }
 

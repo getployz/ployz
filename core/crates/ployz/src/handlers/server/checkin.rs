@@ -38,6 +38,11 @@ pub(crate) fn command(command: Command) -> Command {
                 .help("Read the Fleet Token from stdin, and write it to --token-file once Cloud answers it"),
         )
         .arg(
+            value("key", None)
+                .requires("install")
+                .help("Trust this key, from your install command, when this Server joins or founds a Cluster"),
+        )
+        .arg(
             value("cloud-url", None)
                 .env(env::CLOUD_URL)
                 .help("Cloud to check in with [default: ployz.dev]"),
@@ -76,7 +81,15 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let runtime = runtime()?;
+    let key_line = matches
+        .get_one::<String>("key")
+        .map(|line| crate::first_key_line::parse(line))
+        .transpose()?;
     if matches.get_flag("install") {
+        // Before the first check-in, so the key waits here before Cloud can enroll this disk.
+        if let Some(line) = &key_line {
+            crate::first_key_line::arm(MachineLayout::production().data_dir(), line)?;
+        }
         let piped = matches.get_flag("token-stdin").then(std::io::stdin);
         let (token_source, key, mut client) = install_start(&paths, &cloud_url, piped)?;
         let url_source = match matches.value_source("cloud-url") {
@@ -88,6 +101,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
             cloud_url: &cloud_url,
             url_source,
             token: token_source,
+            keyed: key_line.is_some(),
         };
         return runtime.block_on(install::install(&mut client, &key, &paths, install_with));
     }

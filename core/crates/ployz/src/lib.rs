@@ -23,6 +23,7 @@ pub mod drain;
 pub mod enrollment;
 pub mod env;
 pub mod failure;
+mod first_key_line;
 mod global_catch_up;
 #[cfg(test)]
 mod global_fixtures;

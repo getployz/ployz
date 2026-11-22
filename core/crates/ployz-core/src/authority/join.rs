@@ -13,7 +13,7 @@ use super::{
     refusal::{field, first_mismatch},
     scope::Ask,
     scope::Grant,
-    trusted_key::{PasskeyApprover, TrustedKeys, TrustedPasskey},
+    trusted_key::TrustedKeys,
 };
 use crate::{DeviceKey, Machine, MachineId, SealingPublicKey, WireGuardPublicKey, separation};
 
@@ -188,6 +188,35 @@ impl std::fmt::Display for JoinConfirmation {
     }
 }
 
+/// An admitting Machine's MAC under the Cluster's Sealing Key over the restrictions it hands a
+/// confirmed joiner, bound to the join and the confirmation. Only a holder of that key can
+/// make one, so a relay can neither forge a set nor move one onto another join.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestrictionTag(pub [u8; 32]);
+
+impl Serialize for RestrictionTag {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{self}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for RestrictionTag {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        super::canonical::hex_bytes(&value)
+            .map(Self)
+            .ok_or_else(|| {
+                serde::de::Error::custom("a restriction tag must be 64 lowercase hex digits")
+            })
+    }
+}
+
+impl std::fmt::Display for RestrictionTag {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        super::canonical::write_hex(&self.0, formatter)
+    }
+}
+
 /// Verify a join at an admitting Machine using only its own trusted keys and identity. The
 /// joiner trusts the approval's Devices, passkeys and grants, so each must still be trusted
 /// here, a grant with the same kind, scope, Volumes and issue time: a key removed or a grant
@@ -244,61 +273,23 @@ pub fn verify(
     Ok(body)
 }
 
-/// A join approval a joining Machine accepted, with the Devices it trusts from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JoinerApproval {
-    pub body: JoinApproval,
-    /// The Devices of `body` the joiner trusts: all of them with no pin, and with one only
-    /// those the pin also names, so Cloud cannot add a Device of its own beside the person's.
-    pub devices: Vec<DeviceKey>,
-}
-
-/// Verify a join at the joining Machine, which holds no keys of its own yet. `pinned` are the
-/// Devices the person named; with none, the approval's own Devices are trusted, so the
-/// capsule it travelled in is what vouches for it. `cluster` is the Sealing Key the capsule
-/// opened to, and `machine` the allocation the joiner was handed.
+/// Verify a join at the joining Machine, which holds no keys of its own yet. `anchor` holds
+/// the only keys whose approval it takes: the Devices the person's CLI pinned, or the First Key
+/// its install line armed. Nothing the body lists is trusted from here: the keys a joiner
+/// trusts come sealed in its capsule. `cluster` is the Sealing Key the capsule opened to, and
+/// `machine` the allocation the joiner was handed.
 ///
 /// # Errors
-/// Refuses an unreadable body, an untrusted signature, expiry, any allocation, recipient,
-/// Cluster, network or admitting-Machine mismatch, and a signer outside the Devices the
-/// joiner trusts from the approval.
+/// Refuses an unreadable body, a signer outside `anchor`, expiry, and any allocation,
+/// recipient, Cluster, network or admitting-Machine mismatch.
 pub fn verify_as_joiner(
     signed: &Signed<JoinApproval>,
-    pinned: Option<&[DeviceKey]>,
+    anchor: &TrustedKeys,
     machine: &Machine,
     cluster: Option<SealingPublicKey>,
     now: Timestamp,
-) -> Result<JoinerApproval, AuthorityRefusal> {
-    let own = signed.open()?;
-    // A pin names Devices only, so a passkey in a relayed body never stands in for it, and
-    // no grant signs a join.
-    let trusted = TrustedKeys::new(
-        pinned.map_or_else(|| own.devices.clone(), <[DeviceKey]>::to_vec),
-        match pinned {
-            Some(_) => Vec::new(),
-            None => own
-                .passkeys
-                .iter()
-                .map(|passkey| TrustedPasskey {
-                    passkey: passkey.clone(),
-                    approved_by: PasskeyApprover::Unknown,
-                })
-                .collect(),
-        },
-        [],
-    );
-    let (body, by) = verify_signature(signed, &trusted, now)?;
-    if !grants_apart(&body) {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "approved grants",
-        });
-    }
-    let devices: Vec<DeviceKey> = body
-        .devices
-        .iter()
-        .copied()
-        .filter(|device| pinned.is_none_or(|pinned| pinned.contains(device)))
-        .collect();
+) -> Result<JoinApproval, AuthorityRefusal> {
+    let (body, _) = verify_signature(signed, anchor, now)?;
     if body.machine != JoinAllocation::from(machine)
         || body.sealing_recipient != machine.public_key
         || cluster != Some(body.cluster)
@@ -309,16 +300,7 @@ pub fn verify_as_joiner(
             field: "a joining Machine",
         });
     }
-    let signer_approved = match body.signer {
-        SignerKey::Device(signer) => devices.contains(&signer),
-        SignerKey::Passkey(_) => approves_signer(&body, &by),
-    };
-    if !signer_approved {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "approved Devices",
-        });
-    }
-    Ok(JoinerApproval { body, devices })
+    Ok(body)
 }
 
 /// Whether `row` carries a join approval that one of `trusted` signed, alone or as a bundle's
@@ -368,21 +350,6 @@ pub fn windows(signed: &Signed<JoinApproval>, now: Timestamp) -> Result<(), Auth
     let body = signed.open()?;
     super::validity::verify(body.issued_at, body.expires_at, now)?;
     bundle_window(signed, now)
-}
-
-/// Whether every grant `body` carries holds a key of its own: no Device's or passkey's, and
-/// no other grant's.
-fn grants_apart(body: &JoinApproval) -> bool {
-    body.grants.iter().enumerate().all(|(index, grant)| {
-        let code = grant.key.code();
-        !body.devices.iter().any(|device| device.code() == code)
-            && !body.passkeys.iter().any(|passkey| passkey.code() == code)
-            && !body
-                .grants
-                .iter()
-                .skip(index + 1)
-                .any(|other| other.key == grant.key)
-    })
 }
 
 /// Whether the key that signed `body` is one it lists for the joiner to trust: a Device
@@ -510,35 +477,24 @@ mod tests {
     }
 
     #[test]
-    fn a_joiner_admits_an_approval_for_its_own_allocation_pinned_or_not() {
+    fn a_joiner_admits_an_approval_its_anchor_signed_and_refuses_any_other_signer() {
         let joiner = joiner();
         let signed = sign(&approval(&joiner), 1);
 
-        for pinned in [None, Some(&[device(1)][..])] {
-            let joined =
-                verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now()).unwrap();
-            assert_eq!(joined.body, approval(&joiner));
-            assert_eq!(joined.devices, vec![device(1)]);
-        }
-    }
-
-    #[test]
-    fn a_joiner_refuses_an_approval_whose_signer_is_not_the_pinned_device() {
-        let joiner = joiner();
-        let signed = sign(&approval(&joiner), 1);
-
-        let refused = verify_as_joiner(
+        let joined = verify_as_joiner(
             &signed,
-            Some(&[device(2)]),
+            &keys(&[device(1)]),
             &joiner,
             Some(cluster(5)),
             now(),
         );
-
-        assert!(
-            refused.is_err(),
-            "a pin names who may approve, not the capsule"
-        );
+        assert_eq!(joined, Ok(approval(&joiner)));
+        for anchor in [keys(&[device(2)]), TrustedKeys::default()] {
+            assert!(
+                verify_as_joiner(&signed, &anchor, &joiner, Some(cluster(5)), now()).is_err(),
+                "the body's own Devices never vouch for it"
+            );
+        }
     }
 
     #[test]
@@ -579,7 +535,8 @@ mod tests {
             ),
         ];
         for (name, body, opened) in cases {
-            let refused = verify_as_joiner(&sign(&body, 1), None, &joiner, opened, now());
+            let refused =
+                verify_as_joiner(&sign(&body, 1), &keys(&[device(1)]), &joiner, opened, now());
             assert_eq!(refused, Err(mismatch.clone()), "{name}");
         }
     }
@@ -587,6 +544,7 @@ mod tests {
     #[test]
     fn a_joiner_refuses_an_approval_with_no_single_admitting_machine_or_past_its_expiry() {
         let joiner = joiner();
+        let anchor = keys(&[device(1)]);
         let none = JoinApproval {
             admitting_machines: Vec::new(),
             ..approval(&joiner)
@@ -597,7 +555,7 @@ mod tests {
         };
         for body in [none, two] {
             assert_eq!(
-                verify_as_joiner(&sign(&body, 1), None, &joiner, Some(cluster(5)), now()),
+                verify_as_joiner(&sign(&body, 1), &anchor, &joiner, Some(cluster(5)), now()),
                 Err(AuthorityRefusal::Mismatch {
                     field: "one admitting Machine"
                 })
@@ -606,104 +564,12 @@ mod tests {
 
         let late = verify_as_joiner(
             &sign(&approval(&joiner), 1),
-            None,
+            &anchor,
             &joiner,
             Some(cluster(5)),
             now().plus(60_000 + crate::authority::validity::CLOCK_SKEW_MILLIS + 1),
         );
         assert_eq!(late, Err(AuthorityRefusal::Expired));
-    }
-
-    #[test]
-    fn a_joiner_trusts_the_approvals_devices_only_as_far_as_the_pin_names_them() {
-        let joiner = joiner();
-        let body = JoinApproval {
-            devices: vec![device(1), device(3)],
-            ..approval(&joiner)
-        };
-        let signed = sign(&body, 1);
-
-        let trusted = |pinned: Option<&[DeviceKey]>| {
-            verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now())
-                .unwrap()
-                .devices
-        };
-
-        assert_eq!(trusted(None), vec![device(1), device(3)], "no pin");
-        assert_eq!(
-            trusted(Some(&[device(1), device(2)])),
-            vec![device(1)],
-            "the pin leaves out Device 3 and the approval leaves out Device 2"
-        );
-    }
-
-    #[test]
-    fn a_joiner_refuses_an_approval_that_leaves_out_its_own_signer_as_approved_devices() {
-        let joiner = joiner();
-        let leaves_out_signer = JoinApproval {
-            devices: vec![device(3)],
-            ..approval(&joiner)
-        };
-        let signed = sign(&leaves_out_signer, 1);
-        let approved_devices = AuthorityRefusal::Mismatch {
-            field: "approved Devices",
-        };
-
-        assert_eq!(
-            verify_as_joiner(
-                &signed,
-                Some(&[device(1)]),
-                &joiner,
-                Some(cluster(5)),
-                now()
-            ),
-            Err(approved_devices)
-        );
-        assert!(
-            matches!(
-                verify_as_joiner(&signed, None, &joiner, Some(cluster(5)), now()),
-                Err(AuthorityRefusal::UnknownKey { .. })
-            ),
-            "with no pin the signature already fails on a signer the approval does not list"
-        );
-
-        let pinned_elsewhere = JoinApproval {
-            devices: vec![device(1), device(3)],
-            ..approval(&joiner)
-        };
-        assert_eq!(
-            verify_as_joiner(
-                &sign(&pinned_elsewhere, 1),
-                Some(&[device(1)]),
-                &joiner,
-                Some(cluster(5)),
-                now()
-            )
-            .map(|joined| joined.devices),
-            Ok(vec![device(1)])
-        );
-    }
-
-    #[test]
-    fn a_joiner_names_the_allocation_before_the_approved_devices() {
-        let joiner = joiner();
-        let both_wrong = JoinApproval {
-            devices: vec![device(3)],
-            ..approval(&joiner)
-        };
-
-        assert_eq!(
-            verify_as_joiner(
-                &sign(&both_wrong, 1),
-                Some(&[device(1)]),
-                &joiner,
-                Some(cluster(6)),
-                now()
-            ),
-            Err(AuthorityRefusal::Mismatch {
-                field: "a joining Machine"
-            })
-        );
     }
 
     fn row_carrying(approved: &Machine, body: &JoinApproval, seed: u8) -> Machine {
@@ -850,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_passkey_bundle_admits_a_join_only_inside_both_windows_and_never_past_a_device_pin() {
+    fn a_passkey_bundle_admits_a_join_only_inside_both_windows_and_never_past_a_device_anchor() {
         let authenticator = crate::authority::trusted_key::tests::Authenticator::eddsa([4; 32]);
         let joiner = joiner();
         let body = JoinApproval {
@@ -879,11 +745,11 @@ mod tests {
 
         let signed = passkey_bundle(body.clone(), &authenticator, now());
         assert!(verify_at(&signed, now()).is_ok());
-        assert!(verify_as_joiner(&signed, None, &joiner, Some(cluster(5)), now()).is_ok());
+        assert!(verify_as_joiner(&signed, &admitting, &joiner, Some(cluster(5)), now()).is_ok());
         assert!(
             verify_as_joiner(
                 &signed,
-                Some(&[device(1)]),
+                &keys(&[device(1)]),
                 &joiner,
                 Some(cluster(5)),
                 now()

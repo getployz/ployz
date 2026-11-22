@@ -447,6 +447,7 @@ fn only_a_founder_recovers_a_sealing_key() {
                     sealing_key: None,
                     devices: Vec::new(),
                     grants: Vec::new(),
+                    restrictions: None,
                 },
             },
             wireguard_mtu: None,

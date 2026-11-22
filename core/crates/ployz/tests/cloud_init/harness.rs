@@ -1264,6 +1264,7 @@ pub fn registration() -> Registered {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     }
 }
 

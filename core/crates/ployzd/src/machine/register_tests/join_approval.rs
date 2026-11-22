@@ -7,6 +7,13 @@ use ployz_core::{
 
 use crate::machine::StoreError;
 
+/// The pin a CLI holding `signer`'s Device sends.
+fn pinned(signer: &Signer) -> ployz_core::JoinPin {
+    ployz_core::JoinPin {
+        devices: vec![signer.public().into()],
+    }
+}
+
 /// Approve `signer` at `entry`'s console, as a person does on a Server born enforcing.
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
     entry
@@ -111,8 +118,8 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
         joiner
             .enroll(EnrollRequest {
                 role: EnrollAs::Member {
+                    pin: Some(pinned(&signer)),
                     registration,
-                    pin: None
                 },
                 wireguard_mtu: None,
                 pinned: Default::default()
@@ -586,7 +593,7 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         ..
     } = Box::pin(joiner.enroll(EnrollRequest {
         role: EnrollAs::Member {
-            pin: None,
+            pin: crate::machine::test_support::pin_of(&registration),
             registration: registration.clone(),
         },
         wireguard_mtu: None,
@@ -633,7 +640,14 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         })
         .await
         .unwrap();
-    assert_eq!(confirmed, registration);
+    assert_eq!(
+        ployz_core::Registered {
+            restrictions: None,
+            ..confirmed.clone()
+        },
+        registration
+    );
+    assert!(confirmed.restrictions.is_some());
     assert!(
         entry
             .replicated()
@@ -666,8 +680,8 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
     assert!(matches!(
         joiner.enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: crate::machine::test_support::pin_of(&registration),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -755,19 +769,33 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     registration.assigned_machine.join_approval = Some(approval.clone());
     registration.sealing_key = Some(
         fake_key
-            .seal_join(&body.machine.public_key, &approval, None)
+            .seal_join(
+                &body.machine.public_key,
+                &approval,
+                None,
+                Some(&Default::default()),
+            )
             .unwrap(),
     );
-    joiner
-        .enroll(EnrollRequest {
-            role: EnrollAs::Member {
-                registration,
-                pin: None,
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
-        .unwrap();
+    let forged_join = |pin| EnrollRequest {
+        role: EnrollAs::Member {
+            pin,
+            registration: registration.clone(),
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    };
+    assert!(matches!(
+        joiner.enroll(forged_join(Some(pinned(&signer)))),
+        Err(StoreError::JoinRefused(AuthorityRefusal::UnknownKey { .. }))
+    ));
+    assert!(matches!(
+        joiner.enroll(forged_join(None)),
+        Err(StoreError::JoinUnanchored)
+    ));
+    // A joiner that pinned the attacker's own Device joins the attacker's Cluster, and the
+    // real one still never publishes it.
+    joiner.enroll(forged_join(Some(pinned(&attacker)))).unwrap();
     let forged = joiner.record().machine().unwrap();
     assert!(matches!(
         entry
@@ -814,8 +842,8 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
     joiner
         .enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: Some(pinned(&signer)),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -891,8 +919,8 @@ async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_sta
     let registration = entry.register(request.clone()).await.unwrap();
     let enrollment = EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -997,8 +1025,8 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     joiner
         .enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: crate::machine::test_support::pin_of(&registration),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -1142,8 +1170,8 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let enrollment = EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -1212,8 +1240,8 @@ fn confirmation(
 fn member(registration: ployz_core::Registered) -> EnrollRequest {
     EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -1377,7 +1405,7 @@ async fn an_approval_that_closes_before_the_install_commits_installs_nothing() {
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let now = Timestamp::now();
     let (plan, installation) = joiner
-        .plan_enrollment(member(registration), None, now)
+        .plan_enrollment(member(registration), None, None, now)
         .unwrap();
     assert_eq!(plan, EnrollPlan::Fresh);
 

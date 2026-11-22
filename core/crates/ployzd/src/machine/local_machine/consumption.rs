@@ -135,6 +135,10 @@ struct RuleMark {
 pub(crate) struct JoinResult {
     pub approval: Signed<ployz_core::authority::JoinApproval>,
     pub reply: JoinReply,
+    /// Whether the capsule in `reply` carries this Machine's trust after the floors, as a
+    /// joiner that claims `join-trust.v1` requires. Absent from answers from before it.
+    #[serde(default)]
+    pub sealed_trust: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -435,6 +439,30 @@ impl ConsumptionLog {
             log.joins.insert(approval.machine.id, result);
             Ok(Edit::Write(Ok(())))
         })?
+    }
+
+    /// Replace the stored answer to a join already consumed with `result`, for the same
+    /// approval: a capsule sealed again for a joiner that now opens more of it.
+    ///
+    /// # Errors
+    /// Returns [`Error::JoinRecord`] when the record cannot be read or written, and
+    /// [`Error::JoinConsumed`] when the stored answer is for another approval.
+    pub(crate) fn replace_join_result(&self, result: JoinResult) -> Result<(), Error> {
+        self.transact(Error::JoinRecord, |log| {
+            let machine = result
+                .approval
+                .open()
+                .map_err(Error::JoinRefused)?
+                .machine
+                .id;
+            match log.joins.get_mut(&machine) {
+                Some(stored) if stored.approval == result.approval => {
+                    *stored = result;
+                    Ok(Edit::Write(()))
+                }
+                _ => Err(Error::JoinConsumed(machine)),
+            }
+        })
     }
 
     /// This Machine's clock for a one-shot window: `now`, raised to the highest time this

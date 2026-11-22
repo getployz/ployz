@@ -10,8 +10,9 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
-    deploy, device, docs, domain, env, github, github_rule, ingress, link, login, mcp, metrics,
-    operator, private_access, project, recovery, region, review, server, service, up, volume,
+    deploy, device, docs, domain, env, github, github_rule, ingress, key, link, login, mcp,
+    metrics, operator, private_access, project, recovery, region, review, server, service, up,
+    volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -320,6 +321,8 @@ pub(crate) const DEVICE_REQUEST: Verb = Verb::local(
     device::request,
 )
 .docs("servers/manage-servers.md");
+pub(crate) const KEY_ADD: Verb =
+    Verb::local("key add", Always, key::add_command, key::add).docs("servers/manage-servers.md");
 pub(crate) const DIFF: Verb =
     Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/settings.md");
 pub(crate) const DISCARD: Verb =
@@ -924,6 +927,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEVICE_PIN,
     DEVICE_RM,
     DEVICE_REQUEST,
+    KEY_ADD,
     DIFF,
     DISCARD,
     DOCS,
@@ -1079,6 +1083,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "github rule",
         command: github_rule::group,
+    },
+    Group {
+        path: "key",
+        command: key::group,
     },
     Group {
         path: "org",

@@ -39,6 +39,12 @@ pub(super) fn enroll(
         // A remote host is provisioned up front, in `enroll_steps`.
         return enroll_token(&plan, token, cloud_url, &|_| async { Ok(()) });
     }
+    if let Some(line) = leaf_matches(root).get_one::<String>("key") {
+        crate::first_key_line::arm(
+            ployz_core::MachineLayout::production().data_dir(),
+            &crate::first_key_line::parse(line)?,
+        )?;
+    }
     enroll_token(&plan, token, cloud_url, &|installation| async move {
         match installation {
             Installation::Host(storage) => {
@@ -560,7 +566,7 @@ where
     if relays {
         let confirmation =
             confirmation.ok_or_else(crate::handlers::server::confirmation_missing)?;
-        cloud_enroll::enroll(
+        let answered = cloud_enroll::enroll(
             command,
             enroll_url,
             token,
@@ -568,6 +574,18 @@ where
             progress,
         )
         .await?;
+        let claimed = identity.claims(ployz_core::JOIN_TRUST_CAPABILITY);
+        match answered {
+            cloud_enroll::Outcome::Join(join) => {
+                crate::enrollment::confirm_join(&mut client, claimed, &join.registration).await?;
+            }
+            cloud_enroll::Outcome::Initialize(_) if claimed => {
+                return Err(Error::conflict(
+                    "Cloud answered this Server's join confirmation with a founding. Nothing joined; run the install command again.",
+                ));
+            }
+            cloud_enroll::Outcome::Initialize(_) => {}
+        }
     }
     progress(EnrollStage::Joining);
     let mut ready = wait_phase(
@@ -1768,6 +1786,7 @@ mod tests {
                             sealing_key: None,
                             devices: Vec::new(),
                             grants: Vec::new(),
+                            restrictions: None,
                         },
                     },
                     &policy,
@@ -1933,6 +1952,7 @@ mod tests {
                                 sealing_key: None,
                                 devices: Vec::new(),
                                 grants: Vec::new(),
+                                restrictions: None,
                             },
                         },
                         &policy,
@@ -2094,6 +2114,7 @@ mod tests {
                     devices: Vec::new(),
                     sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
                     grants: Vec::new(),
+                    restrictions: None,
                 },
             };
             let identity = test_identity(&join.registration.assigned_machine);

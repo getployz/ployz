@@ -161,7 +161,17 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             let mut confirmed = assignment.clone();
             confirmed.request.join_confirmation =
                 Some(join_confirmation.ok_or_else(helpers::confirmation_missing)?);
-            crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+            let answered = crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+            crate::enrollment::confirm_join(
+                &mut target_client,
+                confirmed
+                    .request
+                    .capabilities
+                    .iter()
+                    .any(|claim| claim == ployz_core::JOIN_TRUST_CAPABILITY),
+                &answered,
+            )
+            .await?;
         }
 
         Ok::<_, Error>(assigned)

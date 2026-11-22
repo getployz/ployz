@@ -26,10 +26,54 @@ pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot
 #[must_use]
 pub fn claims(joiner: &ployz_core::MachineRuntime) -> Vec<&'static str> {
     let mut claimed = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY];
-    if joiner.claim(ployz_core::FORGET_VERSIONS_CAPABILITY) == ployz_core::Claim::Advertises {
-        claimed.push(ployz_core::FORGET_VERSIONS_CAPABILITY);
+    for capability in [
+        ployz_core::FORGET_VERSIONS_CAPABILITY,
+        ployz_core::JOIN_TRUST_CAPABILITY,
+    ] {
+        if joiner.claim(capability) == ployz_core::Claim::Advertises {
+            claimed.push(capability);
+        }
     }
     claimed
+}
+
+/// Hand a joiner that claimed `join-trust.v1` the restrictions its admitting Machine
+/// answered the confirmation with, so it may participate. It refuses to without them, so a
+/// reply that lacks them fails here, naming the upgrade it needs.
+///
+/// # Errors
+/// Returns a missing set as `unsupported`, and the joiner's own refusal or a transport error.
+pub async fn confirm_join(
+    joiner: &mut Client,
+    claimed: bool,
+    registration: &Registered,
+) -> Result<(), RpcError> {
+    if !claimed {
+        return Ok(());
+    }
+    let Some(restrictions) = registration.restrictions.clone() else {
+        // A joiner that already participates took its restrictions on an earlier run.
+        let details = joiner
+            .call_shared::<op::Inspect>(ployz_core::InspectRequest::default(), Call::once())
+            .await
+            .map_err(crate::connect::rpc_error)?;
+        if details.phase == ployz_core::LocalMachinePhase::Participating {
+            return Ok(());
+        }
+        return Err(RpcError::unsupported(format!(
+            "The admitting Server didn't answer with the restrictions this Server needs before it serves ({}). Upgrade the admitting Server, then run this again.",
+            ployz_core::JOIN_TRUST_CAPABILITY
+        ))
+        .with_details(serde_json::json!({ "capability": ployz_core::JOIN_TRUST_CAPABILITY })));
+    };
+    joiner
+        .call_shared::<op::ConfirmJoin>(
+            ployz_core::ConfirmJoinRequest { restrictions },
+            Call::once(),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    Ok(())
 }
 
 /// The Register request for a saved assignment: what the joiner asked, with the subnet

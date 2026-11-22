@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ApproveJoinRequest, DeviceKey, JoinApproved, Machine, MachineId, PendingJoins,
-    WireGuardPublicKey,
+    ApproveJoinRequest, ConfirmJoinRequest, DeviceKey, JoinApproved, JoinConfirmed, Machine,
+    MachineId, PendingJoins, WireGuardPublicKey,
     authority::{AuthorityRefusal, JoinApproval, Purpose, Signed, SignerKey, Timestamp, join},
 };
 use serde::{Deserialize, Serialize};
@@ -152,6 +152,43 @@ impl LocalMachine {
             .get(&machine)
             .filter(|proposal| proposal.approval.is_some())
             .map(|proposal| proposal.body.machine.public_key))
+    }
+
+    /// Take the restrictions this joiner's admitting Machine answered its confirmation with,
+    /// once their MAC shows a holder of the Cluster's Sealing Key made them for this join:
+    /// raise the floors, hold each removed key and Member removed, and stop waiting, so
+    /// catch-up may finish. A joiner refuses anything else, so a relay that drops or forges
+    /// them only keeps it from participating.
+    pub(crate) async fn confirm_join(
+        &self,
+        request: ConfirmJoinRequest,
+    ) -> Result<JoinConfirmed, Error> {
+        self.finish_mutation(move |local| async move {
+            let record = local.record();
+            let approval = record
+                .machine()
+                .and_then(|machine| machine.join_approval.clone())
+                .ok_or(Error::Store(crate::machine::StoreError::NotJoining))?;
+            let key = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                .map_err(Error::JoinRecord)?
+                .ok_or(Error::JoinRefused(AuthorityRefusal::NoClusterIdentity))?;
+            let confirmation = key.confirm_join(&approval);
+            if !key.restricts_join(&approval, &confirmation, &request.restrictions) {
+                return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                    field: "join restrictions",
+                }));
+            }
+            let set = request.restrictions.set;
+            local
+                .approvals
+                .install_floors(key.public_key(), &set.floors)?;
+            local
+                .owner
+                .mutate(move |store| store.apply_join_restrictions(&set))
+                .await??;
+            Ok(JoinConfirmed {})
+        })
+        .await
     }
 
     pub(crate) fn require_unused_join(&self, machine: MachineId) -> Result<(), Error> {

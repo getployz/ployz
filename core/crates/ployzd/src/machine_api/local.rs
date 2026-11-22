@@ -443,6 +443,25 @@ impl MachineRpc for MachineService {
         finish(local.key_step(expect::<op::KeyStep>(request)?).await)
     }
 
+    async fn set_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_key(expect::<op::SetKey>(request)?).await)
+    }
+
+    async fn confirm_join(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .confirm_join(expect::<op::ConfirmJoin>(request)?)
+                .await,
+        )
+    }
+
     async fn forget_versions(
         &self,
         request: Request<OpaquePayload>,
@@ -1431,6 +1450,24 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 .because(GateReason::JoinAlreadyAdmitted)
                 .inspecting(&["ployz server ls"]),
         )),
+        LocalMachineError::Store(StoreError::FirstKeySpent) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
+                .next("sudo ployz key add LINE on this Server, with the key line from your install command"),
+        )),
+        LocalMachineError::Store(StoreError::JoinUnanchored) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY).next(
+                "copy the install command again, or run sudo ployz key add LINE on this Server",
+            ),
+        )),
+        LocalMachineError::Store(StoreError::JoinTrustMissing { .. }) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_TRUST_CAPABILITY),
+        )),
         LocalMachineError::JoinRefused(_)
         | LocalMachineError::Store(StoreError::JoinRefused(_)) => Err(gated(
             tonic::Code::PermissionDenied,
@@ -1674,7 +1711,12 @@ fn finish(
 
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
-        StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        StoreError::JoinRefused(_)
+        | StoreError::FirstKeySpent
+        | StoreError::JoinUnanchored
+        | StoreError::JoinTrustMissing { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        StoreError::JoinRestrictionsPending => RpcErrorCode::Conflict,
+        StoreError::FirstKey(_) => RpcErrorCode::Internal,
         StoreError::KeyRemoved(_)
         | StoreError::LastKey(_)
         | StoreError::AmbiguousCode(_)

@@ -8,9 +8,19 @@ PLOYZ_FALLBACK_URL=${PLOYZ_FALLBACK_URL:-https://ployz.sh}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 ENROLL=
 VERSION_ARG=
+# The key the Server trusts first, from the install command: passed to ployz, which checks it.
+FIRST_KEY=
+FIRST_KEY_NEXT=
 for arg do
+    if [ -n "$FIRST_KEY_NEXT" ]; then
+        FIRST_KEY=$arg
+        FIRST_KEY_NEXT=
+        continue
+    fi
     case "$arg" in
         --enroll) ENROLL=1 ;;
+        --key) FIRST_KEY_NEXT=1 ;;
+        --key=*) FIRST_KEY=${arg#--key=} ;;
         *) VERSION_ARG=${VERSION_ARG:-$arg} ;;
     esac
 done
@@ -291,9 +301,10 @@ check_in() {
     install_cli
     # printf is a builtin, so the token reaches ployz on stdin without entering any process's argv.
     printf '%s\n' "$FLEET_TOKEN" |
-        "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE" --token-stdin
+        "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE" --token-stdin ${FIRST_KEY:+--key "$FIRST_KEY"}
 }
 
+[ -z "$FIRST_KEY_NEXT" ] || error "--key needs the key from your install command after it."
 if [ -n "$ENROLL$FLEET_TOKEN" ]; then
     check_in
 else
