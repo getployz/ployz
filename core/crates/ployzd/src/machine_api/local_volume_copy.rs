@@ -102,7 +102,6 @@ impl MachineService {
             | WantedCopy::Floor => None,
         };
         let start_running = start == Some(StartState::Running);
-        // `None` when the copy is already at the want.
         let transition = match ployz_core::plan(copy.as_ref(), start_running, &expect, &want) {
             CopyPlan::AtWant => None,
             CopyPlan::Refuse(reason) => return Err(refused(reason, copy, &name)),

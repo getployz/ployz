@@ -624,7 +624,7 @@ fn resolve(
     compiled
         .variable_producers
         .extend(branch.live.iter().cloned());
-    let resolved = variables::resolve(&compiled, environment.as_str())?;
+    let resolved = variables::resolve(&compiled, environment)?;
     compiled.variable_producers.truncate(own);
     Ok((compiled, resolved))
 }
@@ -673,7 +673,6 @@ pub(super) fn lower(
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
-    // Only the Services this Deployment starts must fit a Container's environment.
     for service in &saved.services {
         if (!narrowed || targeted.contains(&service.id.as_str()))
             && let Some(env) = resolved.env.get(&service.id)
@@ -685,7 +684,6 @@ pub(super) fn lower(
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
-            // A targeted Deployment builds only the Git Services it targets.
             CompiledNodeConfig::Service(config)
                 if narrowed
                     && matches!(config.settings.source, ServiceSource::Git { .. })
@@ -707,7 +705,6 @@ pub(super) fn lower(
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
         .collect();
-    // Empty reconciles the whole Namespace; names deploy only those Services.
     let selected = if narrowed {
         saved
             .services
@@ -725,7 +722,6 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
-    // Each warning with the Services whose Deploy it concerns.
     let mut warnings: Vec<(Vec<&ServiceName>, DeploymentWarning)> = snapshots
         .iter()
         .filter_map(|(config, snapshot)| {
@@ -905,12 +901,10 @@ pub(super) fn lower(
         prune,
         cluster_domain: cluster_domain
             .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
-        sealed_for: uuid::Uuid::parse_str(environment.as_str())
-            .ok()
-            .map(|environment| SealedFor {
-                organization: organization.as_str().to_owned(),
-                environment,
-            }),
+        sealed_for: Some(SealedFor {
+            organization: organization.as_str().to_owned(),
+            environment: environment.uuid(),
+        }),
     };
     // `uploaded` also gives each named source-less Service the image its upload
     // builds, as the SDK's preparation does.

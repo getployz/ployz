@@ -26,16 +26,6 @@ fn carried(matches: &ArgMatches) -> impl Iterator<Item = &str> + Clone {
         )
 }
 
-/// This command line as typed, then `extra`.
-pub(crate) fn typed_with(extra: &[&str]) -> String {
-    std::iter::once("ployz".to_owned())
-        .chain(std::env::args().skip(1))
-        .chain(extra.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| crate::ui::shell_word(&arg).into_owned())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// `args` as the same Cluster would run them, under the context this command was given.
 pub(in crate::handlers) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let context = matches.try_get_one::<String>("context").ok().flatten();

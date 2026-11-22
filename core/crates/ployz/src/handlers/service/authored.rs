@@ -213,7 +213,6 @@ struct Inspected<'view> {
     domain_changes: Vec<store::DomainLine>,
 }
 
-/// Rename a Service in Working State.
 pub(crate) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let rename = RenameService {

@@ -315,8 +315,8 @@ impl RunningCorrosion {
         self.admin.clone()
     }
 
-    pub async fn membership_states(&self) -> Result<Vec<super::MembershipState>, Error> {
-        self.admin.membership_states().await
+    pub async fn membership(&self) -> Result<super::MembershipStates, Error> {
+        self.admin.membership(super::IO_TIMEOUT).await
     }
 
     pub async fn cleanup(&mut self) -> Result<(), Error> {

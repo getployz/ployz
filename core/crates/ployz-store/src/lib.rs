@@ -15,10 +15,9 @@ mod command;
 mod config_item;
 mod deployment;
 mod digest;
-pub mod docs;
 mod domain;
 mod error;
-mod followup;
+pub mod followup;
 mod git;
 mod github;
 mod id;
@@ -44,10 +43,8 @@ mod sealing;
 mod sealing_targets;
 mod service;
 mod settings;
-pub mod stderr_log;
 mod storage;
 mod teardown;
-pub mod tools;
 mod trusted;
 mod typed_address;
 mod variables;
@@ -93,6 +90,7 @@ pub use domain::{
     DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain, SetGeneratedDomain,
     TunnelEvidence,
 };
+pub use error::{Accept, Confirmation, did_you_mean};
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{
     GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
@@ -109,7 +107,7 @@ pub use pull_request::{
 pub use query::*;
 pub use region::{
     NameRegion, NewRegionQuery, NewRegionView, Region, RegionName, RegionsQuery, RegionsView,
-    region_key, region_servers,
+    deserialize_key, deserialize_optional_key, region_key, region_servers,
 };
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
@@ -135,6 +133,7 @@ pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,
     Trusted, VolumeObservation,
 };
+pub use variables::holds_secret_text;
 pub use volume::size::{Unheld, VolumeResized};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.

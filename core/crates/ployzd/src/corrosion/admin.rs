@@ -1,6 +1,6 @@
 //! Corrosion admin-socket protocol and membership decoding.
 
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -18,12 +18,14 @@ pub struct MembershipState {
     pub evidence: MembershipEvidence,
 }
 
+pub(crate) type MembershipStates = BTreeMap<ManagementAddress, MembershipEvidence>;
+
 /// Each address's membership. A Server whose Corrosion store was recreated comes back
 /// as a new actor at the same address, and peers can keep the old one Down beside it,
 /// so the liveliest actor at an address speaks for it.
-pub(crate) fn membership_states_by_address(
+fn membership_states_by_address(
     states: impl IntoIterator<Item = MembershipState>,
-) -> BTreeMap<ManagementAddress, MembershipEvidence> {
+) -> MembershipStates {
     let mut by_address = BTreeMap::new();
     for state in states {
         let std::net::IpAddr::V6(address) = state.address.ip() else {
@@ -65,8 +67,12 @@ impl AdminClient {
         }
     }
 
-    async fn command(&self, command: &impl Serialize) -> Result<Vec<Value>, Error> {
-        super::within_io_timeout(async {
+    async fn command(
+        &self,
+        bound: Duration,
+        command: &impl Serialize,
+    ) -> Result<Vec<Value>, Error> {
+        super::within(bound, async {
             let stream = UnixStream::connect(&self.socket_path).await?;
             let mut framed = LengthDelimitedCodec::builder()
                 .big_endian()
@@ -95,21 +101,28 @@ impl AdminClient {
         .await
     }
 
-    pub async fn membership_states(&self) -> Result<Vec<MembershipState>, Error> {
-        self.command(&serde_json::json!({"Cluster": "MembershipStates"}))
+    /// Corrosion's membership by address, read within `bound`. Each caller decides what
+    /// an unreadable sample means for it.
+    pub(crate) async fn membership(&self, bound: Duration) -> Result<MembershipStates, Error> {
+        let states = self
+            .command(bound, &serde_json::json!({"Cluster": "MembershipStates"}))
             .await?
             .into_iter()
             .map(decode_membership_state)
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(membership_states_by_address(states))
     }
 
     pub async fn member_rtts(&self) -> Result<Vec<RttObservation>, Error> {
-        self.command(&serde_json::json!({"Cluster": "Members"}))
-            .await?
-            .into_iter()
-            .map(decode_member_rtt)
-            .filter_map(|result| result.transpose())
-            .collect()
+        self.command(
+            super::IO_TIMEOUT,
+            &serde_json::json!({"Cluster": "Members"}),
+        )
+        .await?
+        .into_iter()
+        .map(decode_member_rtt)
+        .filter_map(|result| result.transpose())
+        .collect()
     }
 }
 
@@ -359,7 +372,7 @@ mod tests {
         });
 
         let response = AdminClient::new(path)
-            .command(&json!({"Cluster": "MembershipStates"}))
+            .command(IO_TIMEOUT, &json!({"Cluster": "MembershipStates"}))
             .await
             .unwrap();
         assert_eq!(response, vec![json!({"state": "Alive"})]);
@@ -368,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn membership_states_times_out_when_admin_never_replies() {
+    async fn membership_times_out_when_admin_never_replies() {
         let root = std::env::temp_dir().join(format!(
             "ployzd-corrosion-admin-hang-{}",
             ployz_core::MachineId::random()
@@ -383,7 +396,7 @@ mod tests {
 
         let error = tokio::time::timeout(
             IO_TIMEOUT + std::time::Duration::from_secs(1),
-            AdminClient::new(path).membership_states(),
+            AdminClient::new(path).membership(IO_TIMEOUT),
         )
         .await
         .expect("hung admin must fail")

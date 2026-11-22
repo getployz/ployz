@@ -35,7 +35,7 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
         [QualifiedService::parse("app/debug").unwrap()]
     );
     assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
-    assert!(!removes(&plan, 'd'));
+    assert!(operations(&plan).is_empty());
 }
 
 #[test]
@@ -485,33 +485,6 @@ fn a_mixed_deploy_updates_one_service_retires_another_and_leaves_drift() {
             QualifiedService::parse("app/stray").unwrap(),
         ]
     );
-}
-
-/// Absence from a partial snapshot proves nothing, so a full Deploy prunes none of it.
-#[test]
-fn an_incomplete_snapshot_prunes_nothing() {
-    let (web, snapshot) = shop_with_obsolete_debug();
-    let snapshot = DeploySnapshot {
-        volume_snapshot: VolumeSnapshot::try_from_parts(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![machine_id('1')],
-        )
-        .expect("valid Volume Snapshot fixture"),
-        ..snapshot
-    };
-    let plan = preview_deploy(
-        &DeployIntent::apply_all(
-            Namespace::parse("app").unwrap(),
-            [&web],
-            PlanOptions::default(),
-        ),
-        &snapshot,
-    )
-    .unwrap();
-    assert!(operations(&plan).is_empty());
-    assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
 }
 
 /// A named removal goes ahead on the Servers the snapshot observed. The copy on the

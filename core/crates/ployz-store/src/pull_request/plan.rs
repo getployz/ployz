@@ -18,7 +18,6 @@ pub(crate) fn set_plan(
     set: &SetPrPlan,
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
-    // Serialize plan writes per Project.
     scope::lock_project(tx, &project.id)?;
     let repositories = repositories(tx, &project.id)?;
     let Some(Repository {

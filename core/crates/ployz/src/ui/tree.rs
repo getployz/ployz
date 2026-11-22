@@ -4,7 +4,6 @@ use std::fmt;
 
 use super::Tone;
 
-/// A line, and the lines under it.
 pub(crate) struct Tree {
     label: String,
     children: Vec<Self>,

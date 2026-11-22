@@ -8,10 +8,8 @@ use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
-/// The longest agent name kept.
 const MAX_NAME: usize = 64;
 
-/// The agent's name, read once.
 pub(crate) fn name() -> Option<&'static str> {
     static AGENT: OnceLock<Option<String>> = OnceLock::new();
     AGENT

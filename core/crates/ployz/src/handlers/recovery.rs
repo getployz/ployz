@@ -1186,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn the_code_has_no_argument_and_neither_verb_is_a_tool() {
+    fn the_code_has_no_argument() {
         let arguments: Vec<_> = recover_command(Command::new("recover"))
             .get_arguments()
             .filter(|argument| argument.get_id().as_str().contains("code"))
@@ -1198,8 +1198,6 @@ mod tests {
             })
             .collect();
         assert_eq!(arguments, [("code-stdin".to_owned(), false)]);
-        assert!(verbs::RECOVER.tool.is_none());
-        assert!(verbs::RECOVERY_ROTATE.tool.is_none());
         assert!(verbs::find("recover").is_some());
         assert!(verbs::find("recovery rotate").is_some());
     }

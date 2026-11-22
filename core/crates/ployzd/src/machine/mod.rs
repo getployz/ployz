@@ -371,7 +371,15 @@ impl LocalMachineRecord {
         )
     }
 
-    /// The keys this Machine removed for good.
+    /// Whether this Machine's own record pins `machine` as a Member, with this ID, WireGuard
+    /// key and subnet, and never saw it removed. Unlike [`Self::accepts_machine`], it reads no
+    /// approval off the row, and a record that doesn't filter peers trusts no Member.
+    pub(crate) fn trusts_member(&self, machine: &Machine) -> bool {
+        self.filters_peers
+            && !self.removes_member(machine.id, Some(machine.public_key))
+            && self.pins_machine(machine)
+    }
+
     #[must_use]
     pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {
         &self.removed_keys
@@ -496,7 +504,6 @@ impl LocalMachineRecord {
             .any(|slot| slot.accepted().as_ref() == Some(remote))
     }
 
-    /// Label of the slot holding `remote` as its pending key.
     #[must_use]
     pub fn pending_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
@@ -505,7 +512,6 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
-    /// Label of the slot holding `remote` as its accepted key.
     #[must_use]
     pub fn accepted_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
@@ -778,7 +784,6 @@ impl LocalMachineRecord {
         }
     }
 
-    /// Secret behind this Machine's Management Identity.
     #[must_use]
     pub fn management_secret(&self) -> &ManagementSecret {
         &self.management_secret
@@ -813,7 +818,6 @@ impl LocalMachineRecord {
         self.body.id()
     }
 
-    /// Local Machine Phase of this record.
     #[must_use]
     pub fn phase(&self) -> LocalMachinePhase {
         self.body.phase()

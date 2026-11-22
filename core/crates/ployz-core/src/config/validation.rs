@@ -19,21 +19,17 @@ pub const MAX_RETRIES_MAX: u8 = 100;
 pub const COMMAND_MAX: usize = 2000;
 /// The longest container image reference.
 pub const IMAGE_MAX: usize = 500;
-/// The longest Dockerfile path.
 pub const DOCKERFILE_PATH_MAX: usize = 500;
 /// The longest GitHub repository name, as `owner/name`.
 pub const REPOSITORY_MAX: usize = 300;
 /// The longest Git branch name.
 pub const BRANCH_MAX: usize = 255;
-/// The longest healthcheck path.
 pub const HEALTHCHECK_PATH_MAX: usize = 500;
 /// The longest a healthcheck may take, in seconds.
 pub const HEALTHCHECK_TIMEOUT_MAX: u16 = 300;
 /// How long a healthcheck takes when its timeout isn't given, in seconds.
 pub const HEALTHCHECK_TIMEOUT_DEFAULT: u16 = 300;
-/// Every restart policy.
 pub const RESTART_POLICIES: [&str; 4] = ["always", "no", "on-failure", "unless-stopped"];
-/// Every update order.
 pub const UPDATE_ORDERS: [&str; 3] = ["start-first", "stop-first", "rolling"];
 
 /// Validation errors identify the setting, never echo credentials or authored values.

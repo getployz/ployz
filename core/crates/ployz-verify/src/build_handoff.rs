@@ -180,7 +180,7 @@ enum Why {
     NoRunnerInTime,
     /// `Why::EndedBeforeStart` in `ployz-decide`.
     EndedBeforeStart,
-    /// `ployz::sdk::github_build::OLD_MINT_SKIPS`.
+    /// `OLD_MINT_SKIPS` in `ployz-decide`.
     OldMint,
     /// `Why::StepFailed` in `ployz-decide`.
     StepFailed,
@@ -188,7 +188,7 @@ enum Why {
     Unreachable,
     /// `Why::Refused` in `ployz-decide`: the Machine's refusal.
     Refused,
-    /// "cancelled" (`ployz::sdk::github_build::github_cancel`).
+    /// `CANCELLED` in `ployz-decide` (`ployz::sdk::github_build::github_cancel`).
     Cancelled,
 }
 
@@ -203,11 +203,9 @@ impl Why {
             Self::EndedBeforeStart => real::Why::EndedBeforeStart.message().to_owned(),
             Self::StepFailed => real::Why::StepFailed.message().to_owned(),
             Self::Unreachable => real::Why::Unreachable.message().to_owned(),
-            Self::OldMint => {
-                "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server".to_owned()
-            }
+            Self::OldMint => real::OLD_MINT_SKIPS.to_owned(),
             Self::Refused => "<the Machine's refusal>".to_owned(),
-            Self::Cancelled => "cancelled".to_owned(),
+            Self::Cancelled => real::CANCELLED.to_owned(),
         }
     }
 
@@ -669,7 +667,7 @@ struct State {
 }
 
 impl State {
-    /// `github_end` in core/crates/ployz-store/src/build.rs, for run `run`; its guard is
+    /// `github_end` in core/crates/ployz-store/src/build/github.rs, for run `run`; its guard is
     /// `github_end_holds` in `ployz-decide`.
     fn github_end(&mut self, broken: Broken, run: Run, end: End) -> Result<Status, ()> {
         // Without the grant guard the Store treats an Unstarted end like any other.

@@ -667,7 +667,6 @@ impl LocalMachine {
 
 #[cfg(test)]
 impl LocalMachine {
-    /// Ensure `want` as a full-access caller does.
     pub(crate) async fn ensure_full_access(
         &self,
         want: ContainerWant,

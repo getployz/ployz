@@ -1,4 +1,5 @@
-//! Docker-in-Docker support for the ignored informing cluster suite.
+//! Test support: Docker-in-Docker Clusters for the ignored informing suite, and in-process
+//! fakes of the Machine API, an ACME directory, a release key and a fleet.
 
 pub mod fake_acme;
 pub mod fake_fleet;
@@ -30,8 +31,8 @@ use thiserror::Error;
 pub use poll::{Attempt, WaitError, hold_for, poll_until};
 
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
-pub const OWNER_LABEL: &str = "dev.ployz.testkit";
-pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
+pub(crate) const OWNER_LABEL: &str = "dev.ployz.testkit";
+pub(crate) const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 const HOST_ENTRY_API_PORT: u16 = 51003;
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
@@ -1112,32 +1113,27 @@ mod tests {
     #[test]
     fn plans_two_isolated_privileged_machines() {
         let plan = ClusterPlan::new("l3-001", 2).unwrap();
-        assert_eq!(plan.name(), "l3-001");
-        assert_eq!(plan.network(), "ployz-testkit-l3-001");
-        assert_eq!(plan.machine_name(0), "ployz-testkit-l3-001-0");
-        assert_eq!(plan.machine_name(1), "ployz-testkit-l3-001-1");
-        assert_eq!(plan.machines.len(), 2);
+        let other = ClusterPlan::new("l3-002", 2).unwrap();
+        assert_ne!(plan.network(), other.network());
+        assert_ne!(plan.machine_name(0), plan.machine_name(1));
+        assert_ne!(plan.machine_name(0), other.machine_name(0));
         let [first, second] = plan.machines.as_slice() else {
             panic!("expected two Machines")
         };
         assert_ne!(first.api_port, second.api_port);
-        assert_eq!(
-            plan.labels(),
-            BTreeMap::from([
-                (OWNER_LABEL.to_owned(), "true".to_owned()),
-                (CLUSTER_LABEL.to_owned(), "l3-001".to_owned()),
-            ])
-        );
         assert!(plan.machines.iter().all(|machine| {
             machine.environment.get("PLOYZ_ACME_DIRECTORY") == Some(&String::new())
         }));
-        assert_eq!(
-            plan.teardown_filters(),
-            [
-                "label=dev.ployz.testkit=true",
-                "label=dev.ployz.testkit.cluster=l3-001",
-            ]
-        );
+        // Teardown finds exactly what this Cluster labelled, never another Cluster's.
+        let selects = |plan: &ClusterPlan, labels: &BTreeMap<String, String>| {
+            plan.teardown_filters().iter().all(|filter| {
+                labels
+                    .iter()
+                    .any(|(key, value)| *filter == format!("label={key}={value}"))
+            })
+        };
+        assert!(selects(&plan, &plan.labels()));
+        assert!(!selects(&plan, &other.labels()));
     }
 
     #[tokio::test]

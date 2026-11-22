@@ -42,11 +42,11 @@ fn process_sort_orders_match_the_cli_contract() {
         ContainerRef::Service(&gamma),
         ContainerRef::Hook(&hook),
     ];
-    sort_processes(&mut containers, "service");
+    sort_processes(&mut containers, ProcessOrder::Service);
     assert_eq!(names(&containers), ["alpha", "beta", "delta", "gamma"]);
-    sort_processes(&mut containers, "machine");
+    sort_processes(&mut containers, ProcessOrder::Machine);
     assert_eq!(names(&containers), ["gamma", "beta", "alpha", "delta"]);
-    sort_processes(&mut containers, "health");
+    sort_processes(&mut containers, ProcessOrder::Health);
     assert_eq!(names(&containers), ["alpha", "gamma", "beta", "delta"]);
 }
 

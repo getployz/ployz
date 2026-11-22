@@ -127,7 +127,6 @@ impl CertificateMaterial {
         &self.certificate
     }
 
-    /// Borrow the corresponding PEM private key.
     #[must_use]
     pub fn private_key(&self) -> &str {
         &self.private_key
@@ -269,7 +268,6 @@ impl CertificateRow {
         }
     }
 
-    /// Published material, if this row holds it.
     #[must_use]
     pub fn published(&self) -> Option<&CertificateMaterial> {
         match self {
@@ -317,7 +315,6 @@ impl CertificateRow {
         }
     }
 
-    /// Last recorded refusal or issuance error, if any.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
         self.refusal().map(|refusal| refusal.reason.as_str())

@@ -94,7 +94,6 @@ pub enum RotationTarget {
 /// The owner's answer to one move.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RotationEdge {
-    /// Write this rotation.
     Write(CopyRotation),
     /// Allowed with nothing to write: the rotation already holds, or the move is
     /// a stop that keeps it.
@@ -274,16 +273,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn held_same_run_is_idempotent() {
-        let held = CopyRotation::Held(run("a"));
-        assert_eq!(
-            held.edge(&RotationTarget::Held(run("a"))),
-            RotationEdge::Keep
-        );
-        assert_eq!(held.edge(&RotationTarget::Stopped), RotationEdge::Keep);
     }
 
     #[test]

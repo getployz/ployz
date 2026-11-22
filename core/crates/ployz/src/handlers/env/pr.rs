@@ -31,7 +31,6 @@ pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     deploy::finish_view(&view, Some(on))
 }
 
-/// Show the Project's PR plans, or change one.
 pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let list = |flag: &str| -> Option<Vec<String>> {

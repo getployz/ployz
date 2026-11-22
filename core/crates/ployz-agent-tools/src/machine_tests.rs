@@ -1,0 +1,376 @@
+use std::sync::LazyLock;
+
+use super::*;
+
+static PLACE: LazyLock<Place> = LazyLock::new(|| Place {
+    project: None,
+    environment: None,
+    store: StoreAt::Cloud {
+        organization: OrganizationId::parse("org").unwrap(),
+    },
+});
+
+fn cx<'run>(rounds: &'run [Round], tool: &str) -> Cx<'run> {
+    Cx {
+        rounds,
+        cursor: 0,
+        steps: 0,
+        waited_ms: 0,
+        slot: Some(WriteSlot::new()),
+        place: &PLACE,
+        call: Call::new(tool, json!({})),
+        call_key: "call-1",
+        local_next: None,
+    }
+}
+
+fn read_round() -> Round {
+    Round {
+        kind: Kind::Read { count: 0 },
+        answers: Vec::new(),
+    }
+}
+
+fn refused<T>(outcome: Result<T, Stop>) -> Refusal {
+    match outcome {
+        Err(Stop::Refuse(refusal)) => *refusal,
+        Err(Stop::Step(..)) => panic!("expected a refusal, got a step"),
+        Ok(_) => panic!("expected a refusal, got an answer"),
+    }
+}
+
+fn empty_batch() -> Batch {
+    Batch {
+        environment: EnvironmentRef {
+            project: None,
+            environment: None,
+        },
+        commands: Vec::new(),
+        expect: None,
+    }
+}
+
+#[test]
+fn a_stale_write_reads_again_at_the_place_the_call_named() {
+    let moved = Round {
+        kind: Kind::Write,
+        answers: vec![Err(
+            RpcError::conflict("moved").with_details(json!({ "revision": 4 }))
+        )],
+    };
+    for (input, next) in [
+        (json!({}), Call::new("environment_show", json!({}))),
+        (
+            json!({ "project": "shop", "environment": "staging", "other": 1 }),
+            Call::new(
+                "environment_show",
+                json!({ "project": "shop", "environment": "staging" }),
+            ),
+        ),
+        (
+            json!({ "project": "shop", "service": "web", "expect_revision": 3 }),
+            Call::new(
+                "service_inspect",
+                json!({ "project": "shop", "service": "web" }),
+            ),
+        ),
+    ] {
+        let rounds = vec![moved.clone()];
+        let mut cx = cx(&rounds, "service_update");
+        cx.call = Call::new("service_update", input.clone());
+        let refusal = refused(cx.write_expecting(&empty_batch(), Some(3), from_store));
+        assert_eq!(refusal.code, RpcErrorCode::Conflict, "{input}");
+        assert_eq!(
+            refusal.message,
+            "The Environment changed since you read it; read it again before writing"
+        );
+        assert_eq!(refusal.next, [next], "{input}");
+    }
+}
+
+#[test]
+fn a_local_call_that_needs_cloud_points_at_the_store_read_in_its_place() {
+    let local = Place {
+        project: None,
+        environment: None,
+        store: StoreAt::Local,
+    };
+    for (input, next) in [
+        (
+            json!({ "project": "shop", "environment": "staging" }),
+            json!({ "project": "shop", "environment": "staging" }),
+        ),
+        (
+            json!({ "environment": "staging" }),
+            json!({ "environment": "staging" }),
+        ),
+        (json!({}), json!({})),
+    ] {
+        let (step, _) = start("environment_setup", input.clone(), &local, "call-1");
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("a local environment_setup is refused at once");
+        };
+        assert_eq!(refusal.code.as_str(), "not_here", "{input}");
+        assert_eq!(
+            refusal.next,
+            [Call::new("environment_show", next)],
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn a_local_store_refuses_exactly_the_tools_declared_cloud_only_before_they_plan() {
+    let local = Place {
+        project: None,
+        environment: None,
+        store: StoreAt::Local,
+    };
+    for tool in crate::TOOLS {
+        let (step, _) = start(tool.name, (tool.example)(), &local, "call-1");
+        let refused_here = matches!(
+            &step,
+            Step::Done { result: ToolResult::Refused(refusal) } if refusal.code.as_str() == "not_here"
+        );
+        assert_eq!(
+            refused_here,
+            tool.reach != Reach::Anywhere,
+            "{} must be declared CloudOnly exactly when a local call is refused at once: {step:?}",
+            tool.name
+        );
+    }
+}
+
+#[test]
+fn a_call_takes_at_most_three_reads_and_writes() {
+    let rounds = vec![read_round(), read_round(), read_round(), read_round()];
+    let mut cx = cx(&rounds, "environment_show");
+    for _ in 0..STEP_BUDGET {
+        assert!(cx.read(Vec::new()).is_ok());
+    }
+    let refusal = refused(cx.read(Vec::new()));
+    assert_eq!(refusal.code, RpcErrorCode::Internal);
+    assert_eq!(
+        refusal.message,
+        "A call takes at most three reads and writes"
+    );
+}
+
+#[test]
+fn a_call_writes_at_most_once() {
+    let rounds = Vec::new();
+    let mut cx = cx(&rounds, "service_add");
+    assert!(matches!(
+        cx.write(&empty_batch()),
+        Err(Stop::Step(step, Kind::Write)) if matches!(*step, Step::Write { .. })
+    ));
+    let refusal = refused(cx.write(&empty_batch()));
+    assert_eq!(refusal.message, "A call writes at most once");
+}
+
+#[test]
+fn waits_back_off_and_stop_at_the_cap() {
+    let rounds = Vec::new();
+    let mut cx = cx(&rounds, "deployment_show");
+    assert!(matches!(cx.poll(0, 0, Vec::new()), Ok(None)));
+    let mut waits = Vec::new();
+    for attempt in 0..100 {
+        match cx.poll(1_000, attempt, Vec::new()) {
+            Ok(None) => break,
+            Err(Stop::Step(step, Kind::Wait { ms, .. })) => {
+                assert!(matches!(*step, Step::Wait { ms: shown, .. } if shown == ms));
+                waits.push(ms);
+            }
+            Ok(Some(_)) | Err(Stop::Step(..) | Stop::Refuse(_)) => panic!("a poll only waits"),
+        }
+    }
+    assert_eq!(waits.get(..4), Some(&[1_000, 2_000, 4_000, 10_000][..]));
+    assert_eq!(waits.iter().sum::<u32>(), WAIT_CAP_SECONDS * 1_000);
+}
+
+#[test]
+fn an_unknown_write_retries_under_the_same_key_only_when_keyed() {
+    let unknown = |tool: &str| {
+        let entry = super::super::TOOLS
+            .iter()
+            .find(|entry| entry.name == tool)
+            .unwrap();
+        let mut refusal = Refusal::internal("The write may have landed");
+        refusal.writes = Writes::Unknown;
+        finish(
+            refusal,
+            entry,
+            &Call::new(tool, json!({ "environment": "staging" })),
+            "call-1",
+        )
+    };
+    let deploy = unknown("deploy");
+    assert_eq!(
+        deploy.retry,
+        Call::new(
+            "deploy",
+            json!({
+                "environment": "staging",
+                "request_key": RequestKey::effective(None, "call-1").as_str(),
+            })
+        )
+    );
+    let added = unknown("service_add");
+    assert_eq!(
+        added.retry,
+        Call::new("service_add", json!({ "environment": "staging" }))
+    );
+}
+
+#[test]
+fn a_bad_argument_names_what_fits_and_an_example() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "deployment_show")
+        .unwrap();
+    let refusal = finish(
+        Refusal::invalid("Too long", "wait_seconds"),
+        entry,
+        &Call::new("deployment_show", json!({ "wait_seconds": 9_000 })),
+        "call-1",
+    );
+    assert_eq!(
+        refusal.expected.as_ref().and_then(|at| at.get("maximum")),
+        Some(&json!(300))
+    );
+    assert_eq!(refusal.example, Some((entry.example)()));
+}
+
+#[test]
+fn a_resume_must_answer_the_step_it_was_given() {
+    let (step, state) = start("environment_show", json!({}), &PLACE, "call-1");
+    let Step::Read { asks } = step else {
+        panic!("environment_show reads first");
+    };
+    let short = asks.iter().skip(1).map(|_| Ok(json!({}))).collect();
+    let (step, _) = resume(state.clone(), short);
+    let Step::Done {
+        result: ToolResult::Refused(refusal),
+    } = step
+    else {
+        panic!("short answers are refused");
+    };
+    assert_eq!(refusal.code, RpcErrorCode::Internal);
+    assert_eq!(refusal.retry, Call::new("environment_show", json!({})));
+    let mut idle = state;
+    idle.pending = None;
+    assert!(matches!(
+        resume(idle, Vec::new()).0,
+        Step::Done {
+            result: ToolResult::Refused(_)
+        }
+    ));
+}
+
+#[test]
+fn a_bad_argument_outlines_what_fits_instead_of_echoing_the_schema() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "service_update")
+        .unwrap();
+    let whole = (entry.def)().input_schema.to_string().len();
+    for field in ["", "set", "set.bogus"] {
+        let refusal = finish(
+            Refusal::invalid("Unknown Service Setting", field),
+            entry,
+            &Call::new("service_update", json!({ "set": { "bogus": 1 } })),
+            "call-1",
+        );
+        let expected = refusal.expected.unwrap();
+        let size = expected.to_string().len();
+        assert!(
+            size < 2_048 && size < whole / 4,
+            "{field}: {size} of {whole}"
+        );
+        let names = expected
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap();
+        let want = match field {
+            "" => "service",
+            _ => "env",
+        };
+        assert!(names.contains_key(want), "{field}: {expected}");
+    }
+}
+
+#[test]
+fn a_number_outside_its_declared_range_is_refused() {
+    for (input, field) in [
+        (json!({ "wait_seconds": 301 }), "wait_seconds"),
+        (json!({ "wait_seconds": 100_000 }), "wait_seconds"),
+        (json!({ "deployment": 0 }), "deployment"),
+    ] {
+        let (step, _) = start("deployment_show", input.clone(), &PLACE, "call-1");
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("{input} is out of range");
+        };
+        assert_eq!(refusal.code, RpcErrorCode::InvalidArgument, "{input}");
+        assert_eq!(refusal.field.as_deref(), Some(field), "{input}");
+    }
+    let (step, _) = start(
+        "deployment_show",
+        json!({ "wait_seconds": 300 }),
+        &PLACE,
+        "call-1",
+    );
+    assert!(!matches!(step, Step::Done { .. }), "300 is in range");
+}
+
+#[test]
+fn an_ambiguous_refusal_leaves_the_choice_to_the_agent_instead_of_a_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "domain_check")
+        .unwrap();
+    let call = Call::new("domain_check", json!({ "domain": "example.com" }));
+    let refusal = finish(
+        from_store(
+            RpcError::ambiguous("Name a Project: this Organization has more than one")
+                .with_details(json!({ "projects": ["blog", "shop"] })),
+            &call,
+            Writes::None,
+        ),
+        entry,
+        &call,
+        "call-1",
+    );
+    assert_eq!(refusal.valid, ["blog", "shop"]);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+}
+
+#[test]
+fn a_move_to_where_the_volume_already_is_offers_no_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "volume_move")
+        .unwrap();
+    let call = Call::new(
+        "volume_move",
+        json!({ "volume": "files", "to": "machine-1" }),
+    );
+    let shown = Call::new("volume_show", json!({ "volume": "files" }));
+    let Stop::Refuse(refusal) = refused_act(
+        RpcError::conflict("files's writer is already on machine-1")
+            .with_details(json!({ "settled": true })),
+        &call,
+        shown.clone(),
+    ) else {
+        panic!("a refused act stops with a refusal");
+    };
+    let refusal = finish(*refusal, entry, &call, "call-1");
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+    assert_eq!(refusal.next, [shown]);
+}

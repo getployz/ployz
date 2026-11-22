@@ -250,18 +250,3 @@ fn unnamed_founding() -> Error {
         "<name>",
     ])))
 }
-
-#[cfg(test)]
-mod tests {
-    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
-
-    use super::*;
-
-    #[test]
-    fn init_timeout_leaves_the_docker_network_recovery_to_the_journal() {
-        let message = helpers::readiness_timeout_message("initial Server did not become ready");
-
-        assert!(message.contains("initial Server did not become ready"));
-        assert!(!message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
-}

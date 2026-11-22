@@ -128,7 +128,6 @@ impl MachinePool {
         &self.name
     }
 
-    /// Current ZFS Pool size in bytes.
     #[must_use]
     pub fn size_bytes(&self) -> NonZeroU64 {
         self.size_bytes
@@ -140,7 +139,6 @@ impl MachinePool {
         self.used_bytes
     }
 
-    /// Current free ZFS Pool bytes.
     #[must_use]
     pub fn free_bytes(&self) -> u64 {
         self.free_bytes

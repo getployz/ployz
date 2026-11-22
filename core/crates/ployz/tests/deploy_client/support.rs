@@ -9,9 +9,7 @@ use std::{
 };
 
 use ployz::{
-    connect::{
-        BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
-    },
+    connect::{Client, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
     deploy::PlanOptions,
 };
@@ -24,22 +22,23 @@ use ployz_core::{
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcRequestBody,
-    RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use ployz_testkit::{
-    fake_machine::{Fake, FakeMachine, FakeStream},
+    fake_machine::{Fake, FakeMachine, FakeStream, Proxies, reply, target, unused},
     rotation,
 };
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{
-    Request, Response, Status, Streaming,
-    transport::{Channel, Server},
-};
+use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
+
+#[path = "../support/memory.rs"]
+mod memory;
+pub(super) use memory::connected_in_memory;
 
 #[path = "../support/build.rs"]
 mod build_fixture;
@@ -95,8 +94,7 @@ pub(super) struct DeployService {
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
     unroutes: Arc<tokio::sync::Notify>,
-    /// What each proxy last routed, kept by the real rule.
-    served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
+    proxies: Arc<Proxies>,
     /// Machines whose proxy adds copies as they go In but never drops one.
     sticky_proxies: BTreeSet<MachineId>,
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
@@ -200,7 +198,7 @@ impl DeployService {
             rotations: Arc::new(Mutex::new(BTreeMap::new())),
             unrouted: Arc::new(Mutex::new(BTreeSet::new())),
             unroutes: Arc::new(tokio::sync::Notify::new()),
-            served: Arc::default(),
+            proxies: Arc::default(),
             sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
@@ -651,7 +649,7 @@ impl DeployService {
             )
     }
 
-    /// How a proxy sees a copy: addressed, with the rotation its owner wrote.
+    /// How a proxy sees a copy: with the rotation its owner wrote.
     fn proxied(
         &self,
         container_id: ContainerId,
@@ -674,9 +672,6 @@ impl DeployService {
                 parts.namespace = service.namespace.clone();
                 parts.resolved_spec.name = service.name.clone();
                 parts.rotation = Some(rotation);
-                parts.address = parts.address.or(Some(ployz_core::ContainerAddress(
-                    "10.210.1.2".parse().unwrap(),
-                )));
             })
             .unwrap();
         observed
@@ -701,7 +696,9 @@ impl DeployService {
                 .map(|(id, rotated)| (*id, rotated.service.clone())),
         );
         let ours = |id: &ContainerId| copies.get(id) == Some(service) && !removed.contains(id);
-        let siblings = ployz_core::service_containers(
+        let mut read = self.proxies.read(
+            service,
+            self.machines.iter().map(|observed| observed.machine.id),
             copies
                 .keys()
                 .filter(|id| ours(id))
@@ -715,34 +712,12 @@ impl DeployService {
             .filter(|id| ours(id))
             .copied()
             .collect();
-        let mut served = self.served.lock().unwrap();
-        RoutesRead {
-            routes: self
-                .machines
-                .iter()
-                .map(|observed| {
-                    let id = observed.machine.id;
-                    let current = served.entry(id).or_default();
-                    let next = ployz_core::proxy_routes(&siblings, |_| false, current);
-                    let route = next.get(service).cloned().unwrap_or_default();
-                    let mut listed: BTreeSet<ContainerId> = route
-                        .iter()
-                        .map(|serving| serving.as_observation().container_id)
-                        .collect();
-                    if next.contains_key(service) {
-                        current.insert(service.clone(), route);
-                    } else {
-                        current.remove(service);
-                    }
-                    if self.sticky_proxies.contains(&id) {
-                        listed.extend(unrouted.iter().copied());
-                    }
-                    (id, Some(listed))
-                })
-                .collect(),
-            complete: true,
-            ..RoutesRead::default()
+        for (machine, listed) in &mut read.routes {
+            if let (true, Some(listed)) = (self.sticky_proxies.contains(machine), listed) {
+                listed.extend(unrouted.iter().copied());
+            }
         }
+        read
     }
 
     async fn turn(
@@ -833,7 +808,7 @@ impl FakeMachine for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        encoded(RpcResponse::from(ployz_core::StorageCapacity {
+        reply(ployz_core::StorageCapacity {
             backing: ployz_core::StorageBacking::Unallocated {
                 host_total_bytes: 100 * ployz_core::STORAGE_GIB,
                 host_available_bytes: 90 * ployz_core::STORAGE_GIB,
@@ -842,7 +817,7 @@ impl FakeMachine for DeployService {
             slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: self.copies.lock().unwrap().clone(),
-        }))
+        })
     }
 
     async fn prepare_volumes(
@@ -850,9 +825,7 @@ impl FakeMachine for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        encoded(RpcResponse::from(ployz_core::PreparedVolumes {
-            names: Vec::new(),
-        }))
+        reply(ployz_core::PreparedVolumes { names: Vec::new() })
     }
 
     async fn build(
@@ -901,9 +874,9 @@ impl FakeMachine for DeployService {
                 .map(|name| CapabilityName::parse(name).unwrap()),
             );
         }
-        encoded(RpcResponse::from(ContractDescription {
+        reply(ContractDescription {
             attest: None,
-            machine_id: machine_from_metadata(&request)
+            machine_id: target(&request)
                 .ok()
                 .or_else(|| self.machines.first().map(|machine| machine.machine.id))
                 .unwrap_or_else(MachineId::random),
@@ -911,7 +884,7 @@ impl FakeMachine for DeployService {
             daemon_version: "test".into(),
             capabilities,
             sealing: self.sealing,
-        }))
+        })
     }
 
     async fn list_machines(
@@ -919,7 +892,7 @@ impl FakeMachine for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if let Some(error) = self.machines_error.lock().unwrap().clone() {
-            return encoded(RpcResponse::from(error));
+            return reply(error);
         }
         let mut machines = self.listed_machines();
         let lags = self
@@ -933,10 +906,10 @@ impl FakeMachine for DeployService {
                 observed.machine.accepts_ingress = false;
             }
         }
-        encoded(RpcResponse::from(MachineList {
+        reply(MachineList {
             enrollment: None,
             machines,
-        }))
+        })
     }
 
     async fn runtime_watch(
@@ -972,9 +945,9 @@ impl FakeMachine for DeployService {
             blocked.notify_one();
             std::future::pending::<()>().await;
         }
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         if self.listing_failures.contains(&machine_id) {
-            return encoded(RpcResponse::from(RpcError::unavailable("listing failed")));
+            return reply(RpcError::unavailable("listing failed"));
         }
         let listed: Vec<_> = self
             .listed_containers
@@ -984,7 +957,7 @@ impl FakeMachine for DeployService {
             .filter(|container| container.machine_id == machine_id)
             .cloned()
             .collect();
-        encoded(RpcResponse::from(ContainerList {
+        reply(ContainerList {
             containers: listed
                 .into_iter()
                 .map(|mut container| {
@@ -995,17 +968,17 @@ impl FakeMachine for DeployService {
                     container
                 })
                 .collect(),
-        }))
+        })
     }
 
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        encoded(RpcResponse::from(VolumeInventory {
+        reply(VolumeInventory {
             volumes: self.volumes.lock().unwrap().clone(),
             failures: Vec::new(),
-        }))
+        })
     }
 
     async fn inspect(
@@ -1013,7 +986,7 @@ impl FakeMachine for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id = if request.metadata().contains_key("machine") {
-            machine_from_metadata(&request)?
+            target(&request)?
         } else {
             self.machines
                 .first()
@@ -1034,7 +1007,7 @@ impl FakeMachine for DeployService {
             .into_iter()
             .find(|observed| observed.machine.id == machine_id)
             .map(|observed| observed.machine);
-        encoded(RpcResponse::from(MachineDetails {
+        reply(MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
             removed_grants: Vec::new(),
@@ -1054,7 +1027,7 @@ impl FakeMachine for DeployService {
             sealing: self.sealing,
             founding: Default::default(),
             grants: Vec::new(),
-        }))
+        })
     }
     async fn enroll(
         &self,
@@ -1081,14 +1054,14 @@ impl FakeMachine for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let target = machine_from_metadata(&request).ok();
+        let target = target(&request).ok();
         let RpcRequestBody::InspectContainer(inspect) =
             request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected inspect_container"));
         };
         if let Some(error) = &self.inspect_error {
-            return encoded(RpcResponse::from(error.clone()));
+            return reply(error.clone());
         }
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
@@ -1106,7 +1079,7 @@ impl FakeMachine for DeployService {
                 },
             )
             .expect("volume graph is scoped");
-        encoded(RpcResponse::from(ContainerDetails {
+        reply(ContainerDetails {
             image_id: None,
             last_check: None,
             run: None,
@@ -1140,14 +1113,14 @@ impl FakeMachine for DeployService {
             last_exit_code: matches!(self.runtime, ContainerRuntimeObservation::Restarting)
                 .then_some(1),
             leaving: false,
-        }))
+        })
     }
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         let RpcRequestBody::RemoveVolume(remove) =
             request.into_inner().decode_request().unwrap().body
         else {
@@ -1157,14 +1130,14 @@ impl FakeMachine for DeployService {
             .lock()
             .unwrap()
             .retain(|volume| volume.id.machine_id != machine_id || volume.id.name != remove.name);
-        encoded(RpcResponse::from(ployz_core::VolumeRemoved {}))
+        reply(ployz_core::VolumeRemoved {})
     }
     async fn ensure_container(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         let RpcRequestBody::EnsureContainer(ensure) =
             request.into_inner().decode_request().unwrap().body
         else {
@@ -1179,7 +1152,7 @@ impl FakeMachine for DeployService {
         {
             match self.check_rule(ensure.rule.as_deref()) {
                 Ok(issued) => verified = issued,
-                Err(refusal) => return encoded(RpcResponse::from(refusal)),
+                Err(refusal) => return reply(refusal),
             }
         }
         let settled = matches!(
@@ -1199,11 +1172,11 @@ impl FakeMachine for DeployService {
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
                     if self.pull_failures.contains(&machine_id) {
-                        return encoded(RpcResponse::from(self.pull_failure.clone()));
+                        return reply(self.pull_failure.clone());
                     }
                 }
                 if let Some(error) = &self.create_volume_error {
-                    return encoded(RpcResponse::from(error.clone()));
+                    return reply(error.clone());
                 }
                 if let Some(error) = &self.create_volume_verification_error {
                     let mut error = error.clone();
@@ -1211,7 +1184,7 @@ impl FakeMachine for DeployService {
                         "Docker Volume was created but could not be verified: {}",
                         error.message
                     );
-                    return encoded(RpcResponse::from(error));
+                    return reply(error);
                 }
                 let key = new.slot.creation_key.as_str().to_owned();
                 let existing = self.slots.lock().unwrap().get(&key).copied();
@@ -1244,7 +1217,7 @@ impl FakeMachine for DeployService {
                 };
                 if let Some(error) = self.start_error(machine_id) {
                     self.rival_starts(machine_id);
-                    return encoded(RpcResponse::from(error.clone()));
+                    return reply(error.clone());
                 }
                 let mut observed = self.observed(machine_id, container_id, new.resolved_spec);
                 observed
@@ -1263,7 +1236,7 @@ impl FakeMachine for DeployService {
                 ..
             } => {
                 if let Some(error) = self.start_error(machine_id) {
-                    return encoded(RpcResponse::from(error.clone()));
+                    return reply(error.clone());
                 }
                 let container_id = self.located(&locator)?;
                 match turned(container_id).await {
@@ -1275,7 +1248,7 @@ impl FakeMachine for DeployService {
                         )),
                         health,
                     ),
-                    Err(answer) => return encoded(RpcResponse::from(answer)),
+                    Err(answer) => return reply(answer),
                 }
             }
             ployz_core::ContainerWant::Stopped { container, .. }
@@ -1283,7 +1256,7 @@ impl FakeMachine for DeployService {
             | ployz_core::ContainerWant::Held { container, .. } => {
                 let container_id = self.located(&container)?;
                 if let Err(answer) = turned(container_id).await {
-                    return encoded(RpcResponse::from(answer));
+                    return reply(answer);
                 }
                 (
                     ContainerNow::Present(self.observed(
@@ -1296,11 +1269,11 @@ impl FakeMachine for DeployService {
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
                 if let Some(refusal) = &self.removal_refusal {
-                    return encoded(RpcResponse::from(refusal.clone()));
+                    return reply(refusal.clone());
                 }
                 if let Ok(container_id) = self.located(&container) {
                     if let Err(answer) = turned(container_id).await {
-                        return encoded(RpcResponse::from(answer));
+                        return reply(answer);
                     }
                     self.removed.lock().unwrap().insert(container_id);
                     if self.lists_created {
@@ -1319,11 +1292,11 @@ impl FakeMachine for DeployService {
         } else {
             turned_health
         };
-        encoded(RpcResponse::from(EnsuredContainer::Ensured {
+        reply(EnsuredContainer::Ensured {
             now,
             health,
             verified,
-        }))
+        })
     }
     async fn exec(
         &self,
@@ -1356,7 +1329,7 @@ impl FakeMachine for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<FakeStream>, Status> {
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected tail_logs"));
@@ -1408,7 +1381,7 @@ impl FakeMachine for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine = machine_from_metadata(&request)?;
+        let machine = target(&request)?;
         let images = self
             .builds
             .as_ref()
@@ -1418,20 +1391,20 @@ impl FakeMachine for DeployService {
                 images: Vec::new(),
                 docker_root: None,
             });
-        encoded(RpcResponse::from(images))
+        reply(images)
     }
     async fn ensure_image_ingest(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if let Some(builds) = &self.builds {
-            let machine = machine_from_metadata(&request)?;
+            let machine = target(&request)?;
             let machine = self
                 .machines
                 .iter()
                 .find(|observed| observed.machine.id == machine)
                 .unwrap();
-            return encoded(RpcResponse::from(builds.open(&machine.machine)));
+            return reply(builds.open(&machine.machine));
         }
         self.record_mutation();
         unused()
@@ -1448,11 +1421,11 @@ impl FakeMachine for DeployService {
             ployz_core::ManagementIdentity::from_bytes([1; 32]),
             [2; 32],
         );
-        encoded(RpcResponse::from(ployz_core::BuildGrantMinted {
+        reply(ployz_core::BuildGrantMinted {
             id: ployz_core::BuildGrantId::parse("d".repeat(64)).unwrap(),
             key: ployz_core::MintedKey::Grant { grant },
             expires_in_seconds: 600,
-        }))
+        })
     }
     async fn inspect_build_grant(
         &self,
@@ -1461,10 +1434,10 @@ impl FakeMachine for DeployService {
         if !self.grants {
             return unused();
         }
-        encoded(RpcResponse::from(ployz_core::BuildGrantInspected {
+        reply(ployz_core::BuildGrantInspected {
             pushed: None,
             expires_in_seconds: 600,
-        }))
+        })
     }
     /// The holder then Caddy, each created once per Machine and running as Containers
     /// here run. A start error fails the holder's stage, as a taken port does.
@@ -1473,7 +1446,7 @@ impl FakeMachine for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         let RpcRequestBody::SetIngressDoors(doors) =
             request.into_inner().decode_request().unwrap().body
         else {
@@ -1481,13 +1454,13 @@ impl FakeMachine for DeployService {
         };
         if let Some(error) = self.start_error(machine_id) {
             self.rival_starts(machine_id);
-            return encoded(RpcResponse::from(ployz_core::IngressDoorsSet {
+            return reply(ployz_core::IngressDoorsSet {
                 failure: Some(ployz_core::IngressDoorsFailure {
                     stage: ployz_core::IngressStage::Holder,
                     error: error.clone(),
                 }),
                 ..Default::default()
-            }));
+            });
         }
         let mut set = ployz_core::IngressDoorsSet::default();
         for (identity, spec) in [
@@ -1531,7 +1504,7 @@ impl FakeMachine for DeployService {
                 set.holder = outcome;
             }
         }
-        encoded(RpcResponse::from(set))
+        reply(set)
     }
     async fn read_routes(
         &self,
@@ -1541,7 +1514,7 @@ impl FakeMachine for DeployService {
         else {
             panic!("expected a routes read");
         };
-        encoded(RpcResponse::from(self.routes(&read.service)))
+        reply(self.routes(&read.service))
     }
     async fn read_routed_addresses(
         &self,
@@ -1556,19 +1529,19 @@ impl FakeMachine for DeployService {
         if self.builds.is_none() {
             return unused();
         }
-        encoded(RpcResponse::from(ployz_core::ImagesRemoved::default()))
+        reply(ployz_core::ImagesRemoved::default())
     }
     async fn pull_image(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine = machine_from_metadata(&request)?;
+        let machine = target(&request)?;
         let RpcRequestBody::PullImage(pull) = request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected pull_image"));
         };
         if self.pull_failures.contains(&machine) {
-            return encoded(RpcResponse::from(self.pull_failure.clone()));
+            return reply(self.pull_failure.clone());
         }
         self.image_pulls.lock().unwrap().push(ImagePullCall {
             machine,
@@ -1576,20 +1549,20 @@ impl FakeMachine for DeployService {
             policy: pull.policy,
             mutations_before: self.mutating_rpcs.load(Ordering::SeqCst),
         });
-        encoded(RpcResponse::from(ployz_core::ImagePulled::default()))
+        reply(ployz_core::ImagePulled::default())
     }
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if let Some(builds) = &self.builds {
-            let machine = machine_from_metadata(&request)?;
+            let machine = target(&request)?;
             let RpcRequestBody::PullImageFromMachine(pull) =
                 request.into_inner().decode_request().unwrap().body
             else {
                 panic!("expected peer pull");
             };
-            return encoded(builds.pull(machine, pull));
+            return reply(builds.pull(machine, pull));
         }
         self.record_mutation();
         unused()
@@ -1606,7 +1579,7 @@ impl FakeMachine for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        let machine_id = machine_from_metadata(&request)?;
+        let machine_id = target(&request)?;
         let RpcRequestBody::UpdateMachine(update) =
             request.into_inner().decode_request().unwrap().body
         else {
@@ -1614,7 +1587,7 @@ impl FakeMachine for DeployService {
         };
         if let Some(role) = update.update.accepts_ingress {
             if let (false, Some(refusal)) = (role, &self.role_off_refusal) {
-                return encoded(RpcResponse::from(refusal.clone()));
+                return reply(refusal.clone());
             }
             self.ingress_roles.lock().unwrap().insert(machine_id, role);
         }
@@ -1624,7 +1597,7 @@ impl FakeMachine for DeployService {
             .find(|observed| observed.machine.id == machine_id)
             .ok_or_else(|| Status::not_found("no such Machine"))?
             .machine;
-        encoded(RpcResponse::from(ployz_core::MachineUpdated { machine }))
+        reply(ployz_core::MachineUpdated { machine })
     }
     async fn leave(
         &self,
@@ -1642,36 +1615,6 @@ impl FakeMachine for DeployService {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the MachineRpc error type"
-)]
-fn unused<T>() -> Result<T, Status> {
-    Err(Status::unimplemented("unused"))
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the MachineRpc error type"
-)]
-fn encoded(response: RpcResponse) -> Result<Response<OpaquePayload>, Status> {
-    Ok(Response::new(response.encode().unwrap()))
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic Status is the MachineRpc error type"
-)]
-fn machine_from_metadata(request: &Request<OpaquePayload>) -> Result<MachineId, Status> {
-    let value = request
-        .metadata()
-        .get("machine")
-        .ok_or_else(|| Status::invalid_argument("missing machine target"))?
-        .to_str()
-        .map_err(|_| Status::invalid_argument("machine target is not utf-8"))?;
-    MachineId::parse(value).map_err(|error| Status::invalid_argument(error.to_string()))
-}
-
 pub(super) async fn connected(
     service: DeployService,
 ) -> (
@@ -1685,59 +1628,6 @@ pub(super) async fn connected(
             connections: vec![Connection::tcp(address)],
         },
         Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-    (client, server)
-}
-
-/// `connected` over in-process streams, so a paused clock never outruns OS I/O.
-pub(super) async fn connected_in_memory(
-    service: DeployService,
-) -> (
-    Client,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) {
-    type Incoming =
-        tokio::sync::mpsc::UnboundedSender<Result<tokio::io::DuplexStream, std::io::Error>>;
-    struct Memory(Incoming);
-    #[tonic::async_trait]
-    impl Connector for Memory {
-        async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
-            let incoming = self.0.clone();
-            Channel::from_static("http://memory.invalid")
-                .connect_with_connector(tower::service_fn(move |_| {
-                    let (client, server) = tokio::io::duplex(64 * 1024);
-                    incoming.send(Ok(server)).unwrap();
-                    async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client)) }
-                }))
-                .await
-                .map_err(Into::into)
-        }
-
-        async fn dial_proxy(
-            &self,
-            _: &Connection,
-            _: &str,
-            _: &str,
-        ) -> Result<BoxProxyStream, ConnectError> {
-            Err(ConnectError::Attempt("unused".into()))
-        }
-    }
-    let (incoming, receiver) = tokio::sync::mpsc::unbounded_channel();
-    let server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(Fake(service)))
-            .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
-                receiver,
-            )),
-    );
-    let client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
-        },
-        Arc::new(Memory(incoming)),
     )
     .await
     .unwrap();

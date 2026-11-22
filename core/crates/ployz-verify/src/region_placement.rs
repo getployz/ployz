@@ -26,19 +26,20 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
-    num::{NonZeroU32, NonZeroU64},
+    num::{NonZeroU8, NonZeroU32, NonZeroU64},
 };
 
 use ployz::deploy::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, PlanOptions,
     ReplacementOperation, VolumeSnapshot, preview_deploy,
 };
+use ployz_core::config::{self, lower_placement};
 use ployz_core::{
     BlockedKind, ContainerId, ContainerKind, ContainerObservation, ContainerObservationParts,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, ContainerUpdateOperation,
     CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
     HealthObservation, Machine, MachineId, MachineName, MachineObservation, MachinePath,
-    MachineStorageObservation, MembershipObservation, Namespace, Placement, PullPolicy, Region,
+    MachineStorageObservation, MembershipObservation, Namespace, PullPolicy, Region,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
     ServiceVolumeReference, SpecChange, UpdateConfig, UpdateOrder, WireGuardPublicKey,
@@ -114,6 +115,19 @@ pub(crate) enum Replicas {
 }
 
 impl Replicas {
+    /// It as a Service's settings hold it.
+    fn authored(self) -> config::Replicas {
+        match self {
+            Self::Count(count) => config::Replicas::Count(count),
+            Self::By { .. } => config::Replicas::PerRegion(
+                config::RegionReplicas::new(Label::REGIONS.into_iter().filter_map(|label| {
+                    Some((label.region()?, NonZeroU8::new(self.count_in(label)?)?))
+                }))
+                .expect("counts by region name a region"),
+            ),
+        }
+    }
+
     const fn total(self) -> u8 {
         match self {
             Self::Count(count) => count,
@@ -447,11 +461,12 @@ impl RegionPlacement {
         Namespace::parse("app").expect("a Namespace")
     }
 
-    /// The spec lowering gives `service` under `config`'s region and counts
-    /// (ployz-core config/lowering.rs): counts by region set `regions` and no
-    /// constraint; one count takes the Environment's region as its constraint.
+    /// The spec lowering gives `service` under `config`'s region and counts, placed by
+    /// [`lower_placement`].
     fn requested(&self, service: usize, made: Made) -> RequestedServiceSpec {
         let name = service_name(service);
+        let (placement, regions) =
+            lower_placement(&made.replicas.authored(), made.region.region().as_ref());
         let mut spec = RequestedServiceSpec {
             name: ServiceName::parse(name).expect("a Service name"),
             mode: ServiceMode::Replicated {
@@ -484,21 +499,8 @@ impl RegionPlacement {
                 network: None,
                 restart: RestartPolicy::default(),
             },
-            placement: Placement {
-                constraints: match made.replicas {
-                    Replicas::By { .. } => None,
-                    Replicas::Count(_) => made.region.region().map(|region| region.constraint()),
-                }
-                .into_iter()
-                .collect(),
-            },
-            regions: Label::REGIONS
-                .into_iter()
-                .filter_map(|label| {
-                    let count = NonZeroU32::new(u32::from(made.replicas.count_in(label)?))?;
-                    Some((label.region()?, count))
-                })
-                .collect(),
+            placement,
+            regions,
             ports: Vec::new(),
             mount_graph: ployz_core::ServiceMountGraph::default(),
             pre_deploy: None,

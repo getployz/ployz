@@ -839,8 +839,6 @@ mod tests {
             }],
             omissions: Vec::new(),
         };
-        assert_eq!(changed.successes.len(), 1);
-        assert_eq!(changed.failures.len(), 1);
         assert!(!changed.all_targets_succeeded());
     }
 

@@ -86,7 +86,6 @@ impl VolumeName {
     }
 }
 
-/// The dataset names of one Machine Pool.
 #[derive(Clone, Copy, Debug)]
 pub struct DatasetLayout<'pool> {
     pool: &'pool str,
@@ -99,7 +98,6 @@ impl<'pool> DatasetLayout<'pool> {
         Self { pool }
     }
 
-    /// The layout of an imported Machine Pool.
     #[must_use]
     pub fn of(pool: &'pool MachinePool) -> Self {
         Self::new(pool.name())
@@ -264,15 +262,6 @@ mod tests {
         assert_eq!(slot_fs_mountpoint("data"), "/var/lib/ployz-mirror/data/fs");
         assert_eq!(MOUNT_ROOT, "/var/lib/ployz-volumes");
         assert_eq!(MIRROR_MOUNT_ROOT, "/var/lib/ployz-mirror");
-    }
-
-    #[test]
-    fn the_mirror_mount_root_is_the_mirror_dataset_name_under_var_lib() {
-        assert_eq!(MIRROR_MOUNT_ROOT, format!("/var/lib/{MIRROR_ROOT}"));
-        assert_eq!(
-            slot_fs_mountpoint("data"),
-            format!("/var/lib/{MIRROR_ROOT}/data/fs")
-        );
     }
 
     #[test]

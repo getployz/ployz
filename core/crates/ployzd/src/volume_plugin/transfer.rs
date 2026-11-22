@@ -25,7 +25,7 @@ use tokio::{
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-use super::{VolumeName, VolumeStorage, storage::HeldMutation};
+use super::{PluginError, VolumeName, VolumeStorage, storage::HeldMutation};
 
 /// The Volume and target a pull of `stream` lands, for the lane at `gen`.
 pub(super) fn pulling(stream: &SendStream, r#gen: VolumeGen) -> Identity<'_> {
@@ -411,19 +411,16 @@ pub(super) struct OpenedStream {
 }
 
 /// Why a receive did not land its stream.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(super) enum ReceiveFailure {
     /// The writer has no such stream: the base or the token is gone from it.
+    #[error("{0}")]
     NoStream(String),
+    #[error("{0}")]
     Failed(String),
-}
-
-impl std::fmt::Display for ReceiveFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoStream(message) | Self::Failed(message) => f.write_str(message),
-        }
-    }
+    /// This Server's own ZFS read or write of the slot failed.
+    #[error(transparent)]
+    Storage(#[from] PluginError),
 }
 
 impl VolumeStorage {
@@ -466,26 +463,15 @@ impl VolumeStorage {
                 .map(|value| value.to_str().unwrap_or_default()),
         )
         .map_err(|error| failed(format!("{} answered {error}", opened.shown)))?;
-        let record = self
-            .record(parent)
-            .await
-            .map_err(|error| failed(error.to_string()))?;
+        let record = self.record(parent).await?;
         // An absent `fs` lets any origin in, so absence comes only from a finished listing.
         let held = match record {
             Some(record) => Some(Some(record)),
-            None if self
-                .exists(fs)
-                .await
-                .map_err(|error| failed(error.to_string()))? =>
-            {
-                let newest = self
-                    .newest_snapshot(fs)
-                    .await
-                    .map_err(|error| failed(error.to_string()))?;
+            None if self.exists(fs).await? => {
+                let newest = self.newest_snapshot(fs).await?;
                 Some(
                     self.origin_of(None, Some((fs, newest.as_ref().map(|newest| &newest.name))))
-                        .await
-                        .map_err(|error| failed(error.to_string()))?,
+                        .await?,
                 )
             }
             None => None,
@@ -503,9 +489,7 @@ impl VolumeStorage {
         if record == sent {
             return Ok(());
         }
-        self.write_record(parent, sent)
-            .await
-            .map_err(|error| failed(error.to_string()))
+        Ok(self.write_record(parent, sent).await?)
     }
 
     /// The writer's answer to `stream`, before anything touches the slot. A writer that
@@ -595,9 +579,7 @@ impl VolumeStorage {
         pumped.ok_or_else(|| {
             ReceiveFailure::Failed(format!("the receive into {fs} was stopped"))
         })??;
-        self.finish_copy(fs, bound)
-            .await
-            .map_err(ReceiveFailure::Failed)
+        Ok(self.finish_copy(fs, bound).await?)
     }
 
     /// Writes the stream into the receive `child` and waits for it to exit.
@@ -670,11 +652,9 @@ impl VolumeStorage {
     }
 
     /// The copy is read-only and carries the slot's bound, whatever the stream said.
-    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> super::Result<()> {
         for (property, value) in [("readonly", "on"), ("refquota", bound.to_string().as_str())] {
-            self.set_verified(fs, property, value)
-                .await
-                .map_err(|error| error.to_string())?;
+            self.set_verified(fs, property, value).await?;
         }
         Ok(())
     }

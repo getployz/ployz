@@ -31,7 +31,6 @@ pub(crate) const PIN_COMMAND: &str = "ployz device pin --connect ssh://USER@SERV
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Pin {
     pub(crate) public_key: SealingPublicKey,
-    /// The Server that reported it.
     pub(crate) server: MachineName,
 }
 

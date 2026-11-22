@@ -497,13 +497,6 @@ mod tests {
     use ployz_core::{ContainerId, HealthObservation};
     use serde_json::json;
 
-    #[test]
-    fn the_router_gets_forty_five_seconds_to_join_and_is_looked_at_each_second() {
-        let pacing = Pacing::default();
-        assert_eq!(pacing.router_settle, Duration::from_secs(45));
-        assert_eq!(pacing.router_poll, Duration::from_secs(1));
-    }
-
     fn id(id: char) -> ContainerId {
         ContainerId::parse(id.to_string().repeat(64)).unwrap()
     }

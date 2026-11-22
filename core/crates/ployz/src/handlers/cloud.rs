@@ -77,9 +77,13 @@ where
     enroll_token(&EnrollPlan::from_matches(root), token, cloud_url, install)
 }
 
-/// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
-/// committed result returned.
-pub(crate) type Setup = Result<Result<(), Error>, Error>;
+/// An enrollment whose final callback succeeded: the Server is enrolled even when what
+/// followed failed.
+#[derive(Debug)]
+pub(crate) struct Enrolled {
+    /// Printing the committed result, or Global catch-up, failed after the join.
+    pub(crate) follow_up: Option<Error>,
+}
 
 /// Who reads this enrollment's output. Only a person can keep a recovery code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,7 +117,7 @@ where
                 }
             },
         ))
-        .and_then(|printed| printed)
+        .and_then(|enrolled| enrolled.follow_up.map_or(Ok(()), Err))
 }
 
 /// Enroll as `server add` does, reporting Joining only after the daemon accepts
@@ -126,7 +130,7 @@ pub(crate) async fn run_enrollment<Install, InstallFuture>(
     install: &Install,
     reader: Reader,
     progress: &dyn Fn(EnrollStage),
-) -> Setup
+) -> Result<Enrolled, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -166,7 +170,7 @@ async fn enroll_steps<Install, InstallFuture>(
     reader: Reader,
     report: &mut SetupReport,
     progress: &dyn Fn(EnrollStage),
-) -> Setup
+) -> Result<Enrolled, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -492,7 +496,7 @@ async fn enroll_join<Install, InstallFuture>(
     install: &Install,
     report: &mut SetupReport,
     progress: &dyn Fn(EnrollStage),
-) -> Setup
+) -> Result<Enrolled, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -613,7 +617,7 @@ where
     .await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
-    Ok(ui::emit_committed(
+    let printed = ui::emit_committed(
         crate::global_catch_up::with_unarrived(
             serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
             &unarrived,
@@ -623,7 +627,10 @@ where
                 plan.reach().rerun(args)
             })
         }),
-    ))
+    );
+    Ok(Enrolled {
+        follow_up: printed.err(),
+    })
 }
 
 /// A rerun resumes a founding this claim made. The founding a daemon from before 0.3.15
@@ -697,7 +704,7 @@ async fn enroll_founder<Install, InstallFuture>(
     install: &Install,
     report: &mut SetupReport,
     progress: &dyn Fn(EnrollStage),
-) -> Setup
+) -> Result<Enrolled, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -901,8 +908,11 @@ where
     {
         return Err(Error::unavailable(RECOVERY_CODE_NOT_SAVED));
     }
-    Ok(founder_result(&machine, founding, code)
-        .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err))))
+    let printed = founder_result(&machine, founding, code)
+        .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err)));
+    Ok(Enrolled {
+        follow_up: printed.err(),
+    })
 }
 
 fn shows_code(plan: &EnrollPlan, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {

@@ -39,7 +39,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     .await
     .unwrap();
     let store = running.store().clone();
-    running.membership_states().await.unwrap();
+    running.membership().await.unwrap();
 
     let local = machine("duplicate", 1);
     store.publish_local_machine(&local).await.unwrap();

@@ -160,7 +160,6 @@ pub(crate) struct NewToken {
     pub(crate) scope: String,
 }
 
-/// A revoked token or signed-out device.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Removed {
     pub(crate) id: String,

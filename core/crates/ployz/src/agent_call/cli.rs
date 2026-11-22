@@ -14,9 +14,7 @@ use crate::cloud::account::Credential;
 use crate::cloud::login::CredentialStore;
 use crate::cloud::origin::CloudOrigin;
 use crate::failure::Failure;
-use crate::handlers::verbs::{self, Surface as VerbSurface};
 
-/// The `--why` flag.
 pub(crate) const WHY: &str = "why";
 
 const REASON_REQUIRED: &str =
@@ -41,23 +39,23 @@ struct Reported {
 }
 
 impl Run {
-    /// Look at the parsed command line before it runs.
-    pub(crate) fn begin(matches: &ArgMatches, command: &Command) -> Self {
+    /// Look at the parsed command line before it runs. `internal` is a command only Ployz
+    /// runs on itself, which needs no reason.
+    pub(crate) fn begin(matches: &ArgMatches, command: &Command, internal: bool) -> Self {
         let started = Started::now();
-        let tool = crate::handlers::command_path(matches);
+        let tool = crate::cli::command_path(matches);
         let why = matches
             .try_get_one::<String>(WHY)
             .ok()
             .flatten()
             .map(|why| why.trim().to_owned())
             .filter(|why| !why.is_empty());
-        let agent = agent::name().filter(|_| !exempt(matches, command, &tool));
+        let agent = agent::name().filter(|_| !internal && !exempt(matches, command, &tool));
         let separate = ["connect", "context"]
             .into_iter()
             .any(|flag| matches.try_get_one::<String>(flag).ok().flatten().is_some());
         let report = agent.filter(|_| !separate).and_then(|agent| {
-            let config =
-                crate::handlers::config_path(crate::handlers::leaf_matches(matches)).ok()?;
+            let config = crate::cli::config_path(crate::cli::leaf_matches(matches)).ok()?;
             Some(Reported { config, agent })
         });
         Self {
@@ -115,16 +113,12 @@ impl Run {
 
 /// Commands that need no reason: version, help, shell completion, `ployz mcp`, whose
 /// calls each carry their own, and `server checkin`, which the install script runs.
-/// Internal verbs are Ployz running itself.
 fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
     if matches.get_flag("version") || matches.subcommand().is_none() {
         return true;
     }
     // `install.sh` runs `server checkin`, where no agent can add a reason.
     if matches!(path, "mcp" | "server checkin") || path.split(' ').next() == Some("completion") {
-        return true;
-    }
-    if verbs::find(path).is_some_and(|verb| verb.surface == VerbSurface::Internal) {
         return true;
     }
     // A group without its subcommand prints its help.

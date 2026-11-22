@@ -1,5 +1,3 @@
-//! Creating Projects and Environments.
-
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::{Region, RpcError};
 use serde::{Deserialize, Serialize};

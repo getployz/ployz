@@ -280,7 +280,8 @@ pub enum DomainName {
 
 impl Domain {
     /// Whether users mean it by `name`: its hostname, or a generated domain's prefix.
-    pub(crate) fn is_named(&self, name: &str) -> bool {
+    #[must_use]
+    pub fn is_named(&self, name: &str) -> bool {
         let name = crate::id::normalize_hostname(name.to_owned());
         match &self.name {
             DomainName::Generated { prefix, hostname } => {
@@ -1280,7 +1281,7 @@ fn no_domain(environment: &Environment, trusted: &Trusted) -> RpcError {
 
 #[cfg(test)]
 mod generated_hostname_tests {
-    use super::{DNS_LABEL_MAX, DNS_NAME_MAX, generated_hostname, label_under};
+    use super::{generated_hostname, label_under};
     use crate::id::Hostname;
 
     #[test]
@@ -1289,6 +1290,5 @@ mod generated_hostname_tests {
         assert_eq!(generated_hostname("web", &cluster), "web.apps.example.com");
         assert_eq!(label_under("web.apps.example.com", &cluster), Some("web"));
         assert_eq!(label_under("a.web.apps.example.com", &cluster), None);
-        assert_eq!((DNS_LABEL_MAX, DNS_NAME_MAX), (63, 253));
     }
 }

@@ -238,7 +238,6 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// The Cloud account a device signed in as.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Account {
     pub(crate) id: String,
@@ -246,7 +245,6 @@ pub(crate) struct Account {
     pub(crate) name: String,
 }
 
-/// The Organization a device's sign-in acts in.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Organization {
     pub(crate) id: String,

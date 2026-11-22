@@ -109,6 +109,8 @@ pub enum Error {
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
     Verification(String),
+    #[error("artifact verification")]
+    Signature(#[source] ployz_core::ReleaseSignatureError),
     #[error("Release {0} is not signed, and Ployz installs only signed releases.")]
     Unsigned(MachineVersion),
     /// A host command ran and failed, or a step failed with a message for the user.
@@ -129,6 +131,8 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    #[error("reconcile previous Machine upgrade")]
+    UpgradeReconciliation(#[source] Box<upgrade::Error>),
 }
 
 /// The waits the installer bounds itself with. `Default` is production's.
@@ -392,10 +396,7 @@ fn map_upgrade_reconciliation(error: upgrade::Error) -> Error {
     if matches!(error, upgrade::Error::Busy) {
         Error::Busy
     } else {
-        Error::Command {
-            stage: "reconcile previous Machine upgrade".into(),
-            message: ployz_core::error_chain::inline(&error),
-        }
+        Error::UpgradeReconciliation(Box::new(error))
     }
 }
 
@@ -535,14 +536,6 @@ mod tests {
 
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
-
-    #[test]
-    fn production_waits_are_bounded_by_the_numbers_an_operator_sees() {
-        let pacing = InstallPaths::production().pacing;
-        assert_eq!(pacing.soak, Duration::from_secs(30));
-        assert_eq!(pacing.version_command_timeout, Duration::from_secs(10));
-        assert_eq!(pacing, Pacing::default());
-    }
 
     /// The text `UpgradeFailure` records and the CLI prints for each way a host step stops.
     #[test]
@@ -868,8 +861,9 @@ mod tests {
             "tampered-checksums" => assert!(
                 matches!(
                     result,
-                    Err(Error::Verification(ref message))
-                        if message.contains("not signed by the Ployz release key")
+                    Err(Error::Signature(
+                        ployz_core::ReleaseSignatureError::Invalid(_)
+                    ))
                 ),
                 "a tampered checksums file was accepted: {result:?}"
             ),

@@ -53,7 +53,6 @@ pub fn parse_env_file(text: &str) -> Result<Vec<EnvEntry>, ConfigError> {
         let value = match value.chars().next() {
             Some(quote @ ('"' | '\'')) => {
                 let mut rest = value.strip_prefix(quote).unwrap_or(value).to_owned();
-                // A quoted value may run onto the next lines until its closing quote.
                 loop {
                     if let Some(parsed) = quoted(&rest, quote).map_err(bad)? {
                         break parsed;

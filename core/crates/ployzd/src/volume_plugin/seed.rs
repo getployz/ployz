@@ -468,7 +468,9 @@ impl VolumeStorage {
             return Err(format!("zfs send of {snapshot} failed: {}", stderr.trim()));
         }
         piped.map_err(|error| format!("the seed of {fs} broke: {error}"))?;
-        self.finish_copy(fs, bound).await
+        self.finish_copy(fs, bound)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 

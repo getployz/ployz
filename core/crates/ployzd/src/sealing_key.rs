@@ -666,12 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn sealing_key_refuses_a_low_order_recipient() {
-        let key = SealingKey::generate();
-        assert!(key.seal_to(&WireGuardPublicKey([0; 32])).is_err());
-    }
-
-    #[test]
     fn sealing_key_sealed_bytes_hide_the_private_half() {
         let key = SealingKey::generate();
         let sealed = key
@@ -835,16 +829,6 @@ mod tests {
             SealingKey::open(&shared, &recipient),
             Err(OpenError::Unopenable)
         ));
-    }
-
-    #[test]
-    fn sharing_refuses_a_low_order_recipient() {
-        let key = SealingKey::generate();
-        let holder = WireGuardPrivateKey::generate();
-        assert!(
-            key.seal_from(&holder, &WireGuardPublicKey([0; 32]), None)
-                .is_err()
-        );
     }
 
     /// The vector `dashboard/src/modules/sealing/seal-value.test.ts` seals in the

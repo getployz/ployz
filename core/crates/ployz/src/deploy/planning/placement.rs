@@ -772,7 +772,6 @@ pub(super) fn plan_replicated(
     let reservation = match target.admission {
         CapacityAdmission::Reserved { reservation } => reservation,
         CapacityAdmission::Pending { error, landing } => {
-            // Selection uses trial socket claims; the accepted choices are applied below.
             let mut sockets = placement.sockets.clone();
             select_replicated(
                 target.spread,

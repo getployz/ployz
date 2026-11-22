@@ -482,27 +482,26 @@ impl ServiceSetting {
 
     /// Its value for a Service with `config` and Deployment Policy `policy`.
     pub(crate) fn value(self, config: &AuthoredServiceConfig, policy: &Policy) -> Value {
-        if let Self::Git(git) = self {
-            return git.value(config);
-        }
-        if let Self::Policy(setting) = self {
-            return setting.value(policy);
-        }
         match (self, &config.source) {
-            (Self::Image, ServiceSource::Image { image, .. }) => return json!(image),
+            (Self::Git(git), _) => git.value(config),
+            (Self::Policy(setting), _) => setting.value(policy),
+            (Self::Image, ServiceSource::Image { image, .. }) => json!(image),
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
-                return self.shown(json!(credentials));
+                self.shown(json!(credentials))
             }
-            (Self::Image | Self::RegistryCredential, _) => return Value::Null,
-            (Self::Healthcheck, _) => return self.shown(json!(config.healthcheck)),
-            _ => {}
+            (Self::Image | Self::RegistryCredential, _) => Value::Null,
+            (Self::Healthcheck, _) => self.shown(json!(config.healthcheck)),
+            (Self::CpuLimit, _) => json!(config.cpu_limit),
+            (Self::MaxRetries, _) => json!(config.max_retries),
+            (Self::MemLimit, _) => json!(config.mem_limit),
+            (Self::PreDeployCommand, _) => json!(config.pre_deploy_command),
+            (Self::PrivateDns, _) => json!(config.private_dns),
+            (Self::Replicas, _) => json!(config.replicas),
+            (Self::RestartPolicy, _) => json!(config.restart_policy),
+            (Self::StartCommand, _) => json!(config.start_command),
+            (Self::Template, _) => json!(config.template),
+            (Self::UpdateOrder, _) => json!(config.update_order),
         }
-        // Every other Setting is the stored field of the same name.
-        serde_json::to_value(config)
-            .expect("service settings are JSON")
-            .get_mut(self.name())
-            .map(Value::take)
-            .unwrap_or_default()
     }
 
     /// A change row's value as `get` shows it, never the stored shape.

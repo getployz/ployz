@@ -457,7 +457,6 @@ impl LocalMachine {
         self.owner.record()
     }
 
-    /// The owner of this Machine's durable record.
     #[must_use]
     pub fn owner(&self) -> &RecordOwner {
         &self.owner

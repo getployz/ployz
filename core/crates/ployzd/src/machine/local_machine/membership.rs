@@ -7,13 +7,11 @@ use std::{
 };
 
 use ployz_core::{
-    Machine, MachineId, MachineIdentity, MachineList, MachineObservation, ManagementAddress,
-    MembershipEvidence, RttObservation, RttStatistics, SelectedEndpoint, synthesize_membership,
+    Machine, MachineId, MachineIdentity, MachineList, MachineObservation, RttObservation,
+    RttStatistics, SelectedEndpoint, synthesize_membership,
 };
 
-use crate::corrosion::{
-    AdminClient, MembershipState, ReplicatedStore, membership_states_by_address,
-};
+use crate::corrosion::{AdminClient, IO_TIMEOUT, MembershipStates, ReplicatedStore};
 
 use super::{Error, LocalMachine, published_network};
 
@@ -33,7 +31,7 @@ impl LocalMachine {
         let local = self.record();
         let (states, rtts) = read_admin(&cluster.admin).await?;
         Some(RuntimeWatchTelemetry {
-            states: membership_states_by_address(states),
+            states,
             rtts,
             mesh_rtts: paths.rtts(),
             selected_endpoints: local.selected_endpoints.clone(),
@@ -86,14 +84,11 @@ impl LocalMachine {
         })
     }
 
-    async fn membership_states(
-        &self,
-    ) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, Error> {
-        let states = match &self.cluster {
-            Some(cluster) => cluster.admin.membership_states().await?,
-            None => Vec::new(),
-        };
-        Ok(membership_states_by_address(states))
+    async fn membership_states(&self) -> Result<MembershipStates, Error> {
+        Ok(match &self.cluster {
+            Some(cluster) => cluster.admin.membership(IO_TIMEOUT).await?,
+            None => MembershipStates::new(),
+        })
     }
 }
 
@@ -103,7 +98,7 @@ impl LocalMachine {
 /// Missing telemetry is not a delete of the replicated Machine.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RuntimeWatchTelemetry {
-    pub states: BTreeMap<ManagementAddress, MembershipEvidence>,
+    pub states: MembershipStates,
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
     /// Corrosion's RTT, used for a Machine with no mesh echo RTT.
     pub rtts: Vec<RttObservation>,
@@ -163,8 +158,8 @@ pub(super) async fn machine_rtts(
 /// Read membership and RTT from the local admin socket.
 ///
 /// Both reads must succeed; otherwise Watch keeps replicated rows.
-async fn read_admin(admin: &AdminClient) -> Option<(Vec<MembershipState>, Vec<RttObservation>)> {
-    let Ok((states, rtts)) = tokio::try_join!(admin.membership_states(), admin.member_rtts())
+async fn read_admin(admin: &AdminClient) -> Option<(MembershipStates, Vec<RttObservation>)> {
+    let Ok((states, rtts)) = tokio::try_join!(admin.membership(IO_TIMEOUT), admin.member_rtts())
     else {
         return None;
     };

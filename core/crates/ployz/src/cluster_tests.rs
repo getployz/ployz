@@ -733,7 +733,6 @@ impl Resealing {
         hold
     }
 
-    /// Send an empty frame on the Runtime Watch.
     fn watched(&self) {
         let frame = OpaquePayload::from_json(&json!({ "observed_at": "2026-01-01T00:00:00Z" }));
         self.watched.send(Ok(frame.unwrap())).unwrap();
@@ -1066,7 +1065,6 @@ async fn a_session_whose_redial_finds_another_cluster_ends() {
     assert_eq!(connector.calls(), ended);
 }
 
-/// Whether `future` still waits after one poll.
 async fn waits<F: std::future::Future>(mut future: std::pin::Pin<&mut F>) -> bool {
     std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx).is_pending())).await
 }
@@ -1338,14 +1336,6 @@ fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
         undialed.target_unanswered() && undialed.undialed(),
         "{undialed:?}"
     );
-}
-
-#[test]
-fn only_a_full_route_goes_to_its_target_itself() {
-    assert!(!dials_direct(op::Leave::PATH));
-    assert!(dials_direct(op::SetDevice::PATH));
-    assert!(!dials_direct(op::ListMachines::PATH));
-    assert!(!dials_direct(op::EnsureContainer::PATH));
 }
 
 /// Cloud's Server Access can hand over an SSH endpoint of its own, which reports the

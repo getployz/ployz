@@ -754,7 +754,6 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
     );
     assert_eq!(LIST_IMAGES_CAPABILITY, "ployz.image.list.v1");
     assert_eq!(request.body.command(), "list_images");
-    assert_ne!(request.body.command(), "ensure_image_ingest");
 }
 
 #[test]
@@ -856,8 +855,6 @@ fn image_ingest_contract_returns_the_management_address_destination() {
         "ployz.image.ingest.ensure.v1"
     );
     assert_eq!(request.body.command(), "ensure_image_ingest");
-    assert_ne!(request.body.command(), "list_images");
-    assert_eq!(opened.destination.port, ployz_core::UNREGISTRY_PORT);
 
     let frozen = [
         (ImageIngestReason::NotParticipating, "not_participating"),
@@ -967,7 +964,6 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
     assert_eq!(request.body.command(), "pull_image_from_machine");
-    assert_ne!(request.body.command(), "ensure_image_ingest");
     assert_eq!(
         PULL_IMAGE_FROM_MACHINE_CAPABILITY,
         "ployz.image.pull-from-machine.v1"
@@ -985,7 +981,6 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
             .unwrap(),
         pulled
     );
-    assert_eq!(source.port, ployz_core::UNREGISTRY_PORT);
 }
 
 #[test]

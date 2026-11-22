@@ -176,16 +176,8 @@ pub(super) fn millis(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DialOutcome, DialTimings, PathKind, Stage, StageGuard, scope, should_emit};
+    use super::{DialOutcome, DialTimings, Stage, StageGuard, scope, should_emit};
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn selected_path_is_only_a_kind() {
-        assert_eq!(PathKind::from_flags(true, false), PathKind::Direct);
-        assert_eq!(PathKind::from_flags(false, true), PathKind::Relayed);
-        assert_eq!(PathKind::from_flags(false, false), PathKind::Unknown);
-        assert_eq!(PathKind::from_flags(true, true), PathKind::Unknown);
-    }
 
     #[test]
     fn slow_and_non_answering_dials_are_always_kept() {

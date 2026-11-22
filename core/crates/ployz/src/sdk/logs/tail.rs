@@ -1,6 +1,6 @@
 //! The last lines of a failed Container, read from Docker for a deploy's failed row.
+use ployz_agent_tools::{LineCap, LogExcerpt, LogText, SealedValues};
 use ployz_core::{ContainerId, MachineId};
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues};
 
 use super::stream::{TAIL_READ, docker_lines};
 use crate::connect::Client;

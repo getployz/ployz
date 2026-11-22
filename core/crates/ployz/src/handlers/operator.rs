@@ -91,7 +91,7 @@ pub(super) fn ps_command(command: Command) -> Command {
     .arg(
         value("sort", None)
             .default_value("service")
-            .value_parser(["service", "machine", "health"])
+            .value_parser(crate::cli::choice(super::service::ProcessOrder::WORDS))
             .help("Order the rows by Service, Server or health"),
     )
 }

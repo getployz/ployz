@@ -1,4 +1,8 @@
 //! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
+#![expect(
+    clippy::result_large_err,
+    reason = "a handler fails with tonic::Status, the RPC error type"
+)]
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -284,7 +288,7 @@ impl MachineService {
         verb: &'static str,
         route: &str,
         request: &impl serde::Serialize,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    ) -> Answer {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
@@ -296,6 +300,52 @@ impl MachineService {
     }
 }
 
+/// What a unary handler answers.
+type Answer = Result<Response<OpaquePayload>, Status>;
+
+macro_rules! catalog_ops {
+    (package $package:literal unary { $($variant:ident: ($method:ident, $($row:tt)*),)+ } $($rest:tt)*) => {
+        /// The catalog's op for a unary method.
+        macro_rules! op_of {
+            $(($method) => { op::$variant };)+
+        }
+    };
+}
+ployz_core::rpc_catalog!(catalog_ops);
+
+macro_rules! local_call {
+    ($local:ident, $method:ident => $renamed:ident, $request:ident) => {
+        $local.$renamed($request)
+    };
+    ($local:ident, $method:ident, $request:ident) => {
+        $local.$method($request)
+    };
+}
+
+/// Handlers that decode the request, pass it to the [`LocalMachine`] method of the same
+/// name (or the one after `=>`), and answer its result. Written as `async_trait` expands
+/// an `async fn`, because the attribute leaves a macro in the impl unexpanded.
+macro_rules! pass_through {
+    ($($method:ident $(=> $renamed:ident)?,)+) => {
+        $(
+            fn $method<'life0, 'async_trait>(
+                &'life0 self,
+                request: Request<OpaquePayload>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send + 'async_trait>>
+            where
+                'life0: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move {
+                    let local = self.at(&request);
+                    let request = expect::<op_of!($method)>(request)?;
+                    finish(local_call!(local, $method $(=> $renamed)?, request).await)
+                })
+            }
+        )+
+    };
+}
+
 #[tonic::async_trait]
 impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
@@ -303,10 +353,28 @@ impl MachineRpc for MachineService {
     type TailLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
-    async fn describe_contract(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    pass_through! {
+        enroll,
+        enroll_for_recovery,
+        recover_sealing_key,
+        approve_join,
+        register,
+        set_management_client,
+        set_device,
+        key_step,
+        forget_versions,
+        set_push_target,
+        update_machine => update,
+        share_sealing_key,
+        request_machine_upgrade => request_upgrade,
+        leave,
+        forget,
+        prune_images,
+        set_ingress_doors,
+        set_private_access,
+    }
+
+    async fn describe_contract(&self, request: Request<OpaquePayload>) -> Answer {
         expect::<op::DescribeContract>(request)?;
         let record = self.local_record();
         let machine_id = record.id();
@@ -328,10 +396,7 @@ impl MachineRpc for MachineService {
         })
     }
 
-    async fn inspect(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn inspect(&self, request: Request<OpaquePayload>) -> Answer {
         let details = self
             .at(&request)
             .inspect(expect::<op::Inspect>(request)?)
@@ -351,133 +416,20 @@ impl MachineRpc for MachineService {
         }))
     }
 
-    async fn enroll(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .enroll(expect::<op::Enroll>(request)?)
-                .await,
-        )
-    }
-
-    async fn enroll_for_recovery(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .enroll_for_recovery(expect::<op::EnrollForRecovery>(request)?)
-                .await,
-        )
-    }
-
-    async fn wrap_sealing_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn wrap_sealing_key(&self, request: Request<OpaquePayload>) -> Answer {
         finish(
             self.at(&request)
                 .wrap_sealing_key(expect::<op::WrapSealingKey>(request)?),
         )
     }
 
-    async fn recover_sealing_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .recover_sealing_key(expect::<op::RecoverSealingKey>(request)?)
-                .await,
-        )
-    }
-
-    async fn pending_joins(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn pending_joins(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         expect::<op::PendingJoins>(request)?;
         finish(local.pending_joins())
     }
 
-    async fn approve_join(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .approve_join(expect::<op::ApproveJoin>(request)?)
-                .await,
-        )
-    }
-
-    async fn register(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .register(expect::<op::Register>(request)?)
-                .await,
-        )
-    }
-
-    async fn set_management_client(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::SetManagementClient>(request)?;
-        finish(local.set_management_client(request).await)
-    }
-
-    async fn set_device(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .set_device(expect::<op::SetDevice>(request)?)
-                .await,
-        )
-    }
-
-    async fn key_step(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        finish(local.key_step(expect::<op::KeyStep>(request)?).await)
-    }
-
-    async fn forget_versions(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        finish(
-            local
-                .forget_versions(expect::<op::ForgetVersions>(request)?)
-                .await,
-        )
-    }
-
-    async fn set_push_target(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::SetPushTarget>(request)?;
-        finish(local.set_push_target(request).await)
-    }
-
-    async fn select_endpoint(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn select_endpoint(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SelectEndpoint>(request)?;
         match self.select(request).await {
             Ok(selected) => respond(selected),
@@ -485,10 +437,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn list_machines(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn list_machines(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         expect::<op::ListMachines>(request)?;
         finish(local.list_machines().await.map(|mut list| {
@@ -502,10 +451,7 @@ impl MachineRpc for MachineService {
         }))
     }
 
-    async fn list_containers(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn list_containers(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::ListContainers>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -527,10 +473,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn inspect_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn inspect_container(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::InspectContainer>(request)?;
         let containers = match self.containers() {
@@ -556,10 +499,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn ensure_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn ensure_container(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::EnsureContainer>(request)?;
         if let Some(refusal) = pin_on_ensure(&request.want) {
@@ -568,10 +508,7 @@ impl MachineRpc for MachineService {
         self.ensure(local, request).await
     }
 
-    async fn ensure_pinned_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn ensure_pinned_container(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::EnsurePinnedContainer>(request)?;
         if let Some(refusal) = pinned_shape(&request.want) {
@@ -580,10 +517,7 @@ impl MachineRpc for MachineService {
         self.ensure(local, request).await
     }
 
-    async fn update_container_limits(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn update_container_limits(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::UpdateContainerLimits>(request)?;
         finish(
@@ -593,10 +527,7 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn update_container_placement(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn update_container_placement(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::UpdateContainerPlacement>(request)?;
         finish(
@@ -606,10 +537,7 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn inspect_storage(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn inspect_storage(&self, request: Request<OpaquePayload>) -> Answer {
         expect::<op::InspectStorage>(request)?;
         match self
             .local
@@ -622,19 +550,13 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn prepare_volumes(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn prepare_volumes(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::PrepareVolumes>(request)?;
         finish(local.prepare_volumes(request.specs).await)
     }
 
-    async fn list_volumes(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn list_volumes(&self, request: Request<OpaquePayload>) -> Answer {
         expect::<op::ListVolumes>(request)?;
         let machine_id = self.local_record().id();
         let containers = match self.containers() {
@@ -647,19 +569,13 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn remove_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn remove_volume(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::RemoveVolume>(request)?;
         finish(local.remove_volume(request.name, request.force).await)
     }
 
-    async fn inspect_volume_copy(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn inspect_volume_copy(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::InspectVolumeCopy>(request)?;
         self.volume_verb::<ployz_core::VolumeCopyView>(
             "InspectVolumeCopy",
@@ -669,10 +585,7 @@ impl MachineRpc for MachineService {
         .await
     }
 
-    async fn set_volume_copy(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn set_volume_copy(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::SetVolumeCopy>(request)?;
         let service = Self {
@@ -695,10 +608,7 @@ impl MachineRpc for MachineService {
         service.set_copy(request, admitted).await
     }
 
-    async fn seed_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn seed_volume(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SeedVolume>(request)?;
         let _guard = self.local.lock_switch().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
@@ -717,10 +627,7 @@ impl MachineRpc for MachineService {
         .await
     }
 
-    async fn set_volume_size(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn set_volume_size(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SetVolumeSize>(request)?;
         let _guard = self.local.lock_switch().await;
         self.volume_verb::<ployz_core::SetVolumeSizeReply>(
@@ -759,10 +666,7 @@ impl MachineRpc for MachineService {
             .map(Response::new)
     }
 
-    async fn metrics_live(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn metrics_live(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::MetricsLive>(request)?;
         let containers = self
             .containers()
@@ -830,21 +734,7 @@ impl MachineRpc for MachineService {
         Ok(Response::new(stream))
     }
 
-    async fn update_machine(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .update(expect::<op::UpdateMachine>(request)?)
-                .await,
-        )
-    }
-
-    async fn generate_sealing_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn generate_sealing_key(&self, request: Request<OpaquePayload>) -> Answer {
         sealing_refused(
             self.at(&request)
                 .generate_sealing_key(expect::<op::GenerateSealingKey>(request)?)
@@ -853,21 +743,7 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn share_sealing_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .share_sealing_key(expect::<op::ShareSealingKey>(request)?)
-                .await,
-        )
-    }
-
-    async fn install_sealing_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn install_sealing_key(&self, request: Request<OpaquePayload>) -> Answer {
         sealing_refused(
             self.at(&request)
                 .install_sealing_key(expect::<op::InstallSealingKey>(request)?)
@@ -876,39 +752,7 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn request_machine_upgrade(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?)
-                .await,
-        )
-    }
-
-    async fn leave(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::Leave>(request)?;
-        finish(local.leave(request).await)
-    }
-
-    async fn forget(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::Forget>(request)?;
-        finish(local.forget(request).await)
-    }
-
-    async fn list_images(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn list_images(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::ListImages>(request)?;
         let containers = match self.containers() {
             Ok(containers) => containers,
@@ -922,30 +766,13 @@ impl MachineRpc for MachineService {
         respond(images)
     }
 
-    async fn prune_images(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.at(&request)
-                .prune_images(expect::<op::PruneImages>(request)?)
-                .await,
-        )
-    }
-
-    async fn ensure_image_ingest(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn ensure_image_ingest(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         expect::<op::EnsureImageIngest>(request)?;
         finish(local.ensure_image_ingest(Arc::clone(&self.ingest)).await)
     }
 
-    async fn pull_image(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn pull_image(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let mut request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
@@ -963,10 +790,7 @@ impl MachineRpc for MachineService {
         finish(local.pull_image(request).await)
     }
 
-    async fn pull_free_image(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn pull_free_image(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::PullFreeImage>(request)?;
         if request.image.is_empty() {
@@ -987,10 +811,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn pull_image_from_machine(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn pull_image_from_machine(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
@@ -1005,10 +826,7 @@ impl MachineRpc for MachineService {
         finish(local.pull_image_from_machine(request).await)
     }
 
-    async fn mint_build_grant(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn mint_build_grant(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before the mint, which opens the Sealed record to check it. A rule
@@ -1049,10 +867,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn inspect_build_grant(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn inspect_build_grant(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::InspectBuildGrant>(request)?;
         match self.grants.inspect(&request.id) {
             Ok(inspected) => respond(inspected),
@@ -1060,10 +875,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn publish_certificate_material(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn publish_certificate_material(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::PublishCertificateMaterial>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
@@ -1100,10 +912,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn read_routes(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn read_routes(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::ReadRoutes>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
@@ -1128,38 +937,14 @@ impl MachineRpc for MachineService {
         })
     }
 
-    async fn read_routed_addresses(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn read_routed_addresses(&self, request: Request<OpaquePayload>) -> Answer {
         expect::<op::ReadRoutedAddresses>(request)?;
         respond(RoutedAddresses {
             routes: self.published_routes.borrow().addresses.clone(),
         })
     }
 
-    async fn set_ingress_doors(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::SetIngressDoors>(request)?;
-        finish(local.set_ingress_doors(request).await)
-    }
-
-    async fn set_private_access(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.at(&request);
-        let request = expect::<op::SetPrivateAccess>(request)?;
-        finish(local.set_private_access(request).await)
-    }
-
-    async fn read_cluster_name(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn read_cluster_name(&self, request: Request<OpaquePayload>) -> Answer {
         expect::<op::ReadClusterName>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
@@ -1171,10 +956,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn set_cluster_name(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn set_cluster_name(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SetClusterName>(request)?;
         let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
@@ -1188,10 +970,7 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn set_cluster_doors(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    async fn set_cluster_doors(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SetClusterDoors>(request)?;
         if !request.doors.is_known() {
             return respond(
@@ -1236,7 +1015,7 @@ impl MachineService {
         &self,
         local: LocalMachine,
         request: ployz_core::EnsureContainerRequest,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    ) -> Answer {
         let admitted = match local
             .admit_spec(&request.want, request.rule.as_deref(), &request.versions)
             .await
@@ -1329,19 +1108,11 @@ fn pinned_refusal(message: &str) -> RpcError {
     )
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
-fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
+fn local_error(error: LocalMachineError) -> Answer {
     respond(local_failure(error)?)
 }
 
 /// `error` as the [`RpcError`] it answers, or the [`Status`] it fails the call with.
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
 fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
     match error {
         // A source that fails the call outright has no details to mark.
@@ -1552,14 +1323,10 @@ fn sealing_error(error: SealingError) -> RpcError {
 
 /// A refusal that keeps a second Sealing Key out of the Cluster also names the route's
 /// capability, as every refusal the coverage table expects does.
-#[expect(
-    clippy::result_large_err,
-    reason = "a handler fails with tonic's Status"
-)]
 fn sealing_refused(
     result: Result<ployz_core::SealingKeyHeld, LocalMachineError>,
     capability: &'static str,
-) -> Result<Response<OpaquePayload>, Status> {
+) -> Answer {
     match result {
         Err(LocalMachineError::Sealing(
             error @ (SealingError::Published(_)
@@ -1598,10 +1365,6 @@ fn recovery_error(error: RecoveryError) -> RpcError {
     RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "an off-channel refusal fails the call with a Status, as local_failure does"
-)]
 fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, Status> {
     use crate::{installer::upgrade::Error, mutation};
     let code = match &error {
@@ -1636,13 +1399,7 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
     Ok(RpcError::caused(code, &error))
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
-fn finish(
-    result: Result<impl Into<RpcResponse>, LocalMachineError>,
-) -> Result<Response<OpaquePayload>, Status> {
+fn finish(result: Result<impl Into<RpcResponse>, LocalMachineError>) -> Answer {
     match result {
         Ok(value) => respond(value),
         Err(error) => local_error(error),
@@ -1698,11 +1455,7 @@ fn cluster_store_error(error: crate::corrosion::Error) -> RpcError {
     RpcError::caused(RpcErrorCode::Internal, &error)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
-fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
+fn respond(response: impl Into<RpcResponse>) -> Answer {
     Ok(Response::new(
         response.into().encode().map_err(internal_response)?,
     ))
@@ -1712,10 +1465,6 @@ fn invalid_request(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
 fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Status> {
     request
         .into_inner()
@@ -1741,10 +1490,6 @@ fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "tonic::Status is the RPC error type"
-)]
 fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status> {
     T::from_request_body(request_body(request)?).map_err(invalid_request)
 }

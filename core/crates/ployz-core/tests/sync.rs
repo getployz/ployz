@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
     PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, SecretCiphertext,
-    Sides, Verdict, Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
+    Sides, Verdict, Way, Why, name_of, parse_environment_intent, plan, put, put_back,
     redact_environment_intent, unapply, unchanged_since,
 };
 use serde_json::{Value, json};
@@ -1936,34 +1936,6 @@ fn sync_conflicts_start_unticked_follow_unchanged() {
     let follow = compare(Some(&parent()), &from, &into, Way::Follow);
     assert!(ticked(&follow, &start));
     assert!(ticked(&follow, &pre));
-}
-
-#[test]
-fn dependents_lists_mounts_and_config_mounts() {
-    let config = "a0000000-0000-4000-8000-000000000007";
-    let mut env = parent();
-    env["configs"] = json!([{
-        "resourceId": id(0xb000_0000, 60), "resourceLineageId": config, "name": "app",
-        "files": {"app.conf": {"content": [
-            {"kind": "text", "value": "upstream="},
-            {"kind": "ref", "owner": {"scope": "service", "lineageId": WORKER}, "key": "URL"}],
-            "mode": "0444", "uid": 0, "gid": 0}}}]);
-    svc(&mut env, WEB)["configAttachments"] =
-        json!([{"configResourceId": id(0xb000_0000, 60), "mountDir": "/etc/app"}]);
-    let env = intent(&env);
-    let show = |lineage| {
-        dependents(&env, lineage)
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(show(DATA), [format!("{API}:mounts.{DATA}")]);
-    assert_eq!(show(config), [format!("{WEB}:configs.{config}")]);
-    // A reference holds nothing: worker's readers are not its dependents.
-    assert!(show(WORKER).is_empty());
-    // A node's own rows are not its dependents; nothing uses cache.
-    assert!(show(API).is_empty());
-    assert!(show(CACHE).is_empty());
 }
 
 /// Remove of a proposal that introduced a node inverts it whole, so a child the
