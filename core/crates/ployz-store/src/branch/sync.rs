@@ -232,7 +232,7 @@ pub(crate) fn sync(
     )?;
     let id = match &request.id {
         Some(id) => id.clone(),
-        None => SyncId::parse(uuid::Uuid::new_v4().to_string())?,
+        None => SyncId::fresh(),
     };
     let proposal = proposal::record(
         tx,

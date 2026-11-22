@@ -87,9 +87,7 @@ pub(crate) fn stored(
         &[environment.as_str().into()],
     )?;
     rows.first()
-        .map(|row| {
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Automatic deploy rule"))
-        })
+        .map(|row| row.json(0, "Automatic deploy rule"))
         .transpose()
 }
 

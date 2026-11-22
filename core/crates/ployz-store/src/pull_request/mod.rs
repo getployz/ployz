@@ -31,6 +31,7 @@ pub(crate) use plan::*;
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
 };
+use crate::storage::json_text;
 use std::collections::BTreeSet;
 use std::num::NonZeroU8;
 
@@ -343,17 +344,6 @@ impl Phase {
     }
 }
 
-/// The JSON in column `index` of `row`, if any.
-fn optional<T: serde::de::DeserializeOwned>(
-    row: &crate::storage::Row,
-    index: usize,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    row.optional_text(index)?
-        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
-}
-
 /// A pull request's row: the facts Cloud last reported, and where it is.
 struct Record {
     facts: PullRequest,
@@ -372,11 +362,11 @@ impl Record {
         let facts: PullRequest = row.json(at, "pull request")?;
         let derived = Phase::of_columns(
             &facts,
-            optional(row, at + 1, "pull request merge")?,
-            optional(row, at + 2, "unlanded")?,
-            optional(row, at + 3, "pull request standing")?,
+            row.optional_json(at + 1, "pull request merge")?,
+            row.optional_json(at + 2, "unlanded")?,
+            row.optional_json(at + 3, "pull request standing")?,
         );
-        let stored: Option<Phase> = optional(row, at + 4, "pull request phase")?;
+        let stored: Option<Phase> = row.optional_json(at + 4, "pull request phase")?;
         let agrees = |stored: &Phase| {
             std::mem::discriminant(stored) == std::mem::discriminant(&derived)
                 && stored.head() == derived.head()
@@ -626,10 +616,7 @@ pub(crate) fn withdraw_trust(
         ),
         &[
             who.organization.as_str().into(),
-            serde_json::to_string(&Standing::Trusted)
-                .expect("a standing is JSON")
-                .as_str()
-                .into(),
+            json_text(&Standing::Trusted).as_str().into(),
         ],
     )?;
     for row in rows {
@@ -669,10 +656,7 @@ pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
                 row.text(0)?.into(),
                 row.int(1)?.into(),
                 row.int(2)?.into(),
-                serde_json::to_string(&phase)
-                    .expect("a phase is JSON")
-                    .as_str()
-                    .into(),
+                json_text(&phase).as_str().into(),
             ],
         )?;
     }
@@ -694,14 +678,8 @@ fn write_phase(
             who.organization.as_str().into(),
             pr.repository_id.into(),
             pr.number.into(),
-            serde_json::to_string(phase)
-                .expect("a phase is JSON")
-                .as_str()
-                .into(),
-            serde_json::to_string(&phase.standing())
-                .expect("a standing is JSON")
-                .as_str()
-                .into(),
+            json_text(phase).as_str().into(),
+            json_text(&phase.standing()).as_str().into(),
         ],
     )?;
     Ok(())
@@ -820,7 +798,7 @@ fn record_facts(
         number: event.number,
     };
     let (repository_id, number) = (pr.repository_id.into(), pr.number.into());
-    let facts = serde_json::to_string(event).expect("facts are JSON");
+    let facts = json_text(event);
     // The lock: a placeholder no facts are older than, or the row. A second first
     // report waits here on the first, then reads what it left.
     tx.execute(
@@ -857,11 +835,10 @@ fn record_facts(
     )? != 0;
     let mut first_merge = false;
     if let Some(commit) = &event.merge_commit {
-        let merged = serde_json::to_string(&Merged {
+        let merged = json_text(&Merged {
             commit: commit.clone(),
             into: event.target_branch.clone(),
-        })
-        .expect("a merge is JSON");
+        });
         first_merge = tx.execute(
             &format!(
                 "UPDATE config_pull_request SET merged = ?4 \
@@ -1321,7 +1298,7 @@ fn create(
         (&[], &[]),
         (cluster_domain.as_ref(), &pins),
         crate::deployment::Admission::New {
-            id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+            id: &crate::id::DeploymentId::fresh(),
             push: Some(&push),
         },
         trusted,
@@ -1393,7 +1370,7 @@ fn make(
     // refuses, isn't made: the caller rolls it back.
     let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
     let name = free_name(tx, start, event.number)?;
-    let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let id = EnvironmentId::fresh();
     let from = EnvironmentRef {
         project: Some(start.summary.project.clone()),
         environment: Some(start.summary.name.clone()),

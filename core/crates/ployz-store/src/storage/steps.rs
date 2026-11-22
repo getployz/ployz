@@ -2,8 +2,9 @@
 
 use ployz_core::RpcError;
 
-use crate::branch::{UNKEPT, json_of};
+use crate::branch::UNKEPT;
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// Repair, before `0037_arrival_checks` adds its CHECKs, the stored arrivals it can
 /// without inventing a value, each statement touching only the rows it changes: a
@@ -14,7 +15,7 @@ pub(crate) fn repair_arrivals(tx: &mut dyn Tx) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_sync_arrival SET was = ?1 WHERE state = 'pending' \
          AND sync_id IS NULL AND proposal_id IS NULL AND was IS NULL",
-        &[json_of(&UNKEPT).as_str().into()],
+        &[json_text(&UNKEPT).as_str().into()],
     )?;
     tx.execute(
         "UPDATE config_sync_arrival SET prior = NULL, was = NULL \

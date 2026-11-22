@@ -208,10 +208,7 @@ fn take(
     let credentials = credentials
         .first()
         .ok_or_else(|| missing(&id))?
-        .text(0)
-        .and_then(|text| {
-            serde_json::from_str(text).map_err(|_| error::corrupt("Deployment credentials"))
-        })?;
+        .json(0, "Deployment credentials")?;
     intent.registry_auth = registry::unseal(credentials, sealing)?;
     let receipts = receipts(tx, &stored.summary.environment_id)?;
     let deletes = stored

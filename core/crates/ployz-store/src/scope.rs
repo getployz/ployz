@@ -17,6 +17,7 @@ use crate::error;
 use crate::followup::FollowUp;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
+use crate::storage::json_text;
 use crate::trusted::Evidence;
 
 /// Which Environment a request addresses. An omitted Project means the
@@ -459,11 +460,10 @@ impl<'a> Node<'a> {
 
     pub(crate) fn document(self) -> String {
         match self {
-            Self::Service(service) => serde_json::to_string(service),
-            Self::Volume(volume) => serde_json::to_string(volume),
-            Self::Config(config) => serde_json::to_string(config),
+            Self::Service(service) => json_text(service),
+            Self::Volume(volume) => json_text(volume),
+            Self::Config(config) => json_text(config),
         }
-        .expect("a node is JSON")
     }
 }
 
@@ -938,12 +938,10 @@ fn persist_working(
         "UPDATE config_environment SET working_revision = ?1, working = ?2, removed = ?3 WHERE id = ?4",
         &[
             revision_param(environment.summary.revision)?.into(),
-            serde_json::to_string(&environment.working)
-                .expect("Working State is JSON")
+            json_text(&environment.working)
                 .as_str()
                 .into(),
-            serde_json::to_string(&environment.removed)
-                .expect("names are JSON")
+            json_text(&environment.removed)
                 .as_str()
                 .into(),
             environment.summary.id.as_str().into(),
@@ -967,10 +965,7 @@ fn persist_removed(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(),
     tx.execute(
         "UPDATE config_environment SET removed = ?1 WHERE id = ?2",
         &[
-            serde_json::to_string(&environment.removed)
-                .expect("names are JSON")
-                .as_str()
-                .into(),
+            json_text(&environment.removed).as_str().into(),
             environment.summary.id.as_str().into(),
         ],
     )?;
@@ -1110,6 +1105,11 @@ pub(crate) fn checked(
 
 pub(crate) fn revision_param(revision: Revision) -> Result<i64, RpcError> {
     i64::try_from(revision.0).map_err(|_| error::internal("Working State revision overflowed"))
+}
+
+/// The name a stored Service goes by; one that isn't a name is corrupt.
+pub(crate) fn service_name(service: &SavedServiceIntent) -> Result<ServiceName, RpcError> {
+    ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
 }
 
 /// An Environment `name` with nothing in it.

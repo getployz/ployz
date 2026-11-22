@@ -8,9 +8,9 @@ use ployz_core::deploy_progress::{
 };
 use ployz_core::{MachineId, RpcError, ServiceName};
 
-use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
-use crate::error;
+use super::{DeploymentStatus, Stored, TargetNode, now, saved_at};
 use crate::id::OrganizationId;
+use crate::storage::json_text;
 use crate::storage::{Row, Tx};
 
 pub(super) fn record(
@@ -188,11 +188,7 @@ pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
 }
 
 fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcError> {
-    row.optional_text(index)?
-        .map(|text| {
-            serde_json::from_str(text).map_err(|_| error::corrupt("Deployment row history"))
-        })
-        .transpose()
+    row.optional_json(index, "Deployment row history")
 }
 
 /// The name each of `machines` (every Server, when `None`) last ran a Deployment row

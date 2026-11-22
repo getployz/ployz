@@ -5,6 +5,7 @@ use crate::Trusted;
 use crate::followup::{FollowUp, Place};
 use crate::seal_scrub::empty::empty_plain_in;
 use crate::seal_scrub::ledger::sealed_rows;
+use crate::storage::json_text;
 
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
@@ -208,7 +209,7 @@ pub(crate) fn create_branch(
     };
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.
-    let made_with = document(&base);
+    let made_with = json_text(&base);
     rows::insert(
         tx,
         who.organization.as_str(),

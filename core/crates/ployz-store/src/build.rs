@@ -18,10 +18,10 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
-use crate::deployment::{self, Stored};
+use crate::deployment::{self, Stored, clipped};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::{Param, Tx, name_of};
+use crate::storage::{Param, Tx, json_text, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -184,10 +184,13 @@ impl PartialEq<BuildStatus> for RowStatus {
 /// GitHub holds stays Building, so Cloud still finds its run to cancel
 /// ([`github_outstanding`]). Settling again changes nothing.
 pub(crate) fn settle(tx: &mut dyn Tx, id: &DeploymentId, ended: i64) -> Result<(), RpcError> {
+    let (failed, building) = (name_of(BuildStatus::Failed), name_of(BuildStatus::Building));
     tx.execute(
-        "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+        &format!(
+            "UPDATE config_build SET status = '{failed}', interrupted = 1, message = ?2, \
          finished = COALESCE(finished, ?3) \
-         WHERE deployment_id = ?1 AND status = 'building' AND github IS NULL",
+         WHERE deployment_id = ?1 AND status = '{building}' AND github IS NULL"
+        ),
         &[id.as_str().into(), INTERRUPTED.into(), ended.into()],
     )?;
     Ok(())
@@ -302,7 +305,7 @@ pub(crate) fn record(
     }
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = report.message.as_deref().map(trimmed);
+    let message = report.message.as_deref().map(clipped);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = NULL, \
          server = COALESCE(?6, server) \
@@ -566,10 +569,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let github = row
-            .optional_text(5)?
-            .map(|github| serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build")))
-            .transpose()?;
+        let github = row.optional_json(5, "GitHub build")?;
         Ok(BuildRow {
             service: row.parse::<ServiceName>(0, "build")?,
             commit: row.parse_optional(1, "build commit")?,
@@ -584,20 +584,12 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             started: row.optional_int(7)?,
             finished: row.optional_int(8)?,
             github_skipped: row.optional_text(10)?.map(str::to_owned),
-            receipt: json_column(row.optional_text(12)?, "build receipt")?,
-            image_token: json_column(row.optional_text(13)?, "image token")?,
-            verified: json_column(row.optional_text(14)?, "verified build")?,
+            receipt: row.optional_json(12, "build receipt")?,
+            image_token: row.optional_json(13, "image token")?,
+            verified: row.optional_json(14, "verified build")?,
         })
     })
     .collect()
-}
-
-fn json_column<T: serde::de::DeserializeOwned>(
-    text: Option<&str>,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    text.map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
 }
 
 /// The Services `stored` targets that have no source of their own: they build from
@@ -736,10 +728,6 @@ fn append(log: &mut String, more: &str) {
             .unwrap_or(log.len());
         log.drain(..cut);
     }
-}
-
-fn trimmed(message: &str) -> String {
-    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -1026,8 +1014,7 @@ fn save_github(
     github: Option<&GithubHold>,
 ) -> Result<(), RpcError> {
     let status = status.into();
-    let github =
-        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
+    let github = github.map(json_text);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
@@ -1265,7 +1252,7 @@ pub(crate) fn keep_verified(
         ));
     }
     for (service, verified) in kept {
-        let verified = serde_json::to_string(verified).expect("a verified build is JSON");
+        let verified = json_text(verified);
         tx.execute(
             "UPDATE config_build SET verified = ?3 WHERE deployment_id = ?1 AND service = ?2",
             &[
@@ -1537,14 +1524,14 @@ pub(crate) fn github_end(
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                Some(trimmed(message)),
+                Some(clipped(message)),
                 row.stage.github(),
             )
         }
         // The next Builder starts it afresh: the run holds it no more.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, Some(trimmed(message)), None)
+            (BuildStatus::Pending, Some(clipped(message)), None)
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
@@ -1599,7 +1586,7 @@ fn keep_built(
     token: Option<&ImageToken>,
 ) -> Result<(), RpcError> {
     let receipt = receipt.to_string();
-    let token = token.map(|token| serde_json::to_string(token).expect("an image token is JSON"));
+    let token = token.map(json_text);
     tx.execute(
         "UPDATE config_build SET receipt = ?3, image_token = ?4 \
          WHERE deployment_id = ?1 AND service = ?2",

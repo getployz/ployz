@@ -42,7 +42,7 @@ mod tests {
     use ployz_core::ServiceName;
 
     use super::scope_sql::{FULL, NAMED};
-    use crate::deployment::json_text;
+    use crate::storage::json_text;
 
     #[test]
     fn the_predicates_read_the_text_an_empty_and_a_named_list_store_as() {
