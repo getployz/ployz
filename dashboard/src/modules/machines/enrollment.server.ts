@@ -13,14 +13,13 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   JoinApprovalRequired,
   enrollmentExpiry,
   MANAGEMENT_CAPABILITY_LENGTH,
-  mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
   setupReportAccepted,
@@ -33,7 +32,6 @@ import {
   type EnrollmentCallbackSealing,
   type CliMintMachineEnrollmentInput,
   type CliResetPendingEnrollmentInput,
-  type MintMachineEnrollmentInput,
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
@@ -52,13 +50,12 @@ import {
 } from "#/modules/inngest/events";
 import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
-import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
-import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
+import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import {
-  decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
+  decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, managementIdentity, SERVER_REACH_TIMEOUT_MS,
 } from "#/modules/machines/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
@@ -154,7 +151,7 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, named: OrganizationRef, source: "dashboard" | "cli") {
+  function* (actor: Actor, named: OrganizationRef) {
     const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
@@ -164,29 +161,16 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
       userId: authorization.userId,
       organizationId: authorization.organization.id,
       event: "server_enrollment_started",
-      properties: { source },
+      properties: { source: "cli" },
     });
     return issued;
-  },
-);
-
-export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
-  function* (actor: Actor, input: MintMachineEnrollmentInput) {
-    const config = yield* AppConfig;
-    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input, "dashboard");
-    return mintedEnrollment({
-      origin: config.app.url.origin,
-      token,
-      version: ployzVersion(),
-      expiresAt,
-    });
   },
 );
 
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
   function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, "cli");
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input);
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -981,7 +965,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const token = yield* requireUnspentClaim(input.token, input.machineId);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
-    const managementIdentity = managementIdentityOf(input.capability);
+    const identity = managementIdentity(input.capability);
     /**
      * `verified` once the Machine answered on this capability: the saved capability it replaces, if any, and the founder
      * publication turn it verified in.
@@ -1038,7 +1022,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         const previous = yield* decryptPairingSecret(saved.encryptedCapability);
         if (credentialsMatch(previous, input.capability)) return null;
         // A Machine keeps its management key across rotations; a new key would hand Cloud's credential to another endpoint.
-        if (managementIdentityOf(previous) !== managementIdentity) {
+        if (managementIdentity(previous) !== identity) {
           return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
         if (verified === undefined) return yield* verification(saved.encryptedCapability.iv);
@@ -1047,7 +1031,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
         }
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
           machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
@@ -1055,11 +1039,11 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (verified === undefined) return yield* verification(undefined);
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
           machineName: token.claimedName, isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
           set: {
-            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
             machineName: sql`coalesce(excluded.machine_name, ${organizationMachine.machineName})`,
             isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
           },

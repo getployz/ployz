@@ -22,19 +22,14 @@ export function publicSpecifiedAnywhere(frame: Pick<RuntimeWatchView, "services"
 
 const AT_REST = new Set(["created", "exited", "dead"]);
 
-function ingressOn(frame: Pick<RuntimeWatchView, "services">, counts: (state: string) => boolean, identity = INGRESS): Set<string> {
-  const ingress = frame.services.find((service) => service.identity === identity);
+function ingressOn(frame: Pick<RuntimeWatchView, "services">, counts: (state: string) => boolean): Set<string> {
+  const ingress = frame.services.find((service) => service.identity === INGRESS);
   return new Set(ingress?.containers.flatMap((container) => counts(container.runtime.state) ? [container.machine_id] : []));
 }
 
 /** The Machines, by id, where the Ingress Proxy's container is running. */
 export function ingressRunningOn(frame: Pick<RuntimeWatchView, "services">): Set<string> {
   return ingressOn(frame, (state) => state === "running");
-}
-
-/** The Machines, by id, where the Tunnel Connector's container is running. */
-export function tunnelRunningOn(frame: Pick<RuntimeWatchView, "services">): Set<string> {
-  return ingressOn(frame, (state) => state === "running", TUNNEL);
 }
 
 /**

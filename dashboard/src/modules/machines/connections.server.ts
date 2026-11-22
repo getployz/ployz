@@ -26,6 +26,14 @@ export const decryptPairingSecret = Effect.fn("MachineConnections.decryptPairing
   },
 );
 
+const CAPABILITY = /^ployz1:([A-Za-z0-9_-]{86})$/;
+
+/** The management public key a `ployz1:` capability carries, as 64 hex digits; null when it isn't one. */
+export function managementIdentity(capability: string): string | null {
+  const body = CAPABILITY.exec(capability)?.[1];
+  return body === undefined ? null : Buffer.from(body, "base64url").subarray(0, 32).toString("hex");
+}
+
 /** How long Cloud waits for a Server to answer: a join to the Organization's Cluster, or each Server Forget Servers tries. */
 export const SERVER_REACH_TIMEOUT_MS = 10_000;
 

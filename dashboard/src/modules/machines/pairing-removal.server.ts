@@ -19,11 +19,8 @@ import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
 import {
-  decrypt, dropRemovedServer, lockOrganizationEnrollment, lockWitnessedPairing, othersRemain, replaced,
-  shareOrganizationEnrollment,
+  decrypt, lockOrganizationEnrollment, lockWitnessedPairing, othersRemain, replaced,
 } from "#/modules/machines/pairing-release.server";
-
-export { dropRemovedServer, lockOrganizationEnrollment, shareOrganizationEnrollment };
 import type { ServerRelease } from "#/modules/machines/machine-removal";
 
 type Pairing = typeof organizationPairing.$inferSelect;

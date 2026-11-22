@@ -158,9 +158,6 @@ export const runtimeCertificateRecordSchema = Schema.Struct({
   viaProxy: Schema.Boolean,
 });
 
-export type RuntimeCertificateRecord =
-  typeof runtimeCertificateRecordSchema.Type;
-
 /** Incomplete IDs are evidence of an incomplete observation, never deletion. */
 export const runtimeIncompleteIdsSchema = Schema.Struct({
   machines: Schema.Array(Schema.String),

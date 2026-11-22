@@ -99,7 +99,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const of = ofCheck(check.id, organization.id);
   const window = resolveRange(input, now.getTime());
   const checked = checkWindow(window);
-  const since = (series: UptimeSeries, from: number) => clampSince(organization.id, series, new Date(from), now);
+  const since = (series: UptimeSeries, from: number) => clampSince(series, new Date(from), now);
   const to = new Date(checked.to);
 
   const [open] = yield* drizzle

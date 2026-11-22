@@ -49,7 +49,4 @@ const lifecycle = attemptLifecycle({
   sweep: { id: "close-stale-ingress-doors", closeStale: closeStaleDoors },
 });
 
-export const createApplyIngressDoors = lifecycle.createRun;
-export const createCancelIngressDoors = lifecycle.createCancel;
-export const createCloseStaleIngressDoors = lifecycle.createSweep;
 export const createIngressDoorsFunctions = lifecycle.createFunctions;

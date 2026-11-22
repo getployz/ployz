@@ -31,7 +31,8 @@ import {
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
-import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
+import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { nameLostVolumes, planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
@@ -88,25 +89,6 @@ export function asRemoveMachineOutcome<R>(
     ),
   );
 }
-
-export const loadMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.loadAttempt",
-)(loadMachineRemoveAttempt);
-
-export const loadMachineRemoveAttemptByRunActivity = Effect.fn(
-  "MachineRemoval.loadAttemptByRun",
-)((inngestRunId: string) =>
-  loadMachineRemoveAttemptByRun(inngestRunId));
-
-export const claimMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.claim",
-)((input: Parameters<typeof claimMachineRemoveAttempt>[0]) =>
-  claimMachineRemoveAttempt(input));
-
-export const completeMachineRemoveAttemptActivity = Effect.fn(
-  "MachineRemoval.complete",
-)((input: Parameters<typeof completeMachineRemoveAttempt>[0]) =>
-  completeMachineRemoveAttempt(input));
 
 /** Why a Server Cloud reaches only through itself can't be removed while `others` are listed, and what unblocks it. */
 function carriedOnlyBy(name: string, others: readonly string[]) {
@@ -261,14 +243,14 @@ export const prepareMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const existing = yield* loadMachineRemoveAttemptActivity(input.attemptId);
+  const existing = yield* loadMachineRemoveAttempt(input.attemptId);
   if (existing === null) {
     return { kind: "missing" as const, attemptId: input.attemptId };
   }
   if (isTerminalMachineRemove(existing)) {
     return { kind: "terminal" as const, attempt: existing };
   }
-  const claimed = yield* claimMachineRemoveAttemptActivity(input);
+  const claimed = yield* claimMachineRemoveAttempt(input);
   return { kind: "ready" as const, attempt: claimed.attempt };
 });
 
@@ -279,7 +261,7 @@ export const failOwnedMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const attempt = yield* loadMachineRemoveAttemptActivity(input.attemptId);
+  const attempt = yield* loadMachineRemoveAttempt(input.attemptId);
   if (
     attempt === null ||
     attempt.state !== "running" ||
@@ -287,7 +269,7 @@ export const failOwnedMachineRemoveAttemptActivity = Effect.fn(
   ) {
     return { state: "skipped" as const };
   }
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     ...input,
     completion: {
       state: "failed",
@@ -304,13 +286,13 @@ export const cancelMachineRemoveAttemptActivity = Effect.fn(
   readonly inngestRunId: string;
   readonly now: Date;
 }) {
-  const attempt = yield* loadMachineRemoveAttemptByRunActivity(
+  const attempt = yield* loadMachineRemoveAttemptByRun(
     input.inngestRunId,
   );
   if (attempt === null || attempt.state !== "running") {
     return { state: "skipped" as const };
   }
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     attemptId: attempt.id,
     inngestRunId: input.inngestRunId,
     now: input.now,

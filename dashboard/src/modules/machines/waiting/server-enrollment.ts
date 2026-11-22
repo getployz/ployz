@@ -25,8 +25,6 @@ export const joinCommitted = (
   row: { readonly reportedAttemptId: string | null; readonly reportedStage: string | null },
 ) => PAST_STORAGE.has(attempt.stage) || (row.reportedAttemptId === attempt.id && PAST_STORAGE.has(row.reportedStage));
 
-export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
-
 export type EnrollStorage = { readonly kind: "none" } | { readonly kind: "zfs"; readonly device?: string };
 
 export type EnrollPolicy = {

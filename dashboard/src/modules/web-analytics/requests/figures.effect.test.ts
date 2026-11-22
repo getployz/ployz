@@ -5,6 +5,7 @@ import { isbot } from "isbot";
 import { afterAll, describe, expect } from "vitest";
 import { testConfigLayer } from "#/test/config-environment";
 import * as analytics from "../adapter";
+import type { Query, Site } from "../model";
 import { addDays, dayStart, localDay } from "../local-time";
 
 const URL_UNSET = !process.env["OBSERVE_CLICKHOUSE_URL"];
@@ -80,8 +81,8 @@ const first = addDays("UTC", today, -3);
 const second = addDays("UTC", today, -2);
 const at = (day: string, time: string) => `${day}T${time}.000000Z`;
 
-const site = (organizationId: string): analytics.Site => ({ organizationId, environmentId: randomUUID(), timezone: "UTC", namespaces: [NAMESPACE] });
-const query = (organizationId: string): analytics.Query => ({
+const site = (organizationId: string): Site => ({ organizationId, environmentId: randomUUID(), timezone: "UTC", namespaces: [NAMESPACE] });
+const query = (organizationId: string): Query => ({
   site: site(organizationId),
   range: { start: dayStart("UTC", first), end: dayStart("UTC", today) },
   filters: [],

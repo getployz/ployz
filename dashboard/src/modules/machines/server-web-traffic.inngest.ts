@@ -56,7 +56,4 @@ const lifecycle = attemptLifecycle({
   sweep: { id: "close-stale-server-web-traffic", closeStale: closeStaleWebTraffic },
 });
 
-export const createApplyServerWebTraffic = lifecycle.createRun;
-export const createCancelServerWebTraffic = lifecycle.createCancel;
-export const createCloseStaleServerWebTraffic = lifecycle.createSweep;
 export const createServerWebTrafficFunctions = lifecycle.createFunctions;

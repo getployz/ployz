@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect } from "effect";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-import { ForgetServersInput } from "./forget-servers";
+import { ForgetServersInput } from "./machine-removal";
 import { checkForgetServers, forgetServers, forgetterFor } from "./forget-servers.server";
 
 const input = strictValidator(ForgetServersInput);

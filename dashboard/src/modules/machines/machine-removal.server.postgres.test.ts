@@ -17,12 +17,11 @@ import * as ids from "#/test/ids";
 import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelMachineRemoveAttemptActivity,
-  completeMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
   startMachineRemove,
 } from "#/modules/machines/machine-removal.server";
-import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import { completeMachineRemoveAttempt, requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { Conflict } from "#/server/public-error";
 import type { Inngest } from "inngest";
 
@@ -143,7 +142,7 @@ describe("machine removal durable ownership", () => {
     expect(stolen.failure).toBeInstanceOf(Conflict);
 
     await runEffect(
-      completeMachineRemoveAttemptActivity({
+      completeMachineRemoveAttempt({
         attemptId: attempt.id,
         inngestRunId: "run-1",
         completion: { state: "succeeded", result: { resetWarning: null, release: { kind: "others_remain" } } },
@@ -151,7 +150,7 @@ describe("machine removal durable ownership", () => {
       }),
     );
     await runEffect(
-      completeMachineRemoveAttemptActivity({
+      completeMachineRemoveAttempt({
         attemptId: attempt.id,
         inngestRunId: "run-1",
         completion: { state: "succeeded", result: { resetWarning: null, release: { kind: "others_remain" } } },

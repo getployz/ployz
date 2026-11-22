@@ -37,6 +37,9 @@ export const EnqueueMachineRemoveInput = Schema.Struct({
 export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
 
 /** Forget one offline Server: no reset, so its Volumes are lost. `requestId` keys the request. */
+/** Forget Servers: the Organization whose every Server is gone. */
+export const ForgetServersInput = Schema.Struct({ organizationSlug: Schema.String });
+
 export const ForgetServerInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   machineId: rustMachineIdSchema,
