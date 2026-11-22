@@ -3,7 +3,7 @@ import { ConfigProvider, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { refusedPublicly, statusFor } from "#/modules/config-store/config-store.server";
+import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
@@ -19,7 +19,7 @@ import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volum
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { encodePublicError, statusForPublicError, statusForRefusal } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
@@ -178,7 +178,7 @@ describe("volume placement", () => {
       ["unauthenticated", 401, 500], ["unsupported", 501, 500], ["internal", 500, 500], ["constructor", 500, 500],
     ];
     for (const [code, cli, browser] of statuses) {
-      expect(statusFor(code), code).toBe(cli);
+      expect(statusForRefusal(code), code).toBe(cli);
       for (const staging of [placement, restore]) {
         const error = await answered(code, staging);
         expect(statusForPublicError(error), code).toBe(browser);

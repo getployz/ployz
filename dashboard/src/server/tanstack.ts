@@ -1,6 +1,7 @@
 import { createMiddleware, createServerOnlyFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
+import { strictParseOptions } from "#/lib/schema";
 import { Auth } from "#/server/auth.server";
 import { encodePublicBoundaryError } from "#/server/public-error";
 import { currentRequestScope, RequestScope } from "#/server/request-scope.server";
@@ -22,8 +23,6 @@ export const actorMiddleware = createMiddleware({ type: "function" })
     const actor = await runActor(request, Effect.flatMap(Auth, (auth) => auth.resolveActor(request.headers)));
     return next({ context: { actor, signal: request.signal } });
   });
-
-const strictParseOptions = { onExcessProperty: "error" } as const;
 
 export function strictValidator<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,

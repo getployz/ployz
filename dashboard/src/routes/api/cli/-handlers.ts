@@ -2,13 +2,12 @@ import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import { runCommand, MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
-import { refusal } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
 import { ClientAddress, resolveCaller } from "#/modules/identity/caller.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { observedIp } from "#/routes/api/checkin/-handler";
 import { AppConfig } from "#/server/config.server";
-import { Forbidden, publicErrorResponse, Validation } from "#/server/public-error";
+import { cliRefusalResponse, Forbidden, publicErrorResponse, Validation } from "#/server/public-error";
 import type { AppServices } from "#/server/runtime.server";
 import { runAppEffect } from "#/server/run.server";
 
@@ -69,14 +68,14 @@ export function handleCliRequestAs<I extends { readonly organizationId: string }
 export const handleRunRequest = Effect.fn("Commands.handleRun")(function* (request: Request, name: string) {
   const caller = yield* resolveCaller(request.headers);
   const key = requestKeyOf(request.headers.get(REQUEST_KEY_HEADER));
-  if (!key.ok) return refusal(key.refusal);
+  if (!key.ok) return cliRefusalResponse(key.refusal);
   const body = yield* Effect.tryPromise({
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const input = asRecord(body)?.["input"] ?? null;
   const ran = yield* runCommand(caller, name, input, { approvalId: request.headers.get("x-ployz-approval"), key: key.key });
-  if (!ran.ok) return refusal(ran.refusal);
+  if (!ran.ok) return cliRefusalResponse(ran.refusal);
   const reply = ran.message === undefined ? { output: ran.output } : { output: ran.output, message: ran.message };
   return Response.json(reply, { headers: { "cache-control": "no-store" } });
 });
