@@ -43,6 +43,8 @@
 
 use std::fmt::Write as _;
 
+use ployz_core::VolumeGen;
+use ployz_decide::volume_floor;
 use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
 use stateright::{Model, Property};
 
@@ -492,6 +494,15 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
+/// A modelled gen as the lane gen `ployz_decide::volume_floor` reads.
+fn lane(r#gen: u8) -> VolumeGen {
+    VolumeGen::new(r#gen.into())
+}
+
+fn modelled(r#gen: VolumeGen) -> u8 {
+    u8::try_from(r#gen.get()).expect("a modelled gen")
+}
+
 #[derive(Clone, Copy, Debug)]
 struct VolumeMarks {
     scenario: Scenario,
@@ -639,10 +650,10 @@ impl VolumeMarks {
     /// (`ployzd::machine_api::local_volume_copy::MachineService::admit_gen`), which `set_copy` runs before the switch
     /// lock (`ployzd::machine_api::local_volume_copy::MachineService::set_copy`) and `set_copy_planned` again under it.
     fn admit(state: &mut State, generation: u8) -> bool {
-        if generation < state.floor {
+        let Ok(raised) = volume_floor::admit(lane(state.floor), lane(generation)) else {
             return false;
-        }
-        state.floor = state.floor.max(generation);
+        };
+        state.floor = modelled(raised);
         true
     }
 
@@ -653,7 +664,7 @@ impl VolumeMarks {
         if self.broken.seed_raises_floor {
             return Self::admit(state, generation);
         }
-        generation >= state.floor
+        volume_floor::check(lane(state.floor), lane(generation)).is_ok()
     }
 
     fn step(&self, state: &mut State, action: Action) {
