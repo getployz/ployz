@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import type { ServiceVerb } from "@ployz/sdk";
 import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 import { toErrorMessage } from "#/lib/error-message";
-import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
+import { refetchApprovals } from "#/modules/approvals/approvals.queries";
 import { actAlert, actBadge } from "./service-act-view";
 import { actServiceServerFn } from "./service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "./service-act.queries";

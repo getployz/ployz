@@ -7,7 +7,7 @@ import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
 import { type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
 import { denial, DenyReason, DenyWithReasonButton, DestroyedItem, DestroysList, ServerLine } from "./decision-parts";
-import { decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
+import { decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "#/modules/proposals/proposals.queries";
 
 const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
 

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
-import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
+import { refetchApprovals } from "#/modules/approvals/approvals.queries";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { FieldError } from "#/components/ui/field";
 import { environmentKey } from "#/modules/config-store/environment-ref";

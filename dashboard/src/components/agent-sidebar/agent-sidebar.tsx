@@ -6,8 +6,8 @@ import { readStored, writeStored } from "#/hooks/use-stored-state";
 import type { PageContext } from "#/modules/agent/page-context";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
-import { pendingProposalsOptions } from "./proposals.queries";
+import { pendingApprovalsOptions, waitsOnYou } from "#/modules/approvals/approvals.queries";
+import { pendingProposalsOptions } from "#/modules/proposals/proposals.queries";
 
 type Panel = typeof import("./agent-panel").default;
 const loadPanel = () => import("./agent-panel").then((module) => module.default);
