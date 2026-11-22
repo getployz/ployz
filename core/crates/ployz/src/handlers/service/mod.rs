@@ -22,10 +22,6 @@ use ployz_core::EnvironmentValues;
 use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_lister};
 
 /// List observed Service and hook Containers.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, or serialization error.
 pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let sort = *matches

@@ -24,7 +24,6 @@ pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))
 }
 
-/// The scope a command acts on.
 pub(crate) fn scope(matches: &ArgMatches) -> Result<Scope, Error> {
     Scope::flags(matches)?.linked_here(&config_path(matches)?)
 }
