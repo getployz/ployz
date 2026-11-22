@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use super::ingress_doors::reserved::{self, Retiree, Step, newest, retirees, usable};
 use super::ingress_doors::{Effects, Gate};
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, Scope};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
@@ -162,7 +162,7 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
-    pub(crate) fn admit_operator_private_access(
+    fn admit_operator_private_access(
         &self,
         request: &SetPrivateAccessRequest,
     ) -> Result<(), Error> {
@@ -211,11 +211,13 @@ impl LocalMachine {
         super::published_network(&record, self.replicated()?).await
     }
 
-    /// Place this Machine's Private Access router, or remove it.
+    /// Place this Machine's Private Access router, or remove it. An Operator's turn on
+    /// needs an approval, as [`Self::admit_operator_private_access`] decides.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
+    /// Returns [`Error::PrivateAccessRefused`] for an Operator's turn on without an
+    /// approval, [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
     /// a request to turn on without an auth key this Cluster opens,
     /// [`Error::PrivateAccessRouterStays`] when a router turned off could not be
     /// removed, and the errors of a Docker stage that fails. A router that was placed
@@ -224,6 +226,9 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
+        if let Scope::Operator = self.scope() {
+            self.admit_operator_private_access(&request)?;
+        }
         let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request

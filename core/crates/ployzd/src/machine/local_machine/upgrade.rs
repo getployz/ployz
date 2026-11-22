@@ -1,8 +1,8 @@
 //! Local ownership of Machine upgrade replay and admission.
 
-use ployz_core::{MachineUpgradeAttempt, ManagementScope, RequestMachineUpgradeRequest};
+use ployz_core::{MachineUpgradeAttempt, RequestMachineUpgradeRequest};
 
-use super::{Caller, Error, LocalMachine};
+use super::{Caller, Error, LocalMachine, Scope};
 use crate::installer::upgrade::ReleaseChoice;
 
 impl LocalMachine {
@@ -11,8 +11,8 @@ impl LocalMachine {
     /// A replay is read before claiming exclusive mutation ownership so a lost reply can be
     /// recovered while the independent worker owns the installation lock.
     ///
-    /// `cloud_routed` marks a request that entered the mesh through Ployz Cloud on any
-    /// Machine; such a request, like one on this Machine's own tunnel, cannot downgrade.
+    /// A request that entered the mesh through Ployz Cloud on any Machine, like one on this
+    /// Machine's own tunnel, cannot downgrade.
     ///
     /// # Errors
     ///
@@ -22,8 +22,6 @@ impl LocalMachine {
     pub(crate) async fn request_upgrade(
         &self,
         request: RequestMachineUpgradeRequest,
-        cloud_routed: bool,
-        scope: ManagementScope,
     ) -> Result<MachineUpgradeAttempt, Error> {
         let data_dir = self.owner.data_dir().to_owned();
         let run_dir = self.owner.run_dir().to_owned();
@@ -38,13 +36,13 @@ impl LocalMachine {
             .try_write_owned()
             .map_err(|_| crate::mutation::Error::Busy)?;
         self.require_management_access()?;
-        let choice = release_choice(scope);
+        let choice = self.release_choice();
         let installation = self.owner.mutation_gate().try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
         crate::installer::upgrade::request(
             request,
-            self.downgrade(cloud_routed),
+            self.downgrade(),
             choice,
             data_dir,
             run_dir,
@@ -54,30 +52,32 @@ impl LocalMachine {
         .map_err(Into::into)
     }
 
-    fn downgrade(&self, cloud_routed: bool) -> crate::installer::upgrade::Downgrade {
-        if cloud_routed || matches!(self.caller, Caller::Management(_)) {
+    fn downgrade(&self) -> crate::installer::upgrade::Downgrade {
+        if self.call.cloud_routed() || matches!(self.call.caller(), Caller::Management(_)) {
             crate::installer::upgrade::Downgrade::Refused
         } else {
             crate::installer::upgrade::Downgrade::Allowed
         }
     }
-}
 
-/// The releases `scope` may name: a Full caller any published release, an Operator a
-/// Release Channel or what one resolves to now.
-fn release_choice(scope: ManagementScope) -> ReleaseChoice {
-    match scope {
-        ManagementScope::Full => ReleaseChoice::AnyRelease,
-        ManagementScope::Operator => ReleaseChoice::ChannelResolved,
+    /// The releases this call may name: a Full caller any published release, an Operator
+    /// a Release Channel or what one resolves to now.
+    fn release_choice(&self) -> ReleaseChoice {
+        match self.scope() {
+            Scope::Full(_) => ReleaseChoice::AnyRelease,
+            Scope::Operator => ReleaseChoice::ChannelResolved,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::ManagementScope;
+
     use super::*;
     use crate::{
         installer::upgrade::Downgrade,
-        machine::{LocalMachineStore, RecordOwner},
+        machine::{Call, LocalMachineStore, RecordOwner},
     };
 
     #[test]
@@ -86,13 +86,17 @@ mod tests {
         let local = LocalMachine::new(
             RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
         );
-        let tunnel = local
-            .clone()
-            .with_management_client(ployz_core::ClientKey::from_bytes([7; 32]));
+        let tunnel = Caller::Management(ployz_core::ClientKey::from_bytes([7; 32]));
+        let at = |caller, cloud_routed| {
+            local
+                .clone()
+                .at(Call::new(caller, ManagementScope::Full, cloud_routed))
+                .downgrade()
+        };
 
-        assert_eq!(local.downgrade(false), Downgrade::Allowed);
-        assert_eq!(local.downgrade(true), Downgrade::Refused);
-        assert_eq!(tunnel.downgrade(false), Downgrade::Refused);
-        assert_eq!(tunnel.downgrade(true), Downgrade::Refused);
+        assert_eq!(at(Caller::LocalSocket, false), Downgrade::Allowed);
+        assert_eq!(at(Caller::LocalSocket, true), Downgrade::Refused);
+        assert_eq!(at(tunnel, false), Downgrade::Refused);
+        assert_eq!(at(tunnel, true), Downgrade::Refused);
     }
 }

@@ -10,10 +10,10 @@ use std::{
 };
 
 use ployz_core::{
-    ClientKey, ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest,
-    Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
-    MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
-    MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
+    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
     RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
     synthesize_membership,
@@ -44,17 +44,6 @@ use crate::{
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
 const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 
-/// Where a call to this Machine came from, as its Machine API decided at the edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Caller {
-    /// This Server's own local socket: its terminal, or SSH.
-    LocalSocket,
-    /// An authenticated management connection: Cloud's or a Device's.
-    Management(ClientKey),
-    /// A call routed here over the mesh, which carries no key of its own.
-    Routed,
-}
-
 /// This Machine inside work admitted to run, which no one else can build: `finish_*` hands
 /// one to the work after the call passed admission, owning the handle so the work outlives
 /// its RPC.
@@ -72,10 +61,9 @@ impl std::ops::Deref for Admission {
 #[derive(Clone)]
 pub struct LocalMachine {
     owner: RecordOwner,
-    caller: Caller,
-    /// Operator for a call at Operator scope, whose starts are checked against who
-    /// admitted each Container. Full otherwise, the daemon's own work included.
-    scope: ployz_core::ManagementScope,
+    /// The call this handle serves. An Operator's starts are checked against who admitted
+    /// each Container.
+    call: Call,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
@@ -111,12 +99,15 @@ pub(crate) type PeerInspect = std::sync::Arc<
 >;
 
 mod admission;
+mod call;
 mod consumption;
 mod container;
 mod forget;
 mod ingress_doors;
 mod private_access;
-pub(crate) use admission::{AdmittedBy, AdmittedSpec, Presented};
+pub(crate) use admission::{AdmittedBy, AdmittedSpec};
+pub use call::FullCaller;
+pub(crate) use call::{Call, Caller, Scope};
 pub(crate) use consumption::ConsumptionLog;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
@@ -358,8 +349,7 @@ impl LocalMachine {
         Self {
             approvals: owner.restart_approvals(),
             owner,
-            caller: Caller::Routed,
-            scope: ployz_core::ManagementScope::Full,
+            call: Call::daemon(),
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -422,32 +412,10 @@ impl LocalMachine {
         &self.plugin
     }
 
-    /// Bind subsequent mutation admission to this authenticated management client.
-    #[must_use]
-    pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
-        self.caller = Caller::Management(remote);
-        self
-    }
-
     /// Make subsequent creates and starts of a Provisioned Volume's holder take `switch`.
     #[must_use]
     pub(crate) fn with_switch(mut self, switch: SwitchLock) -> Self {
         self.switch = Some(switch);
-        self
-    }
-
-    /// Mark subsequent calls as an Operator's, whose starts of existing Containers are
-    /// checked.
-    #[must_use]
-    pub(crate) fn at_scope(mut self, scope: ployz_core::ManagementScope) -> Self {
-        self.scope = scope;
-        self
-    }
-
-    /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
-    #[must_use]
-    pub(crate) fn on_local_socket(mut self) -> Self {
-        self.caller = Caller::LocalSocket;
         self
     }
 
@@ -528,7 +496,7 @@ impl LocalMachine {
     }
 
     pub(crate) fn require_management_access(&self) -> Result<(), Error> {
-        if let Caller::Management(remote) = self.caller
+        if let Caller::Management(remote) = self.call.caller()
             && !self.record().accepts_management_client(&remote)
         {
             return Err(Error::ManagementRevoked);
