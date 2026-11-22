@@ -18,7 +18,7 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/sealing/sealing-key.server";
@@ -707,7 +707,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         pairing: state.pairing,
         storage: request.storage,
         recovery: state.recovery,
-      };
+      } satisfies EnrollResponse;
     }
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
     if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
@@ -784,7 +784,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
               ? new JoinApprovalRequired({ message })
               : error);
         }));
-      return { kind: "join" as const, pairing, storage: request.storage, registration };
+      return { kind: "join" as const, pairing, storage: request.storage, registration } satisfies EnrollResponse;
     }));
   },
 );
