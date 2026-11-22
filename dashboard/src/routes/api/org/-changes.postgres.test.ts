@@ -91,7 +91,9 @@ describe("the Organization change stream", () => {
     expect(events.text).not.toContain("organization_support_access");
     expect(events.text).not.toContain("id: ");
     await events.cancel();
-  });
+    // The cursor is pg_snapshot_xmin, which is server-wide: a transaction open in another test file's database on the
+    // same Postgres holds the insert back until it ends.
+  }, 30_000);
 
   it("ends the stream when the change log can't be read, so EventSource reconnects", async () => {
     const real = await harness.runEffect(Database);
