@@ -50,10 +50,7 @@ pub use github_build::{
     RuleCheckIn, RuleGranted, github_cancel, github_check_in, github_finish, github_report,
     github_rule_check_in, github_rule_grant, github_start,
 };
-pub use observe::{
-    observe_copies, observe_running, observe_running_expecting, observe_volumes,
-    observe_volumes_expecting,
-};
+pub use observe::{observe_copies, observe_running, observe_volumes};
 pub use running::Running;
 pub use store_call::store_call;
 pub use store_runner::{

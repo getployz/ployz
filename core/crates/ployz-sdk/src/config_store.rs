@@ -65,7 +65,7 @@ pub async fn observe_volumes(
         .map(ployz_core::DockerVolumeName::parse)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|_| invalid_argument("invalid Docker Volume name"))?;
-    to_json(ployz::sdk::observe_volumes_expecting(connections, sought, expect).await)
+    to_json(ployz::sdk::observe_volumes(connections, sought, expect).await)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role
@@ -100,7 +100,7 @@ pub async fn observe_running(
 ) -> Result<serde_json::Value> {
     let connections = parse_connections(connections)?;
     let expect = parse_expect(expect)?;
-    to_json(ployz::sdk::observe_running_expecting(connections, expect).await)
+    to_json(ployz::sdk::observe_running(connections, expect).await)
 }
 
 #[napi]
