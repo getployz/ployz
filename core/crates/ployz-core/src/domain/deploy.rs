@@ -149,7 +149,6 @@ impl PlanMode<'_> {
         matches!(self, Self::Runner { .. })
     }
 
-    /// Who drives the Deploy.
     #[must_use]
     pub const fn operator(&self) -> Operator {
         match self {

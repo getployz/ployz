@@ -1,6 +1,5 @@
 //! Fixed network ports owned by Ployz.
 
-/// Fixed TCP port for Machine RPC.
 pub const MACHINE_API_PORT: u16 = 7569;
 /// Fixed UDP port for Corrosion gossip between Machines.
 pub const CORROSION_GOSSIP_PORT: u16 = 7570;

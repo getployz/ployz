@@ -141,13 +141,11 @@ impl ByteCapacity {
             .ok_or(ByteCapacityError)
     }
 
-    /// Total bytes in the resource.
     #[must_use]
     pub fn total(self) -> u64 {
         self.total
     }
 
-    /// Available bytes in the resource.
     #[must_use]
     pub fn available(self) -> u64 {
         self.available

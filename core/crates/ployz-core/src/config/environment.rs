@@ -128,7 +128,6 @@ impl SavedEnvironmentIntent {
         }
     }
 
-    /// The Volume `attachment` mounts.
     #[must_use]
     pub fn volume_of(&self, attachment: &VolumeAttachment) -> Option<&SavedVolumeIntent> {
         self.volumes
@@ -136,7 +135,6 @@ impl SavedEnvironmentIntent {
             .find(|volume| volume.resource_id == attachment.volume_resource_id)
     }
 
-    /// The Config `attachment` mounts.
     #[must_use]
     pub fn config_of(&self, attachment: &ConfigAttachment) -> Option<&SavedConfigIntent> {
         self.configs
@@ -332,7 +330,6 @@ impl SavedServiceIntent {
         Ok(())
     }
 
-    /// Drop the mount of `resource_id`.
     pub fn detach(&mut self, kind: MountKind, resource_id: &str) {
         match kind {
             MountKind::Volume => self
@@ -894,7 +891,6 @@ impl VariableValue {
         }
     }
 
-    /// This value as stored, borrowed.
     pub(crate) fn stored(&self) -> StoredValue<'_> {
         match self {
             Self::Plain {
