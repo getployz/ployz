@@ -11,6 +11,7 @@ use ployz_core::{ImageSummary, ListImagesRequest, MachineObservation};
 
 use super::*;
 
+#[cfg(test)]
 /// Transfer the completed image directly from its Build Machine. The client
 /// neither inspects Docker nor carries image bytes or selects another source.
 /// # Errors
