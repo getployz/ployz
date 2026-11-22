@@ -4,10 +4,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { VolumeRunView } from "./volume-run";
-import * as functions from "./volume-run.functions";
+import { getVolumeRunServerFn } from "./volume-run.functions";
 import { useWatchVolumeRun } from "./volume-run.queries";
 
-afterEach(() => vi.restoreAllMocks());
+vi.mock("./volume-run.functions", async (original) => ({ ...await original<typeof import("./volume-run.functions")>(), getVolumeRunServerFn: vi.fn() }));
+const readRun = vi.mocked(getVolumeRunServerFn);
+
+afterEach(() => vi.resetAllMocks());
 
 const done: VolumeRunView = {
   id: "run-1", volume_id: "vol", volume_name: "data", kind: "sync", args: {}, orphan: false,
@@ -24,14 +27,14 @@ function watch() {
 }
 
 it("keeps watching a run through one failed read, and hands over the run when it ends", async () => {
-  vi.spyOn(functions, "getVolumeRunServerFn").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(done);
+  readRun.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(done);
   const onEnd = watch();
   await waitFor(() => expect(onEnd).toHaveBeenCalled(), { timeout: 4_000 });
   expect(onEnd).toHaveBeenCalledExactlyOnceWith(done);
 });
 
 it("stops watching a run it still cannot read after retrying", async () => {
-  vi.spyOn(functions, "getVolumeRunServerFn").mockRejectedValue(new Error("offline"));
+  readRun.mockRejectedValue(new Error("offline"));
   const onEnd = watch();
   await waitFor(() => expect(onEnd).toHaveBeenCalled(), { timeout: 4_000 });
   expect(onEnd).toHaveBeenCalledExactlyOnceWith(null);
