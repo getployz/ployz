@@ -33,7 +33,7 @@ import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { deployWaits } from "#/modules/config-store/deploy-waits";
 import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
+import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement.review";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { CanvasContextMenu } from "../../../../-components/service-create/CanvasContextMenu";
