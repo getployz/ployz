@@ -17,7 +17,6 @@ pub const PLATFORMS: [&str; 2] = ["linux/amd64", "linux/arm64"];
 pub const SETTING_PREFIX: &str = "RAILPACK_";
 /// The setting that overrides Railpack's build command.
 pub const BUILD_CMD: &str = "RAILPACK_BUILD_CMD";
-/// The setting that names Railpack's config file.
 pub const CONFIG_FILE: &str = "RAILPACK_CONFIG_FILE";
 /// The config file Railpack reads when [`CONFIG_FILE`] is unset.
 pub const DEFAULT_PLAN_FILE: &str = "railpack.json";
