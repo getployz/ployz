@@ -402,7 +402,7 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
 #[tokio::test(start_paused = true)]
 async fn created_but_unverified_volume_fails_the_container_operation() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected_in_memory(
+    let (mut client, server, _) = connected_in_memory(
         DeployService::new(machine)
             .fail_create_volume_verification("Docker inspect response was malformed"),
     )
