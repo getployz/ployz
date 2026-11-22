@@ -757,7 +757,7 @@ fn set_here(
             .into_iter()
             .find(|setting| setting.value(&now) != setting.value(&was))
         {
-            return Ok(Some((service.slug.to_string(), setting.label())));
+            return Ok(Some((service.slug.to_string(), setting.spec().label)));
         }
     }
     Ok(None)
