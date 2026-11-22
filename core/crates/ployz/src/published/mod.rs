@@ -97,6 +97,18 @@ pub(crate) struct PublishedArg {
     pub(crate) help: Option<String>,
 }
 
+impl PublishedArg {
+    /// The long flag a named argument takes. Cloud's `environment` input is `--env`,
+    /// as on every compiled command.
+    pub(crate) fn flag(&self) -> &str {
+        if self.name == "environment" {
+            "env"
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// The flat schema subset a command line can carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArgKind {

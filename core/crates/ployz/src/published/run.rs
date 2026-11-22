@@ -184,9 +184,9 @@ fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
             if arg.positional {
                 positionals.push(value);
             } else if value.starts_with('-') {
-                named.push(format!("--{}={value}", arg.name));
+                named.push(format!("--{}={value}", arg.flag()));
             } else {
-                named.extend([format!("--{}", arg.name), value]);
+                named.extend([format!("--{}", arg.flag()), value]);
             }
         }
     }
@@ -481,15 +481,18 @@ mod tests {
         }
     }
 
-    /// The fixture manifest, with `org member invite` and `org approval deny` behind
-    /// approval so a gated entry takes named flags too.
+    /// The fixture manifest, with `org member invite`, `org approval deny` and
+    /// `uptime show` behind approval so a gated entry takes named flags too, `--env`
+    /// among them.
     fn gated() -> crate::published::Published {
         let mut published = crate::published::Published::parse(include_bytes!(
             "../../tests/fixtures/published-manifest.json"
         ))
         .unwrap();
         for command in &mut published.commands {
-            if ["org member invite", "org approval deny"].contains(&command.path().as_str()) {
+            if ["org member invite", "org approval deny", "uptime show"]
+                .contains(&command.path().as_str())
+            {
                 command.effect = crate::published::Effect::Write {
                     ask: true,
                     removes: false,
@@ -548,6 +551,10 @@ mod tests {
             (
                 "org member rm",
                 vec!["ployz", "org", "member", "rm", "--", "--json"],
+            ),
+            (
+                "uptime show",
+                vec!["ployz", "uptime", "show", "web", "--env", "staging"],
             ),
             (
                 "org approval deny",
