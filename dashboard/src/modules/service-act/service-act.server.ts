@@ -5,7 +5,7 @@ import { Data, Effect } from "effect";
 import { type ServiceActRequestedEventData, serviceActRequested } from "#/modules/service-act/service-act.events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
-import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
+import { frameServers, requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
@@ -164,8 +164,8 @@ const STARTED = {
 
 /** Whether each Server's record says it runs EnsureContainer. A Server Cloud can't read is attempted. */
 const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
-  Effect.map((frame) => new Map<string, boolean | "unknown">((frame?.machines ?? []).map(({ machine }) =>
-    [machine.id, serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.ensureContainer)]))),
+  Effect.map((frame) => new Map<string, boolean | "unknown">(frameServers(frame).map((server) =>
+    [server.id, serverSupports(server, requirements.ensureContainer)]))),
   Effect.orElseSucceed(() => new Map<string, boolean | "unknown">()),
 );
 

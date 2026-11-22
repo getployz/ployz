@@ -25,6 +25,7 @@ import { askCopy, inspectVolumeCopies, observeVolumeMembers } from "#/modules/vo
 import { commitment, getVolumeRun, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { type CopyObserver, observeOrganizationCopies } from "#/modules/volume-run/volume-run.orphans.server";
 import { Database } from "#/server/database.server";
+import { frameServers } from "#/modules/runtime/daemon-compat";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
 export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep; readonly fenced?: boolean };
@@ -334,9 +335,7 @@ export const readOriginBlockers: OriginReader = (organizationId, servers, docker
   Effect.flatMap((frame) => {
     if (frame === null) return Effect.fail("no Server answered");
     const holders = frame.volumes.filter((entry) => entry.id.name === dockerVolume).map((entry) => entry.id.machine_id);
-    return Effect.succeed(originBlockers(frame.machines.map((entry) => ({
-      id: entry.machine.id, name: entry.machine.name, capabilities: entry.machine.runtime.capabilities ?? [],
-    })), [...servers, ...holders]));
+    return Effect.succeed(originBlockers(frameServers(frame), [...servers, ...holders]));
   }),
 );
 
