@@ -22,6 +22,7 @@ use crate::storage::Tx;
 
 /// What a plan leaves for the Servers to decide when the Deployment runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(from = "String")]
 pub enum Unresolved {
     /// Which containers start and stop, and where.
     #[serde(rename = "operations")]
@@ -32,6 +33,16 @@ pub enum Unresolved {
     /// One a newer Store names, as it wrote it.
     #[serde(untagged)]
     Other(String),
+}
+
+impl From<String> for Unresolved {
+    fn from(said: String) -> Self {
+        match said.as_str() {
+            "operations" => Self::Operations,
+            "volume data" => Self::VolumeData,
+            _ => Self::Other(said),
+        }
+    }
 }
 
 /// What `deploy` would ship, from authored state alone: nothing builds or runs.

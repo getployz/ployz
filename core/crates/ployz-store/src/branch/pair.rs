@@ -379,8 +379,6 @@ impl Checked<'_> {
     }
 }
 
-/// `plan` landing in Environment `environment`, so a value the browser sealed for
-/// another Environment arrives Not set.
 const VERSION: &str = "version";
 
 /// The details of a refusal to land what changed since its review, or nothing: the
@@ -396,6 +394,8 @@ pub fn carries_plan_version(details: &Value) -> bool {
     details.get(VERSION).is_some()
 }
 
+/// `plan` landing in Environment `environment`, so a value the browser sealed for
+/// another Environment arrives Not set.
 pub(crate) fn landing_in(plan: Plan, environment: &EnvironmentId) -> Plan {
     plan.receiving(environment.uuid())
 }
