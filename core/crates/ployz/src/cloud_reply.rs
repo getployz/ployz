@@ -27,6 +27,22 @@ pub(crate) fn message(body: &[u8]) -> Option<String> {
     }
 }
 
+/// Cloud's own sentence for a failed call, else its status and any readable body.
+pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
+    message(body.as_bytes()).unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
+}
+
+/// `body` as the tail of a status line: a short text or JSON answer is worth
+/// printing, a proxy's HTML error page is not.
+fn readable(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() || body.starts_with('<') {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
+}
+
 /// The `--json` code of a Cloud HTTP refusal.
 pub(crate) fn status_code(status: u16) -> RpcErrorCode {
     match status {
@@ -74,6 +90,42 @@ impl PublicCode {
             Self::Unknown(_) => RpcErrorCode::Internal,
         }
     }
+}
+
+/// The `{error: {code, message, details}}` a Cloud command refuses with, as the refusal it is.
+pub(crate) fn command_refusal(body: &[u8]) -> Option<RpcError> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: Refused,
+    }
+    /// A Cloud command's refusal also names the input field, what fits there and
+    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
+    #[derive(Deserialize)]
+    struct Refused {
+        #[serde(flatten)]
+        error: RpcError,
+        field: Option<Value>,
+        expected: Option<Value>,
+        writes: Option<Value>,
+    }
+    let Refused {
+        mut error,
+        field,
+        expected,
+        writes,
+    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
+    let told = [("field", field), ("expected", expected), ("writes", writes)]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
+    for (key, value) in told {
+        if !error.details.is_object() {
+            error.details = serde_json::json!({});
+        }
+        if let Value::Object(details) = &mut error.details {
+            details.insert(key, value);
+        }
+    }
+    Some(error)
 }
 
 /// A Cloud route's `PublicError`, as the refusal it stands for.

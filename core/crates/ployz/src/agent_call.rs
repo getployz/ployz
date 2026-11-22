@@ -6,7 +6,7 @@
 //! its `call_tool` once with [`mcp`]. A report is best effort: it never changes a result,
 //! an exit code or a tool answer, and it prints nothing.
 
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use ployz_core::RpcErrorCode;
@@ -20,9 +20,6 @@ pub(crate) mod cli;
 pub(crate) mod mcp;
 
 pub(crate) use agent::name as agent_name;
-
-/// How long a report may take. Cloud answers 204 at once; anything slower is dropped.
-const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One agent call as Cloud records it.
 #[derive(Clone, Debug, Serialize)]
@@ -209,13 +206,17 @@ async fn send(credential: &Credential, report: &CallReport) {
     else {
         return;
     };
-    let _ = request.timeout(SEND_TIMEOUT).send().await;
+    let _ = request
+        .timeout(cloud_account::http::REPORT_TIMEOUT)
+        .send()
+        .await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]

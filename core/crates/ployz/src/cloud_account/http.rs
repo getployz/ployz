@@ -10,7 +10,10 @@ use super::credential::Credential;
 use crate::cloud_login::{self, LoginError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a best-effort report may take. Cloud answers at once; anything slower is dropped.
+pub(crate) const REPORT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long a call Cloud answers only after reading the Servers waits for that answer.
 /// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default

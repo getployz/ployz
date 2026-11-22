@@ -46,7 +46,7 @@ pub(crate) enum LoginError {
     },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("{}", answered("Cloud answered", *.status, .body))]
+    #[error("{}", crate::cloud_reply::answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -180,6 +180,14 @@ pub(crate) enum Delivery {
 }
 
 impl LoginError {
+    /// Cloud answered `status` with `body`, which a refusal reader may still read.
+    pub(crate) fn status(status: reqwest::StatusCode, body: &[u8]) -> Self {
+        Self::Status {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(body).into_owned(),
+        }
+    }
+
     /// How far the call got; `None` for a failure that is not about a call to Cloud.
     pub(crate) fn delivery(&self) -> Option<Delivery> {
         match self {
@@ -698,34 +706,16 @@ fn forget<T>(store: &CredentialStore, error: LoginError) -> Result<T, LoginError
 async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginError> {
     let status = response.status();
     let cloud = response.url().origin().ascii_serialization();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| unreachable(&cloud, error))?;
+    let body = crate::cloud_account::http::read_body(
+        &cloud,
+        response,
+        crate::cloud_account::http::Effect::Read,
+    )
+    .await?;
     if status.is_success() {
-        Ok(body.to_vec())
+        Ok(body)
     } else {
-        Err(LoginError::Status {
-            status: status.as_u16(),
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
-    }
-}
-
-/// Cloud's own sentence for a failed call, else its status and any readable body.
-pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
-    crate::cloud_reply::message(body.as_bytes())
-        .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
-}
-
-/// `body` as the tail of a status line: a short text or JSON answer is worth
-/// printing, a proxy's HTML error page is not.
-fn readable(body: &str) -> String {
-    let body = body.trim();
-    if body.is_empty() || body.starts_with('<') {
-        String::new()
-    } else {
-        format!(": {body}")
+        Err(LoginError::status(status, &body))
     }
 }
 

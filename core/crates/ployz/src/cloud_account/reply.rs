@@ -3,7 +3,7 @@
 
 use ployz_core::RpcError;
 use reqwest::StatusCode;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 
 use super::{
     credential::{Credential, env_token},
@@ -60,38 +60,7 @@ pub(crate) fn stored<T: DeserializeOwned>(
 
 /// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
-    #[derive(Deserialize)]
-    struct Refusal {
-        error: Refused,
-    }
-    /// A Cloud command's refusal also names the input field, what fits there and
-    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
-    #[derive(Deserialize)]
-    struct Refused {
-        #[serde(flatten)]
-        error: RpcError,
-        field: Option<serde_json::Value>,
-        expected: Option<serde_json::Value>,
-        writes: Option<serde_json::Value>,
-    }
-    let Refused {
-        mut error,
-        field,
-        expected,
-        writes,
-    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
-    let told = [("field", field), ("expected", expected), ("writes", writes)]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
-    for (key, value) in told {
-        if !error.details.is_object() {
-            error.details = serde_json::json!({});
-        }
-        if let serde_json::Value::Object(details) = &mut error.details {
-            details.insert(key, value);
-        }
-    }
-    Some(past_token(error))
+    crate::cloud_reply::command_refusal(body).map(past_token)
 }
 
 /// What Cloud refused with: a command's refusal, else a route's `PublicError`.
@@ -129,10 +98,7 @@ pub(crate) fn answer<T: DeserializeOwned>(
         (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
             Err(LoginError::NotMember(signed_in.organization.slug.clone()))
         }
-        (status, _) => Err(LoginError::Status {
-            status: status.as_u16(),
-            body: String::from_utf8_lossy(body).into_owned(),
-        }),
+        (status, _) => Err(LoginError::status(status, body)),
     }
 }
 

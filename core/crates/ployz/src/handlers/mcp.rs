@@ -1237,7 +1237,8 @@ fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
 /// `credential` acts in, which lists the approval under Waiting on you. Cloud itself when
 /// the Organization can't be read.
 async fn waiting_on_you(credential: &Credential) -> String {
-    let cloud = credential.cloud().trim_end_matches('/');
+    let origin = credential.origin();
+    let cloud = origin.as_str();
     match cloud_account::acting_in(credential).await {
         Ok(organization) => format!(
             "{cloud}/cloud/{}?chat={}",

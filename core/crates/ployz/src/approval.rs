@@ -480,7 +480,8 @@ pub(crate) fn settle(
 /// Waiting on you, in the Organization the approval names, else the one this device acts
 /// in. A token's approval that names none points at Cloud itself.
 fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str>) -> String {
-    let cloud = credential.cloud().trim_end_matches('/');
+    let origin = credential.origin();
+    let cloud = origin.as_str();
     let organization = organization.or(match credential {
         Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
         Credential::Token { .. } => None,
@@ -497,7 +498,8 @@ fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str
 /// Who answers approval `id` when its asker can't, and where: Ployz Cloud, or the command
 /// they run. The asker can only follow it, with `org approval show`.
 fn for_another_approver(credential: &Credential, id: &str) -> String {
-    let cloud = credential.cloud().trim_end_matches('/');
+    let origin = credential.origin();
+    let cloud = origin.as_str();
     format!(
         "An owner or admin who didn't ask must approve {id} in Ployz Cloud at {cloud}, or with ployz org approval approve {id}."
     )

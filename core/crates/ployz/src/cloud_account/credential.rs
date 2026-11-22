@@ -34,6 +34,11 @@ impl Credential {
         }
     }
 
+    /// [`Self::cloud`] as a [`CloudOrigin`], for a link a person opens.
+    pub(crate) fn origin(&self) -> CloudOrigin {
+        CloudOrigin::new(self.cloud())
+    }
+
     /// Cloud refused this token: the refusal names where it came from and its fix.
     pub(crate) fn token_refused(&self) -> LoginError {
         match self {

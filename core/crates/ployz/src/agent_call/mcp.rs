@@ -237,7 +237,7 @@ impl Reporter {
             Ok(mut sends) => std::mem::take(&mut *sends),
             Err(_) => return,
         };
-        let _ = tokio::time::timeout(super::SEND_TIMEOUT, async {
+        let _ = tokio::time::timeout(crate::cloud_account::http::REPORT_TIMEOUT, async {
             while sends.join_next().await.is_some() {}
         })
         .await;
