@@ -1,10 +1,9 @@
 import { Effect, Option, Schema } from "effect";
-import { inngestEventEnvelopeFields, inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFailedEnvelopeSchema } from "#/modules/inngest/events";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import { machineRemoveRequested } from "#/modules/machines/machines.events";
+import { attemptRunLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { eventData } from "#/modules/inngest/define-event";
-import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   cancelMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
@@ -18,20 +17,6 @@ import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal
 import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-const MachineRemoveRequestedEnvelope = Schema.Struct({
-  ...inngestEventEnvelopeFields,
-  name: Schema.Literal(machineRemoveRequested.name),
-  data: machineRemoveRequested.schema,
-});
-const MachineRemoveFailureEnvelope = inngestFunctionFailedEnvelopeSchema(
-  MachineRemoveRequestedEnvelope,
-);
-
-export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
-  MachineRemoveFailureEnvelope,
-);
-
-const PROCESS_MACHINE_REMOVE_FUNCTION_ID = "process-machine-remove";
 export const MACHINE_REMOVE_RETRIES = 5;
 
 export async function executeProcessMachineRemove({
@@ -171,83 +156,34 @@ export async function executeProcessMachineRemove({
   return { attemptId, status: "succeeded" as const };
 }
 
-export async function executeProcessMachineRemoveOnFailure({
-  event,
-}: {
-  event: unknown;
-}, runEffect: EffectRunner) {
-  const decoded = decodeMachineRemoveFailureEvent(event);
-  if (Option.isNone(decoded)) return;
-  const attemptId = decoded.value.data.event.data.attemptId;
-  const inngestRunId = decoded.value.data.run_id;
-  await runEffect(
-    failOwnedMachineRemoveAttemptActivity({
-      attemptId,
-      inngestRunId,
-      now: new Date(),
-    }),
-  );
-}
+const machineRemoveLifecycle = (observe: typeof observeOrganization) => attemptRunLifecycle({
+  run: {
+    id: "process-machine-remove",
+    retries: MACHINE_REMOVE_RETRIES,
+    triggers: [{ event: machineRemoveRequested.eventType }],
+    concurrency: [{ key: "event.data.attemptId", limit: 1 }],
+    handler: (ctx, runEffect) => executeProcessMachineRemove(ctx, runEffect, observe),
+  },
+  cancelId: "cancel-machine-remove",
+  // Runs in flight have memoized these steps, so they keep their ids.
+  cancelSteps: { decode: "decode-machine-remove-cancellation-event", close: "cancel-machine-remove" },
+  triggeringEvent: Schema.Struct({ data: machineRemoveRequested.schema }),
+  triggeringOnFailure: true,
+  closeRun: (runId, end, triggering) => {
+    const now = new Date();
+    if (end === "cancellation") return Effect.map(cancelMachineRemoveAttemptActivity({ inngestRunId: runId, now }), closedCount);
+    return Option.isNone(triggering)
+      ? Effect.succeed(0)
+      : Effect.map(failOwnedMachineRemoveAttemptActivity({ attemptId: triggering.value.data.attemptId, inngestRunId: runId, now }), closedCount);
+  },
+});
 
-export async function executeCancelMachineRemove({
-  event,
-  step,
-  processFunctionId,
-}: {
-  event: unknown;
-  step: StepTools<"run" | "sendEvent">;
-  processFunctionId: string;
-}) {
-  const decoded = await step.run("decode-machine-remove-cancellation-event", () =>
-    decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event),
-  );
-  if (decoded.data.function_id !== processFunctionId) {
-    return { skipped: true };
-  }
-  const runId = decoded.data.run_id;
-  return step.run("cancel-machine-remove", () =>
-    runInngestEffect(
-      cancelMachineRemoveAttemptActivity({
-        inngestRunId: runId,
-        now: new Date(),
-      }),
-    ),
-  );
-}
+const closedCount = ({ state }: { readonly state: "skipped" | "failed" | "cancelled" }) => (state === "skipped" ? 0 : 1);
 
 export const createProcessMachineRemove = (
   inngest: PloyzInngest,
   runEffect: EffectRunner = runInngestEffect,
   observe: typeof observeOrganization = observeOrganization,
-) =>
-  inngest.createFunction(
-  {
-    id: PROCESS_MACHINE_REMOVE_FUNCTION_ID,
-    retries: MACHINE_REMOVE_RETRIES,
-    triggers: [{ event: machineRemoveRequested.eventType }],
-    concurrency: [{ key: "event.data.attemptId", limit: 1 }],
-    onFailure: async ({ event }) =>
-      executeProcessMachineRemoveOnFailure({ event }, runEffect),
-  },
-  async ({ event, step, runId, attempt }) =>
-    executeProcessMachineRemove({
-      event,
-      step,
-      runId,
-      attempt,
-    }, runEffect, observe),
-  );
+) => machineRemoveLifecycle(observe).createRun(inngest, runEffect);
 
-export const createCancelMachineRemove = (inngest: PloyzInngest) => {
-  const processFunctionId = createProcessMachineRemove(inngest).id(inngest.id);
-  return inngest.createFunction(
-  {
-    id: "cancel-machine-remove",
-    retries: 3,
-    triggers: [{ event: inngestFunctionCancelledEventType }],
-    concurrency: [{ key: "event.data.run_id", limit: 1 }],
-  },
-  async ({ event, step }) =>
-    executeCancelMachineRemove({ event, step, processFunctionId }),
-  );
-};
+export const createCancelMachineRemove = (inngest: PloyzInngest) => machineRemoveLifecycle(observeOrganization).createCancel(inngest);
