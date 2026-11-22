@@ -450,19 +450,33 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A Share with no join approval reaches a Machine this one pinned when it listed the row
+/// carrying the approval that admitted it, and no Machine without one.
 #[tokio::test]
-async fn an_unsigned_share_is_refused() {
-    let (entry, _, _, directory, server) = participating().await;
-    let request = request("joiner", WireGuardPublicKey([2; 32]));
-    register_published(&entry, &request).await.unwrap();
+async fn an_unsigned_share_reaches_only_an_approved_member() {
+    let (entry, replicated, _, directory, server) = participating().await;
+    let joiner = request("joiner", WireGuardPublicKey([2; 32]));
+    register_published(&entry, &joiner).await.unwrap();
+    let stranger = request("stranger", WireGuardPublicKey([3; 32]));
+    let mut row = replicated
+        .machine(joiner.machine_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    row.id = stranger.machine_id;
+    row.public_key = stranger.public_key;
+    row.join_approval = None;
+    replicated.publish_local_machine(&row).await.unwrap();
+    entry.replicated().unwrap().machines().await.unwrap();
+    let unsigned = |machine: &RegisterRequest| ShareSealingKeyRequest {
+        join_approval: None,
+        machine: machine.machine_id,
+        public_key: machine.public_key,
+    };
+
+    assert!(entry.share_sealing_key(unsigned(&joiner)).await.is_ok());
     assert!(matches!(
-        entry
-            .share_sealing_key(ShareSealingKeyRequest {
-                join_approval: None,
-                machine: request.machine_id,
-                public_key: request.public_key
-            })
-            .await,
+        entry.share_sealing_key(unsigned(&stranger)).await,
         Err(LocalMachineError::JoinRefused(
             AuthorityRefusal::Unsigned { .. }
         ))

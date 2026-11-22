@@ -9,6 +9,7 @@ pub(super) mod approve;
 mod follow_tests;
 mod forget;
 pub(crate) mod progress;
+mod silent;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress, State};
@@ -21,9 +22,10 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, EnvironmentSummary,
-    NodeStatus, PlanQuery, Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, Change, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentsQuery, Edit, EnvironmentRef,
+    EnvironmentSummary, NodeStatus, PlanQuery, Publish, RunnerId, SettingPath, Start, UploadBase,
+    UploadedSource, VolumeName,
 };
 
 use super::store::{Store, environment, mint, next, scoped, store};
@@ -67,9 +69,18 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .hide(true),
         )
         .arg(crate::cli::yes(
-            "Sign without asking when your servers enforce device approval; still prints \
-             what it signs",
+            "Sign without asking. Signs only --image changes to the last version a person \
+             approved, and prints what it signs",
         ))
+        .arg(
+            crate::cli::repeated("image")
+                .value_name("SERVICE=IMAGE")
+                .conflicts_with_all(["plan", "skip-deploy", "upload"])
+                .help(
+                    "Run SERVICE from IMAGE and save it to its settings. The only change \
+                     --yes or a CI key signs",
+                ),
+        )
         .arg(
             switch("forget-older", None)
                 .conflicts_with_all(["plan", "skip-deploy", "upload"])
@@ -324,10 +335,11 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
+    let edits = images(matches, store, (&environment, &services))?;
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
-        None => approve::sign(matches, store, (&environment, &services))?,
+        None => approve::sign(matches, store, (&environment, &services), &edits)?,
     };
     // Under `--forget-older` every version this Device signed is marked to forget.
     let forgets: Vec<_> = if approve::flag(matches, "forget-older") {
@@ -371,6 +383,55 @@ pub(super) fn upload_and_ship(
     shipped.approved = device.map(|device| device.approved).unwrap_or_default();
     shipped.forgot = forgot;
     Ok(shipped)
+}
+
+/// Pin each `--image SERVICE=IMAGE`, then stage it as `ployz set SERVICE.image=IMAGE`
+/// does, so the plan the deploy signs runs it. An image that can't be pinned, or names a
+/// Service a deploy of only `services` doesn't name, stages nothing.
+///
+/// # Errors
+/// Returns a usage error for a malformed `--image`, the refusal of a Service the deploy
+/// doesn't name, why an image can't be pinned, and the Store's refusal of the edit or of
+/// reading its Services.
+fn images(
+    matches: &ArgMatches,
+    store: &Store,
+    (environment, services): (&EnvironmentRef, &[ServiceName]),
+) -> Result<Vec<silent::ImageEdit>, Error> {
+    let typed = silent::typed(matches)?;
+    if typed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Some((service, _)) = typed
+        .iter()
+        .find(|(service, _)| !services.is_empty() && !services.contains(service))
+    {
+        return Err(silent::Refused::NotShipped(service.clone()).error(matches));
+    }
+    let runtime: BTreeMap<ServiceName, ServiceName> = store
+        .read(&ployz_store::ServicesQuery {
+            environment: environment.clone(),
+        })?
+        .services
+        .into_iter()
+        .map(|listing| (listing.service.name, listing.service.private_dns))
+        .collect();
+    let edits = silent::pinned(typed, &runtime)?;
+    let changes = edits
+        .iter()
+        .map(|edit| {
+            Ok(Change::Set {
+                path: SettingPath::parse(&format!("{}.image", edit.service))?,
+                value: serde_json::Value::String(edit.image.clone()),
+            })
+        })
+        .collect::<Result<_, Error>>()?;
+    store.try_edit(&Edit {
+        environment: environment.clone(),
+        expect: None,
+        changes,
+    })?;
+    Ok(edits)
 }
 
 /// The refusal of `--forget-older` on a deploy this Device doesn't sign: only a signed

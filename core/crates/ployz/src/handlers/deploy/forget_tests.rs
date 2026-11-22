@@ -22,6 +22,7 @@ fn version(service: &str) -> Signed<ServiceVersion> {
     Signed::sign(
         &ServiceVersion {
             forget_older: true,
+            parent: None,
             cluster: SealingPublicKey::from_bytes([9; 32]),
             digest: PayloadDigest::of(&requested(ServiceMode::Global), &namespace).unwrap(),
             namespace,

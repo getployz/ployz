@@ -177,6 +177,7 @@ pub(super) async fn forget_api(entry: &LocalMachine) -> ployz_core::QualifiedSer
         signed_at: Timestamp::now(),
         signer: SignerKey::Device(signer.public().into()),
         proposal: None,
+        parent: None,
     };
     let forgot = entry
         .forget_versions(ployz_core::ForgetVersionsRequest {

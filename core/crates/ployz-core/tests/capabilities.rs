@@ -83,7 +83,11 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.authority.scoped-keys.v1",
-        "fails closed: an older daemon never stores a grant, so it refuses a CI or agent key's signature as an unknown key, refuses a Key step that trusts one for its unknown kind, and an older joiner refuses a join approval carrying grants for its unknown field. No client signs with a CI or agent key yet, and the first that does checks for it",
+        "fails closed: an older daemon never stores a grant, so it refuses a CI or agent key's signature as an unknown key, refuses a Key step that trusts one for its unknown kind, and an older joiner refuses a join approval carrying grants for its unknown field. A client that signs with a CI or agent key checks for it",
+    ),
+    (
+        "ployz.authority.parent-versions.v1",
+        "fails closed: an older daemon refuses a signed version naming a parent for its unknown field, so a client that signs one checks for it on every Server first",
     ),
     (
         "ployz.metrics.live.v1",

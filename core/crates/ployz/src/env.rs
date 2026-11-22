@@ -11,6 +11,9 @@ pub const CONTEXT: &str = "PLOYZ_CONTEXT";
 pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
 /// The enrollment token for `server add`, kept out of argv.
 pub const ENROLL_TOKEN: &str = "PLOYZ_ENROLL_TOKEN";
+/// A CI or agent key as 64 hex digits. `ployz deploy` signs with it, and with no person
+/// to ask, in place of this computer's Device key.
+pub const KEY: &str = "PLOYZ_KEY";
 pub const TOKEN: &str = "PLOYZ_TOKEN";
 /// The Environment authoring commands address, as `--env`.
 pub const ENVIRONMENT: &str = "PLOYZ_ENV";

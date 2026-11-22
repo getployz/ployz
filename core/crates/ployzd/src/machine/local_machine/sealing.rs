@@ -179,19 +179,31 @@ impl LocalMachine {
         let recipient = self
             .replicated()?
             .machine(&request.machine.to_string())
-            .await?
-            .ok_or(Error::UnknownMachine(request.machine))?;
-        if recipient.public_key != request.public_key {
+            .await?;
+        if let Some(row) = &recipient
+            && row.public_key != request.public_key
+        {
             return Err(Error::WireGuardKeyMismatch(request.machine).into());
         }
-        let approval = request
-            .join_approval
-            .as_ref()
-            .ok_or(super::Error::JoinRefused(
-                ployz_core::authority::AuthorityRefusal::Unsigned {
+        let Some(approval) = request.join_approval.as_ref() else {
+            // A Member's signed join already named its WireGuard key as a recipient of this
+            // key, so sealing to it again gives it nothing new. Anyone else needs a person's
+            // approval, which a caller can't stand in for.
+            let recipient = recipient.filter(|row| record.trusts_member(row)).ok_or(
+                super::Error::JoinRefused(ployz_core::authority::AuthorityRefusal::Unsigned {
                     purpose: ployz_core::authority::Purpose::Join,
-                },
-            ))?;
+                }),
+            )?;
+            let sealed = self.seal_to(&key, &recipient)?;
+            tracing::info!(
+                machine = %record.id(),
+                recipient = %request.machine,
+                public_key = %key.public_key(),
+                "shared the Cluster's Sealing Key with a Member"
+            );
+            return Ok(SealingKeyShared { sealed });
+        };
+        let recipient = recipient.ok_or(Error::UnknownMachine(request.machine))?;
         let body = approval.open().map_err(super::Error::JoinRefused)?;
         if body.machine.id != request.machine || body.sealing_recipient != request.public_key {
             return Err(super::Error::JoinRefused(
@@ -219,27 +231,7 @@ impl LocalMachine {
             &ployz_core::authority::join::JoinAllocation::from(&recipient),
             network,
         )?;
-        // The recipient's own row says what its daemon opens: it publishes that row itself.
-        let opens_floors = recipient
-            .runtime
-            .claim(ployz_core::FORGET_VERSIONS_CAPABILITY)
-            == ployz_core::Claim::Advertises;
-        let floors = self.floors_for(&key, opens_floors)?;
-        // A recovery founder may already participate, so it takes the removals this Machine
-        // holds, as a joiner takes them with its restrictions. An older ployzd refuses them.
-        let removals = (opens_floors
-            && recipient.runtime.claim(ployz_core::JOIN_TRUST_CAPABILITY)
-                == ployz_core::Claim::Advertises)
-            .then(|| Removals {
-                removed_keys: record.removed_keys().to_vec(),
-                removed_members: record.removed_members().to_vec(),
-            });
-        let sealed = key.seal_from(
-            record.private_key(),
-            &request.public_key,
-            floors.as_ref(),
-            removals.as_ref(),
-        )?;
+        let sealed = self.seal_to(&key, &recipient)?;
         self.consume_join(
             fresh,
             super::consumption::JoinResult {
@@ -255,6 +247,36 @@ impl LocalMachine {
             "shared the Cluster's Sealing Key"
         );
         Ok(SealingKeyShared { sealed })
+    }
+
+    /// Seal `key` to `recipient`'s WireGuard key, with the floors its daemon opens.
+    fn seal_to(
+        &self,
+        key: &SealingKey,
+        recipient: &ployz_core::Machine,
+    ) -> Result<ployz_core::SealedSealingKey, super::Error> {
+        // The recipient's own row says what its daemon opens: it publishes that row itself.
+        let opens_floors = recipient
+            .runtime
+            .claim(ployz_core::FORGET_VERSIONS_CAPABILITY)
+            == ployz_core::Claim::Advertises;
+        let floors = self.floors_for(key, opens_floors)?;
+        // A recovery founder may already participate, so it takes the removals this Machine
+        // holds, as a joiner takes them with its restrictions. An older ployzd refuses them.
+        let record = self.record();
+        let removals = (opens_floors
+            && recipient.runtime.claim(ployz_core::JOIN_TRUST_CAPABILITY)
+                == ployz_core::Claim::Advertises)
+            .then(|| Removals {
+                removed_keys: record.removed_keys().to_vec(),
+                removed_members: record.removed_members().to_vec(),
+            });
+        Ok(key.seal_from(
+            record.private_key(),
+            &recipient.public_key,
+            floors.as_ref(),
+            removals.as_ref(),
+        )?)
     }
 
     pub(crate) async fn install_sealing_key(

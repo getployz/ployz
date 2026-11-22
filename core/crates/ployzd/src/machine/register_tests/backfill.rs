@@ -1,5 +1,6 @@
 //! Backfilling one Sealing Key: Generate on a Machine, then Share and Install.
 
+use ployz_core::authority::AuthorityRefusal;
 use ployz_core::{
     GenerateSealingKeyRequest, InstallSealingKeyRequest, Machine, MachineRpc,
     RecoverSealingKeyRequest, RecoveryCode, RpcResponseBody, Sealing, SealingKeyRecovered,
@@ -387,10 +388,91 @@ async fn share_refuses_a_recipient_the_cluster_does_not_publish_that_way() {
         SealingError::WireGuardKeyMismatch(id) if id == joiner.machine.id
     ));
     assert!(matches!(
-        refusal(unlisted),
-        SealingError::UnknownMachine(id) if id == unknown
+        unlisted,
+        LocalMachineError::JoinRefused(AuthorityRefusal::Unsigned { .. })
     ));
     assert!(matches!(refusal(not_held), SealingError::NotHeld));
+    server.abort();
+}
+
+/// A Member that lost its Sealing Key gets it back from a holder with no join approval: the
+/// approval that admitted it already named its WireGuard key as a recipient of the key.
+#[tokio::test]
+async fn share_without_approval_gives_a_member_back_its_lost_key() {
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-backfill-member-holder", &replicated).await;
+    let member = Peer::needing_access("ployzd-backfill-member", &replicated).await;
+    replicated
+        .publish_sealing_public_key(holder.held())
+        .await
+        .unwrap();
+    holder.trust(&[&member]).await;
+    member.trust(&[&holder]).await;
+
+    let shared = holder
+        .local
+        .share_sealing_key(ShareSealingKeyRequest {
+            join_approval: None,
+            machine: member.machine.id,
+            public_key: member.machine.public_key,
+        })
+        .await
+        .unwrap();
+    member
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed: shared.sealed,
+            public_key: holder.held(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(member.held(), holder.held());
+    server.abort();
+}
+
+/// Without a join approval a holder seals only to a Member its own record trusts, with the
+/// WireGuard key it trusts that Member under. A Machine it never trusted is refused, and so
+/// is a Member's row republished with another key.
+#[tokio::test]
+async fn share_without_approval_refuses_a_machine_that_is_no_member() {
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-backfill-stranger-holder", &replicated).await;
+    let member = Peer::needing_access("ployzd-backfill-stranger-member", &replicated).await;
+    let stranger = Peer::needing_access("ployzd-backfill-stranger", &replicated).await;
+    holder.trust(&[&member]).await;
+    let rekeyed = Machine {
+        public_key: WireGuardPublicKey([7; 32]),
+        ..member.machine.clone()
+    };
+    let share = |machine: &Machine| ShareSealingKeyRequest {
+        join_approval: None,
+        machine: machine.id,
+        public_key: machine.public_key,
+    };
+
+    let to_stranger = holder
+        .local
+        .share_sealing_key(share(&stranger.machine))
+        .await
+        .unwrap_err();
+    replicated.publish_local_machine(&rekeyed).await.unwrap();
+    let to_rekeyed = holder
+        .local
+        .share_sealing_key(share(&rekeyed))
+        .await
+        .unwrap_err();
+
+    for refused in [to_stranger, to_rekeyed] {
+        assert!(
+            matches!(
+                refused,
+                LocalMachineError::JoinRefused(AuthorityRefusal::Unsigned { .. })
+            ),
+            "{refused}"
+        );
+    }
     server.abort();
 }
 
@@ -943,6 +1025,7 @@ async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_the
             signed_at,
             signer: SignerKey::Device(signer.public().into()),
             proposal: None,
+            parent: None,
         };
         Signed::sign(&body, &signer).unwrap()
     };

@@ -80,6 +80,12 @@ pub enum MismatchField {
     SigningTime,
     /// A Container a CI or agent key admitted before this Machine kept what it reaches.
     KeptReach,
+    /// A CI or agent key's version names no parent, or none of the statements presented
+    /// with that digest is a parentless version a person or full CLI signed for the same
+    /// Service.
+    Parent,
+    /// A version that edits a parent also asks to forget older ones.
+    ForgetParent,
     Signer,
     OneAdmittingMachine,
     JoiningMachine,
@@ -160,6 +166,8 @@ impl MismatchField {
             Self::SystemNamespace => "the system Namespace",
             Self::SigningTime => "a signing time",
             Self::KeptReach => "a kept reach",
+            Self::Parent => "a parent version",
+            Self::ForgetParent => "a forget on an edit",
             Self::Signer => "the signer",
             Self::OneAdmittingMachine => "one admitting Machine",
             Self::JoiningMachine => "a joining Machine",
@@ -265,6 +273,12 @@ impl MismatchField {
             Self::KeptReach => {
                 "A CI or agent key approved this container before this server kept what it reaches, so the server no longer starts it. Deploy it again."
             }
+            Self::Parent => {
+                "This deploy edits an earlier version a person approved, but that version didn't arrive with it or isn't one this server trusts. Deploy the service once from a terminal."
+            }
+            Self::ForgetParent => {
+                "A deploy that only changes the last version a person approved can't forget older versions. Run --forget-older from a terminal."
+            }
             Self::Signer
             | Self::OneAdmittingMachine
             | Self::JoiningMachine
@@ -363,6 +377,8 @@ impl MismatchField {
             }
             Self::SystemNamespace
             | Self::KeptReach
+            | Self::Parent
+            | Self::ForgetParent
             | Self::OneAdmittingMachine
             | Self::JoiningMachine
             | Self::ApprovedDevices

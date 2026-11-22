@@ -97,6 +97,7 @@ async fn a_server_still_joining_takes_a_forget() {
         signed_at: Timestamp::now().plus(1_000),
         signer: SignerKey::Device(signer.public().into()),
         proposal: None,
+        parent: None,
     };
     let forgot = joiner
         .forget_versions(ForgetVersionsRequest {
