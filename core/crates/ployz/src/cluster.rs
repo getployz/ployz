@@ -43,8 +43,6 @@ use crate::{
 };
 
 mod call;
-#[cfg(test)]
-mod call_audit;
 mod capacity;
 mod container_health;
 mod deploy_context;
