@@ -2,7 +2,7 @@
 //! delivered again settles nothing twice.
 //!
 //! A settlement is named `<cid>-<exit|oom>-<ts>`. `<name>.pending` holds one
-//! whose marker or crash is not stored yet, and renaming it to `<name>`
+//! whose crash is not queued yet, and renaming it to `<name>`
 //! finishes it. A finished one is forgotten once no stream can deliver its
 //! event again.
 
@@ -46,8 +46,7 @@ pub(super) struct Key {
 }
 
 impl Key {
-    /// A restart has no key: it is recorded only after an exit the open
-    /// stream saw, which a resumed stream cannot repeat.
+    /// A restart has no key: nothing settles it.
     pub(super) fn of(marker: &MetricMarker) -> Option<Self> {
         let kind = match marker.kind {
             MarkerKind::Exit { .. } => Kind::Exit,
@@ -93,7 +92,6 @@ impl Key {
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct Unfinished {
     pub(super) marker: MetricMarker,
-    pub(super) appended: bool,
     /// The crash's outbox seq, taken once so queuing it again rewrites the
     /// same entry.
     pub(super) seq: Option<u64>,
