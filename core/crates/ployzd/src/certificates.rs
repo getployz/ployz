@@ -26,8 +26,8 @@ use ployz_core::{
     resolve_ingress_addresses,
 };
 use ployz_decide::issuance::{
-    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
-    machine_rank, step, wake,
+    Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, action_due, issued, machine_rank,
+    step, wake,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -658,7 +658,7 @@ async fn obtain(
     let row = store.certificate_row(hostname).await?;
     let held = held(Some(&row), machine_id, policy);
     if held != Held::Nothing
-        && issuance_action(held, rank, Duration::ZERO, SystemTime::now(), policy)
+        && action_due(held, rank, Duration::ZERO, SystemTime::now(), policy).0
             == IssuanceAction::Nothing
     {
         return Ok(());

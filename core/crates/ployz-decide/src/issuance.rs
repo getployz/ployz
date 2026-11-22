@@ -96,18 +96,6 @@ pub fn action_due(
     }
 }
 
-/// `action_due`'s action alone.
-#[must_use]
-pub fn issuance_action(
-    held: Held,
-    rank: usize,
-    elapsed: Duration,
-    now: SystemTime,
-    policy: &CertificatePolicy,
-) -> IssuanceAction {
-    action_due(held, rank, elapsed, now, policy).0
-}
-
 /// This Machine's view of one wanted Ingress Hostname after a pass of its certificate loop.
 /// It lives only in the loop's memory: each Machine keeps its own, from its own row, verdict
 /// and rank.
@@ -201,7 +189,7 @@ pub fn step(prev: Option<Prev>, pass: Pass<'_>) -> Stepped {
         }) => (orderable_for, true),
         Some(_) | None => (Duration::ZERO, false),
     };
-    let issuance = match issuance_action(pass.held, pass.rank, elapsed, pass.wall, pass.policy) {
+    let issuance = match action_due(pass.held, pass.rank, elapsed, pass.wall, pass.policy).0 {
         IssuanceAction::Order | IssuanceAction::Renew => Issuance::Order(route),
         IssuanceAction::Nothing => Issuance::Waiting,
     };
@@ -313,7 +301,7 @@ mod tests {
     }
 
     fn action(held: Held, rank: usize, elapsed: Duration) -> IssuanceAction {
-        issuance_action(held, rank, elapsed, wall(), &policy())
+        action_due(held, rank, elapsed, wall(), &policy()).0
     }
 
     fn lifetime_renewal(renew_at: SystemTime) -> Held {
@@ -364,11 +352,11 @@ mod tests {
         assert_eq!(issuance_step(&policy()), RANK_STEP);
         assert_eq!(issuance_step(&long), seconds(120));
         assert_eq!(
-            issuance_action(Held::Nothing, 1, seconds(30), wall(), &long),
+            action_due(Held::Nothing, 1, seconds(30), wall(), &long).0,
             IssuanceAction::Nothing
         );
         assert_eq!(
-            issuance_action(Held::Nothing, 1, seconds(120), wall(), &long),
+            action_due(Held::Nothing, 1, seconds(120), wall(), &long).0,
             IssuanceAction::Order
         );
     }
@@ -391,7 +379,7 @@ mod tests {
     fn a_renewal_waits_its_rank_delay_after_the_machines_own_jitter() {
         let due = wall() + seconds(3600);
         let held = lifetime_renewal(due);
-        let renews = |rank, at| issuance_action(held, rank, Duration::ZERO, at, &policy());
+        let renews = |rank, at| action_due(held, rank, Duration::ZERO, at, &policy()).0;
         assert_eq!(renews(0, due - seconds(1)), IssuanceAction::Nothing);
         assert_eq!(renews(0, due), IssuanceAction::Renew);
         assert_eq!(renews(1, due), IssuanceAction::Nothing);

@@ -6,7 +6,7 @@
 //! (the certificates arm of `start_planes` in core/crates/ployzd/src/daemon.rs, after `Participation::wait`). Each pass of `issue_wanted` reads the
 //! row, and `step` moves the loop-local `Issuance` it keeps for the hostname (`ployz_decide::issuance::Issuance`, `ployz_decide::issuance::step`;
 //! `Host`, `run`'s `hosts` and `issue_wanted`'s `hosts.insert`). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
-//! (`ployz_core::domain::issuance::issuance_gate`) and `issuance_action` says the
+//! (`ployz_core::domain::issuance::issuance_gate`) and `action_due` says the
 //! Machine's rank delay has passed since `Waiting`'s `orderable_since`. The rank is
 //! the Machine's place among the `machines` rows whose Public Door is not closed
 //! (`read_pass`'s `machine_rank` call over `ordering_machines`).
@@ -1238,7 +1238,7 @@ impl AcmeIssuance {
         let order = state.machine(who).obtaining?;
         // `obtain`'s `certificate_row` re-read.
         let reread = state.row;
-        // `obtain`'s recheck: with material, `issuance_action` answers Nothing in the model.
+        // `obtain`'s recheck: with material, `action_due` answers Nothing in the model.
         let rechecks = reread.material && !self.broken.obtain_skips_recheck;
         let over_material = reread.material;
         let policy = built_in();
@@ -1796,14 +1796,14 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             wait()
         ),
         Some(Branch::Waiting { gate, .. }) => format!(
-            "pass: {}; issuance_gate answers Order, as {}; {}, and issuance_action answers Nothing, as it has not passed (`ployz_decide::issuance::step`), so the hostname is Waiting and not pushed; {}",
+            "pass: {}; issuance_gate answers Order, as {}; {}, and action_due answers Nothing, as it has not passed (`ployz_decide::issuance::step`), so the hostname is Waiting and not pushed; {}",
             verdict_words(machine.verdict),
             gate_words(gate),
             runs_from_words(machine),
             wait()
         ),
         Some(Branch::Pushed { gate, early, .. }) => format!(
-            "pass: {}; {}; {}, and issuance_action answers Order (`ployz_decide::issuance::step`); the hostname is pushed to to_order{}, and account and obtain are next",
+            "pass: {}; {}; {}, and action_due answers Order (`ployz_decide::issuance::step`); the hostname is pushed to to_order{}, and account and obtain are next",
             verdict_words(machine.verdict),
             if gate == Gate::Held {
                 "issuance_gate answers Hold, as the clock holds, but the pass orders along Direct as Order would (under Broken)".to_owned()
