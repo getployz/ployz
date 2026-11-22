@@ -11,7 +11,7 @@ use super::fake_cluster::{
 };
 use super::{
     IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore,
-    publisher::{RuntimeOverlay, complete_catch_up, publishable_machine},
+    store::{RuntimeOverlay, publishable_machine},
 };
 use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
@@ -43,7 +43,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
     let second = tokio::spawn(async move {
         started.send(()).unwrap();
         let publication = clone.machine_publication().await;
-        complete_catch_up(&publication, &task_local).await
+        publication.complete_catch_up(&task_local).await
     });
     waiting.await.unwrap();
     tokio::task::yield_now().await;

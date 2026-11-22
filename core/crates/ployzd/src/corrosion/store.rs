@@ -30,6 +30,7 @@ use super::{
     ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, ChangeWatch, Error,
     REFRESH_INTERVAL, Retry, Statement, Subscription, Wake, WatchPolicy,
 };
+use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
 
 /// The Cluster's declared Doors as this replica holds them.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,14 +61,18 @@ impl DeclaredDoors {
     }
 }
 
-/// Which Machine rows a reader of the store sees: the Local Machine record decides.
-pub(crate) type MachineFilter = Arc<dyn Fn(&Machine) -> bool + Send + Sync>;
-
 #[derive(Clone)]
 pub struct ReplicatedStore {
     api: ApiClient,
-    accepts: Option<MachineFilter>,
+    authority: Option<RecordOwner>,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RuntimeOverlay {
+    pub(crate) running_builds: u32,
+    pub(crate) pool_committable_bytes: Option<u64>,
+    pub(crate) sealing: Option<ployz_core::Sealing>,
 }
 
 pub(crate) struct MachinePublicationGuard<'a> {
@@ -76,6 +81,29 @@ pub(crate) struct MachinePublicationGuard<'a> {
 }
 
 impl MachinePublicationGuard<'_> {
+    /// Persist catch-up completion while this publication guard is held.
+    ///
+    /// Returns `false` when the record was not joining, so nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalMachineError::RecordOwner`] when the record owner has stopped
+    /// and [`LocalMachineError::Store`] when the record cannot be written.
+    pub(crate) async fn complete_catch_up(
+        &self,
+        local: &RecordOwner,
+    ) -> Result<bool, LocalMachineError> {
+        let completed = local
+            .mutate(|store| {
+                if !matches!(store.record().body(), LocalMachineBody::Joining { .. }) {
+                    return Ok(false);
+                }
+                store.complete_catch_up().map(|()| true)
+            })
+            .await??;
+        Ok(completed)
+    }
+
     pub(crate) async fn publish(&self, machine: &Machine) -> Result<(), Error> {
         self.store.publish_local_machine_unlocked(machine).await
     }
@@ -89,7 +117,7 @@ impl MachinePublicationGuard<'_> {
     /// shows deleted, before it gets here. The write checks again, so a delete that reaches
     /// this store in between still wins: a Register never writes a row this store deleted,
     /// and never takes back a forget. A row a Register kept carries the mark, which outside
-    /// tests only a publish of `publishable_machine` writes, and that row names a
+    /// tests only a publish of [`publishable_machine`] writes, and that row names a
     /// Management Identity. So forgetting a kept row leaves `forgotten:<identity>`, which
     /// the #2927 fence reads, and a joined Server that was forgotten is still not listed
     /// again (#3613).
@@ -216,6 +244,27 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
+/// This Machine as it publishes: its record with what it observes of itself now.
+pub(crate) fn publishable_machine(
+    local: &LocalMachineRecord,
+    overlay: RuntimeOverlay,
+) -> Option<Machine> {
+    match local.body() {
+        LocalMachineBody::Participating { machine, .. } => {
+            let mut machine = machine.clone();
+            machine.runtime.running_builds = overlay.running_builds;
+            machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+            machine.runtime.sealing = overlay.sealing;
+            machine.runtime.device_enforcement = Some(true);
+            machine.runtime.management_identity = Some(local.management_secret().public_key());
+            Some(machine)
+        }
+        LocalMachineBody::Uninitialized { .. }
+        | LocalMachineBody::Joining { .. }
+        | LocalMachineBody::Resetting { .. } => None,
+    }
+}
+
 /// Write `machine`'s row, as this Machine's own publish, unless its id is forgotten
 /// and not listed.
 ///
@@ -228,7 +277,7 @@ impl MachinePublicationGuard<'_> {
 ///
 /// The row gets `"self_published": true`, a key outside [`Machine`]'s fields that
 /// readers ignore. In the daemon only this statement writes it, and outside tests only
-/// the publisher reaches it, with `publishable_machine`.
+/// the publisher reaches it, with [`publishable_machine`].
 /// [`MachinePublicationGuard::mark_leaving`] edits the row in place and keeps it. A
 /// Register under the same WireGuard key keeps a row that has it
 /// ([`registration_upsert`]), so keep the name out of [`Machine`]: a field by that name
@@ -399,19 +448,20 @@ impl ReplicatedStore {
     pub(crate) fn new(api: ApiClient) -> Self {
         Self {
             api,
-            accepts: None,
+            authority: None,
             machine_publication: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// The store whose Machine reads show only the rows `accepts` keeps.
-    pub(crate) fn filtering_machines(mut self, accepts: MachineFilter) -> Self {
-        self.accepts = Some(accepts);
+    pub(crate) fn with_authority(mut self, owner: RecordOwner) -> Self {
+        self.authority = Some(owner);
         self
     }
 
     fn accepts_machine(&self, machine: &Machine) -> bool {
-        self.accepts.as_ref().is_none_or(|accepts| accepts(machine))
+        self.authority
+            .as_ref()
+            .is_none_or(|owner| owner.record().accepts_machine(machine))
     }
 
     #[cfg(test)]
@@ -709,19 +759,7 @@ impl ReplicatedStore {
             .filter(|machine| self.accepts_machine(machine)))
     }
 
-    /// Every Machine row this store accepts. Reading writes nothing.
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
-        let mut snapshot = self.machine_rows().await?;
-        snapshot
-            .observations
-            .retain(|machine| self.accepts_machine(machine));
-        Ok(snapshot)
-    }
-
-    /// Every Machine row, whether this store accepts it or not.
-    pub(crate) async fn machine_rows(
-        &self,
-    ) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -729,11 +767,59 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(
+        let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
             RowPolicy::FailRead,
             |id, encoded| decode_machine(id.as_str(), encoded),
-        )
+        )?;
+        if let Some(owner) = &self.authority {
+            self.record_removed(owner, &snapshot.observations).await?;
+        }
+        snapshot
+            .observations
+            .retain(|machine| self.accepts_machine(machine));
+        if let Some(owner) = &self.authority {
+            let record = owner.record();
+            if record.filters_peers()
+                && snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| !record.pins_machine(machine))
+            {
+                let accepted = snapshot.observations.clone();
+                owner
+                    .mutate(move |store| store.pin_machines(&accepted))
+                    .await
+                    .map_err(std::io::Error::other)?
+                    .map_err(std::io::Error::other)?;
+            }
+        }
+        Ok(snapshot)
+    }
+
+    /// Record as removed each trusted Member whose row this store shows deleted. A Member
+    /// merely missing from `rows`, as on a joiner before catch-up, stays trusted.
+    async fn record_removed(&self, owner: &RecordOwner, rows: &[Machine]) -> Result<(), Error> {
+        let listed = rows.iter().map(|machine| machine.id).collect();
+        let unlisted = owner.record().unlisted_members(&listed);
+        let removed: Vec<_> = self
+            .removed_machines(&unlisted)
+            .await?
+            .into_iter()
+            .map(|id| crate::machine::RemovedMember {
+                id,
+                public_key: None,
+            })
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        owner
+            .mutate(move |store| store.remove_members(&removed))
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)?;
+        Ok(())
     }
 
     #[cfg(test)]

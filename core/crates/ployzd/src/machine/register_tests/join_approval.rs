@@ -1007,8 +1007,9 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     confirm(&entry, &request, &approval, join_dir.path()).await;
     let members = || async {
         entry
-            .owner()
-            .record_machines(entry.replicated().unwrap())
+            .replicated()
+            .unwrap()
+            .machines()
             .await
             .unwrap()
             .observations

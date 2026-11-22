@@ -6,7 +6,7 @@ use super::{AdminClient, MachineView, ReplicatedStore, RunningCorrosion};
 use crate::machine::RecordOwner;
 
 /// The replicated store and admin client of this Machine's Corrosion, with the store
-/// showing only the Machine rows the Local Machine record accepts.
+/// answering for the Local Machine record's authority.
 #[derive(Clone)]
 pub(crate) struct ClusterContext {
     pub(crate) replicated: ReplicatedStore,
@@ -18,9 +18,7 @@ impl ClusterContext {
     /// which Machine rows the store accepts.
     pub(crate) fn new(replicated: ReplicatedStore, admin: AdminClient, owner: RecordOwner) -> Self {
         Self {
-            replicated: replicated.filtering_machines(std::sync::Arc::new(move |machine| {
-                owner.record().accepts_machine(machine)
-            })),
+            replicated: replicated.with_authority(owner),
             admin,
         }
     }
@@ -42,12 +40,8 @@ impl ClusterLink {
         owner: RecordOwner,
         shutdown: CancellationToken,
     ) -> Self {
-        let context = ClusterContext::new(
-            running.store().clone(),
-            running.admin_client(),
-            owner.clone(),
-        );
-        let view = MachineView::recording(context.replicated.clone(), owner, shutdown);
+        let context = ClusterContext::new(running.store().clone(), running.admin_client(), owner);
+        let view = MachineView::start(context.replicated.clone(), shutdown);
         Self { context, view }
     }
 

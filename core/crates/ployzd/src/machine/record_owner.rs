@@ -316,62 +316,6 @@ fn publish(published: &watch::Sender<Arc<LocalMachineRecord>>, record: &LocalMac
     });
 }
 
-/// What the Machines table shows of the Members, recorded into the Local Machine record.
-impl RecordOwner {
-    /// Every Machine row the record accepts, after recording two things the read shows:
-    /// each trusted Member whose row the store deleted is removed, and a record that
-    /// filters peers pins each accepted row. A Member merely missing from the table, as
-    /// on a joiner before catch-up, stays trusted.
-    ///
-    /// # Errors
-    ///
-    /// Returns the Corrosion error of a failed read, and the record error of a write
-    /// that failed.
-    pub(crate) async fn record_machines(
-        &self,
-        replicated: &crate::corrosion::ReplicatedStore,
-    ) -> Result<
-        crate::corrosion::ReplicatedObservations<ployz_core::Machine, ployz_core::MachineId>,
-        super::LocalMachineError,
-    > {
-        let mut snapshot = replicated.machine_rows().await?;
-        let listed = snapshot
-            .observations
-            .iter()
-            .map(|machine| machine.id)
-            .collect();
-        let unlisted = self.record().unlisted_members(&listed);
-        let removed: Vec<_> = replicated
-            .removed_machines(&unlisted)
-            .await?
-            .into_iter()
-            .map(|id| super::RemovedMember {
-                id,
-                public_key: None,
-            })
-            .collect();
-        if !removed.is_empty() {
-            self.mutate(move |store| store.remove_members(&removed))
-                .await??;
-        }
-        let record = self.record();
-        snapshot
-            .observations
-            .retain(|machine| record.accepts_machine(machine));
-        if record.filters_peers()
-            && snapshot
-                .observations
-                .iter()
-                .any(|machine| !record.pins_machine(machine))
-        {
-            let accepted = snapshot.observations.clone();
-            self.mutate(move |store| store.pin_machines(&accepted))
-                .await??;
-        }
-        Ok(snapshot)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

@@ -3,39 +3,11 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Error, MachineView, MachinesSnapshot, ReplicatedStore, store::MachinePublicationGuard,
+    Error, MachineView, MachinesSnapshot, ReplicatedStore,
+    store::{RuntimeOverlay, publishable_machine},
 };
-use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
+use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 use crate::sealing_key::KeyFile;
-use ployz_core::Machine;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RuntimeOverlay {
-    pub(crate) running_builds: u32,
-    pub(crate) pool_committable_bytes: Option<u64>,
-    pub(crate) sealing: Option<ployz_core::Sealing>,
-}
-
-/// This Machine as it publishes: its record with what it observes of itself now.
-pub(crate) fn publishable_machine(
-    local: &LocalMachineRecord,
-    overlay: RuntimeOverlay,
-) -> Option<Machine> {
-    match local.body() {
-        LocalMachineBody::Participating { machine, .. } => {
-            let mut machine = machine.clone();
-            machine.runtime.running_builds = overlay.running_builds;
-            machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
-            machine.runtime.sealing = overlay.sealing;
-            machine.runtime.device_enforcement = Some(true);
-            machine.runtime.management_identity = Some(local.management_secret().public_key());
-            Some(machine)
-        }
-        LocalMachineBody::Uninitialized { .. }
-        | LocalMachineBody::Joining { .. }
-        | LocalMachineBody::Resetting { .. } => None,
-    }
-}
 
 /// What this Machine observes of itself live: published on its row, never held in
 /// its record.
@@ -156,7 +128,8 @@ pub async fn run_machine_publisher(
                 }
             }
             let publication = replicated.machine_publication().await;
-            let completed = complete_catch_up(&publication, &local)
+            let completed = publication
+                .complete_catch_up(&local)
                 .await
                 .map_err(io::Error::other)?;
             if completed {
@@ -327,27 +300,4 @@ async fn row_is_stale(
         return false;
     };
     !snapshot.observations.contains(&machine)
-}
-
-/// Persist catch-up completion while `_publication` is held.
-///
-/// Returns `false` when the record was not joining, so nothing changed.
-///
-/// # Errors
-///
-/// Returns [`LocalMachineError::RecordOwner`] when the record owner has stopped
-/// and [`LocalMachineError::Store`] when the record cannot be written.
-pub(crate) async fn complete_catch_up(
-    _publication: &MachinePublicationGuard<'_>,
-    local: &RecordOwner,
-) -> Result<bool, LocalMachineError> {
-    let completed = local
-        .mutate(|store| {
-            if !matches!(store.record().body(), LocalMachineBody::Joining { .. }) {
-                return Ok(false);
-            }
-            store.complete_catch_up().map(|()| true)
-        })
-        .await??;
-    Ok(completed)
 }

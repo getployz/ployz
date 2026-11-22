@@ -305,12 +305,12 @@ async fn a_member_is_removed_by_its_deleted_row_and_never_by_its_absence() {
         .await
         .unwrap();
 
-    local.owner().record_machines(&replicated).await.unwrap();
+    replicated.machines().await.unwrap();
     assert!(!local.record().removes_member(unarrived.id, None));
     assert!(local.record().pins_machine(&unarrived));
 
     store.forget_machine(&listed.id).await.unwrap();
-    local.owner().record_machines(&replicated).await.unwrap();
+    replicated.machines().await.unwrap();
     assert!(
         local
             .record()
@@ -319,12 +319,7 @@ async fn a_member_is_removed_by_its_deleted_row_and_never_by_its_absence() {
     assert!(!local.record().pins_machine(&listed));
 
     store.publish_local_machine(&listed).await.unwrap();
-    let observed = local
-        .owner()
-        .record_machines(&replicated)
-        .await
-        .unwrap()
-        .observations;
+    let observed = replicated.machines().await.unwrap().observations;
     assert!(observed.iter().all(|machine| machine.id != listed.id));
     assert!(!local.record().pins_machine(&listed));
     assert!(!local.record().removes_member(unarrived.id, None));
@@ -571,11 +566,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     // The entry trusts the joined Machine once it reads its approved row, and that record
     // change republishes the founder: settle it before the marker.
     replicated.publish_cluster_network(marker).await.unwrap();
-    entry
-        .owner()
-        .record_machines(entry.replicated().unwrap())
-        .await
-        .unwrap();
+    entry.replicated().unwrap().machines().await.unwrap();
     eventually(|| async { replicated.cluster_network().await.unwrap() == Some(network) })
         .await
         .expect("the founder republishes once it trusts the joined Machine");
