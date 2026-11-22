@@ -12,7 +12,6 @@ const reviewOf = (to: "on" | "off"): ApprovalReview => {
 describe("setPrivateAccess gating", () => {
   it("asks a human from the CLI or an agent, and only an operator may ask", () => {
     const operation = OPERATIONS["private_access.use"];
-    expect(operation.gate).toBe("approval");
     expect(operation.requires).toBe("servers:operate");
     expect(privateAccessUse.gate).toBe("ask");
     expect(privateAccessUse.removes).toBe(false);

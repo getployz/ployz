@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { OPERATION_TOOLS, OPERATIONS } from "#/modules/operations/operations";
+import { OPERATION_PARITY } from "#/modules/operations/operations.parity";
 
 const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
 const SRC = new URL("../../", import.meta.url);
@@ -60,7 +61,7 @@ function fieldsOf(surface: Surface, present: Present) {
 function drift(): string[] {
   const problems: string[] = [];
   const agentClaims = new Map<string, Set<string>>();
-  for (const [operation, definition] of Object.entries(OPERATIONS)) {
+  for (const [operation, definition] of Object.entries(OPERATION_PARITY)) {
     const options = Object.keys(definition.options.fields);
     for (const surface of ["cli", "agent", "ui"] as const) {
       const declared = definition.surfaces[surface];

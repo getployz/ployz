@@ -1,10 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
-import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
-import { freshSwitchDigest } from "#/modules/ingress/doors.server";
-import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
@@ -17,10 +14,8 @@ import {
   OrganizationRuntime,
   operationRuntimeFrame,
   RUNTIME_FRAME_TIMEOUT_MS,
-  withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
-import type { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 
 export const UNREACHABLE_MESSAGE = "Your servers aren't answering. Try again once they are.";
@@ -226,7 +221,7 @@ export function removePlan(
   };
 }
 
-const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
+export const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
   Effect.mapError(unreachable),
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
@@ -242,7 +237,7 @@ export const planIngressOff = Effect.fn("ServerOperations.planIngressOff")(funct
   return ingressOffPlan(yield* observe(organizationId), machineId, change);
 });
 
-const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
+export const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
   ? Effect.succeed(true)
   : ownedNamespaces(organizationId).pipe(Effect.map((owned) => owned.includes(namespace)));
 
@@ -336,60 +331,3 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
     [identity.id.name, owned.get(identity.id.name) ?? volumeMountLabel(frame, identity)]));
   return removePlan(machineId, name, removal, labels);
 });
-
-/**
- * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
- * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read within 5 seconds of Cluster
- * time, the stored preview stands.
- */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>> | Database> = (organizationId, subject, verb, stored, preview) => {
-  const separator = subject.indexOf(":");
-  const key = subject.slice(separator + 1);
-  // A member, invite, Service, Project, Environment, Organization or forget-every-Server approval is planned again when
-  // its command reruns; there is no Cluster to recompute it from.
-  if (["member", "invite", "service", "project", "environment", "organization", "servers"].includes(subject.slice(0, separator))) return Effect.succeed(stored);
-  const fresh = Effect.gen(function* () {
-    switch (verb) {
-      case "drain": {
-        const frame = yield* observe(organizationId);
-        const plan = drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), key);
-        return plan === null ? null : operationDigest(plan);
-      }
-      case "clean":
-        if (yield* ownedOrSystem(organizationId, key)) return null;
-        return operationDigest(yield* planClean(organizationId, key));
-      case "set": {
-        const plan = ingressOffPlan(yield* observe(organizationId), key, { acceptsIngress: false });
-        return plan === null || plan.effects.length === 0 ? null : operationDigest({ ...plan, preview });
-      }
-      case "remove":
-      case "forget": {
-        const frame = yield* observe(organizationId);
-        return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
-      }
-      case "release":
-      case "mirror":
-      case "sync":
-      case "remove_mirror":
-      case "move":
-      case "restore":
-      case "resize":
-      case "stop":
-      case "restart":
-      case "unprotect":
-      case "set_private_access":
-        return stored;
-      case "set_cluster_name":
-        return yield* freshRenameDigest(organizationId, stored, preview);
-      case "set_ingress_doors":
-        return yield* freshSwitchDigest(organizationId, stored, preview);
-    }
-  });
-  return fresh.pipe(withClusterBudget(5_000), Effect.orElseSucceed(() => stored));
-};
-
-/** Every approval still waiting in the Organization, each operation's preview recomputed against the Cluster first. */
-export const freshPendingApprovals = (organizationId: string) => pendingApprovals(organizationId, freshOperationDigest);
-
-/** One approval in the Organization, its operation's preview recomputed against the Cluster first. */
-export const freshApproval = (organizationId: string, id: string) => getApproval(organizationId, id, freshOperationDigest);

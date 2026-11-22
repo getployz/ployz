@@ -3,7 +3,7 @@ import type { PrivateAccessOn } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { approveKeyed, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
-import { freshOperationDigest } from "#/modules/machines/server-operations.server";
+import { freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { type PrivateAccessChanged, type PrivateAccessWant, privateAccessObservation, routerProblem } from "#/modules/private-access/private-access";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";

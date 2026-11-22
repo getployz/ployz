@@ -24,7 +24,7 @@ export const statementChallenge = async (body: string, purpose: Purpose) =>
   new Uint8Array(await crypto.subtle.digest("SHA-256", signingInput(body, purpose)));
 
 /** Why a passkey didn't answer, in words a prompt shows as they are. */
-export class PasskeyRefused extends Error {}
+export class PasskeyDeclined extends Error {}
 
 /** One user-verified passkey prompt answering `challenge`, as Servers check it. */
 export async function passkeyAnswer(challenge: Uint8Array<ArrayBuffer>): Promise<PasskeyAssertion> {
@@ -32,7 +32,7 @@ export async function passkeyAnswer(challenge: Uint8Array<ArrayBuffer>): Promise
   const credential = await navigator.credentials.get({
     publicKey: { challenge, rpId: location.hostname, userVerification: "required", timeout: 60_000 },
   }) as PublicKeyCredential | null;
-  if (credential === null) throw new PasskeyRefused("Your passkey didn't answer. Try again.");
+  if (credential === null) throw new PasskeyDeclined("Your passkey didn't answer. Try again.");
   // SAFETY: a `publicKey` get request answers with an assertion response.
   const response = credential.response as AuthenticatorAssertionResponse;
   return {

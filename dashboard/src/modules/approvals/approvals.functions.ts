@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { askerNames, type ApprovalView } from "#/modules/approvals/approvals.server";
-import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/approvals/approvals.fresh.server";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import { approvalForSupport } from "#/modules/support-access/support-view";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";

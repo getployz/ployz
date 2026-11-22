@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
-import { freshApproval, freshOperationDigest } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { cliRefusalResponse } from "#/server/public-error";
 import { decodeBody, refusedMissing, type CliRoutes } from "#/server/cli-call";
 

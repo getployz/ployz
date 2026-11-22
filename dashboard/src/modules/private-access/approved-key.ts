@@ -7,7 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { KeyApproval, PrivateAccessOn } from "@ployz/sdk";
 import { privateAccessApprovalBody } from "@ployz/sdk/authority";
 import { freshSealing } from "#/modules/sealing/sealing.queries";
-import { PasskeyRefused, passkeyAnswer, statementChallenge } from "#/modules/approval-session/passkey-statement";
+import { PasskeyDeclined, passkeyAnswer, statementChallenge } from "#/modules/passkeys/passkey-statement";
 import { SealError } from "#/modules/sealing/seal-error";
 import { sealPlatform } from "#/modules/sealing/seal-value";
 
@@ -46,7 +46,7 @@ export async function approvedKey(
   try {
     return { sealed_auth_key: sealed, approval: { passkey: { body, assertion: await passkeyAnswer(await statementChallenge(body, "workflow")) } } };
   } catch (error) {
-    if (error instanceof PasskeyRefused) throw new KeyNotApproved(error.message);
+    if (error instanceof PasskeyDeclined) throw new KeyNotApproved(error.message);
     if (error instanceof Error && error.name === "NotAllowedError") throw new KeyNotApproved("Your passkey didn't answer. Try again.");
     throw new KeyNotApproved("Your browser couldn't use a passkey here.");
   }

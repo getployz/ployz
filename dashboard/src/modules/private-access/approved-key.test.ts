@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import * as passkey from "#/modules/approval-session/passkey-statement";
+import * as passkey from "#/modules/passkeys/passkey-statement";
 import { approvedKey, KeyNotApproved } from "./approved-key";
 
 const CLUSTER = "NdiV1QY9P3ZyoC82YA/FaBs0zlWTG/CXU1tLfcS0CDg=";
