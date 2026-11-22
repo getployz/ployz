@@ -31,7 +31,11 @@ impl From<ReplaceError> for io::Error {
 /// Replace `path` with `contents` at `mode`: written to a file beside it that is never
 /// readable beyond `mode`, flushed, renamed over `path`, and the rename flushed.
 pub(crate) fn replace(path: &Path, contents: &[u8], mode: u32) -> Result<(), ReplaceError> {
-    let directory = path.parent().unwrap_or(Path::new("."));
+    // A bare file name's parent is "", which names no directory to open.
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     write(directory, path, contents, mode).map_err(ReplaceError::Failed)?;
     File::open(directory)
         .and_then(|directory| directory.sync_all())
@@ -47,4 +51,21 @@ fn write(directory: &Path, path: &Path, contents: &[u8], mode: u32) -> io::Resul
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Nextest runs each test in its own process, so moving this one's working directory
+    // reaches no other test.
+    #[test]
+    fn a_bare_file_name_replaces_in_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        replace(Path::new("links.json"), b"{}", OWNER_ONLY).unwrap();
+
+        assert_eq!(fs::read(dir.path().join("links.json")).unwrap(), b"{}");
+    }
 }
