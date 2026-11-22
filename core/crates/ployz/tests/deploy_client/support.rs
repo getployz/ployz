@@ -1052,6 +1052,7 @@ impl FakeMachine for DeployService {
             token: None,
             sealing: self.sealing,
             founding: Default::default(),
+            grants: Vec::new(),
         }))
     }
     async fn enroll(

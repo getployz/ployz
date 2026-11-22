@@ -349,10 +349,11 @@ fn a_rule_reads_back_only_in_canonical_order() {
 #[test]
 fn a_device_signs_a_rule() {
     let signed = Signed::sign(&rule(), &signer()).unwrap();
-    let trusted = TrustedKeys {
-        devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
-        passkeys: Vec::new(),
-    };
+    let trusted = TrustedKeys::new(
+        vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
+        Vec::new(),
+        [],
+    );
     let (body, key) = verify_signature(
         &signed,
         &trusted,
@@ -360,11 +361,53 @@ fn a_device_signs_a_rule() {
     )
     .unwrap();
     assert_eq!(body, rule());
-    assert_eq!(key, Approver::Device(signer().public()));
+    assert_eq!(key, Approver::Signing(signer().public()));
     assert!(
         signed
             .signing_input()
             .starts_with(b"ployz-authority/v1\nrule\n")
+    );
+}
+
+#[test]
+fn a_ci_key_signs_no_rule_even_over_the_whole_cluster() {
+    use crate::authority::{
+        Cap, CapSet, Grant, GrantKind, KeyKind, KeyPlaces, KeyScope, TrustedGrant,
+    };
+    let ci = Signer::from_seed(&[2; 32]);
+    let body = AutoDeployRule {
+        signer: SignerKey::Device(ci.public().into()),
+        ..rule()
+    };
+    let trusted = TrustedKeys::new(
+        [],
+        [],
+        [TrustedGrant {
+            grant: Grant {
+                key: ci.public(),
+                kind: GrantKind::Ci,
+                scope: KeyScope {
+                    caps: CapSet::of(&[Cap::Spec]),
+                    places: KeyPlaces::Cluster,
+                },
+                volumes: Vec::new(),
+                issued_at: Timestamp::from_millis(1).unwrap(),
+            },
+            approved_by: crate::authority::PasskeyApprover::Server,
+        }],
+    );
+
+    assert_eq!(
+        verify_signature(
+            &Signed::sign(&body, &ci).unwrap(),
+            &trusted,
+            Some(SealingPublicKey::from_bytes([9; 32])),
+        ),
+        Err(AuthorityRefusal::OutOfScope {
+            code: ci.public().code(),
+            kind: KeyKind::Ci,
+            what: "an automatic deploy rule",
+        }),
     );
 }
 

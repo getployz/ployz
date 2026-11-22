@@ -330,12 +330,13 @@ impl<T: Statement> Signed<T> {
             .collect()
     }
 
-    /// Who signed this statement, each checked against `trusted`: a Device it trusts or,
-    /// on a statement that takes one, a trusted passkey's own answer to [`Self::challenge`].
+    /// Who signed this statement, each checked against `trusted`: a Device or grant it
+    /// trusts or, on a statement that takes one, a trusted passkey's own answer to
+    /// [`Self::challenge`]. What each may approve is [`TrustedKeys::covers`]'s to say.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Unsigned`] when nothing signed,
-    /// [`AuthorityRefusal::UnknownKey`] when a key is not a trusted Device,
+    /// [`AuthorityRefusal::UnknownKey`] when a key is neither a trusted Device nor a grant,
     /// [`AuthorityRefusal::BadSignature`] when a signature does not verify, a mismatch
     /// naming a passkey for an answer to a statement that takes none, and the passkey's
     /// refusal from [`TrustedKeys::passkey_approval`].
@@ -356,7 +357,7 @@ impl<T: Statement> Signed<T> {
                 if !signature.verifies(&input) {
                     return Err(AuthorityRefusal::BadSignature { key: signature.key });
                 }
-                Ok(Approver::Device(signature.key))
+                Ok(Approver::Signing(signature.key))
             })
             .collect::<Result<Vec<_>, _>>()?;
         if self.assertions.is_empty() {
@@ -367,7 +368,7 @@ impl<T: Statement> Signed<T> {
         }
         let challenge = self.challenge();
         for assertion in &self.assertions {
-            let passkey = trusted.passkey_approval(T::PURPOSE, assertion, &challenge)?;
+            let passkey = trusted.passkey_approval(assertion, &challenge)?;
             approvers.push(Approver::Passkey(passkey.passkey.code()));
         }
         Ok(approvers)
@@ -377,19 +378,19 @@ impl<T: Statement> Signed<T> {
 /// A signer whose signature on a statement verified, and what vouches for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Approver {
-    /// A Device this Machine trusts.
-    Device(SigningPublicKey),
+    /// A Device or grant this Machine trusts, by the Ed25519 key that signed.
+    Signing(SigningPublicKey),
     /// A passkey this Machine trusts, answering a prompt of its own for this statement.
     Passkey(DeviceCode),
 }
 
 impl Approver {
     /// Whether this approver is the signer a statement names, vouched for the way the
-    /// statement says: a Device as that Device, a passkey by its own prompt.
+    /// statement says: a signing key as that key, a passkey by its own prompt.
     #[must_use]
     pub fn signs_as(&self, signer: SignerKey) -> bool {
         match (self, signer) {
-            (Self::Device(key), SignerKey::Device(device)) => *key == device.into(),
+            (Self::Signing(key), SignerKey::Device(device)) => *key == device.into(),
             (Self::Passkey(_), SignerKey::Passkey(_)) => true,
             _ => false,
         }
@@ -399,7 +400,7 @@ impl Approver {
 impl fmt::Display for Approver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Device(key) => write!(formatter, "device {}", key.code()),
+            Self::Signing(key) => write!(formatter, "key {}", key.code()),
             Self::Passkey(code) => write!(formatter, "passkey {code}"),
         }
     }

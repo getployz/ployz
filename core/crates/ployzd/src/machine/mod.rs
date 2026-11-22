@@ -205,6 +205,10 @@ pub struct LocalMachineRecord {
     /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    /// CI and agent keys a person granted here. They sign Service versions inside their scope
+    /// and hold no slot. A daemon from before scoped keys ignores them, so it trusts none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    grants: Vec<ployz_core::authority::TrustedGrant>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
@@ -320,20 +324,29 @@ impl LocalMachineRecord {
         &self.passkeys
     }
 
-    /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
     #[must_use]
-    pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
-        ployz_core::authority::TrustedKeys {
-            devices: self.devices().collect(),
-            passkeys: self.passkeys.clone(),
-        }
+    pub fn grants(&self) -> &[ployz_core::authority::TrustedGrant] {
+        &self.grants
     }
 
-    /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
+    /// Every key this Machine trusts, from its own record: its Devices, its passkeys and
+    /// its grants, read fresh at each call.
+    #[must_use]
+    pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys::new(
+            self.devices(),
+            self.passkeys.clone(),
+            self.grants.clone(),
+        )
+    }
+
+    /// Keys of the approved Devices: accepted slots whose `device-` label names their key,
+    /// and that no grant holds, so a CI or agent key never reads as a Device.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
             let key = DeviceKey::from_bytes(*slot.accepted()?.as_bytes());
-            (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
+            let granted = self.grants.iter().any(|held| held.grant.key == key.into());
+            (DeviceCode::named_by(label) == Some(key.code()) && !granted).then_some(key)
         })
     }
 
@@ -494,13 +507,16 @@ impl LocalMachineRecord {
     /// or pending key, or `None` when no slot holds it.
     #[must_use]
     pub fn management_scope(&self, remote: &ClientKey) -> Option<ployz_core::ManagementScope> {
-        self.management_clients
-            .iter()
-            .filter(|(_, slot)| {
-                slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
-            })
-            .map(|(label, _)| ployz_core::ManagementScope::of(label, remote))
-            .max()
+        let held = self.management_clients.values().any(|slot| {
+            slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
+        });
+        held.then(|| {
+            if self.trusted_keys().full(remote) {
+                ployz_core::ManagementScope::Full
+            } else {
+                ployz_core::ManagementScope::Operator
+            }
+        })
     }
 
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
@@ -705,6 +721,7 @@ impl LocalMachineRecord {
             filters_peers: false,
             trusted_machines: Vec::new(),
             passkeys: Vec::new(),
+            grants: Vec::new(),
             membership_cluster: None,
             enrollment: None,
             removed_keys: Vec::new(),

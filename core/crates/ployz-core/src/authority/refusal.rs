@@ -5,7 +5,8 @@ use thiserror::Error;
 use super::admission::DataReach;
 use super::canonical::Timestamp;
 use super::keys::{Purpose, SigningPublicKey};
-use crate::DeviceCode;
+use super::scope::KeyKind;
+use crate::{DeviceCode, DockerVolumeName};
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AuthorityRefusal {
@@ -19,8 +20,20 @@ pub enum AuthorityRefusal {
     BadSignature { key: SigningPublicKey },
     #[error("the passkey is not approved on this Machine")]
     UnknownPasskey,
-    #[error("passkey {code} may approve workflows and rules only, not a {purpose} statement")]
-    ApproveOnly { code: DeviceCode, purpose: Purpose },
+    /// The key is trusted here, but its kind or scope doesn't reach what it signed.
+    #[error("the {kind} key {code} may not approve {what} here")]
+    OutOfScope {
+        code: DeviceCode,
+        kind: KeyKind,
+        what: &'static str,
+    },
+    /// The key is a grant whose Volume list names no entry for a Volume the spec mounts.
+    #[error("the {kind} key {code} may not mount Volume {volume} here")]
+    VolumeNotGranted {
+        code: DeviceCode,
+        kind: KeyKind,
+        volume: DockerVolumeName,
+    },
     #[error("the spec {reach}, and nothing signed it")]
     NeedsSignature { reach: DataReach },
     #[error("the approval names {field} this request does not match")]
@@ -63,4 +76,6 @@ pub mod field {
     pub const SYSTEM: &str = "the system Namespace";
     /// Signed more than ten minutes past this Machine's clock.
     pub const AHEAD: &str = "a signing time";
+    /// A Container a CI or agent key admitted before this Machine kept what it reaches.
+    pub const KEPT_REACH: &str = "a kept reach";
 }

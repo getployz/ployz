@@ -639,6 +639,7 @@ mod tests {
             token: None,
             sealing: Some(ployz_core::Sealing::Held { public_key: held }),
             founding: Default::default(),
+            grants: Vec::new(),
         }
     }
 

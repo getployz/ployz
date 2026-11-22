@@ -1,0 +1,244 @@
+//! A Container a CI key admitted, started again after a person changed its grant.
+
+use ployz_core::{
+    Namespace, SealedScope, ServiceName, VolumeOrigin,
+    authority::{
+        Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyPlace, KeyPlaces, KeyScope,
+        PasskeyApprover, PayloadDigest, PlaceService, SignerKey, TrustedGrant,
+    },
+};
+use serde_json::{Value, json};
+
+use super::super::rule_grant::tests::{Fixture, fixture};
+use super::*;
+
+const IMAGE: &str =
+    "ployz-build/api@sha256:4444444444444444444444444444444444444444444444444444444444444444";
+
+fn ci() -> ployz_core::authority::Signer {
+    ployz_core::authority::Signer::from_seed(&[8; 32])
+}
+
+fn app() -> Namespace {
+    Namespace::parse("app").unwrap()
+}
+
+fn api() -> QualifiedService {
+    QualifiedService::parse("app/api").unwrap()
+}
+
+/// `app/api`, opening a Shared value sealed for the fixture's Environment.
+fn opening_shared(fixture: &Fixture) -> Value {
+    json!({
+        "name": "api",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {
+            "image": IMAGE,
+            "pull_policy": "missing",
+            "environment": {
+                "DB_PASSWORD": fixture.sealing.seal("DB_PASSWORD", SealedScope::Shared, "pa55"),
+            },
+            "sealed_identity": fixture.sealing.identity,
+        },
+    })
+}
+
+fn birth() -> Value {
+    json!({"namespace": "app", "name": "data", "made_at": 1_762_178_640_000_u64,
+        "nonce": "00112233445566778899aabbccddeeff"})
+}
+
+/// `app/api`, mounting the Provisioned Volume `data`.
+fn mounting_data() -> Value {
+    json!({
+        "name": "api",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": IMAGE, "pull_policy": "missing"},
+        "volumes": [{"reference": "data", "source": {"kind": "provisioned", "name": "data",
+            "maximum_bytes": 1_073_741_824_u64, "birth": birth()}}],
+        "mounts": [{"volume": "data", "target": "/data"}],
+    })
+}
+
+fn data_entry() -> GrantVolume {
+    GrantVolume {
+        origin: VolumeOrigin::of(&serde_json::from_value(birth()).unwrap()).unwrap(),
+        name: app().volume_name(&ployz_core::DockerVolumeName::parse("data").unwrap()),
+    }
+}
+
+fn requested(spec: &Value) -> ployz_core::RequestedServiceSpec {
+    serde_json::from_value(spec.clone()).unwrap()
+}
+
+fn want(spec: &Value) -> ContainerWant {
+    let mut scoped = requested(spec);
+    scoped.mount_graph = scoped.mount_graph.scope_to_namespace(&app()).unwrap();
+    let resolved = scoped
+        .to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    serde_json::from_value(
+        json!({"state":"running", "rotation":"pending", "container":{"new":{
+        "slot":{"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"1"},
+        "resolved_spec":resolved, "gen":1}}}),
+    )
+    .unwrap()
+}
+
+/// A CI grant over Namespace `app` of the fixture's Environment, or one Service of it,
+/// set by a bundle issued at `issued`.
+fn grant(
+    fixture: &Fixture,
+    service: Option<(uuid::Uuid, &str)>,
+    volumes: Vec<GrantVolume>,
+    issued: u64,
+) -> TrustedGrant {
+    TrustedGrant {
+        grant: Grant {
+            key: ci().public(),
+            kind: GrantKind::Ci,
+            scope: KeyScope {
+                caps: CapSet::of(&[Cap::Spec]),
+                places: KeyPlaces::Only(vec![KeyPlace {
+                    environment: fixture.sealing.identity.environment,
+                    namespace: app(),
+                    service: service.map(|(id, name)| PlaceService {
+                        id,
+                        name: ServiceName::parse(name).unwrap(),
+                    }),
+                }]),
+            },
+            volumes,
+            issued_at: Timestamp::from_millis(issued).unwrap(),
+        },
+        approved_by: PasskeyApprover::Server,
+    }
+}
+
+async fn trust(fixture: &Fixture, grant: TrustedGrant) {
+    fixture
+        .machine
+        .owner
+        .mutate(move |store| store.approve_grant(grant).unwrap())
+        .await
+        .unwrap();
+}
+
+/// Admit `spec` under a version the CI key signed, as an Operator's deploy does.
+async fn admitted_by_ci(fixture: &Fixture, spec: &Value) -> AdmittedBy {
+    let body = ServiceVersion {
+        cluster: fixture.cluster,
+        namespace: app(),
+        service: ServiceName::parse("api").unwrap(),
+        digest: PayloadDigest::of(&requested(spec), &app()).unwrap(),
+        signed_at: Timestamp::now(),
+        signer: SignerKey::Device(ci().public().into()),
+        proposal: None,
+        forget_older: false,
+    };
+    let versions = [Signed::sign(&body, &ci()).unwrap()];
+    fixture
+        .machine
+        .admit_spec(
+            &want(spec),
+            Presented::Operator {
+                rule: None,
+                versions: &versions,
+            },
+        )
+        .await
+        .unwrap()
+        .expect("a creation")
+        .by()
+        .clone()
+}
+
+/// What `start_checked` decides for an Operator's start of a Container kept under `by`.
+fn start(fixture: &Fixture, by: &AdmittedBy) -> Result<(), AuthorityRefusal> {
+    fixture
+        .machine
+        .standing()
+        .admits(by, Error::ApprovalRecord)
+        .unwrap()
+}
+
+fn out_of_scope(what: &'static str) -> AuthorityRefusal {
+    AuthorityRefusal::OutOfScope {
+        code: ci().public().code(),
+        kind: KeyKind::Ci,
+        what,
+    }
+}
+
+#[tokio::test]
+async fn a_kept_start_stops_once_the_grant_narrows_to_its_service_or_moves_to_another() {
+    let fixture = fixture().await;
+    let service = fixture.sealing.identity.service;
+    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+    let kept = admitted_by_ci(&fixture, &opening_shared(&fixture)).await;
+    assert_eq!(start(&fixture, &kept), Ok(()));
+
+    trust(
+        &fixture,
+        grant(&fixture, Some((service, "api")), Vec::new(), 2),
+    )
+    .await;
+    assert_eq!(
+        start(&fixture, &kept),
+        Err(out_of_scope("Sealed values outside its places")),
+        "a Service place holds no Shared value it opened"
+    );
+
+    trust(&fixture, grant(&fixture, None, Vec::new(), 3)).await;
+    assert_eq!(start(&fixture, &kept), Ok(()), "widened again by a person");
+
+    trust(
+        &fixture,
+        grant(&fixture, Some((service, "web")), Vec::new(), 4),
+    )
+    .await;
+    assert_eq!(
+        start(&fixture, &kept),
+        Err(out_of_scope("a version of this Service"))
+    );
+}
+
+#[tokio::test]
+async fn a_kept_start_stops_once_the_grant_drops_its_volume() {
+    let fixture = fixture().await;
+    trust(&fixture, grant(&fixture, None, vec![data_entry()], 1)).await;
+    let kept = admitted_by_ci(&fixture, &mounting_data()).await;
+    assert_eq!(start(&fixture, &kept), Ok(()));
+
+    trust(&fixture, grant(&fixture, None, Vec::new(), 2)).await;
+    assert_eq!(
+        start(&fixture, &kept),
+        Err(AuthorityRefusal::VolumeNotGranted {
+            code: ci().public().code(),
+            kind: KeyKind::Ci,
+            volume: data_entry().name,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_container_kept_before_its_reach_starts_for_a_device_but_not_a_grant() {
+    let fixture = fixture().await;
+    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+    let kept_by = |key: ployz_core::authority::SigningPublicKey| AdmittedBy::Keys {
+        service: api(),
+        keys: vec![(KeptKey::Device(key), Timestamp::now())],
+        reach: None,
+    };
+
+    assert_eq!(start(&fixture, &kept_by(fixture.signer.public())), Ok(()));
+    assert_eq!(
+        start(&fixture, &kept_by(ci().public())),
+        Err(AuthorityRefusal::Mismatch {
+            field: field::KEPT_REACH
+        })
+    );
+}

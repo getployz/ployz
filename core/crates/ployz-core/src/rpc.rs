@@ -41,8 +41,6 @@ use prost::Message;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::DeviceKey;
-
 /// The Machine RPC major. Every `RpcRequest` and `RpcResponse` envelope
 /// carries it, and decoding an envelope refuses another major.
 pub const PROTOCOL_MAJOR: u32 = 1;
@@ -55,26 +53,17 @@ pub enum CapabilityAdvertisement {
     Cluster,
 }
 
-/// What a Management Client may call on a Machine. A slot is `Full` only when its label
-/// is the [`DeviceCode`](crate::DeviceCode) label of the key it holds; `cloud`, every
-/// `cli-*` slot Cloud minted and any other label are `Operator`. The local socket is `Full`.
+/// What a Management Client may call on a Machine. A connection is `Full` only when its key
+/// is a full CLI key the Machine trusts now: an accepted slot whose label is the
+/// [`DeviceCode`](crate::DeviceCode) label of the key it holds, and that no CI or agent
+/// grant holds. `cloud`, every `cli-*` slot Cloud minted, a pending key and any other label
+/// are `Operator`. The local socket is `Full`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ManagementScope {
     /// Drives Deploys and reads state, but never execs into a container, opens a
     /// tunnel, or reads back an env value the Machine opened from Sealed ciphertext.
     Operator,
     Full,
-}
-
-impl ManagementScope {
-    #[must_use]
-    pub fn of(label: &crate::ManagementClientLabel, key: &crate::ClientKey) -> Self {
-        if *label == DeviceKey::from_bytes(*key.as_bytes()).label() {
-            Self::Full
-        } else {
-            Self::Operator
-        }
-    }
 }
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
@@ -637,6 +626,7 @@ mod set_management_client_wire {
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
                     devices: Vec::new(),
+                    grants: Vec::new(),
                 },
             },
             wireguard_mtu: Some(1380),
@@ -675,26 +665,6 @@ mod set_management_client_wire {
                 response
             );
             assert!(!format!("{response:?}").contains(&text[8..]));
-        }
-    }
-}
-
-#[cfg(test)]
-mod management_scope_tests {
-    #[test]
-    fn only_a_device_slot_holding_its_own_key_is_full() {
-        let key = crate::ClientKey::from_bytes([9; 32]);
-        let scope = |label: &str, key: &crate::ClientKey| {
-            super::ManagementScope::of(&crate::ManagementClientLabel::parse(label).unwrap(), key)
-        };
-        let device = crate::DeviceKey::from_bytes(*key.as_bytes()).label();
-        assert_eq!(scope(device.as_str(), &key), super::ManagementScope::Full);
-        assert_eq!(
-            scope(device.as_str(), &crate::ClientKey::from_bytes([8; 32])),
-            super::ManagementScope::Operator
-        );
-        for label in ["cloud", "cli-0123456789abcdef0123456789ab", "laptop"] {
-            assert_eq!(scope(label, &key), super::ManagementScope::Operator);
         }
     }
 }

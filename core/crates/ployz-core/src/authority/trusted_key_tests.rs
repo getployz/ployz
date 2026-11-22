@@ -105,13 +105,14 @@ fn credential(tag: u8) -> CredentialId {
 }
 
 pub(crate) fn trusting(authenticator: &Authenticator) -> TrustedKeys {
-    TrustedKeys {
-        devices: vec![DeviceKey::from_bytes([1; 32])],
-        passkeys: vec![TrustedPasskey {
+    TrustedKeys::new(
+        vec![DeviceKey::from_bytes([1; 32])],
+        vec![TrustedPasskey {
             passkey: authenticator.passkey(),
             approved_by: PasskeyApprover::Server,
         }],
-    }
+        [],
+    )
 }
 
 /// A trusted EdDSA passkey whose public key is the Ed25519 key of `seed`, the shape a
@@ -128,31 +129,10 @@ fn an_es256_and_an_eddsa_passkey_each_approve_a_workflow() {
     for authenticator in [Authenticator::es256(7), Authenticator::eddsa([7; 32])] {
         let trusted = trusting(&authenticator);
         let approved = trusted
-            .passkey_approval(Purpose::Workflow, &authenticator.answer(&HONEST), CHALLENGE)
+            .passkey_approval(&authenticator.answer(&HONEST), CHALLENGE)
             .unwrap();
         assert_eq!(approved.passkey, authenticator.passkey());
     }
-}
-
-#[test]
-fn a_passkey_approves_nothing_but_workflows_and_rules() {
-    let authenticator = Authenticator::es256(7);
-    let trusted = trusting(&authenticator);
-    for purpose in [Purpose::Workflow, Purpose::Rule] {
-        assert!(
-            trusted
-                .passkey_approval(purpose, &authenticator.answer(&HONEST), CHALLENGE)
-                .is_ok(),
-            "{purpose}"
-        );
-    }
-    assert_eq!(
-        trusted.passkey_approval(Purpose::Join, &authenticator.answer(&HONEST), CHALLENGE),
-        Err(AuthorityRefusal::ApproveOnly {
-            code: authenticator.passkey().code(),
-            purpose: Purpose::Join,
-        }),
-    );
 }
 
 #[test]
@@ -160,7 +140,7 @@ fn an_untrusted_passkey_approves_nothing() {
     let trusted = trusting(&Authenticator::es256(7));
     let stranger = Authenticator::es256(8);
     assert_eq!(
-        trusted.passkey_approval(Purpose::Workflow, &stranger.answer(&HONEST), CHALLENGE),
+        trusted.passkey_approval(&stranger.answer(&HONEST), CHALLENGE),
         Err(AuthorityRefusal::UnknownPasskey)
     );
 }
@@ -208,7 +188,7 @@ fn each_spoiled_part_of_an_assertion_is_refused_by_name() {
     ];
     for (answer, field) in cases {
         assert_eq!(
-            trusted.passkey_approval(Purpose::Workflow, &authenticator.answer(&answer), CHALLENGE),
+            trusted.passkey_approval(&authenticator.answer(&answer), CHALLENGE),
             Err(AuthorityRefusal::Mismatch { field }),
             "{field}"
         );
@@ -223,7 +203,7 @@ fn a_signature_from_another_key_is_refused() {
     let forged = Authenticator::es256(9).answer(&HONEST);
     assertion.signature = forged.signature;
     assert_eq!(
-        trusted.passkey_approval(Purpose::Workflow, &assertion, CHALLENGE),
+        trusted.passkey_approval(&assertion, CHALLENGE),
         Err(AuthorityRefusal::Mismatch {
             field: "a passkey signature"
         })
@@ -232,10 +212,7 @@ fn a_signature_from_another_key_is_refused() {
 
 #[test]
 fn a_passkey_never_signs_an_envelope_even_when_its_key_is_ed25519() {
-    let trusted = TrustedKeys {
-        devices: Vec::new(),
-        passkeys: vec![trusted_eddsa_passkey(&[5; 32])],
-    };
+    let trusted = TrustedKeys::new(Vec::new(), vec![trusted_eddsa_passkey(&[5; 32])], []);
     let signer = crate::authority::Signer::from_seed(&[5; 32]);
     let now = Timestamp::from_millis(100_000).unwrap();
     let enrollment = Signed::sign(
@@ -303,17 +280,16 @@ fn passkeys_sharing_a_credential_id_answer_only_for_their_own_signature() {
     let holder = Authenticator::eddsa([5; 32]);
     let mut decoy_passkey = decoy.passkey();
     decoy_passkey.credential_id = holder.passkey().credential_id;
-    let trusted = TrustedKeys {
-        devices: Vec::new(),
-        passkeys: [decoy_passkey, holder.passkey()]
-            .map(|passkey| TrustedPasskey {
-                passkey,
-                approved_by: PasskeyApprover::Server,
-            })
-            .into(),
-    };
+    let trusted = TrustedKeys::new(
+        [],
+        [decoy_passkey, holder.passkey()].map(|passkey| TrustedPasskey {
+            passkey,
+            approved_by: PasskeyApprover::Server,
+        }),
+        [],
+    );
     let approved = trusted
-        .passkey_approval(Purpose::Workflow, &holder.answer(&HONEST), CHALLENGE)
+        .passkey_approval(&holder.answer(&HONEST), CHALLENGE)
         .unwrap();
     assert_eq!(approved.passkey.code(), holder.passkey().code());
 }

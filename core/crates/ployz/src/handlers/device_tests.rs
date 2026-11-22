@@ -114,6 +114,7 @@ async fn cluster(
                     token: None,
                     sealing: None,
                     founding: Default::default(),
+                    grants: Vec::new(),
                 })
             }
             RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code })
@@ -541,6 +542,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         expires_at: issued_at.plus(900_000),
         signer: signer.public().into(),
         proposal: None,
+        grants: Vec::new(),
     };
     let (mut client, server) =
         crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
@@ -605,6 +607,7 @@ fn relayed_join(
         expires_at: issued_at.plus(900_000),
         signer: DeviceKey::from_bytes([0; 32]).into(),
         proposal: None,
+        grants: Vec::new(),
     };
     (expected, body)
 }
@@ -820,6 +823,7 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
         expires_at: issued_at.plus(900_000),
         signer: key(1).into(),
         proposal: None,
+        grants: Vec::new(),
     };
     assert_eq!(
         join_summary(&body),
@@ -997,6 +1001,7 @@ async fn removal_fleet(
                             token: None,
                             sealing: None,
                             founding: Default::default(),
+                            grants: Vec::new(),
                         })
                     }
                     RpcRequestBody::SetDevice(request) => {
@@ -1053,7 +1058,7 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
 
     let (_, sent) = remove_everywhere(&mut client, &sent).await;
 
-    let removed = KeyRef::Device { key: key(1) };
+    let removed = KeyRef::Signing { key: key(1) };
     assert_eq!(
         sent,
         [
@@ -1072,7 +1077,7 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
 async fn rm_again_after_a_partial_removal_hands_the_full_key_from_a_removal_record() {
     let (mut client, sent, server) = removal_fleet(|target| {
         let removed = if target == id('1') {
-            vec![KeyRef::Device { key: key(1) }]
+            vec![KeyRef::Signing { key: key(1) }]
         } else {
             Vec::new()
         };
@@ -1082,7 +1087,7 @@ async fn rm_again_after_a_partial_removal_hands_the_full_key_from_a_removal_reco
 
     let (settled, sent) = remove_everywhere(&mut client, &sent).await;
 
-    let removed = KeyRef::Device { key: key(1) };
+    let removed = KeyRef::Signing { key: key(1) };
     assert_eq!(
         sent,
         [
@@ -1212,6 +1217,7 @@ async fn raced(
                         token: None,
                         sealing: None,
                         founding: Default::default(),
+                        grants: Vec::new(),
                     })
                 }
                 RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code }) => {

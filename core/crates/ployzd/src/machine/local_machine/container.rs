@@ -2266,7 +2266,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::TunnelToken
             | OpenError::PrivateAccessKey
             | OpenError::ShortLine(_)
-            | OpenError::Unsigned(_) => ContainerRefusalReason::SealedValueUnopenable,
+            | OpenError::Unsigned(_)
+            | OpenError::OutOfReach(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),
     };

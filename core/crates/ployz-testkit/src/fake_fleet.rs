@@ -786,6 +786,7 @@ impl Fleet {
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
                         passkeys: Vec::new(),
+                        grants: Vec::new(),
                         telemetry: None,
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),

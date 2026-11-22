@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
     Ciphertext, ContainerId, EnvPart, EnvValue, OpenedSealed, PlatformPurpose, SealedIdentity,
-    SealedScope, SealedValue,
+    SealedScope, SealedValue, authority::ValueReach,
 };
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -48,6 +48,8 @@ pub enum OpenError {
     ShortLine(String),
     #[error("env {0} is Sealed, and nothing signed the spec")]
     Unsigned(String),
+    #[error("env {0} holds a Sealed part the key that approved the spec doesn't reach")]
+    OutOfReach(String),
 }
 
 pub(crate) struct OpenedEnv {
@@ -56,11 +58,13 @@ pub(crate) struct OpenedEnv {
 }
 
 /// Open `environment` for a Container of the spec `admitted` stands for. A Sealed value
-/// opens only for a spec a signature stands behind.
+/// opens only for a spec a signature stands behind, and each of its Sealed parts only
+/// when that signature reaches it, as [`AdmittedSpec::opens`] says.
 ///
 /// # Errors
-/// Returns [`OpenError::Unsigned`] for a Sealed value under an unsigned spec, and the
-/// other [`OpenError`]s when a value does not open.
+/// Returns [`OpenError::Unsigned`] for a Sealed value under an unsigned spec,
+/// [`OpenError::OutOfReach`] for a part the admission doesn't reach, and the other
+/// [`OpenError`]s when a value does not open.
 pub(crate) fn open(
     environment: BTreeMap<String, EnvValue>,
     identity: Option<&SealedIdentity>,
@@ -84,6 +88,17 @@ pub(crate) fn open(
         return Err(OpenError::Unsigned(first.clone()));
     }
     let identity = identity.ok_or_else(|| OpenError::MissingIdentity(first.clone()))?;
+    for (name, value) in &sealed {
+        let reached = value.sealed_parts().into_iter().all(|part| {
+            admitted.opens(&ValueReach {
+                environment: identity.environment,
+                scope: part.scope,
+            })
+        });
+        if !reached {
+            return Err(OpenError::OutOfReach(name.clone()));
+        }
+    }
     let record = SealedRecord::new(identity.clone(), sealed);
     check_bindings(&record)?;
     let key = load(key_dir)?;
@@ -596,6 +611,55 @@ mod tests {
         assert_eq!(
             format!("{secrets:?}"),
             r#"["DB_PASSWORD", "DB_USER", "URL"]"#
+        );
+    }
+
+    #[test]
+    fn a_template_part_opens_only_when_the_admission_reached_it() {
+        let cluster = Cluster::new();
+        let env = BTreeMap::from([(
+            "URL".to_owned(),
+            EnvValue::Template(Template {
+                template: vec![
+                    EnvPart::Sealed(cluster.seal("DB_USER", own(), "app")),
+                    EnvPart::Sealed(cluster.seal(
+                        "DB_PASSWORD",
+                        SealedScope::Service(Uuid::from_u128(9)),
+                        "pa55",
+                    )),
+                ],
+            }),
+        )]);
+        let part = |scope| ValueReach {
+            environment: cluster.identity.environment,
+            scope,
+        };
+        let open_reaching = |values| {
+            open(
+                env.clone(),
+                Some(&cluster.identity),
+                Some(&cluster.dir.0),
+                &AdmittedSpec::test_reaching(ployz_core::authority::Reach {
+                    values,
+                    volumes: Vec::new(),
+                }),
+            )
+        };
+
+        assert!(matches!(
+            open_reaching(vec![part(own())]),
+            Err(OpenError::OutOfReach(key)) if key == "URL"
+        ));
+        assert_eq!(
+            open_reaching(vec![
+                part(own()),
+                part(SealedScope::Service(Uuid::from_u128(9)))
+            ])
+            .unwrap()
+            .values
+            .get("URL")
+            .map(String::as_str),
+            Some("apppa55")
         );
     }
 

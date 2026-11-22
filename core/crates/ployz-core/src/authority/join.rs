@@ -11,6 +11,8 @@ use super::{
     open::{bundle_window, open_approval},
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{field, first_mismatch},
+    scope::Ask,
+    scope::Grant,
     trusted_key::{PasskeyApprover, TrustedKeys, TrustedPasskey},
 };
 use crate::{DeviceKey, Machine, MachineId, SealingPublicKey, WireGuardPublicKey, separation};
@@ -105,6 +107,12 @@ pub struct JoinApproval {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<super::Passkey>>")]
     pub passkeys: Vec<super::Passkey>,
+    /// The CI and agent keys the admitting Machine trusts, each exactly as it holds it, so
+    /// a Server that joins later trusts them for the same scope. An older joiner refuses an
+    /// approval that carries any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Grant>>")]
+    pub grants: Vec<Grant>,
     /// Machine IDs scope the approval even when two Clusters share a Sealing key.
     pub admitting_machines: Vec<MachineId>,
     pub bootstrap: Vec<JoinAllocation>,
@@ -135,6 +143,9 @@ impl StepBody for JoinApproval {
     }
     fn namespace(&self) -> Option<&crate::Namespace> {
         None
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Join
     }
 }
 
@@ -176,8 +187,9 @@ impl std::fmt::Display for JoinConfirmation {
 }
 
 /// Verify a join at an admitting Machine using only its own trusted keys and identity. The
-/// joiner trusts the approval's Devices and passkeys, so each must still be trusted here: a
-/// key removed since the approval refuses it. `now` is this Machine's floored clock.
+/// joiner trusts the approval's Devices, passkeys and grants, so each must still be trusted
+/// here, a grant with the same kind, scope, Volumes and issue time: a key removed or a grant
+/// edited since the approval refuses it. `now` is this Machine's floored clock.
 ///
 /// # Errors
 /// Refuses untrusted signatures, expiry of the approval or its bundle, and any allocation,
@@ -197,13 +209,22 @@ pub fn verify(
         (
             "approved Devices",
             approves_signer(&body, &by)
-                && body.devices.iter().all(|key| trusted.devices.contains(key)),
+                && body
+                    .devices
+                    .iter()
+                    .all(|key| trusted.devices().any(|held| held == *key)),
         ),
         (
             "approved passkeys",
             body.passkeys
                 .iter()
-                .all(|passkey| trusted.passkeys.iter().any(|held| &held.passkey == passkey)),
+                .all(|passkey| trusted.passkeys().any(|held| &held.passkey == passkey)),
+        ),
+        (
+            "approved grants",
+            body.grants
+                .iter()
+                .all(|grant| trusted.grants().any(|held| &held.grant == grant)),
         ),
         (
             "an admitting Machine",
@@ -247,10 +268,11 @@ pub fn verify_as_joiner(
     now: Timestamp,
 ) -> Result<JoinerApproval, AuthorityRefusal> {
     let own = signed.open()?;
-    // A pin names Devices only, so a passkey in a relayed body never stands in for it.
-    let trusted = TrustedKeys {
-        devices: pinned.map_or_else(|| own.devices.clone(), <[DeviceKey]>::to_vec),
-        passkeys: match pinned {
+    // A pin names Devices only, so a passkey in a relayed body never stands in for it, and
+    // no grant signs a join.
+    let trusted = TrustedKeys::new(
+        pinned.map_or_else(|| own.devices.clone(), <[DeviceKey]>::to_vec),
+        match pinned {
             Some(_) => Vec::new(),
             None => own
                 .passkeys
@@ -261,8 +283,14 @@ pub fn verify_as_joiner(
                 })
                 .collect(),
         },
-    };
+        [],
+    );
     let (body, by) = verify_signature(signed, &trusted, now)?;
+    if !grants_apart(&body) {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "approved grants",
+        });
+    }
     let devices: Vec<DeviceKey> = body
         .devices
         .iter()
@@ -340,6 +368,21 @@ pub fn windows(signed: &Signed<JoinApproval>, now: Timestamp) -> Result<(), Auth
     bundle_window(signed, now)
 }
 
+/// Whether every grant `body` carries holds a key of its own: no Device's or passkey's, and
+/// no other grant's.
+fn grants_apart(body: &JoinApproval) -> bool {
+    body.grants.iter().enumerate().all(|(index, grant)| {
+        let code = grant.key.code();
+        !body.devices.iter().any(|device| device.code() == code)
+            && !body.passkeys.iter().any(|passkey| passkey.code() == code)
+            && !body
+                .grants
+                .iter()
+                .skip(index + 1)
+                .any(|other| other.key == grant.key)
+    })
+}
+
 /// Whether the key that signed `body` is one it lists for the joiner to trust: a Device
 /// among its Devices, or the passkey that answered among its passkeys.
 fn approves_signer(body: &JoinApproval, by: &Approver) -> bool {
@@ -348,7 +391,7 @@ fn approves_signer(body: &JoinApproval, by: &Approver) -> bool {
         (SignerKey::Passkey(_), Approver::Passkey(code)) => {
             body.passkeys.iter().any(|passkey| passkey.code() == *code)
         }
-        (SignerKey::Passkey(_), Approver::Device(_)) => false,
+        (SignerKey::Passkey(_), Approver::Signing(_)) => false,
     }
 }
 
@@ -442,6 +485,7 @@ mod tests {
             sealing_recipient: joiner.public_key,
             devices: vec![device(1)],
             passkeys: Vec::new(),
+            grants: Vec::new(),
             admitting_machines: vec![MachineId::parse("b".repeat(32)).unwrap()],
             bootstrap: vec![(&machine("entry", "10.210.0.0/24", 9)).into()],
             issued_at: now(),
@@ -452,10 +496,7 @@ mod tests {
     }
 
     fn keys(devices: &[DeviceKey]) -> TrustedKeys {
-        TrustedKeys {
-            devices: devices.to_vec(),
-            passkeys: Vec::new(),
-        }
+        TrustedKeys::new(devices.to_vec(), [], [])
     }
 
     fn sign(body: &JoinApproval, seed: u8) -> Signed<JoinApproval> {
@@ -814,13 +855,14 @@ mod tests {
             passkeys: vec![authenticator.passkey()],
             ..approval(&joiner)
         };
-        let admitting = TrustedKeys {
-            devices: vec![device(1)],
-            passkeys: vec![TrustedPasskey {
+        let admitting = TrustedKeys::new(
+            vec![device(1)],
+            vec![TrustedPasskey {
                 passkey: authenticator.passkey(),
                 approved_by: PasskeyApprover::Server,
             }],
-        };
+            [],
+        );
         let verify_at = |signed: &Signed<JoinApproval>, at| {
             verify(
                 signed,

@@ -738,6 +738,7 @@ impl FakeMachine for DiscoveryService {
                 token: None,
                 sealing: None,
                 founding: Default::default(),
+                grants: Vec::new(),
             })
             .encode()
             .unwrap(),
@@ -792,6 +793,7 @@ impl FakeMachine for DiscoveryService {
             target_versions: BTreeMap::new(),
             sealing_key: None,
             devices: Vec::new(),
+            grants: Vec::new(),
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),

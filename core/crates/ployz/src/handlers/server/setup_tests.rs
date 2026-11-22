@@ -58,6 +58,7 @@ fn departing() -> ployz_core::MachineDetails {
         token: None,
         sealing: None,
         founding: Default::default(),
+        grants: Vec::new(),
     }
 }
 
@@ -331,6 +332,7 @@ async fn restarting_cluster_store(
                     token: None,
                     sealing: None,
                     founding: Default::default(),
+                    grants: Vec::new(),
                 }),
                 RpcRequestBody::ListMachines(_) => {
                     if calls.fetch_add(1, Ordering::SeqCst) < refusals {
@@ -412,6 +414,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                         token: None,
                         sealing: None,
                         founding: Default::default(),
+                        grants: Vec::new(),
                     }),
                     // The first answer comes from the daemon still opening its store.
                     RpcRequestBody::ListMachines(_)

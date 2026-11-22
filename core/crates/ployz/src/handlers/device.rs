@@ -341,18 +341,64 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
         .map(|device| device.code().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let summary = format!("{summary} The Server will trust device {devices}.");
-    if body.passkeys.is_empty() {
-        return summary;
+    let mut summary = format!("{summary} The Server will trust device {devices}.");
+    if !body.passkeys.is_empty() {
+        let passkeys = body
+            .passkeys
+            .iter()
+            .map(|passkey| format!("{} for {}", passkey.code(), passkey.account))
+            .collect::<Vec<_>>()
+            .join(", ");
+        summary = format!(
+            "{summary} The Server will also trust passkey {passkeys}. A passkey approves workflows, automatic deploy rules, volume changes, Release Channels, and Server joins and key changes in a bundle."
+        );
     }
-    let passkeys = body
-        .passkeys
-        .iter()
-        .map(|passkey| format!("{} for {}", passkey.code(), passkey.account))
-        .collect::<Vec<_>>()
-        .join(", ");
+    if !body.grants.is_empty() {
+        let grants = body
+            .grants
+            .iter()
+            .map(grant_summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        summary = format!(
+            "{summary} The Server will also trust {grants}. These keys sign service deploys only, in the places named."
+        );
+    }
+    summary
+}
+
+/// One CI or agent key as a person reads it before they sign: its kind, code, places and
+/// the volumes it may mount.
+fn grant_summary(grant: &ployz_core::authority::Grant) -> String {
+    let places = match &grant.scope.places {
+        ployz_core::authority::KeyPlaces::Cluster => "every environment".to_owned(),
+        ployz_core::authority::KeyPlaces::Only(places) => places
+            .iter()
+            .map(|place| match &place.service {
+                Some(service) => format!(
+                    "service {} in {} (environment {})",
+                    service.name, place.namespace, place.environment
+                ),
+                None => format!("{} (environment {})", place.namespace, place.environment),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let kind = ployz_core::authority::KeyKind::from(grant.kind);
+    let volumes = if grant.volumes.is_empty() {
+        "no volumes".to_owned()
+    } else {
+        let names = grant
+            .volumes
+            .iter()
+            .map(|volume| volume.name.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("volumes {names}")
+    };
     format!(
-        "{summary} The Server will also trust passkey {passkeys}. A passkey approves workflows, automatic deploy rules, volume changes, Release Channels, and Server joins and key changes in a bundle."
+        "{kind} key {} for {places}, with {volumes}",
+        grant.key.code()
     )
 }
 
@@ -407,8 +453,8 @@ pub(super) async fn sign_waiting_join(
 }
 
 /// Narrow a pinned join's `body` to what its joiner installs, answering the Devices left out.
-/// The joiner trusts no passkey, and only the pinned Devices the body names. A relayed body
-/// is signed only for a Cluster this computer pinned.
+/// The joiner trusts no passkey or grant, and only the pinned Devices the body names. A
+/// relayed body is signed only for a Cluster this computer pinned.
 fn narrow_pinned_join(
     body: &mut ployz_core::authority::JoinApproval,
     own: DeviceKey,
@@ -416,6 +462,7 @@ fn narrow_pinned_join(
     pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
 ) -> Result<Vec<DeviceKey>, Error> {
     body.passkeys.clear();
+    body.grants.clear();
     if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
         return Err(Error::conflict(format!(
             "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
@@ -477,7 +524,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
         let own = own
             .filter(|own| own.code() == code)
-            .map(|key| KeyRef::Device { key });
+            .map(|key| KeyRef::Signing { key });
         let key = full_key(&mut client, code, own).await?;
         let settled = set_everywhere(&mut client, |client, machine_id| {
             remove_on(client, machine_id, code, key)
@@ -702,7 +749,7 @@ async fn keys_on(
         .devices
         .into_iter()
         .filter(|key| key.code() == code)
-        .map(|key| KeyRef::Device { key });
+        .map(|key| KeyRef::Signing { key });
     let passkeys = details
         .passkeys
         .into_iter()
@@ -710,11 +757,24 @@ async fn keys_on(
         .map(|trusted| KeyRef::Passkey {
             key: trusted.passkey.public_key,
         });
+    let grants = details
+        .grants
+        .into_iter()
+        .filter(|trusted| trusted.grant.key.code() == code)
+        .map(|trusted| KeyRef::Signing {
+            key: trusted.grant.key.into(),
+        });
     let removed = details
         .removed_keys
         .into_iter()
         .filter(|key| key.code() == code);
-    Ok(Some(devices.chain(passkeys).chain(removed).collect()))
+    Ok(Some(
+        devices
+            .chain(passkeys)
+            .chain(grants)
+            .chain(removed)
+            .collect(),
+    ))
 }
 
 /// Remove the key `code` names on one Server, Device or passkey, for good. A Server with

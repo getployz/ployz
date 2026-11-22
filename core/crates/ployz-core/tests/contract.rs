@@ -1954,6 +1954,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         rtts: Vec::new(),
         management_clients: Vec::new(),
         passkeys: Vec::new(),
+        grants: Vec::new(),
         telemetry: None,
         storage: None,
         upgrade: None,

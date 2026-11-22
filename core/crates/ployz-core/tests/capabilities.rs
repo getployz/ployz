@@ -82,6 +82,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
+        "ployz.authority.scoped-keys.v1",
+        "fails closed: an older daemon never stores a grant, so it refuses a CI or agent key's signature as an unknown key, refuses a Key step that trusts one for its unknown kind, and an older joiner refuses a join approval carrying grants for its unknown field. No client signs with a CI or agent key yet, and the first that does checks for it",
+    ),
+    (
         "ployz.metrics.live.v1",
         "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),

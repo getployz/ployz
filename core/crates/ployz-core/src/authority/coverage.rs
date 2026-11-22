@@ -68,8 +68,8 @@ impl Statement {
 pub enum Authorization {
     /// Changes nothing on the Machine. Served.
     Read,
-    /// Catalog scope Full: refused at dispatch for any caller but the local socket or a
-    /// Device's own connection.
+    /// Catalog scope Full: refused at dispatch for any caller but the local socket or the
+    /// own connection of a Device no CI or agent grant holds.
     Full,
     /// Refused without one of these statements, naming the route's capability or a
     /// statement's. Empty means only a Full caller is served.

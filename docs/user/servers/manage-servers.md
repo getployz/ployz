@@ -279,7 +279,7 @@ approval of that key is still on its way and hasn't expired.
 A server that is still joining when you remove the key that approved its join is refused too. If
 it still waits for approval, approve the join again with another key; if it had already used its
 approval, install it fresh: run `sudo ployz-uninstall` on it and add it again. A server refuses to remove
-the last key it trusts; approve another one first.
+the last device or passkey it trusts; approve another one first.
 Removing this computer's own device warns first. To manage your servers from it again, delete the
 `device.key` file the warning names, then run
 `ployz device approve --this-device --connect ssh://root@HOST`.
