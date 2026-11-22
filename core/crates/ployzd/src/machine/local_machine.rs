@@ -100,6 +100,8 @@ mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
+#[cfg(test)]
+pub(crate) use sealing_recovery::back_up;
 mod turns;
 mod upgrade;
 
