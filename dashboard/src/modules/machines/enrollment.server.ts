@@ -808,7 +808,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           }))(error.cause);
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
-            : `This Server needs a Device to approve its join. On an approved Device, run \`ployz device approve --join ${joinCode(assignment.machine.id, assignment.machine.public_key)}\`, then enroll the Server again.`;
+            : `This Server needs a person to approve its join. Approve it with your passkey on the Servers page in Ployz Cloud, or on an approved device run \`ployz device approve --join ${joinCode(assignment.machine.id, assignment.machine.public_key)}\`. Then enroll the Server again.`;
           return Effect.fail(forgotten
             ? new Conflict({ message: "This Server was forgotten, so it can't join again as it is. Add it with `ployz server add --reset`, and reinstall it first if it never finished joining.", userFacing: true })
             : cannotKeepDoors

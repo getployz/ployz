@@ -17,7 +17,7 @@ export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizat
   if (arrived) {
     return mint.data === undefined ? null : (
       <div className="flex flex-col gap-3">
-        <InstallTabs target={mint.data} />
+        <InstallTabs organizationSlug={organizationSlug} target={mint.data} />
         <p className="text-sm text-muted-foreground">Run it on more servers to add them.</p>
       </div>
     );

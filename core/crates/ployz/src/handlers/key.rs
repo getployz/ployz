@@ -23,7 +23,7 @@ pub(crate) fn group(command: Command) -> Command {
 pub(crate) fn add_command(command: Command) -> Command {
     command
         .about("Trust the key from an install command on this Server")
-        .long_about("Trust the key from an install command (pk1_…) on this Server. On a Server that already joined a Cluster, it trusts the device or passkey on this Server only, so run it on each Server that should trust it. On a Server that hasn't joined yet, it replaces the key the Server trusts to join or found a Cluster, after you confirm at this Server's terminal.")
+        .long_about("Trust the key from an install command (pk1_…) on this Server only. Run it on each Server that should trust it. Before a Server joins a Cluster, it replaces the key the Server trusts to join or found one, once you confirm at this Server's terminal.")
         .after_help(concat!("Examples:\n", "  sudo ployz key add pk1_eyJraW5kIjoi…"))
         .arg(positional("line", true).help("The key from your install command (pk1_…)"))
 }

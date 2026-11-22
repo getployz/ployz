@@ -149,7 +149,53 @@ impl StepBody for JoinApproval {
     }
 }
 
+/// A join a passkey approves from the browser: the step body a Server is handed, and the
+/// one-step bundle the passkey answers, each in canonical form.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PasskeyJoinDraft {
+    pub step: String,
+    pub bundle: String,
+}
+
 impl JoinApproval {
+    /// This join as step 0 of a bundle under `operation` that a passkey answers, open from
+    /// `issued_at` to `expires_at`. A join changes the whole Cluster, so the bundle names the
+    /// system Namespace, which no Join step is checked against.
+    ///
+    /// # Errors
+    /// Returns a body that has no canonical form.
+    pub fn passkey_step(
+        mut self,
+        operation: crate::OperationId,
+        issued_at: Timestamp,
+        expires_at: Timestamp,
+    ) -> Result<PasskeyJoinDraft, super::canonical::CanonicalError> {
+        use super::proposal::{ProposalApproval, ProposalStep, StepDigest};
+        self.signer = SignerKey::Passkey(super::OwnPrompt::Passkey);
+        self.proposal = Some(ProposalRef {
+            operation,
+            index: 0,
+        });
+        let step = super::canonical::to_canonical(&self)?;
+        let bundle = ProposalApproval {
+            cluster: self.cluster,
+            environment: crate::Namespace::system(),
+            operation,
+            steps: vec![ProposalStep {
+                index: 0,
+                kind: StepKind::Join,
+                digest: StepDigest::of(&step),
+            }],
+            issued_at,
+            expires_at,
+            signer: self.signer,
+        };
+        Ok(PasskeyJoinDraft {
+            bundle: super::canonical::to_canonical(&bundle)?,
+            step,
+        })
+    }
+
     /// The code the joining Server prints for a person to compare before approval.
     #[must_use]
     pub fn code(&self) -> String {
@@ -679,32 +725,18 @@ mod tests {
     /// `body` as step 0 of a bundle the passkey of `authenticator` answered, open from
     /// `issued` for ten minutes.
     fn passkey_bundle(
-        mut body: JoinApproval,
+        body: JoinApproval,
         authenticator: &crate::authority::trusted_key::tests::Authenticator,
         issued: Timestamp,
     ) -> Signed<JoinApproval> {
-        use crate::authority::{ProposalApproval, ProposalRef, ProposalStep, StepDigest};
+        use crate::authority::ProposalApproval;
         let operation = crate::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
-        body.signer = SignerKey::Passkey(crate::authority::OwnPrompt::Passkey);
-        body.proposal = Some(ProposalRef {
-            operation,
-            index: 0,
-        });
-        let unsigned = Signed::unsigned(&body).unwrap();
-        let plan = ProposalApproval {
-            cluster: body.cluster,
-            environment: crate::Namespace::parse("app").unwrap(),
-            operation,
-            steps: vec![ProposalStep {
-                index: 0,
-                kind: StepKind::Join,
-                digest: StepDigest::of(&unsigned.body),
-            }],
-            issued_at: issued,
-            expires_at: issued.plus(600_000),
-            signer: body.signer,
-        };
-        let plan = Signed::unsigned(&plan).unwrap();
+        let draft = body
+            .passkey_step(operation, issued, issued.plus(600_000))
+            .unwrap();
+        let plan: Signed<ProposalApproval> =
+            serde_json::from_value(serde_json::json!({ "body": draft.bundle, "signatures": [] }))
+                .unwrap();
         let challenge = plan.challenge();
         let plan = plan.answered(authenticator.answer(
             &crate::authority::trusted_key::tests::Answer {
@@ -712,7 +744,10 @@ mod tests {
                 ..crate::authority::trusted_key::tests::HONEST
             },
         ));
-        Signed::proposed(&body, plan).unwrap()
+        serde_json::from_value(
+            serde_json::json!({ "body": draft.step, "signatures": [], "proposal": plan }),
+        )
+        .unwrap()
     }
 
     #[test]

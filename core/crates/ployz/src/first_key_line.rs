@@ -18,9 +18,7 @@ const TTY: &str = "/dev/tty";
 /// Refuses text that isn't a key line Ployz printed.
 pub(crate) fn parse(line: &str) -> Result<LineKey, Failure> {
     LineKey::parse(line).map_err(|_| {
-        Failure::usage(
-            "That isn't the key from an install command (pk1_…). Copy the install command again.",
-        )
+        Failure::usage("A key starts with pk1_. Copy it from the install command again.")
     })
 }
 

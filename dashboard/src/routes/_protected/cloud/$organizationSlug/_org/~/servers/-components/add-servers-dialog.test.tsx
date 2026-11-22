@@ -7,6 +7,7 @@ import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.fun
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
 import { STALL_MS } from "#/hooks/use-exclusive-mutation";
 import * as memberFunctions from "#/modules/organization/members.functions";
+import * as passkeyFunctions from "#/modules/passkeys/passkeys.functions";
 import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
 import { AddServersDialog } from "./add-servers-dialog";
 
@@ -15,6 +16,7 @@ const TOKEN = "pflt_test-fixture-token";
 beforeEach(() => {
   vi.spyOn(fleetTokenFunctions, "listFleetTokensServerFn").mockResolvedValue([]);
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
+  vi.spyOn(passkeyFunctions, "installKeyServerFn").mockResolvedValue({ kind: "no_passkey" });
 });
 
 afterEach(() => {

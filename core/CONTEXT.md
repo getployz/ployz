@@ -520,6 +520,10 @@ _Avoid_: pending Machine, unenrolled Machine, Cluster member
 The ed25519 key a Waiting Server generates and keeps under `/var/lib/ployz-checkin` to sign each check-in, so Cloud knows repeat check-ins come from the same host. It is not the Management Identity and never reaches the management plane.
 _Avoid_: Management Identity, Machine key, WireGuard key
 
+**First Key**:
+The one Device or passkey a fresh Server trusts to found its Cluster or approve its join, from the `pk1_` key its install line carries or `sudo ployz key add`. It sits beside the data directory, Waiting until the Server founds or enrolls, then Spent; a reset or uninstall spends it too, and a Spent First Key never founds or approves anything. Replacing a Waiting or Spent one asks at the Server's own terminal. After enrollment the Server trusts only what its Cluster does.
+_Avoid_: bootstrap key, install key, Fleet Token
+
 **Founding Claim**:
 Cloud's Organization-scoped exclusive pending enrollment attempt. It has no automatic timeout or transfer: only the matching founder resumes it, and recovery requires an explicit verified reset.
 _Avoid_: token claim, timed lease, init mutex, leader election, cluster lock
@@ -663,7 +667,7 @@ One named holder slot on a Machine, such as `cloud`, a signed-in computer's `cli
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Scope**:
-What a Management Client may do on a Machine, read from its slot and the Machine's Trusted Keys at each call: an accepted Device slot holding the key its label names, and that no Grant holds, is Full; every other slot, a pending key, `cloud` and `cli-<id>` included, is Operator. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+What a Management Client may do on a Machine, read from its slot and the Machine's Trusted Keys at each call: an accepted Device slot holding the key its label names, and that no Grant holds, is Full; every other slot, a pending key, `cloud` and `cli-<id>` included, is Operator. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full; the socket admits root and the `ployz` group.
 _Avoid_: role, permission level, access tier
 
 **Device**:

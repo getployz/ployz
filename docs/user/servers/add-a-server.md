@@ -90,8 +90,17 @@ sealed values. When you add a server from an approved computer with `ployz serve
 signs that approval with your device key.
 
 A server that joins with the line from `ployz server add --command` or the dashboard has no
-approved device key, so its first join stops and names a 20-character code. Where you see it
-depends on how you added the server:
+approved device key, so its first join stops and waits for a person to approve it. The line
+carries a key, `--key pk1_…`: the device or passkey the new server trusts to approve its join.
+The line from `ployz server add --command` carries your computer's device. The dashboard's line
+carries your passkey. The new server refuses an approval signed by any other key.
+
+With the dashboard's line, approve the join from your browser. The **Servers** page lists the
+server under **Waiting for approval**. Choose **Approve with passkey** and answer your passkey's
+prompt. Approve a server only if you added it. Your passkey signs the join for that one server,
+and Ployz Cloud only passes the approval on.
+
+You can approve from an approved computer instead. The join also names a 20-character code:
 
 - **The install line from the dashboard.** The code is in the **Servers** page. Open the server
   under **Waiting**: **Last enroll** names the code and the command to run. The server's own
@@ -115,20 +124,23 @@ A new server refuses to join without an approval. If the approval goes missing o
 join stops and says the join approval carries no signature. Nothing changes on the server, so
 you can run the join again.
 
-The new server takes its devices, the passkeys your admitting server trusts and its starting
-peers only from the approval. A server you add with `ployz server add` takes
-no passkeys from the approval. When you run
-`ployz server add` over SSH, the CLI also tells the new server which devices may sign that
-approval: your own, and with `--standalone`, those of the server it joins through. The new
-server refuses an approval signed by any other key, and trusts only the devices on that list that
-the approval also names. A join from the pasted line has no such list, so it trusts whichever
-devices the approval names.
+The new server trusts the same devices, passkeys and CI or agent keys as the server that admits
+it, and none that server removed. It takes that list from the admitting server, sealed under the
+cluster's key, and not from the approval. A key someone removed while the join ran is removed on
+the new server too.
 
-When `ployz server add` reaches your cluster through Ployz Cloud, the CLI signs the approval for
-this computer's device alone, so the new server trusts only that device. The CLI names the other
-devices it left out; approve each one on the new server afterwards with `ployz device approve`.
-It also signs only for a cluster whose key you pinned with `ployz device pin`, and otherwise stops
-before it signs anything:
+When you run `ployz server add` over SSH, the CLI tells the new server which devices may sign its
+approval: your own, and with `--standalone`, those of the server it joins through. A join from a
+pasted line trusts the key that line carries. The new server refuses an approval signed by any
+other key, and a join with neither stops:
+
+```text
+copy the install command again, or run sudo ployz key add LINE on this Server
+```
+
+When `ployz server add` or `ployz device approve --join` reaches your cluster through Ployz
+Cloud, the CLI signs only for a cluster whose key you pinned with `ployz device pin`, and
+otherwise stops before it signs anything:
 
 ```text
 Server web-2 would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.
@@ -164,7 +176,30 @@ web-2 can't join from here: this computer has no approved device key and reaches
 ```
 
 The line the dashboard or `ployz server add --command` gives you runs on the server itself and
-tells it no devices: it trusts whichever devices the approval names.
+carries the key that may approve its join.
+
+### The key on an install line
+
+The key a line carries is public: it names a device or passkey, and holds no secret. The server
+keeps it as its first key, in `/var/lib/ployz-first-key.json`. It trusts that key to found the
+cluster, or to approve its join, once. After the server enrolls, the first key is used up, and
+the server trusts only what the cluster does.
+
+Check that the line you paste is the one you copied. Someone who changes the key on a line before
+you run it can approve that server's join.
+
+A server that already has a first key keeps it. Running a line with a different key asks you at
+the server's terminal to type the new key's code. It never takes the new key from `--yes` or the
+environment. With no terminal, as under cloud-init, it changes nothing and prints the command to
+run at one:
+
+```sh
+sudo ployz key add pk1_…
+```
+
+Removing a server with `ployz server rm`, which resets it, and the uninstaller use up the first
+key too. To add a server you removed or reinstalled, run `sudo ployz key add` with the key from a
+new install command at the server's terminal, then join it again.
 
 ## Add a standalone server
 
@@ -194,8 +229,10 @@ ployz device approve --this-device --connect ssh://root@HOST
 
 ## Your first server's first key
 
-A new cluster's first server trusts no device, and Ployz Cloud can't give it one.
-Until you approve one on the server itself, it refuses deploys and the other changes that
+A new cluster's first server trusts the key its install line carried, and nothing else. A line
+from the dashboard carries your passkey, so the first server trusts your passkey to approve
+joins, automatic deploy rules and Private Access. Ployz Cloud can't give it a device. Until you
+approve one on the server itself, it refuses deploys and the other changes that
 [need an approved device](manage-servers.md#what-needs-an-approved-device). Approve one over SSH on that server:
 
 - **From your computer, over SSH.** Run
@@ -205,9 +242,7 @@ Until you approve one on the server itself, it refuses deploys and the other cha
   `sudo ployz login` and `sudo ployz device approve CODE`.
 
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
-you. Servers you add later get your devices from the join approval. A server you add from the
-dashboard also gets the passkeys your first server trusts. One you add with `ployz server add`
-doesn't.
+you. Servers you add later trust the same devices and passkeys as the server that admits them.
 
 ## Add servers from the dashboard
 
@@ -217,12 +252,25 @@ with the token under it, then **Shown once. Expires in 24h.** Copy the token now
 it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
 token when it asks. The card then says **Listening for servers…** until the first one checks in.
 
-Adding a second server needs a device you approved: a passkey can't approve a join. Install the
-CLI, approve your device on your first server as in
-[Your first server's first key](#your-first-servers-first-key). When you install the second
-server, its row under **Waiting** shows **Last enroll** with a code. Approve it with
-`ployz device approve --join CODE`, then choose **Enroll** for the server again. It trusts the
-passkeys your first server trusts.
+Add a passkey in **Account** before you make the first install command, and the line carries it:
+your first server trusts that passkey. With no passkey, the line carries no key, the first server
+trusts none, and you approve a device on it as in
+[Your first server's first key](#your-first-servers-first-key).
+
+For a second server, the install line carries your passkey once every server trusts it. When the
+server checks in, approve its join under **Waiting for approval** with **Approve with passkey**,
+or with `ployz device approve --join CODE` from an approved device. Then choose **Enroll** for
+the server again. It trusts the same devices and passkeys as your first server.
+
+When your servers trust no passkey of yours, the dashboard shows no install line. It names the
+people whose passkey your servers trust, who can add the server instead, and the command that
+makes a server trust yours:
+
+```sh
+sudo ployz key add pk1_…
+```
+
+Run it as root on each server. It changes only the server you run it on.
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.

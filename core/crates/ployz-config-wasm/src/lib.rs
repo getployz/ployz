@@ -1,10 +1,13 @@
-//! The SDK's WASM ABI for Node and the browser: config rules, and the automatic deploy
-//! rule and Private Access approval a passkey answers. All policy lives in ployz-core.
+//! The SDK's WASM ABI for Node and the browser: config rules, the automatic deploy rule,
+//! Private Access approval and join a passkey answers, and the key an install line carries.
+//! All policy lives in ployz-core.
+use ployz_core::OperationId;
 use ployz_core::ServiceName;
 use ployz_core::authority::{
-    AutoDeployRule, PrivateAccessApproval, PrivateAccessTerms, RuleBasis, RuleTerms, SignerKey,
-    Timestamp,
+    AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
+    RuleTerms, SignerKey, Timestamp,
 };
+use ployz_core::first_key::LineKey;
 use wasm_bindgen::prelude::*;
 
 /// Decode a JSON request and invoke the pure configuration API in ployz-core.
@@ -91,4 +94,41 @@ pub fn private_access_approval_body(input: &str) -> Result<String, JsError> {
         serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
     ployz_core::authority::canonical::to_canonical(&PrivateAccessApproval::drafted(&terms))
         .map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JoinInput {
+    join: JoinApproval,
+    operation: OperationId,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+}
+
+/// The waiting `join` as step 0 of a bundle a passkey answers, as
+/// [`JoinApproval::passkey_step`] builds it: the step body and the bundle, each canonical.
+///
+/// # Errors
+/// Rejects malformed input.
+#[wasm_bindgen]
+pub fn passkey_join_step(input: &str) -> Result<String, JsError> {
+    let input: JoinInput =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = input
+        .join
+        .passkey_step(input.operation, input.issued_at, input.expires_at)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The key an install line carries for `passkey`, as `ployz key add` and the installer read
+/// it: the passkey a fresh Server trusts to found or join its Cluster.
+///
+/// # Errors
+/// Rejects a malformed passkey.
+#[wasm_bindgen]
+pub fn install_key(passkey: &str) -> Result<String, JsError> {
+    let passkey: Passkey =
+        serde_json::from_str(passkey).map_err(|error| JsError::new(&error.to_string()))?;
+    Ok(LineKey::Passkey { passkey }.to_string())
 }

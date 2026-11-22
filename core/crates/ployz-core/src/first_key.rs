@@ -105,6 +105,10 @@ impl From<LineKey> for NewKey {
 }
 
 /// What the First Key file holds.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a file format read once per enrollment, kept unboxed so serde sees the key"
+)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum FirstKey {
@@ -201,6 +205,10 @@ mod file {
     }
 
     /// What arming a key found.
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "returned once per arming, and boxing would only move the key"
+    )]
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub enum Armed {
         /// No file was there; it now waits for this key.

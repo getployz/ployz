@@ -155,7 +155,8 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
             wireguard_mtu: None,
             pinned: Default::default(),
         }),
-        Err(StoreError::JoinRefused(_))
+        // Neither a pin nor a First Key names a key that may approve this join.
+        Err(StoreError::JoinUnanchored)
     ));
     assert_eq!(second.record(), &original);
 }

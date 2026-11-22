@@ -19,6 +19,7 @@ import type {
   DrainScope,
   ExecutionError,
   IngressCheck,
+  JoinApproval,
   LocalMachineRemoved,
   MachineDetails,
   MachineTarget,
@@ -28,6 +29,7 @@ import type {
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
+  Signed,
   VolumeSwitchReply,
   VolumeSwitchRequest,
   WatchOptions,
@@ -97,6 +99,10 @@ export interface PloyzSession {
   readonly setPushTarget: (url: string | null) => Effect.Effect<void, PloyzSdkError>;
   /** Name the Cluster through the entry; resolves to the name the entry now holds. */
   readonly setClusterName: (name: string) => Effect.Effect<string | null, PloyzSdkError>;
+  /** The joins waiting on the entry for a person to approve them. */
+  readonly pendingJoins: () => Effect.Effect<readonly JoinApproval[], PloyzSdkError>;
+  /** Hand the entry a signed approval of a join waiting there. */
+  readonly approveJoin: (approval: Signed) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   /** Resolves to why the reset didn't finish, if it didn't: the Server left the Cluster, but may keep its state. */
@@ -363,6 +369,8 @@ function wrapClient(client: Client): PloyzSession {
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     setPushTarget: (url) => sdkPromise("set push target", () => client.setPushTarget(url)),
     setClusterName: (name) => sdkPromise("set cluster name", () => client.setClusterName(name)),
+    pendingJoins: () => sdkPromise("read pending joins", () => client.pendingJoins()),
+    approveJoin: (approval) => sdkPromise("approve join", () => client.approveJoin(approval)),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),
       catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),

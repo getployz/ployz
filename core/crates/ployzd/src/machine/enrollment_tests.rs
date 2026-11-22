@@ -15,7 +15,7 @@ use crate::sealing_key::JoinTrust;
 
 fn fresh() -> (tempfile::TempDir, LocalMachineStore) {
     let dir = tempfile::tempdir().unwrap();
-    let store = LocalMachineStore::open(&dir.path().join("data")).unwrap();
+    let store = LocalMachineStore::open(dir.path().join("data")).unwrap();
     (dir, store)
 }
 
@@ -65,7 +65,7 @@ fn a_fresh_daemon_refuses_a_join_without_an_approval() {
     assert!(refused_unsigned(refused));
     assert_eq!(store.record(), &original);
     drop(store);
-    let reopened = LocalMachineStore::open(&dir.path().join("data")).unwrap();
+    let reopened = LocalMachineStore::open(dir.path().join("data")).unwrap();
     let record = reopened.record();
     assert_eq!(record, &original);
     assert_eq!(record.phase(), LocalMachinePhase::Uninitialized);
@@ -177,7 +177,7 @@ fn a_join_trusts_what_its_admitting_server_sealed_and_not_the_approvals_lists() 
     );
 
     drop(store);
-    let reopened = LocalMachineStore::open(&dir.path().join("data")).unwrap();
+    let reopened = LocalMachineStore::open(dir.path().join("data")).unwrap();
     let record = reopened.record();
     assert_eq!(record.phase(), LocalMachinePhase::Joining);
     assert_eq!(record.bootstrap(), [cluster.admitting.clone()].as_slice());
@@ -259,7 +259,7 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
 #[tokio::test]
 async fn a_joiner_participates_only_under_its_admitting_servers_restrictions() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = LocalMachineStore::open(&dir.path().join("data")).unwrap();
+    let mut store = LocalMachineStore::open(dir.path().join("data")).unwrap();
     let cluster = ApprovingCluster::new(1);
     let removed = DeviceKey::from_bytes([6; 32]);
     let mut approval = cluster.approval(store.record());

@@ -163,7 +163,7 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
         <DialogTitle>{minted.name}</DialogTitle>
         <DialogDescription>{minted.autoEnroll === null ? "Waits for you" : `Auto up to ${minted.autoEnroll.maxServers}`}</DialogDescription>
       </DialogHeader>
-      <InstallTabs target={minted} />
+      <InstallTabs organizationSlug={organizationSlug} target={minted} />
       <div className="flex flex-col gap-0.5 text-sm">
         <p className="text-muted-foreground">{minted.autoEnroll === null ? "Installs Docker and Ployz. Nothing joins until you say so." : `Installs Docker and Ployz. Up to ${minted.autoEnroll.maxServers} servers join your existing cluster when ready.`}</p>
         {minted.autoEnroll === null ? <p className="text-muted-foreground">To skip the review, run <code className="font-mono text-foreground">ployz server add --command</code> instead. It enrolls one server now.</p> : null}
