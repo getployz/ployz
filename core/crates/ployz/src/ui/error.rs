@@ -2,9 +2,11 @@
 
 use std::io;
 
+use ployz_agent_tools::{LogText, Withheld};
 use ployz_core::Hint;
 
 use super::{Tone, escaped, pasteable, unprintable};
+use crate::failure::Diagnostic;
 
 /// Most choices a `valid:` line lists before it says how many more there are.
 pub const VALID_SHOWN: usize = 8;
@@ -127,9 +129,55 @@ pub fn write(
     Ok(())
 }
 
+impl Diagnostic {
+    pub(crate) fn write(&self, writer: &mut dyn io::Write) -> io::Result<()> {
+        for failure in &self.failures {
+            write(
+                writer,
+                &failure.message,
+                failure.causes.last().map(String::as_str),
+                &[],
+            )?;
+        }
+        for tail in &self.logs {
+            let (service, server) = (&tail.name, &tail.server);
+            match &tail.log {
+                None => {}
+                Some(LogText::Shown(excerpt)) if excerpt.lines().is_empty() => {}
+                Some(LogText::Shown(excerpt)) => {
+                    let count = excerpt.lines().len();
+                    writeln!(writer, "Last {count} log lines from {service} on {server}:")?;
+                    for line in excerpt.lines() {
+                        writeln!(writer, "  {line}")?;
+                    }
+                }
+                Some(LogText::Withheld {
+                    why: why @ Withheld::NoSecretContext,
+                }) => writeln!(
+                    writer,
+                    "Logs from {service} on {server} withheld: {}.",
+                    why.reason()
+                )?,
+                Some(LogText::Withheld {
+                    why: Withheld::Unanswered,
+                }) => writeln!(writer, "Logs from {service} on {server} unavailable.")?,
+            }
+        }
+        for fact in &self.compensation {
+            writeln!(writer, "  {}", fact.message)?;
+            if let Some(cause) = fact.causes.last() {
+                writeln!(writer, "  cause: {cause}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::LogTail;
+    use ployz_core::{MachineId, QualifiedService, ServiceName};
 
     #[test]
     fn valid_caps_at_eight_and_counts_the_rest() {
@@ -305,6 +353,37 @@ mod tests {
             "error: No Setting s1l\n\
              did you mean s11?\n\
              valid: s1, s2, s3, s4, s5, s6, s7, s8, and 3 more\n"
+        );
+    }
+
+    #[test]
+    fn a_deploy_report_says_why_logs_were_withheld_in_words() {
+        let tail = |log| LogTail {
+            service: QualifiedService::parse("shop/web").unwrap(),
+            name: ServiceName::parse("web").unwrap(),
+            machine: MachineId::parse("a".repeat(32)).unwrap(),
+            server: "web-1".to_owned(),
+            log: Some(log),
+        };
+        let diagnostic = Diagnostic {
+            failed_machine: None,
+            start_failure: None,
+            failures: Vec::new(),
+            logs: vec![
+                tail(LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                }),
+                tail(LogText::Withheld {
+                    why: Withheld::Unanswered,
+                }),
+            ],
+            compensation: Vec::new(),
+        };
+        let mut written = Vec::new();
+        diagnostic.write(&mut written).unwrap();
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            "Logs from web on web-1 withheld: Ployz couldn't check the variables for secret values, so it can't hide them.\nLogs from web on web-1 unavailable.\n"
         );
     }
 }

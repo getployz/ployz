@@ -114,7 +114,7 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
         args.extend(["--connect".into(), connect.clone()]);
     }
     args.extend(
-        super::config_flag(leaf)
+        crate::cli::config_flag(leaf)
             .into_iter()
             .flatten()
             .map(String::from),

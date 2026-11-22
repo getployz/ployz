@@ -75,7 +75,8 @@ fn remote(root: &Path, destination: &str, log: &Path, ssh_script: &str) -> Remot
         .unwrap()
         .subcommand_matches("add")
         .unwrap();
-    let mut remote = Remote::from_target(&RemoteTarget::from_matches(matches)).unwrap();
+    let mut remote =
+        Remote::from_target(&crate::handlers::server::provision::remote_target(matches)).unwrap();
     let ssh = root.join("ssh");
     let scp = root.join("scp");
     write_executable(&ssh, ssh_script);

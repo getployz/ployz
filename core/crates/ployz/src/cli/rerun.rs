@@ -40,11 +40,7 @@ pub(crate) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
 }
 
 /// `command` under `context`, which this command never typed.
-pub(in crate::handlers) fn recovery_command(
-    matches: &ArgMatches,
-    context: &str,
-    command: &[&str],
-) -> String {
+pub(crate) fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
     let args = carried(matches)
         .chain(command.iter().copied())
         .chain(["--context", context]);
@@ -53,19 +49,23 @@ pub(in crate::handlers) fn recovery_command(
             .try_get_matches_from(args.clone())
             .is_ok_and(|matches| {
                 matches.value_source("context") != Some(clap::parser::ValueSource::CommandLine)
-                    || crate::handlers::takes_value(
-                        crate::handlers::command_path(&matches).split(' '),
-                        "context",
-                    )
+                    || super::takes_value(super::command_path(&matches).split(' '), "context")
             }),
         "recovery hint does not parse or accept its context: {command:?}"
     );
     shell_words::join(args)
 }
 
+/// `rerun` with `--approval id`, the command that goes ahead once a human approved.
+pub(crate) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> String {
+    let mut args = args.to_vec();
+    args.extend(["--approval", id]);
+    rerun(matches, &args)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::handlers::{leaf_matches, recovery_command, rerun, typed_with};
+    use crate::cli::{leaf_matches, recovery_command, rerun, typed_with};
 
     fn matches(args: &[&str]) -> clap::ArgMatches {
         crate::cli::command().try_get_matches_from(args).unwrap()

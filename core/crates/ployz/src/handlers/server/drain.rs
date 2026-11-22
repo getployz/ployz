@@ -2,7 +2,6 @@
 //! from its Config Store, streams a line per step, and prints the report as `--json`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -17,7 +16,7 @@ use super::target;
 use crate::approval;
 use crate::cloud;
 use crate::cloud::account::Credential;
-use crate::deploy::{Approvals, KeptVersions};
+use crate::deploy::Approvals;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -52,12 +51,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     // The Config Store keeps what each Device signed: Cloud's when signed in, else this
     // CLI's own. Each Server a copy moves to checks those versions, as a Cloud drain hands
     // them on.
-    let kept = store
-        .map(store::Store::into_backend)
-        .map(|backend| match backend {
-            store::Backend::Local(local, who) => KeptVersions::new(local, who.organization),
-            store::Backend::Cloud(_, credential) => KeptVersions::Cloud(Arc::new(credential)),
-        });
+    let kept = store.map(|store| store.into_backend().kept_versions());
     let context = matches.get_one::<String>("context").map(String::as_str);
     crate::handlers::runtime()?.block_on(async {
         let mut client = route::connect(matches, context).await?;
@@ -94,7 +88,7 @@ fn through_cloud(
         credential,
         OperationVerb::Drain,
         matches.get_one::<String>("approval").cloned(),
-        |id| super::approved_rerun(matches, &["server", "drain", selector], id),
+        |id| crate::cli::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
             cloud::account::start_run(
                 credential,
@@ -201,10 +195,7 @@ fn scope(matches: &ArgMatches, store: Option<&store::Store<'_>>) -> Result<Drain
     };
     // A Cloud Store owns the signed-in Organization's Namespaces; another Cluster
     // reached through --context or --connect is not that Organization's.
-    if matches!(store.backend(), store::Backend::Cloud(..))
-        && (matches.get_one::<String>("context").is_some()
-            || matches.get_one::<String>("connect").is_some())
-    {
+    if matches!(store.backend(), store::Backend::Cloud(..)) && route::names_cluster(matches) {
         return Ok(DrainScope::EveryNamespace);
     }
     Ok(DrainScope::Owned {
@@ -238,7 +229,7 @@ fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedServi
     .hint(Hint::Next(shell_words::join(
         ["ployz"]
             .into_iter()
-            .chain(super::super::config_flag(matches).into_iter().flatten())
+            .chain(crate::cli::config_flag(matches).into_iter().flatten())
             .chain(["login"]),
     )))
 }

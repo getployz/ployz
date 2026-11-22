@@ -29,6 +29,7 @@ use crate::{
 use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
+pub(crate) mod catch_up;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
@@ -38,6 +39,7 @@ mod fence;
 pub(super) mod forget;
 mod helpers;
 pub(crate) mod init;
+pub(crate) mod provision;
 pub(super) mod reject;
 mod remove;
 mod show;
@@ -55,7 +57,7 @@ pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
-    if leaf.get_one::<String>("connect").is_some() || leaf.get_one::<String>("context").is_some() {
+    if route::names_cluster(leaf) {
         return Err(Error::usage(
             "cache clearing runs on this execution host; run it there as the builder user without --connect or --context",
         ));
@@ -101,13 +103,6 @@ pub(super) fn servers(matches: &ArgMatches) -> Result<Vec<ployz_core::MachineObs
         let mut client = route::connect(matches, None).await?;
         Ok(client.machines().await?)
     })
-}
-
-/// `rerun` with `--approval id`, the command that goes ahead once a human approved.
-pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> String {
-    let mut args = args.to_vec();
-    args.extend(["--approval", id]);
-    super::rerun(matches, &args)
 }
 
 pub(super) struct ConnectionOptions {

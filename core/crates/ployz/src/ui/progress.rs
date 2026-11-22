@@ -7,7 +7,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_agent_tools::{LogText, Withheld};
 use ployz_core::{
     ContainerId, DeployWarning, InPlaceChange, MachineId, ObservationKind, QualifiedService,
 };
@@ -16,7 +15,6 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::{Mode, Tone, escaped_lines};
-use crate::failure::Diagnostic;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const REDRAW: Duration = Duration::from_millis(100);
@@ -1411,48 +1409,4 @@ pub(crate) fn settled_text(frame: &Frame) -> String {
     )
     .unwrap();
     String::from_utf8(output).unwrap()
-}
-
-impl Diagnostic {
-    pub(crate) fn write(&self, writer: &mut dyn Write) -> io::Result<()> {
-        for failure in &self.failures {
-            super::error::write(
-                writer,
-                &failure.message,
-                failure.causes.last().map(String::as_str),
-                &[],
-            )?;
-        }
-        for tail in &self.logs {
-            let (service, server) = (&tail.name, &tail.server);
-            match &tail.log {
-                None => {}
-                Some(LogText::Shown(excerpt)) if excerpt.lines().is_empty() => {}
-                Some(LogText::Shown(excerpt)) => {
-                    let count = excerpt.lines().len();
-                    writeln!(writer, "Last {count} log lines from {service} on {server}:")?;
-                    for line in excerpt.lines() {
-                        writeln!(writer, "  {line}")?;
-                    }
-                }
-                Some(LogText::Withheld {
-                    why: why @ Withheld::NoSecretContext,
-                }) => writeln!(
-                    writer,
-                    "Logs from {service} on {server} withheld: {}.",
-                    why.reason()
-                )?,
-                Some(LogText::Withheld {
-                    why: Withheld::Unanswered,
-                }) => writeln!(writer, "Logs from {service} on {server} unavailable.")?,
-            }
-        }
-        for fact in &self.compensation {
-            writeln!(writer, "  {}", fact.message)?;
-            if let Some(cause) = fact.causes.last() {
-                writeln!(writer, "  cause: {cause}")?;
-            }
-        }
-        Ok(())
-    }
 }

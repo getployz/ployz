@@ -255,7 +255,7 @@ impl EnrollPlan {
             destination: text("destination").map(|address| Destination {
                 address,
                 ssh_key: text("ssh-key"),
-                remote: RemoteTarget::from_matches(matches),
+                remote: crate::handlers::server::provision::remote_target(matches),
             }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),
@@ -410,7 +410,7 @@ impl Reach {
     /// `args` as a command that reaches the same Cluster.
     pub(crate) fn rerun(&self, args: &[&str]) -> String {
         match self {
-            Self::CommandLine(matches) => crate::handlers::rerun(matches, args),
+            Self::CommandLine(matches) => crate::cli::rerun(matches, args),
             Self::ThisHost { config } => shell_words::join(
                 [
                     "ployz",

@@ -327,7 +327,7 @@ where
         // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
         let capability = set_cloud_management_client(plan, &mut ready).await?;
         let (unarrived, catch_up) =
-            crate::global_catch_up::follow_globals(&mut ready, &assigned, |args| {
+            crate::handlers::server::catch_up::follow_globals(&mut ready, &assigned, |args| {
                 plan.reach().rerun(args)
             })
             .await;
@@ -355,12 +355,12 @@ where
         ui::stream(format_args!("Joined Server {}.", assigned.name));
         // The join is committed; a catch-up failure makes it partial.
         let printed = ui::emit_committed(
-            crate::global_catch_up::with_unarrived(
+            crate::handlers::server::catch_up::with_unarrived(
                 serde_json::json!({ "server": crate::handlers::server::server_json(&assigned), "founded": false }),
                 &unarrived,
             ),
             catch_up.map_err(|error| {
-                crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
+                crate::handlers::server::catch_up::joined_catch_up_error(error, &assigned, |args| {
                     plan.reach().rerun(args)
                 })
             }),
