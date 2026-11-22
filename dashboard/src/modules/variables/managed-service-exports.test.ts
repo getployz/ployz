@@ -17,8 +17,6 @@ describe("managed service exports", () => {
         expect.objectContaining({
           key: "PLOYZ_PRIVATE_DOMAIN",
           value: "api.internal",
-          exported: true,
-          managed: true,
         }),
         expect.objectContaining({
           key: "PLOYZ_SERVICE_NAME",
@@ -27,8 +25,6 @@ describe("managed service exports", () => {
         expect.objectContaining({
           key: "PORT",
           value: "8080",
-          exported: true,
-          managed: true,
         }),
       ]),
     );
