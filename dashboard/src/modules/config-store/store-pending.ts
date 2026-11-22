@@ -3,6 +3,7 @@ import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, En
 import { Schema } from "effect";
 import { storedHostname } from "./store-hostname";
 import { commandEnvironments } from "./store.contract";
+import { sameEnvironmentRef } from "./environment-ref";
 
 /** The mutation key of an Environment's pending writes; `store-write.ts` files each with its command. */
 export const storeWriteKey = (organizationSlug: string, key: string) => ["store-write", organizationSlug, key] as const;
@@ -130,8 +131,7 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
   });
 }
 
-const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === (b.project ?? "") && (a.environment ?? "") === (b.environment ?? "");
-const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
+const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameEnvironmentRef(mark.environment, environment);
 
 /** Commands that leave an Environment's review where it is: the review's own Deploy and Save, a Deployment's start and cancel. */
 const KEEPS_REVIEW = {
@@ -188,7 +188,7 @@ const KEEPS_REVIEW = {
 
 /** Whether `command` can move the Environment's review: any other write that names it, a field's edit or a Volume's storage. */
 const movesReview = (command: ConfigCommand, environment: EnvironmentRef) =>
-  !KEEPS_REVIEW[command.command] && commandEnvironments(command).some((named) => sameRef(named, environment));
+  !KEEPS_REVIEW[command.command] && commandEnvironments(command).some((named) => sameEnvironmentRef(named, environment));
 
 /** The newest write this tab has made, any kind: a press marks it as its gesture starts, for `reviewMoving`. */
 export function writeMark(queryClient: QueryClient): number {

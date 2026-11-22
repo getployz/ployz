@@ -1,7 +1,7 @@
 /** @data-source remote: one bounded Config Store view per query (an Environment's Settings, its diff or plan, a Deployments page, one Deployment), prefetched by loaders; the change stream refetches the views each Store table family backs; a domains view polls every 30s while a domain is setting up or needs DNS (certificates and DNS change without a Store write); an in-flight Deployment polls every 5s in case the stream missed its progress; this tab's pending edits show over it until they commit */
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, HistoryAction, DeploymentQuery, DeploymentsQuery,
   DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
@@ -12,6 +12,7 @@ import { storeViewRefreshedBy, type StoreViewName } from "./store.change-sources
 import { readStoreViewServerFn } from "./store.functions";
 import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { usePendingMarks, showPending } from "./store-pending";
+import { environmentKey } from "./environment-ref";
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
 const DOMAIN_POLL_MS = 30_000;
@@ -97,11 +98,6 @@ export function refetchStoreViews(organizationSlug: string, scope: CollectionSco
     });
   }
   void scope.queryClient.invalidateQueries(filters, { cancelRefetch: false });
-}
-
-/** Names an Environment the same way however a ref spells it; the Store resolves omitted names to defaults. */
-export function environmentKey(ref: EnvironmentRef) {
-  return `${ref.project ?? ""}/${ref.environment ?? ""}`;
 }
 
 /** Whether a cached view reads the Environment: its own views, and a Sync's from either side. */
@@ -248,6 +244,21 @@ export function configQuery(environment: EnvironmentRef, config: string): { quer
   return { query: "config", environment, config };
 }
 
+/** The order Git builds run in for the Organization's Servers: the Builds settings. */
+export function buildOrderQuery() {
+  return { query: "build_order" } as const;
+}
+
+/** An Environment's Saved versions, newest first: all of them, or the latest `limit`. */
+export function historyQuery(environment: EnvironmentRef, limit: number | null = null): Extract<ConfigQuery, { query: "history" }> {
+  return limit === null ? { query: "history", environment } : { query: "history", environment, limit };
+}
+
+/** What taking one Saved version's `action` (or one `change` of it) would stage. */
+export function historyPreviewQuery(environment: EnvironmentRef, revision: number, action: HistoryAction, change?: string): Extract<ConfigQuery, { query: "history_preview" }> {
+  return { query: "history_preview", environment, revision, action, change };
+}
+
 /** The Organization's Projects, each with its Default Environment and its Environments' names. */
 export function projectsQuery(): { query: "projects" } & ProjectsQuery {
   return { query: "projects" };
@@ -340,6 +351,12 @@ export function requireView<T>(result: StoreResult<T>): T {
 /** A fresh read of one Store view as a step of a user command (what a removal deletes, before confirming). */
 export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
   return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
+}
+
+/** The Services a Sync or On merge row can land in, read fresh: the `receiver` that `receivingValues` seals for. */
+export async function receivingEnvironment(organizationSlug: string, scope: CollectionScope, destination: EnvironmentRef) {
+  const view = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));
+  return { environment: view.environment.id, services: view.services };
 }
 
 /**

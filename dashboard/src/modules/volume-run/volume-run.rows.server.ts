@@ -23,6 +23,7 @@ import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/namin
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { frameServers } from "#/modules/runtime/daemon-compat";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
 
@@ -512,7 +513,7 @@ export const originRefusal = Effect.fn("VolumeRun.originRefusal")(function* (
 ) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   if (frame === null) return unanswered;
-  const machines = frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [] }));
+  const machines = frameServers(frame);
   const target = machines.find((machine) => to.machine === undefined ? machine.name === to.to : machine.id === to.machine);
   if (target === undefined) {
     return { code: "invalid_argument", message: `${to.to} is not a Server of this cluster`, details: null } satisfies StoreRefusal;

@@ -21,6 +21,7 @@ import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { AppConfig } from "#/server/config.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { admitDeploy } from "./admit-deploy";
 
 /** What Cloud's Store workers need from Cloud. */
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
@@ -233,9 +234,7 @@ export const publishedEnvironments = Effect.fn("StoreDeployment.published")(func
 export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServer")(function* (
   organizationId: string, environment: { project: string; environment: string }, id: string, services: readonly string[] = [],
 ) {
-  const result = yield* callStore(organizationId, null, { operation: "write", command: {
-    command: "admit", admit: "deploy", id, environment, services: [...services], version: null, accept_volume_loss: [],
-  } });
+  const result = yield* callStore(organizationId, null, { operation: "write", command: admitDeploy(environment, id, { services }) });
   if (result.ok) return { admitted: true };
   yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
   return { refused: result.refusal.code, message: result.refusal.message };

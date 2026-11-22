@@ -9,8 +9,9 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import { commandEnvironment, commandEnvironments, isProtectedAsk } from "./store.contract";
 import { StoreRefused } from "#/lib/refusal";
-import { cachedRevision, dropHiddenRefusals, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
+import { cachedRevision, dropHiddenRefusals, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
+import { environmentKey } from "./environment-ref";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {

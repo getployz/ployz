@@ -11,7 +11,7 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { BuildOrder } from "@ployz/sdk";
-import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { buildOrderQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import {
   awaitsWorkflowCommit,
@@ -50,14 +50,13 @@ const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github"
 export const BUILD_ORDER_REFUSED = refusalFor("org:settings", "change where builds run");
 
 /** The Organization's Build Order, which the settings page prefetches. */
-export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
 
 /**
  * Takes effect on the next build; never staged. Never chosen, GitHub goes first, and a repository without the build
  * workflow skips it at once.
  */
 function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
-  const view = requireView(useStoreView(organizationSlug, BUILD_ORDER_QUERY));
+  const view = requireView(useStoreView(organizationSlug, buildOrderQuery()));
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");

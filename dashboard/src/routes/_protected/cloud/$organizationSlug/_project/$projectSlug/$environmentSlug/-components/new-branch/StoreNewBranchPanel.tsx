@@ -23,6 +23,7 @@ import { PickingViewProvider, usePickingView, type PickingView } from "./branch-
 import { NameSection } from "./NameSection";
 import { ServicesSection } from "./ServicesSection";
 import { SetupSection } from "./SetupSection";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
 
 type Picks = { copy: string[] } | { preset: BranchPreset };
 /** The picks of one opening of the panel (`session`), and the Services they are for. */
@@ -126,7 +127,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
       });
       // The writer toasts a refused Deploy; the Branch is made either way.
       if (deployNow) {
-        writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: branch, services: [], version: null, accept_volume_loss: [] });
+        writer.commit(admitDeploy(branch, crypto.randomUUID()));
       }
       await navigate(getDashboardDestination({
         kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.environment,

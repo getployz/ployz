@@ -3,6 +3,7 @@ import type { BatchCommand, Change, ConfigCommand, JsonValue } from "@ployz/sdk"
 import type { JsonObject } from "#/db/tables";
 import { asRecord } from "#/lib/json";
 import type { StoreRefusal } from "#/lib/refusal";
+import { envPath } from "#/modules/config-store/setting-paths";
 
 const holdsText = Schema.is(Schema.Struct({ secret: Schema.String }));
 const holdsCredential = Schema.is(Schema.Struct({ value: Schema.Struct({ secret: Schema.String }) }));
@@ -44,7 +45,7 @@ function suppliedPath(change: Change): string | null {
   if (suppliesSecret(set["registryCredential"])) return `${service}.registryCredential`;
   const env = asRecord(set["env"]) ?? {};
   const key = Object.keys(env).find((name) => suppliesSecret(env[name]));
-  return key === undefined ? null : `${service}.env.${key}`;
+  return key === undefined ? null : envPath(service, key);
 }
 
 const values = (change: Change): JsonValue[] => change.op === "set" || change.op === "patch" ? [change.value] : [];

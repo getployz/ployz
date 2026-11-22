@@ -20,6 +20,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
 const LOG_HISTORY_DOCS = "https://ployz.dev/docs/self-hosting";
@@ -217,7 +218,7 @@ function Redeploy({ selection }: { selection: ContainerLogSelection }) {
     if (!projectSlug || !environmentSlug) return;
     const id = crypto.randomUUID();
     setStarting(true);
-    const started = await writer.commit({ command: "admit", admit: "deploy", id, environment: { project: projectSlug, environment: environmentSlug }, services: [], version: null, accept_volume_loss: [] })
+    const started = await writer.commit(admitDeploy({ project: projectSlug, environment: environmentSlug }, id))
       .then(() => true, () => false);
     setStarting(false);
     if (started) void navigate(deploymentDestination({ organizationSlug: selection.organizationSlug, projectSlug, environmentSlug }, id));

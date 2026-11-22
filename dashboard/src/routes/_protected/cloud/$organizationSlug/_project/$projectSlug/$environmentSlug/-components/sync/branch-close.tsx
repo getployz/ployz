@@ -11,6 +11,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { branchQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { removeTarget, type RemovalConsent } from "#/modules/config-store/store-workspace";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
+import { environmentKey } from "#/modules/config-store/environment-ref";
 
 /**
  * Once the Branch is gone (the Store deletes a closed one), any page on it opens the Parent it had. It sits on the
@@ -48,7 +49,7 @@ type Consent = { shut: true; acceptance: Acceptance } | { shut: false; consent: 
 export function useStoreBranchClose(params: EnvironmentRouteParams, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
   const lossOf = useVolumeLossCheck(params.organizationSlug);
-  const place = `${store.project ?? ""}/${store.environment ?? ""}`;
+  const place = environmentKey(store);
   const [loss, setLoss] = useState<DeletionCheck<Consent> | null>(null);
   const name = branch.environment.name;
   const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>

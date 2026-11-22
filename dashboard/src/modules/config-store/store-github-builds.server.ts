@@ -17,12 +17,13 @@ import { installationRefusal } from "#/modules/github/github-token.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent } from "#/modules/github/github.events";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
-import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
+import { requirements } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { bearerToken } from "#/server/bearer";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { serversLackingIn } from "#/modules/runtime/daemon-compat.server";
 
 /**
  * GitHub as a Builder for Store Deployments. Before the runner claims a Deployment, each Git Service whose walk
@@ -126,13 +127,7 @@ const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationI
  * The Servers whose records say they can't read a Build Grant back. Any Server may mint the grant, so one such Server
  * is enough to send the build to its next Builder. No answer names none: the build is attempted.
  */
-const serversLackingGrants = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
-  Effect.map((frame) => frame === null ? [] : serversLacking(
-    frame.machines.map(({ machine }) => ({ name: machine.name, capabilities: machine.runtime.capabilities ?? [] })),
-    requirements.buildGrantInspect,
-  )),
-  Effect.orElseSucceed((): string[] => []),
-);
+const serversLackingGrants = (organizationId: string) => serversLackingIn(organizationId, requirements.buildGrantInspect);
 
 /**
  * Pin the Deployment's Git Services and list those whose walk starts with GitHub and haven't started; a walk that

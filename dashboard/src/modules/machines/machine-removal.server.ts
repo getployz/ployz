@@ -32,6 +32,7 @@ import { nameLostVolumes, planRemove } from "#/modules/machines/server-operation
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
 import { releaseLanesOff } from "#/modules/volume-run/volume-run.cluster.server";
+import { frameServers } from "#/modules/runtime/daemon-compat";
 
 export class MachineRemovalProviderFailure extends Data.TaggedError(
   "MachineRemovalProviderFailure",
@@ -119,12 +120,7 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     }
     // Without a frame every Server's capabilities are unknown, and an unknown capability attempts.
     const frame = yield* Effect.option(session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS));
-    const servers = Option.match(frame, {
-      onNone: () => [],
-      onSome: ({ machines }) => machines.map(({ machine }) => ({
-        id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [],
-      })),
-    });
+    const servers = frameServers(Option.getOrNull(frame));
     const lack = removalLack(servers, {
       target: attempt.machineId,
       entries: access.connections.flatMap((connection) => connection.machine_id ?? []),
