@@ -1,6 +1,6 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { sweepProposals } from "#/modules/proposals/proposals.server";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /** Every minute: an approved plan whose next step is due but never started gets it started. A step starts once. */
 export const createSweepProposals = (inngest: PloyzInngest, runEffect: typeof runInngestEffect = runInngestEffect) =>

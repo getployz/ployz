@@ -3,12 +3,12 @@ import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType } from "#/modules/inngest/events";
 import type { AppServices } from "#/server/runtime.server";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-type EffectRunner = typeof runInngestEffect;
 type Activity<A> = Effect.Effect<A, Error, AppServices>;
 type RunTrigger = Parameters<PloyzInngest["createFunction"]>[0]["triggers"];
 type RunConcurrency = Parameters<PloyzInngest["createFunction"]>[0]["concurrency"];
+type RunRetries = Parameters<PloyzInngest["createFunction"]>[0]["retries"];
 type RunCancelOn = Parameters<PloyzInngest["createFunction"]>[0]["cancelOn"];
 
 export type RunEnd = "failure" | "cancellation";
@@ -20,6 +20,8 @@ const decodeFailedRun = Schema.decodeUnknownOption(
 export function attemptLifecycle<Result, More extends object, Triggering = never>(workflow: {
   readonly run: {
     readonly id: string;
+    /** Retries of the run itself; the cancel and sweep functions keep 3. */
+    readonly retries?: RunRetries;
     readonly triggers: RunTrigger;
     readonly concurrency?: RunConcurrency;
     readonly cancelOn?: RunCancelOn;
@@ -45,7 +47,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     inngest.createFunction(
       {
         id: run.id,
-        retries: 3,
+        retries: run.retries ?? 3,
         triggers: run.triggers,
         concurrency: run.concurrency,
         cancelOn: run.cancelOn,

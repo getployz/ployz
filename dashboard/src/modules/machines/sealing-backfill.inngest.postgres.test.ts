@@ -14,7 +14,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 

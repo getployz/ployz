@@ -7,12 +7,8 @@ import {
   inngestFunctionFailedEnvelopeSchema,
   machineRemoveRequestedEventType,
 } from "#/modules/inngest/events";
-import type {
-  PloyzInngest,
-  PloyzStepTools,
-} from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import { PROCESS_MACHINE_REMOVE_FUNCTION_ID } from "#/modules/inngest/row-backed-workflow-ids";
 import {
   cancelMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
@@ -24,7 +20,7 @@ import {
 } from "#/modules/machines/machine-removal.server";
 import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { observeOrganization } from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const MachineRemoveRequestedData = Schema.Struct({ attemptId: NonEmptyString });
@@ -41,9 +37,7 @@ export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
   MachineRemoveFailureEnvelope,
 );
 
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
-
+const PROCESS_MACHINE_REMOVE_FUNCTION_ID = "process-machine-remove";
 export const MACHINE_REMOVE_RETRIES = 5;
 
 export async function executeProcessMachineRemove({
@@ -53,7 +47,7 @@ export async function executeProcessMachineRemove({
   attempt: stepAttempt,
 }: {
   event: { data: unknown };
-  step: StepTools;
+  step: StepTools<"run" | "sendEvent">;
   runId: string;
   attempt: number;
 }, runEffect: EffectRunner, observe: typeof observeOrganization) {
@@ -215,7 +209,7 @@ export async function executeCancelMachineRemove({
   processFunctionId,
 }: {
   event: unknown;
-  step: StepTools;
+  step: StepTools<"run" | "sendEvent">;
   processFunctionId: string;
 }) {
   const decoded = await step.run("decode-machine-remove-cancellation-event", () =>

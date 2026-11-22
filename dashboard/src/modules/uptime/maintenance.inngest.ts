@@ -1,13 +1,12 @@
-import type { Effect } from "effect";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { uptimeBackfillRequestedEventType } from "#/modules/inngest/events";
 import { pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
 import { PRUNE_BATCH_ROWS, RETAINED } from "#/modules/uptime/retention";
 import { backfillUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import type { Database } from "#/server/database.server";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-type UptimeEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, Database>) => Promise<A>;
+type UptimeEffectRunner = EffectRunner<Database>;
 
 /** 4 kinds at most 200 batches each stays under Inngest's 1,000 steps per run. The rest waits for the next hour. */
 const MAX_PRUNE_BATCHES = 200;

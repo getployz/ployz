@@ -10,7 +10,7 @@ import { agentPersistence } from "#/modules/agent/persistence.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { configDeploymentAdmittedEvent, serviceActRequestedEvent } from "#/modules/inngest/events";
 import { createActService } from "#/modules/service-act/service-act.inngest";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Caller } from "#/modules/identity/actor";

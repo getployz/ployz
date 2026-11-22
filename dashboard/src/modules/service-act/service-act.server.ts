@@ -4,7 +4,7 @@ import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
 import type { Admission } from "#/modules/operations/keyed.server";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";

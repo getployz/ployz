@@ -1,3 +1,4 @@
+import { billingInngestFunctions } from "#/modules/billing/inngest-sync/sync";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { createScheduleGithubRepositorySync } from "#/modules/github/inngest-sync/scheduled";
 import { createSyncGithubRepositories } from "#/modules/github/inngest-sync/sync";
@@ -38,7 +39,7 @@ import { createRefreshVolumeMirrors } from "#/modules/volume-placement/volume-pl
 import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
-import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
+import { createSweepOperationOutbox } from "#/modules/inngest/outbox.server";
 import { createSweepProposals } from "#/modules/proposals/proposals.inngest";
 import { createServiceActFunctions } from "#/modules/service-act/service-act.inngest";
 import { createSendMail } from "#/modules/mail/mail.inngest";
@@ -46,8 +47,10 @@ import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.in
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/web-analytics.inngest";
 import { createDeliverPushTargets } from "#/modules/observe-ingest/push-target.inngest";
 import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
+import type { PolarConfiguration } from "#/server/config.server";
 
-export function createInngestFunctions(inngest: PloyzInngest) {
+/** Every function the worker registers. A new function goes here, and nowhere else. */
+export function createWorkerFunctions(inngest: PloyzInngest, billingMode: PolarConfiguration["mode"]) {
   return [
     createProcessGithubInstallationReceived(inngest),
     createProcessGithubInstallationRepositoriesReceived(inngest),
@@ -94,5 +97,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createWebAnalyticsFunctions(inngest),
     createTearDownAnonymousOrganization(inngest),
     createScheduleAnonymousSweep(inngest),
+    ...billingInngestFunctions(inngest, billingMode),
   ];
 }

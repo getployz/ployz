@@ -28,7 +28,7 @@ import {
   markOwnedMachineRemoveSent,
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";

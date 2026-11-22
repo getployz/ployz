@@ -9,7 +9,7 @@ import {
 } from "#/modules/config-store/retire-old.server";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { configDeploymentRetireRequestedEvent } from "#/modules/inngest/events";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000af01";

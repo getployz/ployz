@@ -9,7 +9,7 @@ import { callStore } from "#/modules/config-store/config-store.server";
 import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { fakeGithubApiBy, fakeGithubAuthority } from "#/test/fake-github";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 

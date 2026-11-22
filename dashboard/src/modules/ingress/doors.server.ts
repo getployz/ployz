@@ -42,7 +42,7 @@ import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData }
 import { observeClusterEnrollment } from "#/modules/machines/enrollment.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";

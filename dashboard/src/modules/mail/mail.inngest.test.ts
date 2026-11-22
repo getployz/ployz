@@ -11,7 +11,7 @@ import {
   type MailSendError,
   type MailSendResult,
 } from "#/modules/mail/mailer.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 
 type Send = { readonly message: MailMessage; readonly idempotencyKey: string };
 

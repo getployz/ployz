@@ -3,7 +3,7 @@ import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
-import { enqueueEvent, sweepOutbox } from "#/modules/operations/outbox.server";
+import { enqueueEvent, sweepOutbox } from "#/modules/inngest/outbox.server";
 import { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 

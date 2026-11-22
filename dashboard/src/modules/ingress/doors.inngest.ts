@@ -1,12 +1,9 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent, ingressDoorsRequestedEventType } from "#/modules/inngest/events";
 import { bindDoorsRun, closeDoorsRun, closeStaleDoors, executeDoorsOnce } from "#/modules/ingress/doors.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 const IngressDoorsRequestedData = Schema.Struct({
   attemptId: Schema.String.check(Schema.isUUID()),
@@ -19,7 +16,7 @@ const IngressDoorsRequestedData = Schema.Struct({
  * `executeDoorsOnce`). Then DNS catches up: the Cluster Domain's source changed, so the Hosted records follow it.
  */
 export async function applyIngressDoors(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent">; runId: string },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {

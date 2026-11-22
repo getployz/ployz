@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import { advanceProposal } from "#/modules/proposals/proposals.server";
 import { serviceActRequestedEventType } from "#/modules/inngest/events";
 import { cameBack, rollOrder, stepsOf, takes } from "#/modules/service-act/service-act";
@@ -11,10 +11,7 @@ import {
   closeStaleServiceActs,
   recordServiceAct,
 } from "#/modules/service-act/service-act.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 const ServiceActRequestedData = Schema.Struct({
   actId: Schema.String.check(Schema.isUUID()),
@@ -22,7 +19,7 @@ const ServiceActRequestedData = Schema.Struct({
 });
 
 export async function executeServiceAct(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run">; runId: string },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {

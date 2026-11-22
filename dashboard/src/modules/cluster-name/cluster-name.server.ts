@@ -7,7 +7,7 @@ import { operationDigest, type OperationAsked } from "#/modules/approvals/approv
 import { type ClusterNameRow, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
 import { createClusterNameRequestedEvent } from "#/modules/inngest/events";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { organization } from "#/modules/organization/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";

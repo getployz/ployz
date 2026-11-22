@@ -1,7 +1,7 @@
 import { Option, Schema } from "effect";
 import type { MachineId } from "@ployz/sdk";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import {
   createServerEnrollmentFoundedEvent,
   serverEnrollmentCancelEvent,
@@ -20,10 +20,7 @@ import {
   recordStage,
   releaseJoiner,
 } from "#/modules/machines/waiting/enrollment-run.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "waitForEvent" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 export const FOUNDER_ROUNDS = 12;
 const FOUNDER_WAIT = "10m";
@@ -50,7 +47,7 @@ const Heard = Schema.Struct({
 });
 const decodeHeard = Schema.decodeUnknownOption(Heard);
 
-type Ctx = { event: { data: unknown }; step: StepTools; runId: string };
+type Ctx = { event: { data: unknown }; step: StepTools<"run" | "waitForEvent" | "sendEvent">; runId: string };
 
 export async function executeServerEnrollment({ event, step, runId }: Ctx, runEffect: EffectRunner) {
   const request = await step.run("normalize-request", () => {

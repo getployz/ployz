@@ -18,7 +18,7 @@ import {
 import { notificationPreference } from "#/modules/notifications/tables";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { sealedSecret } from "#/test/sealed-secret";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";

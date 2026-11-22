@@ -6,7 +6,7 @@ import { attemptLifecycle, type RunEnd } from "#/modules/inngest/attempt-lifecyc
 import { inngestRunStatus, type PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { configDeploymentAdmittedEventType, configDeploymentRetireRequestedEventType } from "#/modules/inngest/events";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RETIRE_ATTEMPTS = 3;
 export const RETIRE_PAUSE = "1m";

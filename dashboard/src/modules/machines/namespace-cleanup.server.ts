@@ -13,7 +13,7 @@ import {
   type CleanupState,
 } from "#/modules/machines/namespace-cleanup";
 import { namespaceCleanup } from "#/modules/machines/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";

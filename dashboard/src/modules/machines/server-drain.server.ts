@@ -7,7 +7,7 @@ import { gateOperation, operationDigest } from "#/modules/approvals/approvals.se
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import {
   DRAIN_END_CODES,
   DRAIN_PENDING_LIMIT_MS,

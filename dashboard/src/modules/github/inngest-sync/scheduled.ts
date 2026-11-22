@@ -4,7 +4,7 @@ import {
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
 import { listAllGithubInstallationIds } from "#/modules/github/github.repository";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubRepositoryScheduleStepTools = Pick<
   PloyzStepTools,

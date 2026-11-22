@@ -1,12 +1,9 @@
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError, RetryAfterError } from "inngest";
-import { sendInngestEvent, type PloyzInngest, type PloyzStepTools } from "#/modules/inngest/client";
+import { sendInngestEvent, type PloyzInngest, type StepTools } from "#/modules/inngest/client";
 import { createMailSendRequestedEvent, mailSendRequestedEventType } from "#/modules/inngest/events";
 import { sendMail, type MailMessage, type MailSendError } from "#/modules/mail/mailer.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run">;
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const MailSendRequestedData = Schema.Struct({
@@ -31,7 +28,7 @@ const toInngestError = (error: MailSendError, attempt: number) => {
 
 /** The event id keys the send, so every retry of this run delivers one mail. */
 export async function executeSendMail(
-  { event, step, attempt }: { event: { id?: string; data: unknown }; step: StepTools; attempt: number },
+  { event, step, attempt }: { event: { id?: string; data: unknown }; step: StepTools<"run">; attempt: number },
   runEffect: EffectRunner,
 ) {
   const decoded = Schema.decodeUnknownOption(MailSendRequestedData)(event.data);

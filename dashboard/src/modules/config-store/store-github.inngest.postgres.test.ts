@@ -13,7 +13,7 @@ import { githubRepositoryCache } from "#/modules/github/tables";
 import { account } from "#/modules/identity/tables";
 import { githubCheckSuiteReceivedEvent, githubPushReceivedEvent } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 

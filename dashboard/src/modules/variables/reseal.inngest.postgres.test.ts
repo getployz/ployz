@@ -15,7 +15,7 @@ import { clusterSealingKey } from "#/modules/machines/tables";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { enrollStoreServer, seedStoreOrganization, type StoreCloud, storeTestCloud } from "#/test/store-cloud";
 import { encryptSecretValue } from "#/utils/encrypted-secret.server";

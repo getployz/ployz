@@ -13,7 +13,7 @@ import {
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 describe("machine remove Inngest boundary", () => {

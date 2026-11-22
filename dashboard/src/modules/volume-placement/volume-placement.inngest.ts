@@ -1,9 +1,7 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { organizationsWithMachines } from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 /** Every 15 minutes each organization's mirrors refresh, and a primary that came back is demoted to a detached copy. */
 export const createRefreshVolumeMirrors = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>

@@ -6,7 +6,7 @@ import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
 import { type CrashEventInput, crashEventsOf } from "#/modules/observe-ingest/crash-logs";
 import type { ObservePusher } from "#/modules/observe-ingest/ingest.server";
 import { crashEvent } from "#/modules/observe-ingest/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { Database } from "#/server/database.server";
 import { Unavailable } from "#/server/public-error";
 

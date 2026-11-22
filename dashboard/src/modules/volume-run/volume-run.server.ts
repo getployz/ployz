@@ -28,7 +28,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { clusterExpectation, loadOrganizationConnections, logForeignServers } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import {

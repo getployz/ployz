@@ -24,7 +24,7 @@ import {
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000b01";

@@ -2,7 +2,7 @@ import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCo
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import { inngestRunStatus, type PloyzInngest, type PloyzStepTools } from "#/modules/inngest/client";
+import { inngestRunStatus, type PloyzInngest, type PloyzStepTools, qualifiedFunctionId, type StepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   inngestFunctionFinishedEnvelopeSchema,
@@ -49,12 +49,9 @@ import {
   SwitchAttemptError,
   takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
-type EffectRunner = typeof runInngestEffect;
 
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
 // A Volume written faster than it ships never converges, so the rounds are capped.
@@ -72,7 +69,7 @@ const VolumeRunRequestedData = Schema.Struct({
 
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
 type RunSteps = {
-  readonly step: StepTools;
+  readonly step: StepTools<"run" | "sleep" | "sleepUntil">;
   readonly runEffect: EffectRunner;
   readonly run: RunContext;
   readonly runId: string;
@@ -80,7 +77,7 @@ type RunSteps = {
 };
 
 export async function runVolume(
-  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools; runId: string; attempt: number },
+  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools<"run" | "sleep" | "sleepUntil">; runId: string; attempt: number },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {
@@ -369,7 +366,6 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   await finish(steps, "05-finish", withdrawnMessage(run.volumeName, phase.destroy.map((slot) => slot.machine.name), phase.forget?.machine.name, behind));
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
-
 
 const SIZING = { grow: "Growing", shrink: "Shrinking", settle: "Setting" } satisfies Record<SizeDirection, string>;
 
@@ -866,7 +862,7 @@ export const createCloseFinishedVolumeRun = (inngest: PloyzInngest, runEffect: E
       retries: 3,
       triggers: [{
         event: inngestFunctionFinishedEventType,
-        if: `event.data.function_id == '${RUN_VOLUME_FUNCTION_ID}' || event.data.function_id == 'ployz-cloud-${RUN_VOLUME_FUNCTION_ID}'`,
+        if: `event.data.function_id == '${RUN_VOLUME_FUNCTION_ID}' || event.data.function_id == '${qualifiedFunctionId(RUN_VOLUME_FUNCTION_ID)}'`,
       }],
     },
     async ({ event, step }) => {

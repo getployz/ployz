@@ -1,7 +1,7 @@
 import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import {
   createSealingKeyEnsureRequestedEvent,
   createServerUpgradeRequestedEvent,
@@ -31,10 +31,7 @@ import {
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
 import { AppConfig } from "#/server/config.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent" | "sleep">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 const POLL_INTERVAL_MS = 15_000;
 const SWEEP_INTERVAL_MS = 60 * 60_000;
@@ -63,7 +60,7 @@ type ServerResult =
  * offline or refuses as Busy is skipped and records nothing. An automatic one that didn't finish mails the members.
  */
 export async function executeRollOutServerUpgrade(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent" | "sleep">; runId: string },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {
@@ -148,7 +145,7 @@ const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(functio
  * `unknown` with the last stage seen.
  */
 async function upgradeServer(
-  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools; runId: string },
+  { request, machineId, step, runId }: { request: Request; machineId: MachineId; step: StepTools<"run" | "sendEvent" | "sleep">; runId: string },
   runEffect: EffectRunner,
 ): Promise<ServerResult> {
   const { organizationId, channel, attemptId: requested, ...event } = request;

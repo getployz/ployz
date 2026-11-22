@@ -8,7 +8,7 @@ import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";

@@ -1,20 +1,17 @@
 import { Option, Schema } from "effect";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { sealingKeyEnsureRequestedEventType } from "#/modules/inngest/events";
 import {
   backfillClusterSealingKey,
   handleSealingBackfillReport,
   loadSealingBackfillTarget,
 } from "#/modules/machines/sealing-backfill.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run">;
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const EnsureRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
 export async function executeEnsureClusterSealingKey(
-  { event, step }: { event: { data: unknown }; step: StepTools },
+  { event, step }: { event: { data: unknown }; step: StepTools<"run"> },
   runEffect: EffectRunner,
 ) {
   const organizationId = await step.run("normalize-organization-id", () => {

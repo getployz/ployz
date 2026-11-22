@@ -15,7 +15,7 @@ import { processGithubInstallationEvent, processGithubInstallationRepositoriesEv
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
 import { executeSyncGithubRepositories, GITHUB_REPOSITORY_PAGE_DEADLINE, syncGithubRepositories } from "./inngest-sync/sync";
-import { isNonRetriableInngestCause } from "#/server/run.server";
+import { isNonRetriableInngestCause } from "#/modules/inngest/run.server";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import type { AppConfig } from "#/server/config.server";

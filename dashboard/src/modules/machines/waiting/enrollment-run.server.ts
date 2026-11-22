@@ -10,7 +10,7 @@ import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { enrollmentAllocation, machineEnrollmentToken } from "#/modules/machines/tables";
 import { committedAfter, ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { asTestDouble } from "#/lib/test-double";
 import { applyServerWebTraffic } from "#/modules/machines/server-web-traffic.inngest";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 const data = { attemptId: "00000000-0000-4000-8000-0000000000e1", organizationId: "org-1", machineId: "a".repeat(32) };
 

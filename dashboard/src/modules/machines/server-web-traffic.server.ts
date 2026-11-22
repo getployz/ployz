@@ -14,7 +14,7 @@ import {
   type WebTrafficWant,
 } from "#/modules/machines/server-web-traffic";
 import { serverWebTrafficAttempt } from "#/modules/machines/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSdkError, PloyzSession } from "#/modules/runtime/ployz.server";

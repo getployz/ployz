@@ -15,6 +15,7 @@ import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -23,7 +24,7 @@ import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
 /** Runs one of the Store workers' Effects for an Inngest step. */
-export type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, StoreServices>) => Promise<A>;
+export type StoreEffectRunner = EffectRunner<StoreServices>;
 
 /** Cloud could not read a Git Service's source; users read the message. */
 export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}

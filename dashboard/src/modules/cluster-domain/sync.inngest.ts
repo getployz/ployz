@@ -10,15 +10,12 @@ import {
   recordClusterDomainCheck,
   renewClusterDomainLease,
 } from "#/modules/cluster-domain/sync.server";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import {
   clusterDomainSyncRequestedEventType,
   createClusterDomainSyncRequestedEvent,
 } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const SyncRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
@@ -42,7 +39,7 @@ function recordedServers<Server>(
  * republish it to the Cluster. With no Cluster only the lease and certificate steps do anything.
  */
 export async function executeSyncClusterDomain(
-  { event, step }: { event: { data: unknown }; step: StepTools },
+  { event, step }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent"> },
   runEffect: EffectRunner,
 ) {
   const organizationId = await step.run("normalize-organization-id", () => {
@@ -80,7 +77,7 @@ export async function executeSyncClusterDomain(
   return { organizationId, name, observed: probe.kind !== "unknown", recordsPut, certificateIssued, certificatePublished };
 }
 
-export async function executeScheduleClusterDomainSync({ step }: { step: StepTools }, runEffect: EffectRunner) {
+export async function executeScheduleClusterDomainSync({ step }: { step: StepTools<"run" | "sendEvent"> }, runEffect: EffectRunner) {
   const organizationIds = await step.run("list-cluster-domain-organization-ids", () => runEffect(listClusterDomainOrganizationIds()));
   if (organizationIds.length > 0) {
     await step.sendEvent(

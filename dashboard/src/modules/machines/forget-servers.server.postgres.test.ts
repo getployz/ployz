@@ -22,7 +22,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 

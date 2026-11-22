@@ -18,7 +18,7 @@ import {
   githubPullRequestReceivedEventType,
   githubPushReceivedEventType,
 } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
  * Each its own step after the Store's, so a failed one retries alone: the observation is already applied. Runs to

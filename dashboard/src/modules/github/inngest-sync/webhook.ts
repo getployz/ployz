@@ -22,7 +22,7 @@ import {
   githubInstallationRepositoriesWebhookEventDataSchema,
   githubInstallationWebhookEventDataSchema,
 } from "#/modules/github/github-webhook-contracts";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubInstallationWebhookStepTools = Pick<
   PloyzStepTools,

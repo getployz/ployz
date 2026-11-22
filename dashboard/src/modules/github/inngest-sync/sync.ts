@@ -14,7 +14,7 @@ import type { AppConfig } from "#/server/config.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
  * A request replaces the installation's running sync rather than being skipped: a run that already wrote may still be

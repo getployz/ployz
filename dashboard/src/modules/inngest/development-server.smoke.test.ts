@@ -7,7 +7,7 @@ import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRetireOld } from "#/modules/config-store/retire-old.inngest";
-import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
+import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
 import {
   createConfigDeploymentRetireRequestedEvent, createConfigDeploymentStartedEvent, serverDrainRequestedEvent,
   serverPolicyChangeRequestedEvent, volumeRunTakenEvent,

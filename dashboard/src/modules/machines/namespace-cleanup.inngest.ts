@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import { namespaceCleanupRequestedEventType } from "#/modules/inngest/events";
 import {
   bindCleanupRun,
@@ -8,10 +8,7 @@ import {
   closeStaleCleanups,
   executeCleanupOnce,
 } from "#/modules/machines/namespace-cleanup.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 const NamespaceCleanupRequestedData = Schema.Struct({
   cleanupId: Schema.String.check(Schema.isUUID()),
@@ -23,7 +20,7 @@ const NamespaceCleanupRequestedData = Schema.Struct({
  * touches the Engine, and a retry of it never asks again (see `executeCleanupOnce`).
  */
 export async function executeCleanNamespace(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run">; runId: string },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {

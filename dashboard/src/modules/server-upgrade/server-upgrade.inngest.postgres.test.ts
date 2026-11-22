@@ -31,7 +31,7 @@ import { admitOperation } from "#/modules/operations/keyed.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import * as ids from "#/test/ids";
 import { invokeOnFailure } from "#/test/inngest-failure";

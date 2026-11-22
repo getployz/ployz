@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { type createServerEnrollmentFoundedEvent, serverEnrollmentReportedEvent } from "#/modules/inngest/events";
 import { executeServerEnrollment, FOUNDER_ROUNDS } from "#/modules/machines/waiting/server-enrollment.inngest";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 const attemptId = "00000000-0000-4000-8000-0000000000f1";
 const joinerId = "00000000-0000-4000-8000-0000000000f2";

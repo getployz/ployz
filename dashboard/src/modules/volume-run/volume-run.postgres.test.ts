@@ -73,7 +73,7 @@ import { decideApproval } from "#/modules/approvals/approvals.server";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 

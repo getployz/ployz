@@ -1,4 +1,4 @@
-import { runWorker } from "#/modules/inngest/worker.server";
+import { runWorker } from "#/worker/worker.server";
 import { startupConfigFailure } from "#/server/config.server";
 
 const configFailure = startupConfigFailure();

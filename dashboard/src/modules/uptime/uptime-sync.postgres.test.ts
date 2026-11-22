@@ -12,7 +12,7 @@ import { configDeploymentAdmittedEvent, uptimeBackfillRequestedEvent } from "#/m
 import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 

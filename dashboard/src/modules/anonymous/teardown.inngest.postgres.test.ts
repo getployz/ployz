@@ -23,7 +23,7 @@ import { organizationPairing } from "#/modules/runtime/tables";
 import { uptimeCheck, uptimeIncident } from "#/modules/uptime/tables";
 import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
-import { makeInngestEffectRunner } from "#/server/run.server";
+import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedAnonymousStoreOrganization, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

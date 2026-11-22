@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
+import type { StepTools } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent, serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
@@ -9,10 +9,7 @@ import {
   closeWebTrafficRun,
   executeWebTrafficOnce,
 } from "#/modules/machines/server-web-traffic.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
 
 const ServerWebTrafficRequestedData = Schema.Struct({
   attemptId: Schema.String.check(Schema.isUUID()),
@@ -26,7 +23,7 @@ const ServerWebTrafficRequestedData = Schema.Struct({
  * up: turning the role back on over a proxy that kept running changes no container, so nothing else would tell it.
  */
 export async function applyServerWebTraffic(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent">; runId: string },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {

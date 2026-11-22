@@ -23,7 +23,7 @@ import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
 import { cleanOrphans, closeVolumeRun } from "#/modules/volume-run/volume-run.server";
-import { runInngestEffect } from "#/server/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
 

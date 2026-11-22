@@ -3,9 +3,7 @@ import type { PloyzInngest } from "#/modules/inngest/client";
 import { observeCrashReceivedEventType } from "#/modules/inngest/events";
 import { claimCrashMail, PRUNE_BATCH_ROWS, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
 import { observeServerNames } from "#/modules/server-upgrade/server-upgrade.server";
-import { runInngestEffect } from "#/server/run.server";
-
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const MAX_CLAIMS = 3;
 const MAX_PRUNE_BATCHES = 200;

@@ -4,7 +4,7 @@ import {
   organizationBillingSyncRequestedEventType,
 } from "#/modules/inngest/events";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import {
   getActiveManagedSubscriptionSnapshot,
   persistOrganizationBillingStateSnapshot,
@@ -26,9 +26,7 @@ export type BillingSyncStepTools = Pick<
   "run" | "sendEvent"
 >;
 
-export type BillingEffectRunner = <A, E extends Error>(
-  effect: Effect.Effect<A, E, Database | Polar | SecretEncryption>,
-) => Promise<A>;
+export type BillingEffectRunner = EffectRunner<Database | Polar | SecretEncryption>;
 
 const OrganizationId = Schema.Trim.check(Schema.isMinLength(1));
 const OptionalSourceUpdatedAt = Schema.NullOr(Schema.DateFromString);

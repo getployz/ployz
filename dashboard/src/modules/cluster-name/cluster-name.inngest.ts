@@ -1,16 +1,13 @@
 import { Schema } from "effect";
 import { applyClusterName, foundClusterName, listUnappliedClusterNames } from "#/modules/cluster-name/cluster-name.server";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import {
   clusterNameRequestedEventType,
   configFirstServerJoinedEvent,
   configFirstServerJoinedEventType,
   createClusterNameRequestedEvent,
 } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent" | "sleep">;
-type EffectRunner = typeof runInngestEffect;
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const Requested = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
@@ -18,7 +15,7 @@ const PATIENCE_SECONDS = 60 * 60;
 const delaySeconds = (attempt: number) => Math.min(15 * 2 ** attempt, 120);
 
 export async function executeApplyClusterName(
-  { event, step }: { event: { name: string; data: unknown }; step: StepTools },
+  { event, step }: { event: { name: string; data: unknown }; step: StepTools<"run" | "sendEvent" | "sleep"> },
   runEffect: EffectRunner,
 ) {
   const { organizationId } = Schema.decodeUnknownSync(Requested)(event.data, { onExcessProperty: "preserve" });
@@ -32,7 +29,7 @@ export async function executeApplyClusterName(
   return { organizationId, applied: "waiting" as const };
 }
 
-export async function executeRetryClusterNames({ step }: { step: StepTools }, runEffect: EffectRunner) {
+export async function executeRetryClusterNames({ step }: { step: StepTools<"run" | "sendEvent" | "sleep"> }, runEffect: EffectRunner) {
   const organizationIds = await step.run("list-unapplied", () => runEffect(listUnappliedClusterNames()));
   const hour = new Date().toISOString().slice(0, 13);
   if (organizationIds.length > 0) {

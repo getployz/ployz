@@ -28,7 +28,7 @@ import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { isBehind } from "#/modules/server-upgrade/server-upgrade";

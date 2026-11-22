@@ -31,7 +31,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { makeSecretEncryption, type SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { invokeOnFailure } from "#/test/inngest-failure";

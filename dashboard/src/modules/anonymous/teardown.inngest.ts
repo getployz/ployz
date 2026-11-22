@@ -1,13 +1,12 @@
 import { type Effect, Option, Schema } from "effect";
 import { listLapsedOrganizationIds, tearDownStep } from "#/modules/anonymous/teardown.server";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { anonymousTeardownRequestedEventType, createAnonymousTeardownRequestedEvent } from "#/modules/inngest/events";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 type TeardownServices = Effect.Services<ReturnType<typeof tearDownStep>> | Effect.Services<ReturnType<typeof listLapsedOrganizationIds>>;
 /** Runs one of the teardown's Effects for an Inngest step. */
-export type TeardownEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, TeardownServices>) => Promise<A>;
+export type TeardownEffectRunner = EffectRunner<TeardownServices>;
 
 const TeardownRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
@@ -17,7 +16,7 @@ const TeardownRequestedData = Schema.Struct({ organizationId: Schema.String.chec
  * Server: the failed attempt may have heard an answer Cloud couldn't record, so the next sweep decides.
  */
 export async function executeTearDownAnonymousOrganization(
-  { event, step, attempt }: { event: { data: unknown }; step: StepTools; attempt: number },
+  { event, step, attempt }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent">; attempt: number },
   runEffect: TeardownEffectRunner,
 ) {
   const organizationId = await step.run("normalize-organization-id", () => {
@@ -32,7 +31,7 @@ export async function executeTearDownAnonymousOrganization(
   return result;
 }
 
-export async function executeScheduleAnonymousSweep({ step }: { step: StepTools }, runEffect: TeardownEffectRunner) {
+export async function executeScheduleAnonymousSweep({ step }: { step: StepTools<"run" | "sendEvent"> }, runEffect: TeardownEffectRunner) {
   const organizationIds = await step.run("list-lapsed-organizations", () => runEffect(listLapsedOrganizationIds()));
   if (organizationIds.length > 0) {
     await step.sendEvent(

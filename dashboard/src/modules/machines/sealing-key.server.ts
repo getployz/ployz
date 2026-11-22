@@ -12,7 +12,7 @@ import type {
   CliRotateSealingRecoveryInput,
 } from "#/modules/machines/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey, sealingKeyOwner } from "#/modules/machines/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccessById } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";

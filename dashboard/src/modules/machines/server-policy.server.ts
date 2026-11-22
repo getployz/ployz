@@ -17,7 +17,7 @@ import {
   type RequestServerPolicyChangeInput,
   type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Conflict, Validation } from "#/server/public-error";
