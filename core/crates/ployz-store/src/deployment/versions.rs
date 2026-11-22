@@ -23,6 +23,7 @@ use ts_rs::TS;
 use super::{TargetNode, now};
 use crate::error;
 use crate::id::DeploymentId;
+use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
 
 /// A signed version a client posts with a Deploy, and the image it pinned for it.
@@ -228,12 +229,45 @@ pub(super) fn replaying(source: &DeploymentId) -> Result<String, RpcError> {
     })
 }
 
-/// Every signed version kept for `service` in `namespace` at `digest`, newest first, at
-/// most as many as one request carries.
+/// Every signed version kept for `service` in `namespace` at `digest`, newest first, each
+/// followed by the parentless versions kept for the digest it names as its parent, which
+/// a Server checks it against, at most as many as one request carries.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a row that doesn't read.
 pub(crate) fn versions_for(
+    tx: &mut dyn Tx,
+    organization: &str,
+    service: (&Namespace, &ServiceName),
+    digest: PayloadDigest,
+) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
+    let mut presented = Vec::new();
+    let mut parents = Vec::new();
+    for statement in kept(tx, organization, service, digest)? {
+        let parent = statement.open().ok().and_then(|body| body.parent);
+        push_new(&mut presented, statement);
+        if let Some(parent) = parent
+            && !parents.contains(&parent)
+        {
+            parents.push(parent);
+            for root in roots(tx, organization, service, parent)? {
+                push_new(&mut presented, root);
+            }
+        }
+    }
+    presented.truncate(MAX_PRESENTED);
+    Ok(presented)
+}
+
+fn push_new(presented: &mut Vec<Signed<ServiceVersion>>, statement: Signed<ServiceVersion>) {
+    if !presented.contains(&statement) {
+        presented.push(statement);
+    }
+}
+
+/// Every signed version kept for `service` in `namespace` at `digest`, newest first, at
+/// most as many as one request carries.
+fn kept(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&Namespace, &ServiceName),
@@ -254,6 +288,163 @@ pub(crate) fn versions_for(
     .iter()
     .map(|row| row.json(0, "Signed version"))
     .collect()
+}
+
+/// The versions kept for `service` at `digest` that name no parent, newest first: those a
+/// Server can take as the parent of an edit.
+fn roots(
+    tx: &mut dyn Tx,
+    organization: &str,
+    service: (&Namespace, &ServiceName),
+    digest: PayloadDigest,
+) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
+    Ok(kept(tx, organization, service, digest)?
+        .into_iter()
+        .filter(|statement| statement.open().is_ok_and(|body| body.parent.is_none()))
+        .collect())
+}
+
+/// The last version a person approved of each of `services`, for a key that signs
+/// without a person to edit.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ParentQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// By the name its spec runs under.
+    pub services: Vec<ServiceName>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ParentView {
+    pub namespace: Namespace,
+    pub services: BTreeMap<ServiceName, Parent>,
+}
+
+/// What a Service's newest parentless signed version is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "parent", rename_all = "snake_case")]
+pub enum Parent {
+    /// The newest a Deployment ran, with the spec it ran under it, its tag pinned. The
+    /// Store checks neither signature nor digest: the signer recomputes the digest.
+    Signed {
+        statement: Signed<ServiceVersion>,
+        spec: Box<RequestedServiceSpec>,
+        /// The tag its Saved image names and what it was pinned to. None when the Saved
+        /// State names the image by digest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        pin: Option<TagPin>,
+    },
+    /// No Deployment ran one. `deployed` when the Service runs anyway: from a build, an
+    /// automatic deploy rule, or a Deploy from before signed versions.
+    Missing { deployed: bool },
+}
+
+/// What `organization` keeps as the parent of each Service `query` names: the newest
+/// Deployment of its Environment that ran a version of it that names no parent, that
+/// version, and the spec that Deployment ran it with. A Deployment whose spec no longer
+/// lowers to the digest it ran is passed over.
+///
+/// # Errors
+/// Returns a storage error, `corrupt` for a record that doesn't read, and what reading
+/// the Environment refuses, write access included: the spec carries its Sealed values.
+pub(crate) fn parents(
+    tx: &mut dyn Tx,
+    who: &crate::Actor,
+    trusted: &crate::Trusted,
+    query: &ParentQuery,
+) -> Result<ParentView, RpcError> {
+    let environment = crate::scope::environment(tx, who, &query.environment)?;
+    trusted.writes(&environment.summary.name)?;
+    let namespace = super::namespace(tx, who, &environment.summary, false)?;
+    let organization = who.organization.as_str();
+    let records: Vec<(DeploymentId, Record)> = tx
+        .query(
+            "SELECT id, ran FROM config_deployment \
+             WHERE environment_id = ?1 AND ran IS NOT NULL ORDER BY number DESC",
+            &[environment.summary.id.as_str().into()],
+        )?
+        .iter()
+        .map(|row| Ok((row.parse(0, "Deployment")?, parse(row.text(1)?)?)))
+        .collect::<Result<_, RpcError>>()?;
+    let applied = super::head(tx, &environment)?.applied;
+    let mut services = BTreeMap::new();
+    for service in &query.services {
+        let parent = match signed_parent(tx, organization, (&namespace, service), &records)? {
+            Some(parent) => parent,
+            None => Parent::Missing {
+                deployed: applied
+                    .services
+                    .iter()
+                    .any(|applied| applied.config.private_dns == *service),
+            },
+        };
+        services.insert(service.clone(), parent);
+    }
+    Ok(ParentView {
+        namespace,
+        services,
+    })
+}
+
+/// The newest of `records` that ran a parentless version of `service`, as [`parents`]
+/// reads it.
+fn signed_parent(
+    tx: &mut dyn Tx,
+    organization: &str,
+    service: (&Namespace, &ServiceName),
+    records: &[(DeploymentId, Record)],
+) -> Result<Option<Parent>, RpcError> {
+    let mut tried = Vec::new();
+    for (id, record) in records {
+        let Some(ran) = record.services.get(service.1) else {
+            continue;
+        };
+        if tried.contains(&ran.digest) {
+            continue;
+        }
+        tried.push(ran.digest);
+        let Some(statement) = roots(tx, organization, service, ran.digest)?
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        if let Some(spec) = ran_spec(tx, id, service.1, ran) {
+            return Ok(Some(Parent::Signed {
+                statement,
+                spec: Box::new(spec),
+                pin: ran.pin.clone(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// The spec Deployment `id` ran `service` with, its tag pinned as `ran` says, when it
+/// still lowers to the digest `ran` names.
+fn ran_spec(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    service: &ServiceName,
+    ran: &RanService,
+) -> Option<RequestedServiceSpec> {
+    let stored = super::load(tx, id).ok()?;
+    let saved = super::held_revision(tx, &stored).ok()?;
+    let lowered = super::lowered(tx, &stored, &saved).ok()?;
+    let mut spec = lowered
+        .intent
+        .target
+        .into_iter()
+        .find(|spec| spec.name == *service)?;
+    if let Some(pin) = &ran.pin {
+        if pin.tag != spec.container.image {
+            return None;
+        }
+        spec.container.image.clone_from(&pin.image);
+    }
+    (PayloadDigest::of(&spec, stored.namespace()).ok() == Some(ran.digest)).then_some(spec)
 }
 
 /// The signed versions kept for one spec of a Service, by the digest a Server checks.

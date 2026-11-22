@@ -949,6 +949,7 @@ async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_the
             signed_at,
             signer: SignerKey::Device(signer.public().into()),
             proposal: None,
+            parent: None,
         };
         Signed::sign(&body, &signer).unwrap()
     };

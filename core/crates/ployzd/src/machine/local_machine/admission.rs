@@ -476,7 +476,8 @@ impl LocalMachine {
             .into_iter()
             .map(|approved| Signature {
                 key: KeptKey::from(approved.by),
-                at: approved.signed_at,
+                at: approved.floor_at,
+                signed: approved.signed_at,
                 forget: approved.forget_older,
             })
             .collect();
@@ -768,6 +769,16 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
             field: field::KEPT_REACH,
         } => {
             "A CI or agent key approved this container before this server kept what it reaches, so the server no longer starts it. Deploy it again."
+        }
+        AuthorityRefusal::Mismatch {
+            field: field::PARENT,
+        } => {
+            "A CI or agent key can only change a version a person approved, and this server found none it trusts. Deploy the service once from a terminal."
+        }
+        AuthorityRefusal::Mismatch {
+            field: field::FORGET_PARENT,
+        } => {
+            "A deploy that only changes the last version a person approved can't forget older versions. Run --forget-older from a terminal."
         }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }

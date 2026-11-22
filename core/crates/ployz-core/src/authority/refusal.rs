@@ -78,4 +78,10 @@ pub mod field {
     pub const AHEAD: &str = "a signing time";
     /// A Container a CI or agent key admitted before this Machine kept what it reaches.
     pub const KEPT_REACH: &str = "a kept reach";
+    /// A CI or agent key's version names no parent, or none of the statements presented
+    /// with that digest is a parentless version a person or full CLI signed for the same
+    /// Service.
+    pub const PARENT: &str = "a parent version";
+    /// A version that edits a parent also asks to forget older ones.
+    pub const FORGET_PARENT: &str = "a forget on an edit";
 }

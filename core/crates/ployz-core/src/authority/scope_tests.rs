@@ -130,12 +130,16 @@ fn version_of(
     version_for(by, namespace_name, &requested(service_name), forget_older)
 }
 
+/// A version of `spec` signed by `by`. One the CI key signs edits [`root`], as every CI
+/// version must, and [`admit_kind`] presents that root beside it.
 fn version_for(
     by: &Signer,
     namespace_name: &str,
     spec: &RequestedServiceSpec,
     forget_older: bool,
 ) -> Signed<ServiceVersion> {
+    let parent = (by.public() == ci().public())
+        .then(|| PayloadDigest::of(&root(&spec.name), &namespace(namespace_name)).unwrap());
     let body = ServiceVersion {
         cluster: cluster(),
         namespace: namespace(namespace_name),
@@ -145,8 +149,20 @@ fn version_for(
         signer: SignerKey::Device(by.public().into()),
         proposal: None,
         forget_older,
+        parent,
     };
     Signed::sign(&body, by).unwrap()
+}
+
+/// The spec of `name` a person last approved, which every CI version here edits. Its
+/// digest is never one a test creates.
+fn root(name: &ServiceName) -> RequestedServiceSpec {
+    serde_json::from_value(json!({
+        "name": name,
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": IMAGE, "pull_policy": "missing", "environment": {"ROOT": "1"}},
+    }))
+    .unwrap()
 }
 
 /// Admit a creation of `service_name` in `namespace_name` under `versions`.
@@ -189,8 +205,20 @@ fn admit_kind(
         .scope_to_namespace(&namespace(namespace_name))
         .unwrap();
     let spec = resolved(&scoped);
+    let mut versions = versions.to_vec();
+    if versions
+        .iter()
+        .any(|version| version.open().is_ok_and(|body| body.parent.is_some()))
+    {
+        versions.push(version_for(
+            &device(),
+            namespace_name,
+            &root(&requested.name),
+            false,
+        ));
+    }
     version::verify(
-        versions,
+        &versions,
         &VersionFacts {
             cluster: Some(cluster()),
             trusted,

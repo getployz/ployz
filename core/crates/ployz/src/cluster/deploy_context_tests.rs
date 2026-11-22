@@ -11,6 +11,7 @@ fn version(digest: PayloadDigest) -> Signed<ServiceVersion> {
     Signed::sign(
         &ServiceVersion {
             forget_older: false,
+            parent: None,
             cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
             namespace: ployz_core::Namespace::parse("app").unwrap(),
             service: ployz_core::ServiceName::parse("api").unwrap(),

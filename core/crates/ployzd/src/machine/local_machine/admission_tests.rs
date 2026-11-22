@@ -127,20 +127,58 @@ async fn trust(fixture: &Fixture, grant: TrustedGrant) {
         .unwrap();
 }
 
-/// Admit `spec` under a version the CI key signed, as an Operator's deploy does.
-async fn admitted_by_ci(fixture: &Fixture, spec: &Value) -> AdmittedBy {
+/// `spec` run from another image: what the person last approved before a CI edit.
+fn approved(spec: &Value) -> Value {
+    let mut approved = spec.clone();
+    *approved.pointer_mut("/container/image").unwrap() = json!(
+        "ployz-build/api@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    );
+    approved
+}
+
+/// A version of [`approved`] `spec` the fixture's Device signed at `at`, which a CI edit
+/// of `spec` names as its parent.
+fn root(
+    fixture: &Fixture,
+    spec: &Value,
+    at: Timestamp,
+    forget_older: bool,
+) -> Signed<ServiceVersion> {
+    let body = ServiceVersion {
+        cluster: fixture.cluster,
+        namespace: app(),
+        service: ServiceName::parse("api").unwrap(),
+        digest: PayloadDigest::of(&requested(&approved(spec)), &app()).unwrap(),
+        signed_at: at,
+        signer: SignerKey::Device(fixture.signer.public().into()),
+        proposal: None,
+        forget_older,
+        parent: None,
+    };
+    Signed::sign(&body, &fixture.signer).unwrap()
+}
+
+/// Admit `spec` under the CI key's edit of `root`, signed at `at`, as an Operator's
+/// deploy does, with `root` presented beside it.
+async fn admit_ci(
+    fixture: &Fixture,
+    spec: &Value,
+    root: &Signed<ServiceVersion>,
+    at: Timestamp,
+) -> Result<AdmittedBy, Error> {
     let body = ServiceVersion {
         cluster: fixture.cluster,
         namespace: app(),
         service: ServiceName::parse("api").unwrap(),
         digest: PayloadDigest::of(&requested(spec), &app()).unwrap(),
-        signed_at: Timestamp::now(),
+        signed_at: at,
         signer: SignerKey::Device(ci().public().into()),
         proposal: None,
         forget_older: false,
+        parent: Some(root.open().unwrap().digest),
     };
-    let versions = [Signed::sign(&body, &ci()).unwrap()];
-    fixture
+    let versions = [Signed::sign(&body, &ci()).unwrap(), root.clone()];
+    let admitted = fixture
         .machine
         .admit_spec(
             &want(spec),
@@ -149,11 +187,16 @@ async fn admitted_by_ci(fixture: &Fixture, spec: &Value) -> AdmittedBy {
                 versions: &versions,
             },
         )
+        .await?;
+    Ok(admitted.expect("a creation").by().clone())
+}
+
+/// Admit `spec` under a CI edit of a version the person signed just now.
+async fn admitted_by_ci(fixture: &Fixture, spec: &Value) -> AdmittedBy {
+    let now = Timestamp::now();
+    admit_ci(fixture, spec, &root(fixture, spec, now, false), now)
         .await
         .unwrap()
-        .expect("a creation")
-        .by()
-        .clone()
 }
 
 /// What `start_checked` decides for an Operator's start of a Container kept under `by`.
@@ -241,4 +284,41 @@ async fn a_container_kept_before_its_reach_starts_for_a_device_but_not_a_grant()
             field: field::KEPT_REACH
         })
     );
+}
+
+#[tokio::test]
+async fn a_ci_edit_is_forgotten_with_the_version_it_edits_even_when_signed_after_the_forget() {
+    let fixture = fixture().await;
+    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+    let spec = opening_shared(&fixture);
+    let now = Timestamp::now().as_millis();
+    let at = |ago: u64| Timestamp::from_millis(now - ago).unwrap();
+    let old_root = root(&fixture, &spec, at(60_000), false);
+    let forget = root(&fixture, &spec, at(30_000), true);
+    fixture
+        .machine
+        .admit_spec(
+            &want(&approved(&spec)),
+            Presented::Operator {
+                rule: None,
+                versions: std::slice::from_ref(&forget),
+            },
+        )
+        .await
+        .unwrap();
+
+    let refused = admit_ci(&fixture, &spec, &old_root, at(0)).await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::DeployRefused(AuthorityRefusal::Forgotten { floor })) if floor == at(30_000)
+        ),
+        "{refused:?}"
+    );
+
+    let AdmittedBy::Keys { keys, .. } = admit_ci(&fixture, &spec, &forget, at(0)).await.unwrap()
+    else {
+        panic!("kept under keys");
+    };
+    assert_eq!(keys, vec![(KeptKey::Device(ci().public()), at(30_000))]);
 }

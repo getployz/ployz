@@ -202,6 +202,8 @@ fn server(
             .unwrap_or_default()
             .into_iter()
             .collect(),
+        capabilities: (!machine.runtime.capabilities.is_empty())
+            .then(|| machine.runtime.capabilities.clone()),
     }
 }
 

@@ -9,6 +9,8 @@ use super::{
 };
 use crate::image::PinError;
 
+const SIGNED: &[&str] = &[ployz_core::SIGNED_VERSION_CAPABILITY];
+
 const PINNED: &str =
     "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -241,7 +243,8 @@ fn servers_that_do_not_enforce_leave_the_deploy_unsigned() {
     assert_eq!(
         enforced(
             &[server(1, None, Some(9)), server(2, Some(false), Some(9))],
-            &BTreeMap::new()
+            &BTreeMap::new(),
+            SIGNED,
         ),
         Probe::Off
     );
@@ -250,7 +253,7 @@ fn servers_that_do_not_enforce_leave_the_deploy_unsigned() {
 #[test]
 fn an_enforcing_cluster_with_no_reported_key_is_named() {
     assert_eq!(
-        enforced(&[server(1, Some(true), None)], &BTreeMap::new()),
+        enforced(&[server(1, Some(true), None)], &BTreeMap::new(), SIGNED),
         Probe::NoClusterKey
     );
 }
@@ -262,6 +265,7 @@ fn an_enforcing_cluster_signs_for_every_server_listed() {
     }) = enforced(
         &[server(2, Some(true), None), server(1, Some(false), Some(9))],
         &BTreeMap::new(),
+        SIGNED,
     )
     else {
         panic!("expected enforcing");
@@ -305,6 +309,7 @@ fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
             server(6, Some(true), Some(9)),
         ],
         &answered,
+        SIGNED,
     ) else {
         panic!("expected enforcing");
     };
@@ -333,6 +338,7 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     let refused = outdated(
         crate::handlers::leaf_matches(&typed),
         &["machine-1".to_owned()],
+        ployz_core::SIGNED_VERSION_CAPABILITY,
     );
     assert_eq!(refused.report().code, ployz_core::RpcErrorCode::Unsupported);
     let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
@@ -347,45 +353,51 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     );
 }
 
-/// `--yes` signs without asking, for a run nobody watches.
+/// Without a terminal nothing is signed: the refusal says to run it at one.
 #[test]
-fn yes_signs_without_asking() {
-    let approved = [approved(&spec(PINNED))];
-    consent(
-        (&Namespace::parse("app").unwrap(), &approved),
-        true,
-        |question, _, _| panic!("--yes asked {question:?}"),
-    )
-    .unwrap();
-}
-
-/// Without a terminal, and without `--yes`, nothing is signed: the refusal names the
-/// `--yes` retry.
-#[test]
-fn no_terminal_refuses_before_signing_and_names_yes() {
+fn no_terminal_refuses_before_signing() {
     let approved = [approved(&spec(PINNED))];
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved),
-        false,
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )
     .unwrap_err();
     let rpc = error.report();
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
-    assert!(rpc.message.contains("add --yes"), "{}", rpc.message);
+    assert!(
+        rpc.message.contains("Run it at a terminal"),
+        "{}",
+        rpc.message
+    );
     assert!(
         rpc.message.ends_with("Nothing deployed."),
         "{}",
         rpc.message
     );
-    assert!(
-        error.hints().iter().any(|hint| matches!(
-            hint,
-            Hint::Retry(retry) if retry.ends_with(" --yes")
-        )),
-        "{:?}",
-        error.hints()
-    );
+}
+
+/// A silent deploy signs an edit only a Server with parent versions admits, so one that
+/// enforces without them is named to upgrade before anything is signed.
+#[test]
+fn a_silent_deploy_names_an_enforcing_server_without_parent_versions_to_upgrade() {
+    let signed = [ployz_core::SIGNED_VERSION_CAPABILITY];
+    let both = [
+        ployz_core::SIGNED_VERSION_CAPABILITY,
+        ployz_core::PARENT_VERSIONS_CAPABILITY,
+    ];
+    let servers = [
+        serving(server(1, Some(true), Some(9)), &signed),
+        serving(server(2, Some(true), Some(9)), &both),
+    ];
+
+    let Probe::Enforcing(interactive) = enforced(&servers, &BTreeMap::new(), SIGNED) else {
+        panic!("expected enforcing");
+    };
+    assert_eq!(interactive.behind, Behind::default());
+    let Probe::Enforcing(silent) = enforced(&servers, &BTreeMap::new(), &both) else {
+        panic!("expected enforcing");
+    };
+    assert_eq!(silent.behind.outdated, vec!["machine-1".to_owned()]);
 }
 
 /// A person asked names each Service and the Namespace they sign for, and their no fails
@@ -396,7 +408,6 @@ fn declining_signs_nothing_and_fails() {
     let mut asked = None;
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved),
-        false,
         |question, _, declined| {
             asked = Some((question.to_owned(), declined));
             Err(crate::handlers::Error::cancelled())

@@ -211,12 +211,9 @@ way it can mislabel one today.
 Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
 shows here even if Cloud put it there. A control character in a value prints as its escape,
 such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
-or deployed, and the command exits with 130.
-
-A script or CI job on an approved device has no terminal to ask in, so `ployz deploy` refuses
-before it signs and tells you to add `--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints
-the same lines and signs without asking. `--json` never asks either, so it needs `--yes` too.
-Use `--yes` only where you trust the plan Ployz Cloud sends.
+or deployed, and the command exits with 130. Without a terminal, `ployz deploy` refuses before it
+signs, unless it only ships new images: see
+[Deploy a new image without a terminal](#deploy-a-new-image-without-a-terminal).
 
 Each server checks every container it creates against what you signed: the image, command,
 variables and sealed values, mounts, config files, ports, privileges, restart policy and hook. Ployz Cloud
@@ -292,6 +289,38 @@ servers refuse the build with `This server runs only builds an approved device s
 
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
+
+### Deploy a new image without a terminal
+
+A script or CI job has no terminal to ask in, so it can't approve a new version. It can ship a new
+image of one you approved. Name each image with `--image` and add `--yes`:
+
+```sh
+ployz deploy web --image web=ghcr.io/acme/web:1.5 --yes
+```
+
+`--yes` signs the last version a person approved of each service, with only the images `--image`
+names changed. It saves the image to the service's settings, prints the same lines it would ask
+about, and signs without asking. `PLOYZ_AUTO_CONFIRM=1` works the same as `--yes`, and `--json`
+needs `--yes` too. Anything else in the plan, such as a changed variable, a new service or a
+different volume, stops the deploy and names what changed. Run that deploy at a terminal, then
+CI can ship images on top of it again. `--forget-older` always needs a terminal.
+
+The image you name stays in the service's settings even when the deploy stops, so the next deploy
+ships it. If you set an image with `ployz set web.image=...`, deploy it with
+`--image web=...` in the same command rather than `--yes` alone.
+
+A service built from source, by an automatic deploy rule, or deployed before Ployz signed deploys
+has no approved version to start from. Switch it to an image and deploy it once at a terminal
+first.
+
+A CI key does the same without an approved device: set it as `PLOYZ_KEY` beside `PLOYZ_TOKEN`, and
+`ployz deploy --image` signs with it instead of the device's own key. A server runs a CI key's
+version only when it builds on one a person approved, and only within what the key was granted,
+so a leaked CI key can't start a service no person approved. Every server needs the current
+version of Ployz for this, and `ployz deploy` names any older one so you can upgrade it. Removing
+the device that approved a version stops CI deploys built on it until a person deploys from a
+terminal again.
 
 ### Upgrade servers before you sign
 
