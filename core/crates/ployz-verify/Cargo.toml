@@ -13,6 +13,7 @@ ployz-core.workspace = true
 ployz-decide.workspace = true
 serde_json = "1.0.151"
 stateright = "0.31.0"
+uuid = "1.24.0"
 
 [lints]
 workspace = true

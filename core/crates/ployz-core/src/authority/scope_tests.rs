@@ -165,7 +165,30 @@ fn admit_spec(
     namespace_name: &str,
     requested: &RequestedServiceSpec,
 ) -> Result<version::VersionAdmitted, AuthorityRefusal> {
-    let spec = resolved(requested);
+    admit_kind(
+        versions,
+        trusted,
+        namespace_name,
+        requested,
+        ContainerKind::ServiceContainer,
+    )
+}
+
+/// Admit a creation of `kind` from `requested`, its Volumes scoped to `namespace_name` as
+/// a Machine receives them.
+fn admit_kind(
+    versions: &[Signed<ServiceVersion>],
+    trusted: &TrustedKeys,
+    namespace_name: &str,
+    requested: &RequestedServiceSpec,
+    kind: ContainerKind,
+) -> Result<version::VersionAdmitted, AuthorityRefusal> {
+    let mut scoped = requested.clone();
+    scoped.mount_graph = scoped
+        .mount_graph
+        .scope_to_namespace(&namespace(namespace_name))
+        .unwrap();
+    let spec = resolved(&scoped);
     version::verify(
         versions,
         &VersionFacts {
@@ -174,7 +197,7 @@ fn admit_spec(
             namespace: &namespace(namespace_name),
             creation: Creation {
                 service: &requested.name,
-                kind: ContainerKind::ServiceContainer,
+                kind,
                 spec: &spec,
             },
         },
@@ -571,4 +594,301 @@ fn a_grant_entry_this_build_cannot_read_trusts_nothing() {
     let read = readable_grants(json!([newer, held])).unwrap();
 
     assert_eq!(read, vec![held]);
+}
+
+fn prod() -> Uuid {
+    Uuid::from_u128(0x960d)
+}
+
+/// The authored ID of `app/api`, which [`place`] names.
+fn api() -> Uuid {
+    Uuid::from_u128(0xa1)
+}
+
+fn sibling() -> Uuid {
+    Uuid::from_u128(0xb2)
+}
+
+/// A Sealed value authored as `scope`, which admission never opens.
+fn sealed(key: &str, scope: SealedScope) -> serde_json::Value {
+    serde_json::to_value(crate::SealedValue {
+        sealed: Ciphertext::from_bytes(vec![7; 48]),
+        scope,
+        key: key.to_owned(),
+    })
+    .unwrap()
+}
+
+/// `app/api` sealed in `environment`, with `environment` as its variables.
+fn sealed_api(environment: Uuid, variables: serde_json::Value) -> RequestedServiceSpec {
+    serde_json::from_value(json!({
+        "name": "api",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {
+            "image": IMAGE,
+            "pull_policy": "missing",
+            "environment": variables,
+            "sealed_identity": {"organization": "org_1", "environment": environment, "service": api()},
+        },
+    }))
+    .unwrap()
+}
+
+/// A Service place on `app/api` alone.
+fn api_only() -> TrustedKeys {
+    trusting(grant(
+        GrantKind::Agent,
+        spec_scope(vec![place("app", Some("api"))]),
+        NOW,
+    ))
+}
+
+fn values_out_of_place(kind: KeyKind) -> AuthorityRefusal {
+    out_of_scope(kind, "Sealed values outside its places")
+}
+
+#[test]
+fn a_service_place_opens_no_template_part_of_a_sibling_service() {
+    let own = sealed_api(
+        staging(),
+        json!({"TOKEN": sealed("TOKEN", SealedScope::Service(api()))}),
+    );
+    let borrowed = sealed_api(
+        staging(),
+        json!({
+            "TOKEN": sealed("TOKEN", SealedScope::Service(api())),
+            "URL": {"template": ["postgres://app:", sealed("DB_PASSWORD", SealedScope::Service(sibling())), "@db"]},
+        }),
+    );
+
+    assert!(
+        admit_spec(
+            &[version_for(&ci(), "app", &own, false)],
+            &api_only(),
+            "app",
+            &own
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        admit_spec(
+            &[version_for(&ci(), "app", &borrowed, false)],
+            &api_only(),
+            "app",
+            &borrowed
+        ),
+        Err(values_out_of_place(KeyKind::Agent)),
+    );
+}
+
+#[test]
+fn a_service_place_opens_no_shared_part_where_its_environment_place_would() {
+    let shared = sealed_api(
+        staging(),
+        json!({"URL": {"template": ["postgres://", sealed("DB_PASSWORD", SealedScope::Shared)]}}),
+    );
+    let version = [version_for(&ci(), "app", &shared, false)];
+
+    assert_eq!(
+        admit_spec(&version, &api_only(), "app", &shared),
+        Err(values_out_of_place(KeyKind::Agent)),
+    );
+    assert!(admit_spec(&version, &ci_in_app(), "app", &shared).is_ok());
+}
+
+#[test]
+fn a_hooks_shared_part_counts_for_the_hook_it_runs_in() {
+    let mut spec = sealed_api(staging(), json!({}));
+    spec.pre_deploy = Some(
+        serde_json::from_value(json!({
+            "command": ["migrate"],
+            "environment": {"DB_PASSWORD": sealed("DB_PASSWORD", SealedScope::Shared)},
+        }))
+        .unwrap(),
+    );
+    let version = [version_for(&ci(), "app", &spec, false)];
+
+    assert_eq!(
+        admit_kind(
+            &version,
+            &api_only(),
+            "app",
+            &spec,
+            ContainerKind::PreDeployHook
+        ),
+        Err(values_out_of_place(KeyKind::Agent)),
+    );
+    assert!(
+        admit_kind(
+            &version,
+            &api_only(),
+            "app",
+            &spec,
+            ContainerKind::ServiceContainer
+        )
+        .is_ok(),
+        "the Service Container opens none of its hook's values"
+    );
+}
+
+#[test]
+fn a_ci_key_opens_no_value_sealed_in_another_environment_of_its_namespace() {
+    let spec = sealed_api(
+        prod(),
+        json!({"TOKEN": sealed("TOKEN", SealedScope::Shared)}),
+    );
+
+    assert_eq!(
+        admit_spec(
+            &[version_for(&ci(), "app", &spec, false)],
+            &ci_in_app(),
+            "app",
+            &spec
+        ),
+        Err(values_out_of_place(KeyKind::Ci)),
+    );
+}
+
+fn birth(name: &str) -> crate::VolumeBirth {
+    serde_json::from_value(json!({
+        "namespace": "app", "name": name, "made_at": 1_762_178_640_000_u64,
+        "nonce": "00112233445566778899aabbccddeeff",
+    }))
+    .unwrap()
+}
+
+/// `app/api` mounting each of `volumes`, by declared name and the birth it carries.
+fn mounting(volumes: &[(&str, Option<crate::VolumeBirth>)]) -> RequestedServiceSpec {
+    let declared: Vec<_> = volumes
+        .iter()
+        .map(|(name, born)| {
+            let mut source =
+                json!({"kind": "provisioned", "name": name, "maximum_bytes": 1_073_741_824_u64});
+            if let (Some(born), Some(fields)) = (born, source.as_object_mut()) {
+                fields.insert("birth".to_owned(), serde_json::to_value(born).unwrap());
+            }
+            json!({"reference": name, "source": source})
+        })
+        .collect();
+    let mounts: Vec<_> = volumes
+        .iter()
+        .map(|(name, _)| json!({"volume": name, "target": format!("/{name}")}))
+        .collect();
+    serde_json::from_value(json!({
+        "name": "api",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": IMAGE, "pull_policy": "missing"},
+        "volumes": declared,
+        "mounts": mounts,
+    }))
+    .unwrap()
+}
+
+/// The entry for the Volume declared as `name` in Namespace `app`, expecting `origin`.
+fn entry(name: &str, origin: crate::VolumeOrigin) -> GrantVolume {
+    GrantVolume {
+        origin,
+        name: namespace("app").volume_name(&crate::DockerVolumeName::parse(name).unwrap()),
+    }
+}
+
+fn born(name: &str) -> crate::VolumeOrigin {
+    crate::VolumeOrigin::of(&birth(name)).unwrap()
+}
+
+/// A CI key over Namespace `app` that may mount `volumes`.
+fn ci_with(volumes: Vec<GrantVolume>) -> TrustedKeys {
+    trusting(Grant {
+        volumes,
+        ..grant(GrantKind::Ci, spec_scope(vec![place("app", None)]), NOW)
+    })
+}
+
+fn not_granted(name: &str) -> AuthorityRefusal {
+    AuthorityRefusal::VolumeNotGranted {
+        code: ci().public().code(),
+        kind: KeyKind::Ci,
+        volume: namespace("app").volume_name(&crate::DockerVolumeName::parse(name).unwrap()),
+    }
+}
+
+#[test]
+fn a_ci_key_mounts_no_sibling_volume_its_grant_leaves_out() {
+    let trusted = ci_with(vec![entry("data", born("data"))]);
+    let own = mounting(&[("data", Some(birth("data")))]);
+    let both = mounting(&[
+        ("data", Some(birth("data"))),
+        ("cache", Some(birth("cache"))),
+    ]);
+
+    assert!(
+        admit_spec(
+            &[version_for(&ci(), "app", &own, false)],
+            &trusted,
+            "app",
+            &own
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        admit_spec(
+            &[version_for(&ci(), "app", &both, false)],
+            &trusted,
+            "app",
+            &both
+        ),
+        Err(not_granted("cache")),
+    );
+    assert!(
+        admit_spec(
+            &[version_for(&device(), "app", &both, false)],
+            &trusted,
+            "app",
+            &both
+        )
+        .is_ok(),
+        "a Device mounts any Volume"
+    );
+}
+
+#[test]
+fn a_copy_of_a_granted_volume_under_another_name_needs_its_own_entry() {
+    let trusted = ci_with(vec![entry("data", born("data"))]);
+    let copy = mounting(&[("copy", Some(birth("data")))]);
+
+    assert_eq!(
+        admit_spec(
+            &[version_for(&ci(), "app", &copy, false)],
+            &trusted,
+            "app",
+            &copy
+        ),
+        Err(not_granted("copy")),
+    );
+}
+
+#[test]
+fn a_volume_from_before_births_needs_its_legacy_origin_on_the_list() {
+    let legacy = mounting(&[("data", None)]);
+    let version = [version_for(&ci(), "app", &legacy, false)];
+    let physical = namespace("app").volume_name(&crate::DockerVolumeName::parse("data").unwrap());
+
+    assert_eq!(
+        admit_spec(
+            &version,
+            &ci_with(vec![entry("data", born("data"))]),
+            "app",
+            &legacy
+        ),
+        Err(not_granted("data")),
+    );
+    assert!(
+        admit_spec(
+            &version,
+            &ci_with(vec![entry("data", crate::VolumeOrigin::legacy(&physical))]),
+            "app",
+            &legacy
+        )
+        .is_ok()
+    );
 }

@@ -17,9 +17,12 @@
 //!   build, rule R2 approved again at 3, and W, a version of the sibling Service `app/web`
 //!   at 1.
 //! - An Operator's start of a stopped Container (`LocalMachine::start_checked`), one
-//!   `Standing::admits` read: K1, admitted by key A signing at 1 and key B signing at 3,
-//!   and KR, admitted under R1.
-//! - The removal of key B, the clock ticking, and a crash.
+//!   `Standing::admits` read, which asks `TrustedKeys::covers_kept` of each kept key: K1,
+//!   admitted by Device A signing at 1 and CI key B signing at 3, which opened a Shared
+//!   value, and KR, admitted under R1.
+//! - The removal of key B, B's grant narrowed from its Environment to `app/api` alone, the
+//!   clock ticking, and a crash. Narrowed, B still covers `app/api`'s Spec, but no longer
+//!   the Shared value K1 opened.
 //!
 //! What a check passed at its read stands until Docker acts on it. A forget that lands in
 //! between is the accepted handoff race, so the properties hold each check to the floor it
@@ -28,11 +31,19 @@
 //! Out of scope: a second Machine (each one decides alone), the forget fan-out, and the
 //! signature checks before the floor (the authority tests cover them).
 
-use std::fmt::Write as _;
+use std::{collections::BTreeMap, fmt::Write as _, sync::OnceLock};
 
-use ployz_core::authority::Timestamp;
+use ployz_core::{
+    Namespace, QualifiedService, SealedScope, ServiceName,
+    authority::{
+        Approver, CapSet, Grant, GrantKind, KeyPlace, KeyPlaces, KeyScope, PasskeyApprover,
+        PlaceService, Reach, Signer, SigningPublicKey, Timestamp, TrustedGrant, TrustedKeys,
+        ValueReach,
+    },
+};
 use ployz_decide::service_floor::{self, Raise};
 use stateright::{Model, Property};
+use uuid::Uuid;
 
 use crate::harness::Variant;
 
@@ -111,6 +122,8 @@ struct State {
     /// Persisted.
     floor: Option<Minute>,
     b_trusted: bool,
+    /// B's grant holds `app/api` alone, no longer its whole Environment.
+    b_narrowed: bool,
     admissions: [Phase; 5],
     started: [Option<bool>; 2],
     honest_forgets: u8,
@@ -122,6 +135,9 @@ struct State {
     highest: Option<Minute>,
     /// Ghost: a create or start passed its last read under an approval that read forgot.
     used_below: bool,
+    /// Ghost: a start passed while no kept key that still signs at or past the floor
+    /// covers the Container alone.
+    started_uncovered: bool,
     /// Ghost: an admission passed its first read, and pulled, under an approval that read
     /// forgot.
     pulled_below: bool,
@@ -161,6 +177,7 @@ enum Action {
     Create(Approval),
     Start(Kept),
     RemoveB,
+    NarrowB,
     Tick,
     Crash,
 }
@@ -184,6 +201,94 @@ enum Mutation {
     RulesRetiredForGood,
     /// A floor is kept per Cluster, so the sibling reads `app/api`'s.
     FloorPerCluster,
+    /// A start asks only whether its keys are trusted, not whether they still cover it.
+    TrustOnly,
+    /// A start asks whether a key still covers the Service, not the Sealed parts the
+    /// Container opened.
+    SpecOnly,
+}
+
+const ENVIRONMENT: Uuid = Uuid::from_u128(0xe1);
+/// The ID `app/api`'s Sealed values are authored under.
+const API: u128 = 0xa1;
+
+fn key_a() -> SigningPublicKey {
+    Signer::from_seed(&[1; 32]).public()
+}
+
+fn key_b() -> SigningPublicKey {
+    Signer::from_seed(&[2; 32]).public()
+}
+
+/// A CI grant for B in Namespace `app`, over the Environment or `app/api` alone.
+fn grant_b(narrowed: bool) -> TrustedGrant {
+    TrustedGrant {
+        grant: Grant {
+            key: key_b(),
+            kind: GrantKind::Ci,
+            scope: KeyScope {
+                caps: CapSet::of(&[ployz_core::authority::Cap::Spec]),
+                places: KeyPlaces::Only(vec![KeyPlace {
+                    environment: ENVIRONMENT,
+                    namespace: Namespace::parse("app").expect("a Namespace"),
+                    service: narrowed.then(|| PlaceService {
+                        id: Uuid::from_u128(API),
+                        name: ServiceName::parse("api").expect("a Service name"),
+                    }),
+                }]),
+            },
+            volumes: Vec::new(),
+            issued_at: time(0),
+        },
+        approved_by: PasskeyApprover::Server,
+    }
+}
+
+/// What K1 reaches: the Shared value it opened, or nothing, as [`Mutation::SpecOnly`]
+/// reads it.
+fn k1_reach(spec_only: bool) -> Reach {
+    Reach {
+        values: if spec_only {
+            Vec::new()
+        } else {
+            vec![ValueReach {
+                environment: ENVIRONMENT,
+                scope: SealedScope::Shared,
+            }]
+        },
+        volumes: Vec::new(),
+    }
+}
+
+/// `TrustedKeys::covers_kept` for K1's keys A and B, by whether B is trusted, whether it
+/// is narrowed, and whether K1's reach is read as [`Mutation::SpecOnly`] does. The
+/// decision depends on nothing else in a state, so it is read once per input.
+fn covers_kept(b_trusted: bool, b_narrowed: bool, spec_only: bool) -> [bool; 2] {
+    static TABLE: OnceLock<BTreeMap<(bool, bool, bool), [bool; 2]>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let api = QualifiedService::parse("app/api").expect("a Service");
+        let mut table = BTreeMap::new();
+        for bits in 0..8_u8 {
+            let [b_trusted, b_narrowed, spec_only] = [0, 1, 2].map(|bit| bits & (1 << bit) != 0);
+            let trusted = TrustedKeys::new(
+                [ployz_core::DeviceKey::from(key_a())],
+                [],
+                b_trusted.then(|| grant_b(b_narrowed)),
+            );
+            let reach = k1_reach(spec_only);
+            let covered = [key_a(), key_b()].map(|key| {
+                trusted
+                    .covers_kept(&Approver::Signing(key), &api, Some(&reach))
+                    .is_ok()
+            });
+            table.insert((b_trusted, b_narrowed, spec_only), covered);
+        }
+        table
+    });
+    table
+        .get(&(b_trusted, b_narrowed, spec_only))
+        .copied()
+        .expect("every input is in the table")
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -247,6 +352,19 @@ impl ServiceFloor {
             && !self.over_refuses(approval, floor)
     }
 
+    /// Whether K1's key A, or B, covers it alone in `state`, as `Standing::admits` asks.
+    fn covers(self, state: &State, key_is_b: bool) -> bool {
+        if self.has(Mutation::TrustOnly) {
+            return !key_is_b || state.b_trusted;
+        }
+        let [a, b] = covers_kept(
+            state.b_trusted,
+            state.b_narrowed,
+            self.has(Mutation::SpecOnly),
+        );
+        if key_is_b { b } else { a }
+    }
+
     /// `Standing::admits` for a kept Container.
     fn standing(self, state: &State, kept: Kept) -> bool {
         let floor = if self.has(Mutation::DropRecheck) {
@@ -255,11 +373,20 @@ impl ServiceFloor {
             state.floor.map(time)
         };
         match kept {
-            Kept::K1 if self.has(Mutation::NewestPerKeys) => {
-                service_floor::keys_stand([(true, time(3)), (state.b_trusted, time(3))], floor)
-            }
             Kept::K1 => {
-                service_floor::keys_stand([(true, time(1)), (state.b_trusted, time(3))], floor)
+                let b_at = 3;
+                let a_at = if self.has(Mutation::NewestPerKeys) {
+                    3
+                } else {
+                    1
+                };
+                service_floor::keys_stand(
+                    [
+                        (self.covers(state, false), time(a_at)),
+                        (self.covers(state, true), time(b_at)),
+                    ],
+                    floor,
+                )
             }
             Kept::Kr => service_floor::keys_stand([(true, time(1))], floor),
         }
@@ -303,6 +430,7 @@ impl Model for ServiceFloor {
             clock: 0,
             floor: None,
             b_trusted: true,
+            b_narrowed: false,
             admissions: [Phase::Idle; 5],
             started: [None; 2],
             honest_forgets: 0,
@@ -311,6 +439,7 @@ impl Model for ServiceFloor {
             taken: Vec::new(),
             highest: None,
             used_below: false,
+            started_uncovered: false,
             pulled_below: false,
             ahead_refused: false,
             recheck_refused: false,
@@ -340,6 +469,9 @@ impl Model for ServiceFloor {
         }
         if state.b_trusted {
             actions.push(Action::RemoveB);
+            if !state.b_narrowed {
+                actions.push(Action::NarrowB);
+            }
         }
         if state.clock < LAST_MINUTE {
             actions.push(Action::Tick);
@@ -398,14 +530,24 @@ impl Model for ServiceFloor {
             }
             Action::Start(kept) => {
                 let passed = self.standing(&state, kept);
-                let truth = match kept {
-                    Kept::K1 => Self::truly_stands(&state, &[(true, 1), (state.b_trusted, 3)]),
-                    Kept::Kr => Self::truly_stands(&state, &[(true, 1)]),
+                let (trusted, covered) = match kept {
+                    Kept::K1 => (
+                        [(true, 1), (state.b_trusted, 3)],
+                        [(true, 1), (state.b_trusted && !state.b_narrowed, 3)],
+                    ),
+                    Kept::Kr => ([(true, 1), (false, 0)], [(true, 1), (false, 0)]),
                 };
-                state.used_below |= passed && !truth;
+                if passed && !Self::truly_stands(&state, &covered) {
+                    if Self::truly_stands(&state, &trusted) {
+                        state.started_uncovered = true;
+                    } else {
+                        state.used_below = true;
+                    }
+                }
                 *state.start_mut(kept) = Some(passed);
             }
             Action::RemoveB => state.b_trusted = false,
+            Action::NarrowB => state.b_narrowed = true,
             Action::Tick => state.clock += 1,
             Action::Crash => {
                 state.crashed = true;
@@ -423,6 +565,9 @@ impl Model for ServiceFloor {
         vec![
             Property::always(NO_USE_BELOW, |_, state: &State| !state.used_below),
             Property::always(NO_PULL_BELOW, |_, state: &State| !state.pulled_below),
+            Property::always(NO_START_UNCOVERED, |_, state: &State| {
+                !state.started_uncovered
+            }),
             Property::always(FLOOR_SIGNED, |_, state: &State| {
                 state.floor.is_none_or(|floor| state.taken.contains(&floor))
             }),
@@ -453,6 +598,22 @@ impl Model for ServiceFloor {
                 "a kept Container whose post-floor signer was removed is refused",
                 |_, state: &State| !state.b_trusted && state.started.first() == Some(&Some(false)),
             ),
+            Property::sometimes(
+                "a kept Container that opened a Shared value starts over the floor under its post-floor signer's Environment place",
+                |_, state: &State| {
+                    !state.b_narrowed
+                        && state.floor.is_some_and(|floor| floor > 1)
+                        && state.started.first() == Some(&Some(true))
+                },
+            ),
+            Property::sometimes(
+                "a kept Container that opened a Shared value is refused once its post-floor signer holds only its Service",
+                |_, state: &State| {
+                    state.b_trusted
+                        && state.b_narrowed
+                        && state.started.first() == Some(&Some(false))
+                },
+            ),
         ]
     }
 }
@@ -475,6 +636,7 @@ fn minute(at: Timestamp) -> Minute {
 const NO_USE_BELOW: &str =
     "no create or Operator start passes its last floor read under an approval that floor forgot";
 const NO_PULL_BELOW: &str = "no admission pulls after a first floor read that forgot its approval";
+const NO_START_UNCOVERED: &str = "no Operator start passes unless one kept key still covers the Container alone at or past the floor";
 const FLOOR_SIGNED: &str = "the floor is always the signed time of a forget this Machine took";
 const FLOOR_RISES: &str = "the floor never falls";
 const FORGET_RAISES: &str =
@@ -491,8 +653,13 @@ fn story(path: &[(State, Option<Action>)]) -> String {
         led_by = *action;
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    clock={} floor={:?} b_trusted={} admissions={:?} started={:?}",
-            state.clock, state.floor, state.b_trusted, state.admissions, state.started
+            "{n:2}. {what}\n    clock={} floor={:?} b_trusted={} b_narrowed={} admissions={:?} started={:?}",
+            state.clock,
+            state.floor,
+            state.b_trusted,
+            state.b_narrowed,
+            state.admissions,
+            state.started
         );
     }
     story
@@ -507,6 +674,7 @@ fn reads_as(action: Action) -> String {
         Action::Create(approval) => format!("{approval:?}: still_holds, then Docker creates"),
         Action::Start(kept) => format!("{kept:?}: start_checked reads Standing::admits"),
         Action::RemoveB => "key B is removed".to_owned(),
+        Action::NarrowB => "key B's grant is narrowed to app/api alone".to_owned(),
         Action::Tick => "the clock ticks".to_owned(),
         Action::Crash => "the daemon crashes; the floor stays".to_owned(),
     }
@@ -560,6 +728,20 @@ mod tests {
     #[test]
     fn each_key_keeps_its_own_time() {
         breaks(mutated(Mutation::NewestPerKeys), NO_USE_BELOW);
+    }
+
+    /// Reading only trust, K1 starts under B once B holds only `app/api` and a forget left
+    /// A below the floor.
+    #[test]
+    fn a_start_asks_whether_its_key_still_covers_it() {
+        breaks(mutated(Mutation::TrustOnly), NO_START_UNCOVERED);
+    }
+
+    /// Checking only the Service, K1 starts under B once B holds only `app/api`, though it
+    /// opened a Shared value.
+    #[test]
+    fn a_start_asks_for_every_sealed_part_the_container_opened() {
+        breaks(mutated(Mutation::SpecOnly), NO_START_UNCOVERED);
     }
 
     /// A clamp raises the floor to a time no forget was signed at, and each resend would

@@ -18,9 +18,9 @@ use url::Url;
 
 use super::{
     Approver, AuthorityRefusal, SigningPublicKey,
-    scope::{Ask, KeyKind, KeyScope, TrustedGrant},
+    scope::{Ask, Denied, Grant, KeyKind, KeyScope, Reach, TrustedGrant},
 };
-use crate::{CheckCode, ClientKey, DeviceCode, DeviceKey, ValueError};
+use crate::{CheckCode, ClientKey, DeviceCode, DeviceKey, QualifiedService, ValueError};
 
 /// A passkey's public key: a P-256 point for ES256, or an Ed25519 key for EdDSA.
 #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -503,8 +503,14 @@ impl TrustedKey {
     /// ceiling over the whole Cluster.
     #[must_use]
     pub fn scope(&self) -> Option<&KeyScope> {
+        self.grant().map(|grant| &grant.scope)
+    }
+
+    /// The grant a CI or agent key holds. `None` for a Device or passkey.
+    #[must_use]
+    pub fn grant(&self) -> Option<&Grant> {
         match self {
-            Self::Grant(held) => Some(&held.grant.scope),
+            Self::Grant(held) => Some(&held.grant),
             Self::Device(_) | Self::Passkey(_) => None,
         }
     }
@@ -620,26 +626,75 @@ impl TrustedKeys {
     }
 
     /// Whether `by` may approve what `ask` asks: its kind signs such a statement, its
-    /// scope holds the cap, and its places hold the target. This is the one check of what a
-    /// key may approve.
+    /// scope holds the cap, one of its places holds the target with every Sealed part a
+    /// version opens, and its grant names every Volume a version mounts. This is the one
+    /// check of what a key may approve, so one key covers a whole effect alone.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::UnknownKey`] or [`AuthorityRefusal::UnknownPasskey`]
-    /// when `by` is no key on this list, and [`AuthorityRefusal::OutOfScope`] when its kind
-    /// or scope doesn't reach.
+    /// when `by` is no key on this list, [`AuthorityRefusal::OutOfScope`] when its kind or
+    /// scope doesn't reach, and [`AuthorityRefusal::VolumeNotGranted`] for a Volume its
+    /// grant doesn't name.
     pub fn covers(&self, by: &Approver, ask: Ask<'_>) -> Result<(), AuthorityRefusal> {
         let key = self.of(by).ok_or(match by {
             Approver::Signing(key) => AuthorityRefusal::UnknownKey { key: *key },
             Approver::Passkey(_) => AuthorityRefusal::UnknownPasskey,
         })?;
-        if super::scope::allows(key.kind(), key.scope(), ask) {
-            return Ok(());
-        }
-        Err(AuthorityRefusal::OutOfScope {
-            code: key.code(),
-            kind: key.kind(),
-            what: ask.what(),
+        super::scope::allows(key.kind(), key.grant(), ask).map_err(|denied| match denied {
+            Denied::Out => AuthorityRefusal::OutOfScope {
+                code: key.code(),
+                kind: key.kind(),
+                what: ask.what(),
+            },
+            Denied::Values => AuthorityRefusal::OutOfScope {
+                code: key.code(),
+                kind: key.kind(),
+                what: "Sealed values outside its places",
+            },
+            Denied::Volume(volume) => AuthorityRefusal::VolumeNotGranted {
+                code: key.code(),
+                kind: key.kind(),
+                volume,
+            },
         })
+    }
+
+    /// Whether `by` still covers a kept Container of `service` that reaches `reach`, as
+    /// [`Self::covers`] decides for a version of it. A start reads this, so narrowing or
+    /// moving a grant stops every later start outside its new scope. `None` is a Container
+    /// kept before its reach was: a Device or passkey still stands for it, and a CI or
+    /// agent key, whose grant this Machine can no longer check it against, does not.
+    ///
+    /// # Errors
+    /// As [`Self::covers`], and [`AuthorityRefusal::Mismatch`] naming
+    /// [`field::KEPT_REACH`] for a grant without a kept reach.
+    ///
+    /// [`field::KEPT_REACH`]: super::refusal::field::KEPT_REACH
+    pub fn covers_kept(
+        &self,
+        by: &Approver,
+        service: &QualifiedService,
+        reach: Option<&Reach>,
+    ) -> Result<(), AuthorityRefusal> {
+        let ask = |reach| Ask::Version {
+            namespace: &service.namespace,
+            service: &service.name,
+            forgets: false,
+            reaches_host: false,
+            reach,
+        };
+        match reach {
+            Some(reach) => self.covers(by, ask(reach)),
+            None => {
+                self.covers(by, ask(Reach::none()))?;
+                match self.of(by).map(TrustedKey::kind) {
+                    Some(kind) if kind.whole_cluster() => Ok(()),
+                    _ => Err(AuthorityRefusal::Mismatch {
+                        field: super::refusal::field::KEPT_REACH,
+                    }),
+                }
+            }
+        }
     }
 
     /// The trusted passkey that answered `assertion` to `challenge`.
