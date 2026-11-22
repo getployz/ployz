@@ -9905,3 +9905,67 @@ fn a_cancelled_deployment_never_becomes_the_parent_of_an_edit() {
     assert_eq!(statement, &applied.statement);
     assert_eq!(spec.container.image, P1);
 }
+
+#[test]
+fn a_deployment_that_failed_in_a_service_never_becomes_its_parent() {
+    let (store, who) = shop();
+    let (web, api) = (
+        ServiceName::parse("web").unwrap(),
+        ServiceName::parse("api").unwrap(),
+    );
+    let first = [
+        posted(&store, &who, "web", P1),
+        posted(&store, &who, "api", P1),
+    ];
+    admit_signed(&store, &who, 1, first.to_vec());
+    apply(&store, 1);
+    let second = [
+        posted(&store, &who, "web", P2),
+        posted(&store, &who, "api", P2),
+    ];
+    admit_signed(&store, &who, 2, second.to_vec());
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"),
+                        "error": create_error()},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::ParentQuery {
+                environment: EnvironmentRef::default(),
+                services: vec![web.clone(), api.clone()],
+            },
+        )
+        .unwrap();
+    let parent = |service: &ServiceName| match view.services.get(service) {
+        Some(ployz_store::Parent::Signed {
+            statement, spec, ..
+        }) => (statement.clone(), spec.container.image.clone()),
+        other => panic!("{service}: {other:?}"),
+    };
+    assert_eq!(parent(&web), (second[0].statement.clone(), P2.to_owned()));
+    assert_eq!(
+        parent(&api),
+        (first[1].statement.clone(), P1.to_owned()),
+        "api never ran the version Deployment 2 failed to start"
+    );
+}

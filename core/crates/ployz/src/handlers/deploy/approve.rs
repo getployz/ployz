@@ -351,7 +351,9 @@ pub(in crate::handlers) enum Needs {
     /// A person's: each Server that enforces checks a signed version.
     Person,
     /// One with no person to ask, which signs an edit of the last version a person
-    /// approved: every Server must report that it enforces, and admit the edit.
+    /// approved: every Server, enforcing or not, must report whether it enforces and hold
+    /// every capability an edit needs. One that reports both and doesn't enforce passes:
+    /// it signs nothing and refuses nothing.
     Silent,
 }
 
@@ -376,7 +378,7 @@ impl Needs {
     }
 
     /// Whether `machine` must hold every capability: under [`Needs::Silent`] each Server
-    /// does, since one that doesn't report enforcing can't be shown to admit the edit.
+    /// does, enforcing or not, since one that starts enforcing must already admit the edit.
     fn checks(self, machine: &ployz_core::Machine) -> bool {
         match self {
             Self::Person => machine.runtime.device_enforcement == Some(true),

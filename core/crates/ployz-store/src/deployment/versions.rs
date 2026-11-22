@@ -360,9 +360,9 @@ pub enum Parent {
 }
 
 /// What `organization` keeps as the parent of each Service `query` names: the newest
-/// Deployment of its Environment that applied, wholly or in the Service it applied, and
-/// ran a version of it that names no parent, that
-/// version, and the spec that Deployment ran it with. A Deployment whose spec no longer
+/// Deployment of its Environment that applied that Service itself, not only another beside
+/// it, and ran a version of it that names no parent, that version, and the spec that
+/// Deployment ran it with. A Deployment whose spec no longer
 /// lowers to the digest it ran is passed over.
 ///
 /// # Errors
@@ -444,7 +444,7 @@ fn signed_parent(
 }
 
 /// The spec Deployment `id` ran `service` with, its tag pinned as `ran` says, when it
-/// still lowers to the digest `ran` names.
+/// applied `service` and the spec still lowers to the digest `ran` names.
 fn ran_spec(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -452,6 +452,9 @@ fn ran_spec(
     ran: &RanService,
 ) -> Option<RequestedServiceSpec> {
     let stored = super::load(tx, id).ok()?;
+    if !applied(&stored, service) {
+        return None;
+    }
     let saved = super::held_revision(tx, &stored).ok()?;
     let lowered = super::lowered(tx, &stored, &saved).ok()?;
     let mut spec = lowered
@@ -466,6 +469,21 @@ fn ran_spec(
         spec.container.image.clone_from(&pin.image);
     }
     (PayloadDigest::of(&spec, stored.namespace()).ok() == Some(ran.digest)).then_some(spec)
+}
+
+/// Whether `stored` put the Service that runs as `service` into Applied State. A
+/// Deployment that applied a Service beside it, then failed or was cancelled in it, never
+/// ran its version.
+fn applied(stored: &super::Stored, service: &ServiceName) -> bool {
+    let succeeded = stored.summary.status == super::DeploymentStatus::Applied;
+    stored.nodes.iter().any(|node| {
+        matches!(node, super::TargetNode::Service { runtime, .. } if runtime == service)
+            && stored
+                .run
+                .nodes
+                .get(node.id())
+                .is_some_and(|status| status.applied(succeeded))
+    })
 }
 
 /// The signed versions kept for one spec of a Service, by the digest a Server checks.

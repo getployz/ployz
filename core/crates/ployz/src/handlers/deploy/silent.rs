@@ -5,7 +5,8 @@
 //! the spec against the signed digest, changes only the image, and signs only when Cloud's
 //! plan comes to the same digest. Each Server then admits the edit only beside a version a
 //! person signed with the digest it names as its parent. Every other Service ships under
-//! the versions already kept for it, and signs nothing new.
+//! the versions already kept for it, and signs nothing new, so the deploy refuses while
+//! anything else is staged.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +15,7 @@ use ployz_core::authority::{
     ApprovedChange, Mounts, PayloadDigest, ServiceVersion, SignerKey, Timestamp,
     deploy::content_addressed,
 };
-use ployz_core::config::EnvironmentNodeType;
+use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{
     Hint, Namespace, PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode,
     SCOPED_KEYS_CAPABILITY, SealingPublicKey, ServiceName,
@@ -198,7 +199,7 @@ pub(in crate::handlers) fn servers_ready(matches: &ArgMatches) -> Result<(), Err
 /// `signing`, changing only its image. `plan`'s other Services sign nothing.
 ///
 /// # Errors
-/// Refuses before signing anything, as [`unnamed`] and [`children`] say, and returns the
+/// Refuses before signing anything, as [`pending`] and [`children`] say, and returns the
 /// Store's error when it can't read the parents.
 pub(in crate::handlers) fn sign(
     matches: &ArgMatches,
@@ -207,7 +208,7 @@ pub(in crate::handlers) fn sign(
     edits: &[ImageEdit],
     signing: &DeviceSigning,
 ) -> Result<DeviceApproval, Error> {
-    unnamed(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
+    pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
     let named = plan.target.map(|target| {
         target
             .into_iter()
@@ -308,6 +309,14 @@ pub(super) enum Refused {
     NotShipped(ServiceName),
     /// The deploy ships a staged image for a Service `--image` doesn't name.
     Unnamed { service: ServiceName, image: String },
+    /// The deploy ships another staged change: to `node`, a Service's name, `volumes.NAME`
+    /// or `configs.NAME`, at `field` when a Setting changed, and `service` when the node
+    /// is one.
+    Pending {
+        node: String,
+        field: Option<String>,
+        service: Option<ServiceName>,
+    },
     /// No Deployment ran a version of it a person approved; `deployed` when it runs one
     /// nobody signed.
     NoParent {
@@ -327,32 +336,52 @@ pub(super) enum Refused {
     Differs { service: ServiceName, field: String },
 }
 
-/// Refuse a deploy that ships a staged image `edits` doesn't name, as `changes` lists
-/// them: `ployz set web.image=…` then `ployz deploy --yes` signs nothing for web, so each
-/// Server would refuse it. Cloud can hide such a change, but never get it signed.
+/// Refuse a deploy that ships any staged change beyond the images `edits` names, as
+/// `changes` lists them. A silent deploy signs only those images, so anything else staged,
+/// in any Service or node, would ship with no person approving it: `ployz set
+/// web.image=…` then `ployz deploy --yes`, or a staged command beside `--image api=…`.
+/// Cloud can hide such a change, but never get it signed.
 ///
 /// # Errors
-/// Returns [`Refused::Unnamed`] for the first such Service.
-pub(super) fn unnamed(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(), Refused> {
+/// Returns [`Refused::Unnamed`] for the first Service whose only staged change is an image
+/// `--image` doesn't name, and [`Refused::Pending`] for the first other change.
+pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(), Refused> {
     for change in changes {
-        if change.node.node_type != EnvironmentNodeType::Service
-            || edits
-                .iter()
-                .any(|edit| edit.service.as_str() == change.name)
-        {
-            continue;
+        let service = (change.node.node_type == EnvironmentNodeType::Service)
+            .then(|| ServiceName::parse(&change.name).ok())
+            .flatten();
+        let image = format!("{}.image", change.name);
+        let named = service
+            .as_ref()
+            .is_some_and(|service| edits.iter().any(|edit| edit.service == *service));
+        let node = match change.node.node_type {
+            EnvironmentNodeType::Service => change.name.clone(),
+            EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+            EnvironmentNodeType::Config => format!("configs.{}", change.name),
+        };
+        let pending = |field: Option<&str>| Refused::Pending {
+            node: node.clone(),
+            field: field.map(str::to_owned),
+            service: service.clone(),
+        };
+        if change.lifecycle != ReviewLifecycleKind::Update {
+            return Err(pending(None));
         }
-        let path = format!("{}.image", change.name);
-        let Some(staged) = change.settings.iter().find(|setting| setting.path == path) else {
-            continue;
+        if let Some(other) = change.settings.iter().find(|setting| setting.path != image) {
+            return Err(pending(Some(&other.path)));
+        }
+        let Some(staged) = change.settings.first() else {
+            return Err(pending(None));
         };
-        let Ok(service) = ServiceName::parse(&change.name) else {
-            continue;
-        };
-        return Err(Refused::Unnamed {
-            service,
-            image: staged.after.as_str().unwrap_or("IMAGE").to_owned(),
-        });
+        if !named {
+            return Err(match service.clone() {
+                Some(service) => Refused::Unnamed {
+                    service,
+                    image: staged.after.as_str().unwrap_or("IMAGE").to_owned(),
+                },
+                None => pending(Some(&staged.path)),
+            });
+        }
     }
     Ok(())
 }
@@ -499,6 +528,29 @@ impl Refused {
                 "--image",
                 &format!("{service}={image}"),
             ]))),
+            Self::Pending {
+                node,
+                field,
+                service,
+            } => {
+                let at = field
+                    .as_deref()
+                    .map(|field| format!(" at {field}"))
+                    .unwrap_or_default();
+                let deploy: Vec<&str> = std::iter::once("deploy")
+                    .chain(service.as_ref().map(ServiceName::as_str))
+                    .collect();
+                Error::detailed(
+                    RpcErrorCode::ConfirmationRequired,
+                    format!(
+                        "{node} has a staged change{at} that no person approved. --yes and CI \
+                         or agent keys ship only the images --image names. Deploy it from a \
+                         terminal. Nothing signed or deployed."
+                    ),
+                    json!({ "node": node, "field": field }),
+                )
+                .hint(Hint::Next(super::super::store::next(matches, &deploy)))
+            }
             Self::NoParent {
                 service,
                 deployed: false,

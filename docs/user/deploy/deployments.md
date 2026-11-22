@@ -307,8 +307,15 @@ variable or a volume, stops the deploy and names what changed. Run that deploy a
 CI can ship images on top of it again. `--forget-older` always needs a terminal.
 
 Every other service the deploy ships keeps the versions it already runs under, and nothing new is
-signed for it. A server refuses to start one whose settings changed since a person approved it, so
-deploy those changes at a terminal first.
+signed for it. So `--yes` ships nothing else that is staged: when any other change waits to deploy,
+in any service, volume or config, the deploy stops before it signs and names what changed:
+
+```text
+error: api has a staged change at api.command that no person approved. --yes and CI or agent keys ship only the images --image names. Deploy it from a terminal. Nothing signed or deployed.
+next: ployz deploy api
+```
+
+Deploy those changes at a terminal first, or discard them.
 
 The image you name stays in the service's settings even when the deploy stops, so the next deploy
 ships it. If you set an image with `ployz set web.image=...`, deploy it with

