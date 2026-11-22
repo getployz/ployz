@@ -447,7 +447,7 @@ fn this_host() -> String {
 
 /// The `--cluster-name` value given, as a Cluster Name.
 pub(crate) fn parse_cluster_name(name: Option<&str>) -> Result<Option<ClusterName>, Error> {
-    name.map(crate::handlers::cluster::parse).transpose()
+    name.map(crate::cluster::name::parse).transpose()
 }
 
 pub(crate) fn joined_open() {

@@ -208,7 +208,7 @@ fn founding_name(matches: &ArgMatches) -> Result<Option<ClusterName>, Error> {
     }
     crate::ui::input(
         "Name this Cluster",
-        |typed: &str| ClusterName::parse(typed).map_err(|_| crate::handlers::cluster::VALID_NAME),
+        |typed: &str| ClusterName::parse(typed).map_err(|_| crate::cluster::name::VALID_NAME),
         unnamed_founding,
         "Cancelled. No Server was set up.",
     )
