@@ -156,7 +156,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "components/shell/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
-  "modules/ingress/cloudflare-setup.client.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
+  "modules/ingress/cloudflare-setup.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",

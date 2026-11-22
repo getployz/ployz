@@ -9,7 +9,7 @@ import { openPublicPortsServerFn } from "#/modules/ingress/doors.functions";
 import { clusterIngressKeys, clusterIngressObservationQueryOptions, clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { CloudflareChoice } from "./cluster-setup";
-import { forgetCloudflare, holdCloudflare, runFirstSetup, useHeldCloudflare } from "#/modules/ingress/cloudflare-setup.client";
+import { forgetCloudflare, holdCloudflare, runFirstSetup, useHeldCloudflare } from "#/modules/ingress/cloudflare-setup";
 import { type CardCloudflare, firstTunnelState } from "./servers-page-state";
 
 /** On the Servers page once the first Server joined: how the Cloudflare Tunnel chosen for it stands, and the ways on. */

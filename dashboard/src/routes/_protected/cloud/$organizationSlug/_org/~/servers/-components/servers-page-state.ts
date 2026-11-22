@@ -1,6 +1,6 @@
 import type { CloudflareSetup, ClusterIngressObservation } from "#/modules/ingress/doors";
 import type { ServerListState } from "#/modules/machines/server-status";
-import type { HeldCloudflare } from "#/modules/ingress/cloudflare-setup.client";
+import type { HeldCloudflare } from "#/modules/ingress/cloudflare-setup";
 
 /**
  * What the Servers page shows. The intake tray (servers waiting or enrolling) comes from Cloud, not the Runtime, so it

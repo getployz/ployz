@@ -8,7 +8,7 @@ import { DashboardShell } from "#/components/shell/dashboard-shell";
 import type { DashboardScope } from "#/components/shell/dashboard-navigation-model";
 import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
-import { useRunHeldCloudflareOnFounding } from "#/modules/ingress/cloudflare-setup.client";
+import { useRunHeldCloudflareOnFounding } from "#/modules/ingress/cloudflare-setup";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
 /** `chat` names the open agent thread; it rides along every Organization page so the sidebar stays put. */
