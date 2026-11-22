@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 19] = [
+        let expected: [&[u8]; 20] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz build secrets v1",
@@ -123,6 +123,7 @@ mod tests {
             b"ployz build-secrets attest v1",
             b"ployz-sealing-key-backup-v1",
             b"ployz-join-confirmation-v1",
+            b"ployz-join-restrictions-v1",
             b"ployz-verified-build-key-v1",
             b"ployz-verified-build/v1\n",
             b"ployz-join-v1\n",

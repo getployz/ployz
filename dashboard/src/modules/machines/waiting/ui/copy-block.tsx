@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { CopyButton } from "#/components/copy-button";
-import { Spinner } from "#/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { installLines, type InstallTarget } from "#/modules/machines/installer";
-import { installKeyServerFn } from "#/modules/passkeys/passkeys.functions";
+import { installKeyQueryOptions } from "#/modules/machines/waiting/passkey-join.queries";
 import type { InstallKey } from "#/modules/passkeys/passkeys.server";
 
 export function CopyBlock({ value }: { value: string }) {
@@ -23,13 +22,9 @@ export function CopyBlock({ value }: { value: string }) {
  * the Servers trust no passkey of yours, a line can't carry one that works, so it says whose passkey works instead.
  */
 export function InstallTabs({ organizationSlug, target }: { organizationSlug: string; target: InstallTarget }) {
-  const key = useQuery({
-    queryKey: ["install-key", organizationSlug],
-    queryFn: () => installKeyServerFn({ data: { organizationSlug } }),
-    staleTime: 0,
-  });
+  const key = useQuery(installKeyQueryOptions(organizationSlug));
   if (key.isPending) {
-    return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Checking your passkeys…</p>;
+    return <p role="status" className="text-sm text-muted-foreground">Checking your passkeys…</p>;
   }
   if (key.isError) return <p role="alert" className="text-sm text-destructive">Couldn't check your passkeys. Try again.</p>;
   return <KeyedInstall organizationSlug={organizationSlug} target={target} installKey={key.data} />;

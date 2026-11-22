@@ -5,12 +5,10 @@ import { Button } from "#/components/ui/button";
 import { type OnlyPasskey, PasskeyDeclined, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { approvePasskeyJoinServerFn, pendingPasskeyJoinsServerFn } from "#/modules/machines/waiting/passkey-join.functions";
-import { WAITING_POLL_MS } from "#/modules/machines/waiting/waiting.queries";
+import { pendingJoinsKey, pendingJoinsQueryOptions } from "#/modules/machines/waiting/passkey-join.queries";
 
 /** How long a passkey's approval stays open, at most: the join's own window may end sooner. */
 const APPROVAL_WINDOW_MS = 10 * 60_000;
-
-const pendingJoinsKey = (organizationSlug: string) => ["pending-joins", organizationSlug] as const;
 
 type Pending = Awaited<ReturnType<typeof pendingPasskeyJoinsServerFn>>[number];
 
@@ -32,12 +30,7 @@ export async function answerJoin(join: JoinApproval, only?: OnlyPasskey, now = D
 /** Servers waiting for a person to approve their join, each approved with that person's passkey. */
 export function PendingJoins({ organizationSlug }: { organizationSlug: string }) {
   const gate = useRoleGate(organizationSlug, "servers:add");
-  const pending = useQuery({
-    queryKey: pendingJoinsKey(organizationSlug),
-    queryFn: () => pendingPasskeyJoinsServerFn({ data: { organizationSlug } }),
-    refetchInterval: WAITING_POLL_MS,
-    enabled: gate.allowed,
-  });
+  const pending = useQuery({ ...pendingJoinsQueryOptions(organizationSlug), enabled: gate.allowed });
   const joins = pending.data ?? [];
   if (joins.length === 0) return null;
   return (
