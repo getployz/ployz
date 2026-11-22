@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { isRunStatus, isTerminalRunStatus, type ModelMessage, type RunError, type RunRecord, type RunStatus, type RunStore } from "@tanstack/ai";
+import { isRunStatus, isTerminalRunStatus, type ModelMessage, type RunError, type RunRecord, type RunStore } from "@tanstack/ai";
 import type { ChatWithInterruptsPersistence, InterruptRecord, InterruptStore, MessageStore } from "@tanstack/ai-persistence";
 import { and, asc, desc, eq, exists, gt, inArray, isNull, notInArray, or, type SQL, sql } from "drizzle-orm";
 import type { PgColumn, PgUpdateSetSource } from "drizzle-orm/pg-core";
@@ -29,8 +29,7 @@ export class Superseded extends Error {
   }
 }
 
-const STATUSES = Object.keys({ running: null, interrupted: null, completed: null, failed: null, aborted: null } satisfies Record<RunStatus, null>);
-const TERMINAL = STATUSES.filter(isRunStatus).filter(isTerminalRunStatus);
+const TERMINAL = ["running", "interrupted", "completed", "failed", "aborted"].filter(isRunStatus).filter(isTerminalRunStatus);
 
 const supersededError = { message: new Superseded().message, code: "superseded" } satisfies RunError;
 const displaced = and(eq(agentRuns.status, "failed"), sql`${agentRuns.record}->'error'->>'code' = ${supersededError.code}`);

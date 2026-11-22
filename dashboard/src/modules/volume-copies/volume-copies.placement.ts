@@ -118,7 +118,6 @@ export function copiesFromPlacement(input: {
       restore: seed === undefined ? null : { label: seed.point.name },
       moveTo: moving ? form.primary.server : null,
       busy: active !== null && ["move", "release", "restore", "seed", "deploy"].includes(active.kind) ? runWords(active) : null,
-      snapshots: null,
     },
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),

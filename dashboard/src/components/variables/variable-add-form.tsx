@@ -45,7 +45,7 @@ function createVariableAddFormState(draft?: VariableAddInput): VariableAddFormSt
 /** Why `value` can't be saved: a `${{ service.KEY }}` names no Service of the Environment (`serviceNames`). */
 function referenceError(value: string, serviceNames: readonly string[] | undefined) {
   if (serviceNames === undefined) return null;
-  const [unknown] = parseDisplayToParts(value, (slug) => serviceNames.includes(slug) ? { lineageId: slug, scope: "service" } : null).unresolved;
+  const [unknown] = parseDisplayToParts(value, (slug) => serviceNames.includes(slug)).unresolved;
   return unknown === undefined ? null : `There's no service named ${unknown} to reference in this environment.`;
 }
 

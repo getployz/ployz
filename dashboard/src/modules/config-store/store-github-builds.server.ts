@@ -220,7 +220,6 @@ const runEnded = (build: GithubBuild) => githubRunCompleted({
   access: organizationAccess(build.organization, build.run.installation_id), fullName: build.run.repository, runId: build.run.run_id,
 }).pipe(Effect.orElseSucceed(() => false));
 
-export type StoreGithubCheck = "waiting" | "done" | { failed: string };
 
 /**
  * One look at a dispatched build, after its run completed (the webhook), its final report came, or a wait timed out.

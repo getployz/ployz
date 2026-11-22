@@ -52,12 +52,6 @@ export function serviceName(wanted: string, services: readonly ServiceListing[])
   return uniqueName(wanted, services.flatMap((service) => [service.name, service.private_dns]));
 }
 
-// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for a 32-letter password.
-/** `length` random characters of `alphabet`. */
-export function randomText(alphabet: string, length: number) {
-  return Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => alphabet[byte % alphabet.length]).join("");
-}
-
 /**
  * The first of `wanted`, `wanted-2`, `wanted-3`… that is none of `taken`, as a DNS label: the stem is trimmed so the
  * number fits in 63 characters. A `tail` (`-1413`) is kept whole between the stem and the number; one that leaves no

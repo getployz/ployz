@@ -40,8 +40,6 @@ export function approvalOptions(organizationSlug: string, id: string) {
   });
 }
 
-export type Decided = ApprovalView;
-
 /**
  * Approve exactly the digest shown, or deny with a reason, as the CLI does. Answers the refusal's message when Cloud
  * says no, such as a plan that changed since the card drew.
@@ -50,14 +48,14 @@ export async function decideApproval(
   organizationSlug: string,
   id: string,
   decision: ApprovalDecision,
-): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
+): Promise<{ ok: true; decided: ApprovalView } | { ok: false; message: string }> {
   const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision } }).catch(() => null);
   if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
   return answer.ok ? { ok: true, decided: answer.approval } : answer;
 }
 
 /** Show a decision at once, then reread every approval: the badge and the waiting list drop it. */
-export function landDecision(queryClient: QueryClient, organizationSlug: string, id: string, decided: Decided) {
+export function landDecision(queryClient: QueryClient, organizationSlug: string, id: string, decided: ApprovalView) {
   queryClient.setQueryData(approvalOptions(organizationSlug, id).queryKey, (row) => row && { ...row, ...decided });
   return refetchApprovals(queryClient, organizationSlug);
 }
