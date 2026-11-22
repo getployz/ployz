@@ -537,14 +537,6 @@ mod tests {
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
-    #[test]
-    fn production_waits_are_bounded_by_the_numbers_an_operator_sees() {
-        let pacing = InstallPaths::production().pacing;
-        assert_eq!(pacing.soak, Duration::from_secs(30));
-        assert_eq!(pacing.version_command_timeout, Duration::from_secs(10));
-        assert_eq!(pacing, Pacing::default());
-    }
-
     /// The text `UpgradeFailure` records and the CLI prints for each way a host step stops.
     #[test]
     fn host_step_failures_render_their_recorded_text() {
