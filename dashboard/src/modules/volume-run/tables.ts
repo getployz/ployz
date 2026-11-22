@@ -1,5 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
+import { VOLUME_RUN_MESSAGE_LIMIT } from "#/modules/volume-run/volume-run";
 import {
   bigint,
   boolean,
@@ -70,6 +71,6 @@ export const volumeRun = pgTable(
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),
     check("volume_run_phase_check", sql`${table.phase} in (${sqlStringLiterals(VOLUME_RUN_PHASES)})`),
-    check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and 1024`),
+    check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and ${sql.raw(String(VOLUME_RUN_MESSAGE_LIMIT))}`),
   ],
 );
