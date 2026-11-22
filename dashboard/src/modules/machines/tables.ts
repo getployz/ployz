@@ -1,4 +1,5 @@
 import type { DrainReport, EnrollmentAssignment, MachineId, MachineName, QualifiedService } from "@ployz/sdk";
+import { approvalIndex, attemptColumns, attemptConstraints, endCodeCheck, machineIdCheck } from "#/db/attempt-table";
 import { createdAt, type EncryptedSecretValue, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { MACHINE_ID_SQL } from "#/lib/schema";
@@ -134,12 +135,6 @@ export const machineRemoveAttempt = pgTable(
   ],
 );
 
-/** `('refused','failed'),…`: each end code with the state it ends in. */
-const drainEndPairs = sql.join(
-  Object.entries(DRAIN_END_CODES).map(([code, state]) => sql`(${sqlStringLiterals([code, state])})`),
-  sql`,`,
-);
-
 /**
  * One Drain Cloud ran, or was asked to run, on one Server: history, read server-side as the latest per Server, never
  * into the Org Store. The click writes the row (`pending`) under the id the tab minted, so the one-active guard answers
@@ -150,19 +145,10 @@ const drainEndPairs = sql.join(
 export const serverDrainAttempt = pgTable(
   "server_drain_attempt",
   {
-    /** The request id the confirming tab minted. */
-    id: uuid("id").primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
+    ...attemptColumns<DrainState>(),
     machineId: text("machine_id").notNull().$type<MachineId>(),
     /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
     serverName: text("server_name").$type<MachineName>(),
-    /** Who clicked Drain; kept when the user is deleted. */
-    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
-    state: text("state").default("pending").notNull().$type<DrainState>(),
-    /** The run that owns the row, bound while pending; only it may claim or end the row. */
-    inngestRunId: text("inngest_run_id"),
     /** The Engine's DrainReport, verbatim, partial or not. Only `finished` has one. */
     report: jsonb("report").$type<DrainReport | null>(),
     /** How it ended without a report; null until then, and for `finished`. */
@@ -177,31 +163,21 @@ export const serverDrainAttempt = pgTable(
     planDigest: text("plan_digest"),
     /** A try found the servers silent, so the pending row waits for them rather than for another Drain. */
     serversSilent: boolean("servers_silent").default(false).notNull(),
-    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
-    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
-    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
     // One Drain per Server at a time: a second click returns the active one.
-    uniqueIndex("server_drain_attempt_one_active_idx")
-      .on(table.organizationId, table.machineId)
-      .where(sql`${table.state} in ('pending', 'running')`),
-    uniqueIndex("server_drain_attempt_run_uidx")
-      .on(table.inngestRunId)
-      .where(sql`${table.inngestRunId} is not null`),
+    ...attemptConstraints("server_drain_attempt", table, table.machineId, DRAIN_STATES),
     index("server_drain_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
-    uniqueIndex("server_drain_attempt_approval_uidx").on(table.approvalId).where(sql`${table.approvalId} is not null`),
+    approvalIndex("server_drain_attempt", table.approvalId),
     check("server_drain_attempt_targets_check", sql`${table.targets} is null or jsonb_typeof(${table.targets}) = 'array'`),
-    check("server_drain_attempt_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
-    check("server_drain_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(DRAIN_STATES)})`),
+    machineIdCheck("server_drain_attempt", table.machineId),
     // Each end code ends in exactly its state.
-    check("server_drain_attempt_end_code_check", sql`${table.endCode} is null or (${table.endCode}, ${table.state}) in (${drainEndPairs})`),
+    endCodeCheck("server_drain_attempt", table, DRAIN_END_CODES),
     check(
       "server_drain_attempt_refusal_check",
       sql`(${table.endCode} is not distinct from 'refused') = (${table.refusalMessage} is not null)
         and (${table.refusalMessage} is null or length(${table.refusalMessage}) between 1 and 1024)`,
     ),
-    check("server_drain_attempt_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
     // Each state carries exactly its evidence. A bound pending row names its run; one never queued never had one.
     check(
       "server_drain_attempt_state_shape_check",
@@ -232,42 +208,23 @@ export const serverDrainAttempt = pgTable(
 export const serverWebTrafficAttempt = pgTable(
   "server_web_traffic_attempt",
   {
-    /** The request id the flipping tab minted. */
-    id: uuid("id").primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
+    ...attemptColumns<WebTrafficState>(),
     machineId: text("machine_id").notNull().$type<MachineId>(),
-    /** Who flipped the switch; kept when the user is deleted. */
-    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     want: text("want").notNull().$type<WebTrafficWant>(),
-    state: text("state").default("pending").notNull().$type<WebTrafficState>(),
-    /** The run that owns the row, bound while pending; only it may claim or end the row. */
-    inngestRunId: text("inngest_run_id"),
     /** Why it failed, in the user's words: set exactly when `state` is `failed`. */
     failure: text("failure"),
-    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
-    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
-    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
     // One change per Server at a time: a second flip returns the active one.
-    uniqueIndex("server_web_traffic_attempt_one_active_idx")
-      .on(table.organizationId, table.machineId)
-      .where(sql`${table.state} in ('pending', 'running')`),
-    uniqueIndex("server_web_traffic_attempt_run_uidx")
-      .on(table.inngestRunId)
-      .where(sql`${table.inngestRunId} is not null`),
+    ...attemptConstraints("server_web_traffic_attempt", table, table.machineId, WEB_TRAFFIC_STATES),
     index("server_web_traffic_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
-    check("server_web_traffic_attempt_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
+    machineIdCheck("server_web_traffic_attempt", table.machineId),
     check("server_web_traffic_attempt_want_check", sql`${table.want} in (${sqlStringLiterals(WEB_TRAFFIC_WANTS)})`),
-    check("server_web_traffic_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(WEB_TRAFFIC_STATES)})`),
     check(
       "server_web_traffic_attempt_failure_check",
       sql`(${table.state} = 'failed') = (${table.failure} is not null)
         and (${table.failure} is null or length(${table.failure}) between 1 and 1024)`,
     ),
-    check("server_web_traffic_attempt_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
     // Each state carries exactly its evidence. A bound pending row names its run; one never queued never had one.
     check(
       "server_web_traffic_attempt_state_shape_check",
@@ -283,11 +240,6 @@ export const serverWebTrafficAttempt = pgTable(
   ],
 );
 
-const cleanupEndPairs = sql.join(
-  Object.entries(CLEANUP_END_CODES).map(([code, state]) => sql`(${sqlStringLiterals([code, state])})`),
-  sql`,`,
-);
-
 /**
  * One clean of a Namespace no Environment owns, asked for from the CLI. The request writes it `pending` with the Volumes
  * the caller confirmed; the run claims it `running` right before it asks the Engine, and ends it `finished` with the
@@ -296,45 +248,31 @@ const cleanupEndPairs = sql.join(
 export const namespaceCleanup = pgTable(
   "namespace_cleanup",
   {
-    id: uuid("id").primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
+    ...attemptColumns<CleanupState>(),
     namespace: text("namespace").notNull(),
-    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     /** The approval this clean consumed: a retry with it answers this row instead of cleaning again. */
     approvalId: uuid("approval_id"),
     /** The Volumes the caller confirmed losing. */
     confirmDataLoss: jsonb("confirm_data_loss").notNull().$type<DataLossIdentity[]>(),
     /** Unused: the signed teardown a clean once carried. */
     teardown: jsonb("teardown"),
-    state: text("state").default("pending").notNull().$type<CleanupState>(),
-    inngestRunId: text("inngest_run_id"),
     /** The Docker Volume names removed; only `finished` has them. */
     volumes: jsonb("volumes").$type<string[] | null>(),
     endCode: text("end_code").$type<CleanupEndCode | null>(),
     /** The Engine's words: set exactly when `end_code` is `refused` or `incomplete`. */
     endMessage: text("end_message"),
-    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
-    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
-    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("namespace_cleanup_one_active_idx")
-      .on(table.organizationId, table.namespace)
-      .where(sql`${table.state} in ('pending', 'running')`),
-    uniqueIndex("namespace_cleanup_run_uidx").on(table.inngestRunId).where(sql`${table.inngestRunId} is not null`),
-    uniqueIndex("namespace_cleanup_approval_uidx").on(table.approvalId).where(sql`${table.approvalId} is not null`),
+    ...attemptConstraints("namespace_cleanup", table, table.namespace, CLEANUP_STATES),
+    approvalIndex("namespace_cleanup", table.approvalId),
     check("namespace_cleanup_namespace_check", sql`length(${table.namespace}) between 1 and 255 and ${table.namespace} !~ '[[:cntrl:]]'`),
     check("namespace_cleanup_confirm_data_loss_check", sql`jsonb_typeof(${table.confirmDataLoss}) = 'array'`),
-    check("namespace_cleanup_state_check", sql`${table.state} in (${sqlStringLiterals(CLEANUP_STATES)})`),
-    check("namespace_cleanup_end_code_check", sql`${table.endCode} is null or (${table.endCode}, ${table.state}) in (${cleanupEndPairs})`),
+    endCodeCheck("namespace_cleanup", table, CLEANUP_END_CODES),
     check(
       "namespace_cleanup_end_message_check",
       sql`(${table.endCode} is not distinct from 'refused' or ${table.endCode} is not distinct from 'incomplete') = (${table.endMessage} is not null)
         and (${table.endMessage} is null or length(${table.endMessage}) between 1 and 1024)`,
     ),
-    check("namespace_cleanup_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
     check(
       "namespace_cleanup_state_shape_check",
       sql`(
@@ -354,6 +292,7 @@ export const namespaceCleanup = pgTable(
     ),
   ],
 );
+
 
 /** Backend-only connection metadata; neither membership nor live presence. */
 export const organizationMachine = pgTable(
