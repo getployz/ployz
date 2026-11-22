@@ -15,7 +15,7 @@ import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "#/modules/volume-r
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { resizeVolumeServerFn } from "#/modules/volume-run/volume-run.functions";
 import { useWatchVolumeRun, volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
-import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
+import { ServiceSettingInput } from "../../../../../../../../../../../components/settings/ServiceSettingInput";
 
 type Grow = Extract<ResizeVerdict, { kind: "grow" }>;
 

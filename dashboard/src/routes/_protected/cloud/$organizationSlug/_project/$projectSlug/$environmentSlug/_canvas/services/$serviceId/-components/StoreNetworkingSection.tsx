@@ -8,7 +8,7 @@ import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports"
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { useStorePendingDomains, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import type { StoreService } from "./StoreServiceDrawer";
-import { ServiceSettingInput } from "./ServiceSettingInput";
+import { ServiceSettingInput } from "../../../../../../../../../../../components/settings/ServiceSettingInput";
 import { SettingsAddButton, SettingsFoot, SettingsRow } from "#/components/settings/settings-section";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { Skeleton } from "#/components/ui/skeleton";

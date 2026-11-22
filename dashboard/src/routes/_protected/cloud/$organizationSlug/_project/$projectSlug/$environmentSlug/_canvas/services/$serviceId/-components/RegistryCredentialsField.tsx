@@ -7,8 +7,8 @@ import {
   registryProvider,
 } from "#/modules/config-store/registry-credentials";
 import type { Write } from "#/modules/config-store/store-write";
-import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialForm";
-import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
+import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/ServiceRegistryCredentialForm";
+import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
 import { PencilIcon } from "lucide-react";
 
 /**

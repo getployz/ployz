@@ -14,7 +14,7 @@ import { healthcheckOf, healthcheckValue, type Healthcheck, type HealthcheckKind
 import { shownValue } from "#/modules/config-store/store-deployments";
 import { changedProps } from "#/modules/config-store/store-services";
 import type { Write } from "#/modules/config-store/store-write";
-import { ServiceSettingInput } from "./ServiceSettingInput";
+import { ServiceSettingInput } from "../../../../../../../../../../../components/settings/ServiceSettingInput";
 
 const { path, command, timeoutSeconds } = serviceSetting("healthcheck").properties;
 

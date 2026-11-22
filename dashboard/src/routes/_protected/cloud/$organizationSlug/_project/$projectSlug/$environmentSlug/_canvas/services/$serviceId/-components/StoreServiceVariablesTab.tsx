@@ -25,7 +25,7 @@ import {
 import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modules/variables/variables";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
-import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
+import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/ServiceVariablesRawEditor";
 
 const LINK = buttonVariants({ variant: "link", size: "sm", className: "h-auto p-0" });
 

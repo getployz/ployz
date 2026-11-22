@@ -27,7 +27,7 @@ import { StoreVolumeSize } from "./StoreVolumeSize";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
-import { ServiceSettingInput } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceSettingInput";
+import { ServiceSettingInput } from "#/components/settings/ServiceSettingInput";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
