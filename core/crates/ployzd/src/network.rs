@@ -440,14 +440,24 @@ fn elapsed(now: SystemTime, earlier: Option<SystemTime>) -> Duration {
 }
 
 fn checked_command(program: &str, args: &[&str]) -> Result<Output, NetworkError> {
-    let output = Command::new(program).args(args).output()?;
+    checked(Command::new(program).args(args))
+}
+
+fn checked(command: &mut Command) -> Result<Output, NetworkError> {
+    let output = command.output()?;
     if output.status.success() {
         Ok(output)
     } else {
-        Err(NetworkError::Command {
-            program: program.into(),
+        Err(NetworkError::failed(command.get_program(), &output))
+    }
+}
+
+impl NetworkError {
+    fn failed(program: &std::ffi::OsStr, output: &Output) -> Self {
+        Self::Command {
+            program: program.to_string_lossy().into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-        })
+        }
     }
 }
 

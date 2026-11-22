@@ -727,10 +727,7 @@ fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(NetworkError::Command {
-            program,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-        })
+        Err(NetworkError::failed(program.as_ref(), &output))
     }
 }
 
@@ -922,10 +919,7 @@ fn rule_exists(
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1 | 2) => Ok(false),
-        _ => Err(NetworkError::Command {
-            program: program.into(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
-        }),
+        _ => Err(NetworkError::failed(program.as_ref(), &output)),
     }
 }
 

@@ -12,12 +12,10 @@ use std::{
 
 use crate::{
     dataset_layout::{DatasetLayout, MOUNT_ROOT, Place, SlotAt},
+    host_command::{self, Exit, Ran},
     machine_pool::MachinePool,
 };
-use tokio::{
-    process::Command,
-    sync::{Mutex, OwnedMutexGuard},
-};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::{
     PluginError, Result, VolumeName,
@@ -396,13 +394,11 @@ impl VolumeStorage {
         checked_command(&self.zfs, args).await
     }
 
-    /// Like [`Self::zfs`], for a listing an absence is judged from. ZFS exits 0 when it
-    /// stopped iterating on an error and says so only on stderr, so any stderr fails it.
+    /// Like [`Self::zfs`], under [`Exit::Listing`].
     pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
-        let output = run_command(&self.zfs, args).await;
+        let output = host_command::run(&self.zfs, args).await;
         if let Ok(output) = &output
-            && output.status.success()
-            && !output.stderr.trim_ascii().is_empty()
+            && Exit::Listing.judge(output) == Ran::StoppedEarly
         {
             return Err(format!(
                 "{} {} stopped early: {}",
@@ -689,22 +685,8 @@ fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
     ]
 }
 
-pub(super) async fn run_command(program: &PathBuf, args: &[&str]) -> io::Result<Output> {
-    let mut attempt = 0;
-    loop {
-        match Command::new(program).args(args).output().await {
-            // ETXTBSY means exec never started; only that launch error is safe to retry.
-            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
-                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
-                attempt += 1;
-            }
-            output => return output,
-        }
-    }
-}
-
-pub(super) async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
-    checked_output(program, args, run_command(program, args).await)
+pub(super) async fn checked_command(program: &Path, args: &[&str]) -> Result<String> {
+    checked_output(program, args, host_command::run(program, args).await)
 }
 
 pub(super) fn checked_output(

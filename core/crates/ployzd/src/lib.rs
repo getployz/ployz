@@ -30,6 +30,7 @@ pub(crate) mod faults;
 pub(crate) mod filesystem;
 pub mod github;
 mod host_capacity;
+pub(crate) mod host_command;
 pub mod host_facts;
 pub(crate) mod images;
 pub(crate) mod ingress;
