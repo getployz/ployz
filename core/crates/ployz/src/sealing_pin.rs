@@ -20,7 +20,6 @@ use thiserror::Error;
 use crate::{
     cluster::{Call, Wait},
     connect::Client,
-    context::{ConnectionSource, Transport},
     failure::Failure,
 };
 
@@ -172,7 +171,9 @@ impl SealTo {
     /// A connection from Cloud's Server Access is Cloud's choice whatever its transport,
     /// and plain TCP authenticates no one.
     pub(crate) fn direct(client: &Client) -> bool {
-        trusts(client.connection_source(), client.connection().transport())
+        client
+            .connection_source()
+            .own_full_access(client.connection().transport())
     }
 
     /// The key to seal to through `client`. `relayed` is the key the Cluster's rows
@@ -201,11 +202,6 @@ impl SealTo {
             }
         }
     }
-}
-
-fn trusts(source: &ConnectionSource, transport: &Transport) -> bool {
-    !matches!(source, ConnectionSource::Cloud)
-        && matches!(transport, Transport::Ssh { .. } | Transport::Unix(_))
 }
 
 /// `relayed`, a key Cloud passed on, when it is the one this computer pinned.
