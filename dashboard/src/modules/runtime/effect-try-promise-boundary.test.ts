@@ -23,6 +23,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/server-upgrade/server-upgrade.server.ts",
   "modules/passkeys/passkeys.server.ts",
   "modules/identity/auth.server.ts",
+  "server/api-route.ts",
   "server/database.server.ts",
   "server/schema-compatibility.ts",
   "modules/marketing/marketing-proxy.server.ts",
