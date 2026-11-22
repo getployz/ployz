@@ -1,5 +1,10 @@
 //! Domain and wire contracts shared byte-for-byte by the Ployz CLI and daemon.
 
+#![expect(
+    clippy::large_enum_variant,
+    reason = "wire and request enums keep the whole payload unboxed so serde, ts-rs and `Rpc::Request` see it; one request or reply holds one"
+)]
+
 pub mod authority;
 pub mod cloud_contract;
 pub mod config;

@@ -346,7 +346,6 @@ macro_rules! define_responses {
         ///
         /// Envelope identity stores `Rpc::Response` in the variant. Inspect
         /// payloads are large; boxing them would make `decode` return `Box<T>`.
-        #[expect(clippy::large_enum_variant, reason = "boxing would make `decode` return `Box<T>`")]
         #[derive(Clone, Debug, PartialEq)]
         pub enum RpcResponseBody {
             $($variant($payload),)+
