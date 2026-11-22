@@ -51,7 +51,8 @@ impl Command {
         }
     }
 
-    fn retry(self) -> &'static str {
+    /// [`Self::again`], as a hint after `retry:`.
+    pub(crate) fn retry(self) -> &'static str {
         match self {
             Self::ServerAdd => {
                 "rerun the same ployz server add command without --reset (keep all other options)"

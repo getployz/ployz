@@ -1,5 +1,6 @@
 //! Machine-local join proposals and Device-approved admission.
 
+use ployz_core::authority::MismatchField;
 use std::collections::BTreeMap;
 
 use ployz_core::{
@@ -163,7 +164,7 @@ impl LocalMachine {
         let trusted = self.record().trusted_keys();
         if join::approver(fresh, &trusted).is_none_or(|approver| !hint.names(&approver)) {
             return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                field: "the joiner's First Key",
+                field: MismatchField::FirstKey,
             }));
         }
         Ok(())
@@ -274,7 +275,7 @@ impl LocalMachine {
             let confirmation = key.confirm_join(&approval);
             if !key.restricts_join(&approval, &confirmation, &request.restrictions) {
                 return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                    field: "join restrictions",
+                    field: MismatchField::JoinRestrictions,
                 }));
             }
             let set = request.restrictions.set;
@@ -329,7 +330,7 @@ impl LocalMachine {
             .id;
         if machine != fresh.machine {
             return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                field: "a joining Machine",
+                field: MismatchField::JoiningMachine,
             }));
         }
         self.approvals.consume_join(result, Timestamp::now())?;
@@ -401,7 +402,7 @@ impl LocalMachine {
             });
             if !ours {
                 return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                    field: "bootstrap peers",
+                    field: MismatchField::BootstrapPeers,
                 }));
             }
             return Ok(approval);
@@ -417,7 +418,7 @@ impl LocalMachine {
             .retain(|_, proposal| proposal.body.expires_at >= issued_at);
         if !joins.proposals.contains_key(&machine.id) && joins.proposals.len() >= 128 {
             return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                field: "pending join capacity",
+                field: MismatchField::PendingJoinCapacity,
             }));
         }
         joins.proposals.insert(

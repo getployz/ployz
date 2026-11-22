@@ -43,7 +43,10 @@ fn try_inventory(store: &Store, at: &EnvironmentRef) -> Result<Inventory, StoreC
         volumes: volumes
             .volumes
             .iter()
-            .map(|listing| json!({ "name": listing.volume.name, "deployed": listing.deployed }))
+            .map(|listing| InventoryVolume {
+                deployed: listing.deployed,
+                name: listing.volume.name.clone(),
+            })
             .collect(),
     })
 }
@@ -482,7 +485,7 @@ impl Shown {
                 inventory
                     .volumes
                     .iter()
-                    .filter_map(|volume| Some(volume.get("name")?.as_str()?.to_owned())),
+                    .map(|volume| volume.name.to_string()),
             );
         }
         shown
@@ -842,20 +845,24 @@ fn stalled(project: &ProjectName, environment: Option<&EnvironmentName>, left: &
 pub(super) struct Inventory {
     pub(super) environment: EnvironmentSummary,
     pub(super) services: Vec<ServiceName>,
-    pub(super) volumes: Vec<serde_json::Value>,
+    pub(super) volumes: Vec<InventoryVolume>,
+}
+
+/// A Volume removing an Environment deletes.
+#[derive(serde::Serialize)]
+pub(super) struct InventoryVolume {
+    /// Whether a Deploy applied it, so the Servers may hold its data.
+    deployed: bool,
+    name: VolumeName,
 }
 
 impl Inventory {
     /// A line for its Services and one for its Volumes, each only when it has some.
     pub(super) fn branches(&self) -> Vec<Tree> {
-        let volumes = self
-            .volumes
-            .iter()
-            .filter_map(|volume| volume.get("name")?.as_str())
-            .collect::<Vec<_>>();
+        let volumes: Vec<_> = self.volumes.iter().map(|volume| &volume.name).collect();
         [
             ("Services", super::joined(&self.services)),
-            ("Volumes", volumes.join(", ")),
+            ("Volumes", super::joined(&volumes)),
         ]
         .into_iter()
         .filter(|(_, names)| !names.is_empty())

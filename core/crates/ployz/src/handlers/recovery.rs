@@ -1,7 +1,6 @@
 use crate::cloud;
 use crate::cluster::{Call, Wait};
 use std::io::Read;
-use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
@@ -17,7 +16,7 @@ use crate::cli::{base, switch};
 use crate::cloud::account::Credential;
 use crate::cloud::enroll::RecoveryBackup;
 use crate::cloud::login::LoginError;
-use crate::connect::{Client, ConnectError, SystemConnector};
+use crate::connect::{Client, ConnectError};
 use crate::context::Transport;
 use crate::ui::{self, Fields};
 
@@ -254,8 +253,8 @@ pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Err
     {
         return Err(cloud_routed(verb));
     }
-    let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(crate::connect::connect_selected_in_order(selected, Arc::new(connector)).await?)
+    let connector = crate::cli::connector(matches);
+    Ok(crate::connect::connect_selected_in_order(selected, connector).await?)
 }
 
 /// Refuses a Server whose daemon predates `capability`, naming the Server.

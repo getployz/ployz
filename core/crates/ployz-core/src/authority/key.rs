@@ -17,7 +17,7 @@ use super::{
     keys::{Approver, Purpose, Signed, SignerKey, SigningPublicKey, Statement},
     open::{open_approval, open_one_shot},
     proposal::{ProposalRef, StepBody, StepKind},
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::{Ask, Grant, GrantKind, GrantVolume, KeyKind, KeyScope},
     trusted_key::{Passkey, PasskeyPublicKey, TrustedKeys},
 };
@@ -240,16 +240,16 @@ pub fn verify(
         open_approval(step, facts.trusted, facts.cluster)?
     };
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
+        (MismatchField::Cluster, body.cluster == cluster),
         (
-            "this Machine",
+            MismatchField::ThisMachine,
             match &body.change {
                 KeyChange::Trust { members, .. } => members.contains(&facts.member),
                 KeyChange::Remove { .. } => true,
             },
         ),
         (
-            "a key scope",
+            MismatchField::KeyScope,
             match &body.change {
                 KeyChange::Trust { key, .. } => key.fits(),
                 KeyChange::Remove { .. } => true,
@@ -259,7 +259,7 @@ pub fn verify(
     let verified = match body.change {
         KeyChange::Trust { key, .. } => {
             let bundle = step.proposal.as_deref().ok_or(AuthorityRefusal::Mismatch {
-                field: "a proposal",
+                field: MismatchField::Proposal,
             })?;
             KeyVerified::Trust {
                 key,

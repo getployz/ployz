@@ -2,30 +2,26 @@
 
 use super::*;
 
-/// Which nodes a Deployment ships.
-pub(crate) enum Scope<'a> {
-    /// Every Service, Volume and Config, including the removal of those Applied
-    /// State holds and Saved does not, which deletes the Docker Volumes `losses`
-    /// names. It tears down what `retire` names, from [`dropped`]: each Service
-    /// Saved dropped, and beside each it ships, the runtime Services that one no
-    /// longer runs as. With `prune` it tears down every other Service running in
-    /// the Namespace too.
-    All {
-        losses: &'a [VolumeLoss],
-        retire: &'a [Retire],
-        prune: bool,
-    },
-    /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. With `every_saved`, it ships every Saved change:
-    /// each Service, Volume and Config its [`Landing`] doesn't hold settled, and the
-    /// removal of each Config Saved drops. It removes a Volume of `losses` once it
-    /// ships every Service that may run mounting it, at once when none does.
-    Narrow {
-        services: &'a [ServiceName],
-        retire: &'a [Retire],
-        losses: &'a [VolumeLoss],
-        every_saved: bool,
-    },
+/// Which nodes a Deployment ships, besides the teardown of the Services `retire`
+/// names. A full one ships every Service, Volume and Config, including the removal
+/// of those Applied State holds and Saved does not, which deletes the Docker Volumes
+/// `losses` names; `retire` comes from [`dropped`]: each Service Saved dropped, and
+/// beside each it ships, the runtime Services that one no longer runs as. A named
+/// one ships its Services and the Volumes and Configs they mount, and removes a
+/// Volume of `losses` once it ships every Service that may run mounting it, at once
+/// when none does.
+pub(crate) struct Scope<'a> {
+    pub(crate) targeting: Targeting<Narrow<'a>>,
+    pub(crate) retire: &'a [Retire],
+    pub(crate) losses: &'a [VolumeLoss],
+}
+
+/// The Services a named Deployment ships. With `every_saved`, it ships every Saved
+/// change too: each Service, Volume and Config its [`Landing`] doesn't hold settled,
+/// and the removal of each Config Saved drops.
+pub(crate) struct Narrow<'a> {
+    pub(crate) services: &'a [ServiceName],
+    pub(crate) every_saved: bool,
 }
 
 impl<'a> Scope<'a> {
@@ -33,17 +29,19 @@ impl<'a> Scope<'a> {
     /// tears down nothing beyond what Saved dropped.
     pub(crate) fn of(services: &'a [ServiceName], losses: &'a [VolumeLoss]) -> Self {
         if services.is_empty() {
-            Self::All {
-                losses,
+            Self {
+                targeting: Targeting::Full { prune: false },
                 retire: &[],
-                prune: false,
+                losses,
             }
         } else {
-            Self::Narrow {
-                services,
+            Self {
+                targeting: Targeting::Named(Narrow {
+                    services,
+                    every_saved: false,
+                }),
                 retire: &[],
                 losses: &[],
-                every_saved: false,
             }
         }
     }
@@ -255,18 +253,9 @@ pub(crate) fn dropped(
 
 /// What a Deployment lowers: the Saved Services it ships and the runtime
 /// Services it tears down.
-pub(crate) enum Ships {
-    /// Every Saved Service, tearing down `removals`; with `prune`, every other
-    /// Service running in the Namespace too.
-    All {
-        removals: ServiceRemovals,
-        prune: bool,
-    },
-    /// `services`, tearing down `removals`.
-    Named {
-        services: Vec<ServiceName>,
-        removals: ServiceRemovals,
-    },
+pub(crate) struct Ships {
+    pub(crate) targeting: Targeting<Vec<ServiceName>>,
+    pub(crate) removals: ServiceRemovals,
 }
 
 /// Whether `saved`'s `service` would run otherwise than `landing` leaves it: it,
@@ -316,25 +305,15 @@ pub(crate) fn freeze(
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, prune, services, retire, losses, every_saved): (
-        bool,
-        bool,
-        &[ServiceName],
-        &[Retire],
-        &[VolumeLoss],
-        bool,
-    ) = match scope {
-        Scope::All {
-            losses,
-            retire,
-            prune,
-        } => (true, prune, &[], retire, losses, false),
-        Scope::Narrow {
-            services,
-            retire,
-            losses,
-            every_saved,
-        } => (false, false, services, retire, losses, every_saved),
+    let Scope {
+        targeting,
+        retire,
+        losses,
+    } = scope;
+    let full = targeting.is_full();
+    let (services, every_saved): (&[ServiceName], bool) = match &targeting {
+        Targeting::Full { .. } => (&[], false),
+        Targeting::Named(narrow) => (narrow.services, narrow.every_saved),
     };
     let dropped = landing.dropped(saved);
     if !full && services.is_empty() && retire.is_empty() {
@@ -437,20 +416,16 @@ pub(crate) fn freeze(
             .chain(retire.iter().map(TargetNode::retire))
             .collect::<Result<Vec<_>, _>>()?
     };
-    let ships = if full {
-        Ships::All { removals, prune }
-    } else {
-        Ships::Named {
-            services: services.to_vec(),
-            removals,
-        }
+    let shipping = Ships {
+        targeting: targeting.map(|_| services.to_vec()),
+        removals,
     };
     // Live values and Setup Commands resolve at claim; checking without them is the same.
     let lowered = lower(
         environment,
         saved,
         (&BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()),
-        &ships,
+        &shipping,
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
         organization,
@@ -562,12 +537,10 @@ pub(crate) fn freeze(
         .collect();
     Ok(Frozen {
         nodes,
-        full,
-        prune,
+        targeting: shipping.targeting.map(|_| lowered.shipped),
         namespace,
         cluster_domain: cluster_domain.cloned(),
         sourceless,
-        shipped: lowered.shipped,
     })
 }
 
@@ -675,20 +648,18 @@ pub(super) fn lower(
     organization: &OrganizationId,
 ) -> Result<Lowered, RpcError> {
     let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch)?;
-    let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
-        Ships::All { removals, prune } => (
+    let removals = &ships.removals;
+    let (narrowed, services, prune): (bool, &[ServiceName], _) = match &ships.targeting {
+        Targeting::Full { prune } => (
             false,
             &[],
-            removals,
             if *prune {
                 PruneScope::Namespace
             } else {
                 PruneScope::Removals
             },
         ),
-        Ships::Named { services, removals } => {
-            (true, services.as_slice(), removals, PruneScope::Namespace)
-        }
+        Targeting::Named(services) => (true, services.as_slice(), PruneScope::Namespace),
     };
     let lineages: BTreeMap<String, String> = compiled
         .variable_producers
@@ -1046,11 +1017,7 @@ pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
         config.settings.source,
         ServiceSource::Git { .. } | ServiceSource::Empty { .. }
     ) {
-        config.settings.source = ServiceSource::Image {
-            version: 1,
-            image: ployz_core::pending_image(&config.settings.private_dns),
-            credentials: ServiceImageCredentials::None,
-        };
+        config.settings.source = ServiceSource::pending(&config.settings.private_dns);
     }
     config
 }

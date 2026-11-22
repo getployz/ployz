@@ -11,7 +11,7 @@ use crate::deploy::machine_calls::{Outstanding, RESTART_WAIT, RestartTolerant};
 use crate::deploy::progress::Progress;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    ContainerRefusalReason, ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
     ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
     ImageDigest, LastRun, MachineAction, MachineId, Namespace, NewContainer, OperationPhase,
     OutOfMemory, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation,
@@ -233,7 +233,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         spec,
         None,
-        || format!("move:{old}:{}", uuid::Uuid::new_v4().simple()),
+        || CreationKey::for_move(old, uuid::Uuid::new_v4()),
     );
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
     let source = match client.inspect_container(from, old).await {

@@ -5,6 +5,7 @@
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
 
+use ployz_core::authority::MismatchField;
 use std::{
     collections::BTreeMap,
     io,
@@ -15,8 +16,8 @@ use std::{
 use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed,
-        Timestamp, version::Forget,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, RuleId, RuleIdentity, Signed, Timestamp,
+        version::Forget,
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};
@@ -73,16 +74,16 @@ impl Consumption {
             return Ok(());
         };
         if rule.generation < mark.generation {
-            return refused("a generation");
+            return refused(MismatchField::Generation);
         }
         if rule.repository_id != mark.repository_id {
-            return refused("a repository");
+            return refused(MismatchField::Repository);
         }
         if rule.branch != mark.branch {
-            return refused("a branch");
+            return refused(MismatchField::Branch);
         }
         if rule.namespace != &mark.namespace {
-            return refused("a Namespace");
+            return refused(MismatchField::Namespace);
         }
         Ok(())
     }
@@ -553,7 +554,7 @@ impl ConsumptionLog {
     /// repository, branch or Namespace. Writes only when the mark rises.
     pub(crate) fn mark_rule(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let rule = rule.identity();
@@ -605,7 +606,7 @@ impl ConsumptionLog {
                     return Ok(Edit::Keep(()));
                 }
                 return Err(refused(AuthorityRefusal::Mismatch {
-                    field: "a hook run",
+                    field: MismatchField::HookRun,
                 }));
             }
             log.rule_hooks.insert(

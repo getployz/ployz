@@ -995,9 +995,11 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
 pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
-    let headline =
-        super::ingress_headline("Server initialized; Ingress deployment incomplete", &error);
-    error.context(format!("{headline} {}, to reconcile it.", command.again()))
+    super::server::ingress_incomplete(
+        "Server initialized",
+        error,
+        Hint::Retry(command.retry().to_owned()),
+    )
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved

@@ -129,7 +129,7 @@ fn a_join_refuses_a_cluster_neither_its_pin_nor_its_first_key_signed() {
     let genuine = cluster.registration(&original);
     assert_eq!(
         store.enroll(member(genuine, None)).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert!(matches!(
         first_key.lock().unwrap().read().unwrap(),
@@ -173,7 +173,7 @@ fn a_join_trusts_what_its_admitting_server_sealed_and_not_the_approvals_lists() 
         store
             .enroll(member(registration, Some(cluster.pin())))
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
 
     drop(store);
@@ -233,7 +233,7 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
         store
             .enroll(member(registration.clone(), Some(cluster.pin())))
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
 
     let other_issuer = Registered {
@@ -279,7 +279,7 @@ async fn a_joiner_participates_only_under_its_admitting_servers_restrictions() {
         store
             .enroll(member(registration, Some(cluster.pin())))
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert!(store.record().management_scope(&removed.into()).is_some());
     assert!(matches!(

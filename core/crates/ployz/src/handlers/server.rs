@@ -3,7 +3,6 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
@@ -25,9 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, TARGET_RPC_TIMEOUT},
     context::Config,
-    ui::progress::StartFailure,
+    failure::StartFailure,
 };
 
 use super::{Error, leaf_matches, route, string_values, with_client};
@@ -239,9 +238,8 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             confirm_ingress_off(&machines, &doors, &selector)?;
         }
         let entries = route::entries(matches, context).await?;
-        let connector =
-            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-        let mut seeding = endpoint::seed(&entries, Arc::new(connector), &selector, address).await;
+        let connector = crate::cli::connector(matches);
+        let mut seeding = endpoint::seed(&entries, connector, &selector, address).await;
         if let Some(sentence) = seeding.sentence() {
             crate::ui::stream(sentence);
         }
@@ -548,7 +546,11 @@ pub(crate) async fn apply_update(
                 Some(failure) if nothing_serves(client, machine.id).await => {
                     turn_back_off(client, &mut machine, failure, error, rerun, &follow_up).await
                 }
-                _ => ingress_incomplete("Server updated", follow_up.hints(error, &rerun), rerun),
+                _ => ingress_incomplete(
+                    "Server updated",
+                    follow_up.hints(error, &rerun),
+                    Hint::Next(rerun),
+                ),
             };
             (None, Err(error))
         }
@@ -701,13 +703,14 @@ async fn turn_back_off(
     }
 }
 
-/// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-pub(crate) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
+/// A committed Server change whose Ingress Proxy follow-up failed: name it, and `then`, the step
+/// that finishes it.
+pub(crate) fn ingress_incomplete(committed: &str, error: Error, then: Hint) -> Error {
     let headline = super::ingress_headline(
         &format!("{committed}; the Ingress Proxy did not follow"),
         &error,
     );
-    error.context(headline).hint(Hint::Next(next))
+    error.context(headline).hint(then)
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
@@ -1356,7 +1359,7 @@ mod tests {
         let one = MachineId::random();
         let failed_on = |machine| {
             Error::coded(RpcErrorCode::Internal, "ingress: create Container failed.")
-                .with_diagnostic(crate::ui::progress::Diagnostic {
+                .with_diagnostic(crate::failure::Diagnostic {
                     failed_machine: Some(machine),
                     start_failure: Some(StartFailure::PortTaken),
                     ..Default::default()
@@ -1404,7 +1407,7 @@ mod tests {
     /// repeat `next:` as `retry:` (#3341). Another Server stays selected by Machine ID.
     #[test]
     fn set_hints_select_the_server_as_typed() {
-        use crate::ui::progress::{Diagnostic, LogTail};
+        use crate::failure::{Diagnostic, LogTail};
         use ployz_core::QualifiedService;
         let (target, other) = (MachineId::random(), MachineId::random());
         let tail = |machine| LogTail {

@@ -6,12 +6,13 @@
 //! GitHub now, and the Sealed record's digest all pass first. Then the token is spent.
 //! Nothing here opens a Sealed value, and nothing trusts Cloud's word for a fact.
 
+use ployz_core::authority::MismatchField;
 use std::future::Future;
 
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, BuildClaim, BuildStage, ClaimRule, CommitAuthority, CommitSha,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
         GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
     },
 };
@@ -29,7 +30,7 @@ pub(crate) trait Github: Sync {
     /// check out, and its lifetime at `now`.
     fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
@@ -73,7 +74,7 @@ impl GithubOnline {
 impl Github for GithubOnline {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -117,7 +118,7 @@ impl FixedGithub {
 impl Github for FixedGithub {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -176,27 +177,27 @@ impl LocalMachine {
             .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
         let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys(), Some(cluster))
             .map_err(Error::RuleGrantRefused)?;
-        let refused = |field| {
-            tracing::warn!(rule = %rule.rule, field, "refused a rule build's grant");
+        let refused = |field: MismatchField| {
+            tracing::warn!(rule = %rule.rule, field = field.text(), "refused a rule build's grant");
             Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
         };
         record.machine().ok_or(Error::NotParticipating)?;
         if !rule.machines.contains(&record.id()) {
-            return Err(refused("a Machine"));
+            return Err(refused(MismatchField::Machine));
         }
         // An ended generation still supersedes every one below it.
         self.approvals.mark_rule(&rule, Error::RuleGrantRefused)?;
         if rule.ended {
-            return Err(refused("an ended rule"));
+            return Err(refused(MismatchField::EndedRule));
         }
         let service = rule
             .service(&grant.service)
-            .ok_or_else(|| refused("a Service"))?;
+            .ok_or_else(|| refused(MismatchField::Service))?;
         let qualified =
             ployz_core::QualifiedService::new(rule.namespace.clone(), grant.service.clone());
         self.rule_floor(cluster, &qualified, &rule, now)
             .map_err(Error::RuleGrantRefused)?;
-        let holder = holder.ok_or_else(|| refused("a holder"))?;
+        let holder = holder.ok_or_else(|| refused(MismatchField::Holder))?;
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
             .await
@@ -206,7 +207,8 @@ impl LocalMachine {
             rule: rule.rule,
             generation: rule.generation,
             service: grant.service.clone(),
-            policy: PolicyDigest::of(&service.policy).map_err(|_| refused("a policy"))?,
+            policy: PolicyDigest::of(&service.policy)
+                .map_err(|_| refused(MismatchField::Policy))?,
             commit: grant.commit,
             authority: grant.authority,
             stage: BuildStage::Grant {
@@ -214,13 +216,15 @@ impl LocalMachine {
                 recipient: grant.recipient,
             },
         };
-        let audience = expected.audience().map_err(|_| refused("an audience"))?;
+        let audience = expected
+            .audience()
+            .map_err(|_| refused(MismatchField::Audience))?;
         if claims.aud != audience {
-            return Err(refused("an audience"));
+            return Err(refused(MismatchField::Audience));
         }
         let CommitAuthority::Head = grant.authority;
         if grant.commit != claims.sha {
-            return Err(refused("a commit"));
+            return Err(refused(MismatchField::Commit));
         }
         let head = github
             .head(
@@ -231,14 +235,14 @@ impl LocalMachine {
             .await
             .map_err(Error::RuleHeadUnread)?;
         if head != grant.commit {
-            return Err(refused("a commit"));
+            return Err(refused(MismatchField::Commit));
         }
         let digest = sealed
             .map(SealedDigest::of)
             .transpose()
-            .map_err(|_| refused("the Sealed values"))?;
+            .map_err(|_| refused(MismatchField::SealedValues))?;
         if digest != service.secrets {
-            return Err(refused("the Sealed values"));
+            return Err(refused(MismatchField::SealedValues));
         }
         self.approvals.consume_rule_proof(
             &rule,

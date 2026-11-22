@@ -24,10 +24,11 @@ mod record_owner;
 pub(crate) mod store;
 
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
+pub(crate) use store::EnrollPlan;
 #[cfg(test)]
 use store::PENDING_RESET_FILE_NAME;
-pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
+pub use store::{LocalMachineStore, StoreError};
 
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;

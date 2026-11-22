@@ -16,7 +16,7 @@ use ts_rs::TS;
 use super::{
     canonical::Timestamp,
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
 };
@@ -139,7 +139,7 @@ pub(super) fn open_step<T: StepBody>(
 ) -> Result<(T, Approver, SealingPublicKey), AuthorityRefusal> {
     if !step.signatures.is_empty() || bundle.proposal.is_some() {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
+            field: MismatchField::Proposal,
         });
     }
     let approvers = bundle.approvers(trusted)?;
@@ -156,17 +156,20 @@ pub(super) fn open_step<T: StepBody>(
         .filter(|place| place.operation == plan.operation);
     let listed = place.and_then(|place| plan.steps.get(place.index as usize));
     first_mismatch([
-        ("the signer", by.is_some() && body.signer() == plan.signer),
-        ("a proposal", place.is_some()),
         (
-            "a step",
+            MismatchField::Signer,
+            by.is_some() && body.signer() == plan.signer,
+        ),
+        (MismatchField::Proposal, place.is_some()),
+        (
+            MismatchField::Step,
             listed.is_some_and(|listed| {
                 listed.kind == body.kind() && listed.digest == StepDigest::of(&step.body)
             }),
         ),
-        (field::CLUSTER, plan.cluster == body.cluster()),
+        (MismatchField::Cluster, plan.cluster == body.cluster()),
         (
-            field::ENVIRONMENT,
+            MismatchField::Environment,
             body.namespace()
                 .is_none_or(|namespace| &plan.environment == namespace),
         ),

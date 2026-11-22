@@ -1,7 +1,9 @@
 //! Driver behavior with a controllable inbox clock and a real indicatif terminal.
 
 use super::*;
+use crate::failure::LogTail;
 use indicatif::{InMemoryTerm, TermLike};
+use ployz_core::ServiceName;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 

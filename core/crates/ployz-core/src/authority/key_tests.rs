@@ -125,7 +125,7 @@ fn a_trust_signed_alone_is_refused_since_it_has_no_window() {
     assert_eq!(
         verify(&alone, &facts(&trusted(), ISSUED)).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "a proposal"
+            field: MismatchField::Proposal
         }
     );
 }
@@ -140,7 +140,7 @@ fn a_trust_lands_only_on_a_member_it_names() {
     assert_eq!(
         verify(&step, &facts(&trusted(), ISSUED)).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "this Machine"
+            field: MismatchField::ThisMachine
         }
     );
 }
@@ -186,6 +186,8 @@ fn a_key_step_for_another_cluster_is_refused() {
     let alone = Signed::sign(&other, &device()).unwrap();
     assert_eq!(
         verify(&alone, &facts(&trusted(), ISSUED)).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a Cluster" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Cluster
+        }
     );
 }

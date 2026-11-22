@@ -37,16 +37,13 @@ impl LocalMachine {
         let first_key = ployz_core::first_key::FirstKeyFile::beside(self.owner.data_dir());
         let held = first_key.lock().map_err(StoreError::from)?;
         let armed = held.read().map_err(StoreError::from)?;
-        let (plan, installation) = self
+        let plan = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery, armed.as_ref(), now))
             .await??;
         let machine = match plan {
-            EnrollPlan::Fresh => {
-                let machine = installation
-                    .machine()
-                    .cloned()
-                    .expect("an enrollment owns its Machine");
+            EnrollPlan::Fresh(installation) => {
+                let machine = installation.machine().clone();
                 let docker = self.containers.as_ref().map(ContainerRuntime::local_docker);
                 let leftovers = NetworkPlane::leftovers(
                     docker.as_ref().map(LocalDocker::client),

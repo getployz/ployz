@@ -298,6 +298,8 @@ fn cloud_contract_constants() -> Vec<(&'static str, Constant)> {
             "PROBE_GREETING_LENGTH",
             Number(contract::PROBE_GREETING_LENGTH as i128),
         ),
+        ("INGRESS_VERIFY_PATH", Text(contract::INGRESS_VERIFY_PATH)),
+        ("HOSTNAME_VERIFY_PATH", Text(contract::HOSTNAME_VERIFY_PATH)),
         (
             "MIN_MANAGED_VOLUME_BYTES",
             Number(contract::MIN_MANAGED_VOLUME_BYTES.into()),

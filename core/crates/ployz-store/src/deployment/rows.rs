@@ -8,9 +8,10 @@ use ployz_core::deploy_progress::{
 };
 use ployz_core::{MachineId, RpcError, ServiceName};
 
-use super::{DeploymentStatus, Stored, TargetNode, now, saved_at};
+use super::{DeploymentStatus, Stored, TargetNode, saved_at};
 use crate::id::OrganizationId;
 use crate::storage::json_text;
+use crate::storage::now;
 use crate::storage::{Row, Tx};
 
 pub(super) fn record(

@@ -37,7 +37,6 @@ pub struct MachineService {
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
-    switch_mutation: Arc<tokio::sync::Mutex<()>>,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
     pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
@@ -93,7 +92,6 @@ impl MachineService {
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
-            switch_mutation: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
@@ -649,12 +647,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let local = self.at(&request);
         let request = expect::<op::PrepareVolumes>(request)?;
-        finish(
-            local
-                .with_switch(Arc::clone(&self.switch_mutation))
-                .prepare_volumes(request.specs)
-                .await,
-        )
+        finish(local.prepare_volumes(request.specs).await)
     }
 
     async fn list_volumes(
@@ -726,7 +719,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SeedVolume>(request)?;
-        let _guard = self.switch_mutation.lock().await;
+        let _guard = self.local.lock_switch().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
@@ -748,7 +741,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetVolumeSize>(request)?;
-        let _guard = self.switch_mutation.lock().await;
+        let _guard = self.local.lock_switch().await;
         self.volume_verb::<ployz_core::SetVolumeSizeReply>(
             "SetVolumeSize",
             crate::volume_copy::VOLUME_SIZE_SET_ROUTE,
@@ -1263,11 +1256,6 @@ impl MachineService {
         local: LocalMachine,
         request: ployz_core::EnsureContainerRequest,
     ) -> Result<Response<OpaquePayload>, Status> {
-        // Every start or create of a Provisioned Volume's holder, a hook's included, waits
-        // out any switch on this Machine, as a Writer's start does. The lock is one for the
-        // Machine, not one per Volume: a create reads each Volume's origin, and no promote
-        // or seed may land between that read and Docker.
-        let local = local.with_switch(Arc::clone(&self.switch_mutation));
         let admitted = match local
             .admit_spec(&request.want, request.rule.as_deref(), &request.versions)
             .await

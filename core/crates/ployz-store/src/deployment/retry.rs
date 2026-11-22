@@ -311,18 +311,7 @@ pub(crate) fn retry(
                 ran.as_str().into(),
             ],
         )?;
-        // A retry builds the commits its source pinned, and may reuse the image its
-        // source built, with that image's token and verified build.
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log, \
-              receipt, image_token, verified) \
-             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-              image_token, verified \
-             FROM config_build WHERE deployment_id = ?2",
-            &[id.as_str().into(), source.as_str().into()],
-        )?;
-        Ok(())
+        crate::build::retried(tx, id, source)
     })?;
     Ok((load(tx, id)?.summary, rollback))
 }
@@ -486,7 +475,7 @@ fn retried(
     fresh: Option<(SavedEnvironmentIntent, Vec<VolumeLoss>)>,
 ) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
     let environment = &stored.summary.environment_id;
-    let organization = crate::build::organization(tx, &stored.summary.id)?;
+    let organization = organization(tx, &stored.summary.id)?;
     let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
     let source = saved_at(tx, environment, stored.summary.saved)?;
     let holds = |intent: &SavedEnvironmentIntent, id: &str| {
@@ -550,10 +539,12 @@ fn retried(
                     &organization,
                     &source,
                     &landing,
-                    Scope::All {
-                        losses,
+                    Scope {
+                        targeting: Targeting::Full {
+                            prune: stored.summary.prune,
+                        },
                         retire: &retire,
-                        prune: stored.summary.prune,
+                        losses,
                     },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

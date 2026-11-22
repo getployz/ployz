@@ -783,7 +783,7 @@ fn taken_prefixes<'t>(
         }
     }
     if let Some(cluster) = cluster {
-        let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
         let under = format!(".{cluster}");
         taken.extend(
             published_elsewhere(trusted, &namespace).filter_map(|published| {

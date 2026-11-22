@@ -28,8 +28,6 @@ use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
-/// The Cluster network a founding Server takes when `--network` gives none.
-pub(super) const CLUSTER_NETWORK: &str = "10.210.0.0/16";
 
 #[path = "enroll_waiting.rs"]
 mod waiting;
@@ -78,7 +76,7 @@ pub(crate) fn command(command: Command) -> Command {
     )
     .arg(
         value("network", None)
-            .default_value(CLUSTER_NETWORK)
+            .default_value(ployz_core::DEFAULT_CLUSTER_NETWORK.to_string())
             .value_parser(clap::value_parser!(Ipv4Net))
             .help("Cluster network, when this Server founds the Cluster"),
     )

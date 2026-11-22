@@ -5,6 +5,7 @@
 //! verifies only if GitHub signed it. Only RS256 is accepted: the algorithm is never read
 //! from the key set or trusted from the token. No error or log line carries the token.
 
+use ployz_core::authority::MismatchField;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, PoisonError},
@@ -13,7 +14,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::authority::{
-    AuthorityRefusal, ClaimRule, GithubClaims, Timestamp,
+    AuthorityRefusal, AutoDeployRule, GithubClaims, Timestamp,
     validity::{self, CLOCK_SKEW_MILLIS},
 };
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
@@ -204,7 +205,7 @@ pub fn verify(token: &str, keys: &KeySet, now: Timestamp) -> Result<GithubClaims
         .map_err(TokenRefusal::Lifetime)?;
     if claims.nbf > now.plus(CLOCK_SKEW_MILLIS) {
         return Err(TokenRefusal::Lifetime(AuthorityRefusal::Mismatch {
-            field: "a start time",
+            field: MismatchField::StartTime,
         }));
     }
     Ok(claims)
@@ -290,7 +291,7 @@ impl IssuerKeys {
     /// [`ProofRefusal::Claim`] naming the first claim `rule` does not match.
     pub async fn check(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -301,7 +302,7 @@ impl IssuerKeys {
         })?;
         rule.verify_claims(&claims).map_err(|refusal| {
             if let AuthorityRefusal::Mismatch { field } = &refusal {
-                tracing::warn!(rule = %id, claim = field, "refused a GitHub token's claim");
+                tracing::warn!(rule = %id, claim = field.text(), "refused a GitHub token's claim");
             }
             ProofRefusal::Claim(refusal)
         })?;

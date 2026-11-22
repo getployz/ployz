@@ -42,9 +42,9 @@ pub use private_access::{
     key_approval_challenge,
 };
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
-pub use refusal::AuthorityRefusal;
+pub use refusal::{AuthorityRefusal, MismatchField};
 pub use rule::{
-    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest, ClaimRule,
+    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
     CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, RuleEvidence, RuleFacts,
     RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest, VerifiedBuild,
 };

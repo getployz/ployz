@@ -11,6 +11,7 @@
 //! so Generate and Install read it as a missing file and may replace it. Share
 //! needs a key and refuses it. A file that cannot be read is never replaced.
 
+use ployz_core::authority::MismatchField;
 use std::io;
 
 use ployz_core::{
@@ -195,7 +196,7 @@ impl LocalMachine {
         if body.machine.id != request.machine || body.sealing_recipient != request.public_key {
             return Err(super::Error::JoinRefused(
                 ployz_core::authority::AuthorityRefusal::Mismatch {
-                    field: "a sealing recipient",
+                    field: MismatchField::SealingRecipient,
                 },
             ));
         }
