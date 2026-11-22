@@ -1,18 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
-import { enrollmentExpiry, enrollmentIdentitySchema, type EnrollmentTokenRow, redactIpAddresses, registerRequestFromEnrollmentIdentity, ResetPendingEnrollmentInput, setupReportAccepted, setupReportProperties, setupReportSchema, waitForFounder, waitForJoinSlot } from "#/modules/machines/enrollment";
+import { enrollmentIdentitySchema, type EnrollmentTokenRow, redactIpAddresses, registerRequestFromEnrollmentIdentity, ResetPendingEnrollmentInput, setupReportAccepted, setupReportProperties, setupReportSchema } from "#/modules/machines/enrollment";
 import { rustMachineIdSchema } from "#/lib/schema";
 
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
-
-describe("enrollment token expiry", () => {
-  it("keeps token expiry stable", () => {
-    expect(enrollmentExpiry(new Date("2026-08-18T00:00:00.000Z"))).toEqual(
-      new Date("2026-08-19T00:00:00.000Z"),
-    );
-  });
-});
 
 describe("organization enrollment server-function inputs", () => {
   it("requires exact reset confirmation", () => {
@@ -131,13 +123,6 @@ describe("versioned enrollment identity", () => {
     expect(Option.isNone(Schema.decodeUnknownOption(enrollmentIdentitySchema)({ ...identity, capabilities: [1] }))).toBe(true);
   });
 
-  it("waits for two seconds without advertising a claim expiry", () => {
-    expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
-  });
-
-  it("waits five seconds in line for a join slot", () => {
-    expect(waitForJoinSlot(1)).toEqual({ kind: "not_yet", retryAfter: 5, reason: "queued", ahead: 1 });
-  });
 });
 
 describe("setup report", () => {

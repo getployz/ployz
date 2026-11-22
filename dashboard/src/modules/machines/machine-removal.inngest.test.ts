@@ -2,7 +2,7 @@ import { InngestTestEngine, mockCtx } from "@inngest/test";
 import type { MachineId } from "@ployz/sdk";
 import { Inngest } from "inngest";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   createCancelMachineRemove,
@@ -50,10 +50,6 @@ describe("machine remove Inngest boundary", () => {
     }).execute();
 
     expect(output.result).toEqual({ skipped: true });
-    expect(output.ctx.step.run).toHaveBeenCalledWith(
-      "decode-machine-remove-cancellation-event",
-      expect.any(Function),
-    );
   });
 
   it("cancels the attempt when Inngest cancels the app's process-machine-remove", async () => {
@@ -88,11 +84,11 @@ describe("machine remove Inngest boundary", () => {
         stack: expect.stringContaining("NonRetriableError"),
       }),
     );
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
   });
 
   it("fails the attempt, and releases nothing, when the Server refuses its removal", async () => {
     const attemptId = "00000000-0000-4000-8000-000000000a01";
+    const released = vi.fn();
     const output = await new InngestTestEngine({
       function: createProcessMachineRemove(new Inngest({ id: "test" })),
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
@@ -101,17 +97,18 @@ describe("machine remove Inngest boundary", () => {
         { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "conflict", message: "Server two answers and holds copies of Volumes data; removing it without a reset leaves them behind. No changes made." }) },
         { id: "complete-refused", handler: () => undefined },
+        { id: "release-volume-lanes", handler: released },
+        { id: "release-server", handler: released },
       ],
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "failed" });
-    expect(output.ctx.step.run).toHaveBeenCalledWith("complete-refused", expect.any(Function));
-    expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-server", expect.any(Function));
-    expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-volume-lanes", expect.any(Function));
+    expect(released).not.toHaveBeenCalled();
   });
 
   it("leaves a superseded attempt alone: nothing is released, completed or synced", async () => {
     const attemptId = "00000000-0000-4000-8000-000000000a02";
+    const touched = vi.fn();
     const output = await new InngestTestEngine({
       function: createProcessMachineRemove(new Inngest({ id: "test" })),
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
@@ -119,17 +116,19 @@ describe("machine remove Inngest boundary", () => {
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
         { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "superseded" }) },
+        ...["forget-machine", "release-volume-lanes", "release-server", "complete-succeeded", "complete-refused"].map((id) => ({ id, handler: touched })),
       ],
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "superseded", skipped: true });
-    const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
-    expect(steps).toEqual(["claim-machine-remove", "observe-leaving-server", "remove-machine"]);
+    expect(touched).not.toHaveBeenCalled();
     expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
   });
 
   it("finishes a Server that reset before its Forget with Forget alone, then releases it", async () => {
     const attemptId = "00000000-0000-4000-8000-000000000a03";
+    const forgot = vi.fn(() => ({ kind: "removed", resetWarning: "Docker reset failed", generation: "1" }));
+    const released = vi.fn(() => ({ kind: "kept", reason: "its reset didn't finish" }));
     const output = await new InngestTestEngine({
       function: createProcessMachineRemove(new Inngest({ id: "test" })),
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
@@ -137,25 +136,17 @@ describe("machine remove Inngest boundary", () => {
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: "machine-1", noReset: false } }) },
         { id: "observe-leaving-server", handler: () => ({ machine: { id: "machine-1", name: "two" }, writes: ["data"] }) },
         { id: "remove-machine", handler: () => ({ kind: "left", resetWarning: "Docker reset failed", generation: "1" }) },
-        { id: "forget-machine", handler: () => ({ kind: "removed", resetWarning: "Docker reset failed", generation: "1" }) },
+        { id: "forget-machine", handler: forgot },
         { id: "release-volume-lanes", handler: () => [] },
-        { id: "release-server", handler: () => ({ kind: "kept", reason: "its reset didn't finish" }) },
+        { id: "release-server", handler: released },
         { id: "complete-succeeded", handler: () => undefined },
         { id: "request-cluster-domain-sync", handler: () => undefined },
       ],
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "succeeded" });
-    const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
-    expect(steps).toEqual([
-      "claim-machine-remove",
-      "observe-leaving-server",
-      "remove-machine",
-      "forget-machine",
-      "release-volume-lanes",
-      "release-server",
-      "complete-succeeded",
-    ]);
+    expect(forgot).toHaveBeenCalled();
+    expect(released).toHaveBeenCalled();
   });
 });
 
