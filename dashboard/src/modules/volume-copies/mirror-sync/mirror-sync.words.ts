@@ -1,5 +1,4 @@
-import { formatRelativeTime } from "#/utils/relative-time";
-import { isStale, type MirrorCopy } from "#/modules/volume-copies/volume-copies";
+import { copyAge, HEARD_WORDS, isStale, type MirrorCopy } from "#/modules/volume-copies/volume-copies";
 
 /** The cron's cadence: a mirror round every 15 minutes. */
 export const MIRROR_ROUND_MINUTES = 15;
@@ -10,18 +9,8 @@ export type MirrorLast = { readonly spin: boolean; readonly words: string; reado
 export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
   if (copy.busy !== null) return { spin: true, words: copy.busy, stale: false };
   const at = copy.staged === "new" ? null : copy.refreshedAt;
-  if (at === null) return { spin: false, words: "Not yet", stale: isStale(copy, now) };
-  const words = now.getTime() - at.getTime() < 60_000 ? "just now" : formatRelativeTime(at, now);
-  return { spin: false, words, stale: isStale(copy, now) };
+  return { spin: false, words: copyAge(at, now), stale: isStale(copy, now) };
 }
-
-const SKIPPED_WORDS = {
-  outdated: (server) => `${server} needs a newer Ployz.`,
-  lacks: (server) => `${server} can't report this copy.`,
-  silent: (server) => `${server} is not answering.`,
-  waiting: () => "Waiting for its server's report.",
-  failed: () => "The last refresh failed.",
-} as const satisfies Record<NonNullable<MirrorCopy["skipped"]>, (server: string) => string>;
 
 /**
  * Why a mirror is behind, or null while its rounds land. Names no time: a round skips a Volume whose Server is silent or
@@ -30,7 +19,7 @@ const SKIPPED_WORDS = {
  */
 export function skippedWords(copy: MirrorCopy, now: Date): string | null {
   if (copy.skipped === null || copy.busy !== null) return null;
-  const cause = SKIPPED_WORDS[copy.skipped](copy.server.name);
+  const cause = copy.skipped === "failed" ? "The last refresh failed." : HEARD_WORDS[copy.skipped].sentence(copy.server.name);
   if (copy.refreshedAt === null || !isStale(copy, now)) return copy.skipped === "failed" ? null : cause;
   const behind = span(Math.round((now.getTime() - copy.refreshedAt.getTime()) / 60_000));
   return `${cause} Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. Until it catches up, a failover loses ${behind} of writes.`;
