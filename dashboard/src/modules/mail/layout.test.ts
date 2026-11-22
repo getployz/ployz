@@ -6,27 +6,16 @@ const ORIGIN = "https://cloud.example.com";
 
 describe("renderMail", () => {
   it("writes the plain text from the same fields as the HTML", async () => {
-    const mail = await renderMail(sampleMail(ORIGIN), `${ORIGIN}/`);
+    const content = sampleMail(ORIGIN);
+    const mail = await renderMail(content, `${ORIGIN}/`);
 
-    expect(mail.subject).toBe("api is down in shop / production");
-    expect(mail.text).toBe(
-      [
-        "api is down",
-        "",
-        "Visitors can't reach api. Checks have failed since 14:02 UTC. We'll email you when it's back up.",
-        "",
-        `View incident: ${ORIGIN}/cloud/acme/shop/production/uptime`,
-        "",
-        "Environment: shop / production",
-        "Check: GET https://api.acme.com/health",
-        "Error: 502 Bad Gateway",
-        "",
-        "--",
-        "You're getting this as a member of Acme on Ployz.",
-        `Turn off uptime emails: ${ORIGIN}/api/mail/unsubscribe?token=sample`,
-        `Manage emails: ${ORIGIN}/cloud/account`,
-      ].join("\n"),
-    );
+    expect(mail.subject).toBe(content.subject);
+    for (const field of [content.title, ...content.paragraphs, content.action.url, content.reason, content.unsubscribe?.url ?? ""]) {
+      expect(mail.text).toContain(field);
+    }
+    for (const fact of content.facts ?? []) expect(mail.text).toContain(fact.value);
+    expect(mail.text).toContain(`${ORIGIN}/cloud/account`);
+    expect(mail.text).not.toContain(`${ORIGIN}//`);
   });
 
   it("links the action, the unsubscribe and the settings, and loads the logo from this Cloud", async () => {

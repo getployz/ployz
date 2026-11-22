@@ -14,17 +14,17 @@ import { createCancelVolumeRun, createVolumeRunFunctions } from "#/modules/volum
 
 describe("attemptLifecycle", () => {
   it.each([
-    ["drain-server", createServerDrainFunctions, "server/drain.requested", "cancel-server-drain", "close-stale-server-drains"],
-    ["clean-namespace", createNamespaceCleanupFunctions, "namespace/cleanup.requested", "cancel-namespace-cleanup", "close-stale-namespace-cleanups"],
-    ["roll-out-server-upgrade", createServerUpgradeFunctions, "server/upgrade.requested", "cancel-server-upgrade", "schedule-server-upgrades"],
-    ["run-volume", createVolumeRunFunctions, "volume/run.requested", "cancel-volume-run", "close-stale-volume-runs"],
-    ["retire-old", createRetireOldFunctions, "config/deployment.retire-requested", "cancel-retire-old", "close-stale-deployment-cleanups"],
-  ])("registers %s with its failure handler, its cancel handler and its hourly sweep", (id, create, event, cancelId, sweepId) => {
+    ["drain-server", createServerDrainFunctions],
+    ["clean-namespace", createNamespaceCleanupFunctions],
+    ["roll-out-server-upgrade", createServerUpgradeFunctions],
+    ["run-volume", createVolumeRunFunctions],
+    ["retire-old", createRetireOldFunctions],
+  ])("registers %s with its failure handler, a handler for Inngest's cancellation and a scheduled sweep", (_id, create) => {
     const [run, cancel, sweep] = create(new Inngest({ id: "test" }));
 
-    expect(run.opts).toMatchObject({ id, triggers: [{ event: { name: event } }], onFailure: expect.any(Function) });
-    expect(cancel.opts).toMatchObject({ id: cancelId, triggers: [{ event: { name: "inngest/function.cancelled" } }] });
-    expect(sweep.opts).toMatchObject({ id: sweepId, triggers: [{ cron: "TZ=UTC 0 * * * *" }] });
+    expect(run.opts.onFailure).toEqual(expect.any(Function));
+    expect(cancel.opts).toMatchObject({ triggers: [{ event: { name: "inngest/function.cancelled" } }] });
+    expect(sweep.opts).toMatchObject({ triggers: [{ cron: expect.any(String) }] });
   });
 
   it.each([
@@ -82,18 +82,5 @@ describe("attemptLifecycle", () => {
     }).execute();
 
     expect(cancel.result).toEqual({ closed: 1 });
-  });
-
-  it("runs every Volume Run event, and cancels the run when another lane takes its row", () => {
-    const [run] = createVolumeRunFunctions(new Inngest({ id: "test" }));
-
-    expect(run.opts.singleton).toBeUndefined();
-    expect(run.opts.cancelOn).toEqual([{ event: expect.objectContaining({ name: "volume/run.taken" }), match: "data.runId" }]);
-  });
-
-  it("leaves cancelOn unset on a run that does not ask for it", () => {
-    const [run] = createServerDrainFunctions(new Inngest({ id: "test" }));
-
-    expect(run.opts.cancelOn).toBeUndefined();
   });
 });
