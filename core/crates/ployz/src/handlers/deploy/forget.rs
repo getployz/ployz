@@ -209,9 +209,14 @@ pub(super) async fn ask(
             versions: batch.to_vec(),
         })
         .collect();
-    let reach = Reach::of(client).await?;
+    let mut reach = Reach::of(client).await?;
+    let client: &Client = client;
+    // A Server that joined while this ran was sealed the floors its admitting Server held
+    // then, so it is asked too.
     let (answers, gaps) = reach
-        .fan_out(|machine_id| on(client.clone(), machine_id, &batches))
+        .fan_out_through_joins(client, |machine_id| {
+            on(client.clone(), machine_id, &batches)
+        })
         .await;
     Ok(Forgot::Asked {
         machines: answers

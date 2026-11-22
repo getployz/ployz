@@ -276,3 +276,81 @@ async fn a_member_that_misses_a_later_batch_names_its_services() {
     );
     server.abort();
 }
+
+/// Machine 4 joins through machine 2 once the forget reached machine 2, sealed the floors
+/// machine 2 held before it. The fan-out lists the Members again, so machine 4 forgets too.
+#[tokio::test(start_paused = true)]
+async fn a_member_that_joins_while_the_forget_runs_forgets_too() {
+    let forgot_on = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = forgot_on.clone();
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let seen = seen.clone();
+            async move {
+                let target = rpc.metadata().get("machine").map_or(id('1'), |value| {
+                    MachineId::parse(value.to_str().unwrap()).unwrap()
+                });
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "the fixture answers only what the forget fan-out sends"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => {
+                        let joined = target == id('2') && seen.lock().unwrap().contains(&target);
+                        RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: ['1', '2', '3', '4']
+                                .into_iter()
+                                .filter(|hex| *hex != '4' || joined)
+                                .map(|hex| {
+                                    MachineObservation::new(
+                                        machine(hex, &format!("machine-{hex}")),
+                                        MembershipObservation::Up,
+                                    )
+                                })
+                                .collect(),
+                        })
+                    }
+                    RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                        attest: None,
+                        machine_id: target,
+                        protocol_major: PROTOCOL_MAJOR,
+                        daemon_version: "fixture".into(),
+                        capabilities: [CapabilityName::parse(FORGET_VERSIONS_CAPABILITY).unwrap()]
+                            .into(),
+                        sealing: None,
+                    }),
+                    RpcRequestBody::ForgetVersions(request) => {
+                        seen.lock().unwrap().push(target);
+                        RpcResponse::from(VersionsForgotten {
+                            outcomes: request
+                                .versions
+                                .iter()
+                                .map(|version| {
+                                    let body = version.open().unwrap();
+                                    ForgetOutcome::Raised {
+                                        service: QualifiedService::new(
+                                            body.namespace,
+                                            body.service,
+                                        ),
+                                        floor: body.signed_at,
+                                    }
+                                })
+                                .collect(),
+                        })
+                    }
+                    other => panic!("the forget fan-out sent {other:?}"),
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+
+    let forgot = ask(&mut client, &versions(1)).await.unwrap();
+
+    let mut reached = forgot_on.lock().unwrap().clone();
+    reached.sort();
+    assert_eq!(reached, [id('1'), id('2'), id('3'), id('4')]);
+    assert!(forgot.is_complete());
+    server.abort();
+}

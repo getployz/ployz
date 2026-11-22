@@ -618,20 +618,10 @@ where
     O: Into<Outcome> + Send + 'static,
 {
     let mut reach = Reach::full(client).await?;
-    let (mut answers, mut gaps) = reach
-        .fan_out(|machine_id| set(client.clone(), machine_id))
+    let client: &Client = client;
+    let (answers, gaps) = reach
+        .fan_out_through_joins(client, |machine_id| set(client.clone(), machine_id))
         .await;
-    // A Server that joined while this ran was sealed what its admitting Server held then, so
-    // ask each Server that answered which Members it lists now, and reach the new ones too.
-    let joined = reach
-        .joined_since(client, answers.iter().map(|(machine_id, _)| *machine_id))
-        .await;
-    let (later, later_gaps) = joined
-        .fan_out(|machine_id| set(client.clone(), machine_id))
-        .await;
-    answers.extend(later);
-    gaps.extend(&later_gaps.failures, &later_gaps.omitted);
-    reach.names.extend(joined.names);
     Ok(Settled {
         answers: answers
             .into_iter()
@@ -862,14 +852,13 @@ mod compat {
     }
 }
 
-/// The Servers a fan-out asks, the ones it can't, and how warnings name each.
+/// The Servers a fan-out asks, the ones it can't, and how warnings name each. `names`
+/// holds every Member the fan-out knows of, also those outside its scope.
 pub(super) struct Reach {
     asked: Vec<MachineId>,
     silent: Vec<MachineId>,
     entry: Option<MachineId>,
     names: BTreeMap<MachineId, MachineName>,
-    /// Servers that answered but couldn't list the Members they know of.
-    unlisted: Vec<MachineFailure<RpcError>>,
 }
 
 impl Reach {
@@ -901,7 +890,6 @@ impl Reach {
             asked: asked.iter().map(|observed| observed.machine.id).collect(),
             silent: silent.iter().map(|observed| observed.machine.id).collect(),
             entry: client.entry_machine(),
-            unlisted: Vec::new(),
             names: machines
                 .iter()
                 .map(|observed| (observed.machine.id, observed.machine.name.clone()))
@@ -909,13 +897,46 @@ impl Reach {
         })
     }
 
-    /// The Members the `answered` Servers list now that this reach never named. A Server
-    /// that can't list them leaves a gap, since one it knows of may then go unreached.
+    /// [`Self::fan_out`], then the same call on each Member that joined while it ran, until
+    /// no Server that answered lists a Member this reach never named. A joiner is sealed what
+    /// its admitting Server held then, so it may lack the change, and a Member found this way
+    /// may itself have admitted another.
+    pub(super) async fn fan_out_through_joins<T, F, Fut>(
+        &mut self,
+        client: &Client,
+        call: F,
+    ) -> (Vec<(MachineId, T)>, Gaps)
+    where
+        F: Fn(MachineId) -> Fut,
+        Fut: Future<Output = Result<Option<T>, RpcError>>,
+    {
+        let (mut answers, mut gaps) = self.fan_out(&call).await;
+        let unlisted = loop {
+            let (joined, unlisted) = self
+                .joined_since(client, answers.iter().map(|(machine_id, _)| *machine_id))
+                .await;
+            if joined.names.is_empty() {
+                break unlisted;
+            }
+            let (later, later_gaps) = joined.fan_out(&call).await;
+            answers.extend(later);
+            gaps.extend(&later_gaps.failures, &later_gaps.omitted);
+            self.asked.extend(joined.asked);
+            self.silent.extend(joined.silent);
+            self.names.extend(joined.names);
+        };
+        gaps.extend(&unlisted, &[]);
+        (answers, gaps)
+    }
+
+    /// The Members the `answered` Servers list now that this reach never named, and the
+    /// Servers that answered but couldn't list theirs: a gap, since a Member one of them
+    /// knows of may then go unreached.
     async fn joined_since(
         &self,
         client: &Client,
         answered: impl Iterator<Item = MachineId>,
-    ) -> Self {
+    ) -> (Self, Vec<MachineFailure<RpcError>>) {
         let listed = fan_out_entry_last(answered, None, |machine_id| {
             let client = client.clone();
             async move {
@@ -931,13 +952,11 @@ impl Reach {
         })
         .await;
         let direct = client.full_machines();
-        let known = |id: &MachineId| self.asked.contains(id) || self.silent.contains(id);
         let mut joined = Self {
             asked: Vec::new(),
             silent: Vec::new(),
             entry: None,
             names: BTreeMap::new(),
-            unlisted: listed.failures,
         };
         for observed in listed
             .successes
@@ -945,7 +964,7 @@ impl Reach {
             .flat_map(|success| success.value)
         {
             let id = observed.machine.id;
-            if known(&id) || joined.names.contains_key(&id) {
+            if self.names.contains_key(&id) || joined.names.contains_key(&id) {
                 continue;
             }
             joined.names.insert(id, observed.machine.name.clone());
@@ -955,7 +974,7 @@ impl Reach {
                 joined.silent.push(id);
             }
         }
-        joined
+        (joined, listed.failures)
     }
 
     pub(super) async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
@@ -966,7 +985,6 @@ impl Reach {
         let entry = self.entry.filter(|id| self.asked.contains(id));
         let result = fan_out_entry_last(self.asked.iter().copied(), entry, call).await;
         let mut gaps = Gaps::default();
-        gaps.failures.extend(self.unlisted.iter().cloned());
         gaps.omitted.extend(&self.silent);
         gaps.omitted.extend(result.omissions);
         gaps.failures.extend(result.failures);
