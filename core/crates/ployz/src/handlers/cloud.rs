@@ -416,7 +416,7 @@ async fn enroll_current_identity(
                         pins_its_devices: false,
                     }
                 } else {
-                    super::device::JoinEntry::Relayed
+                    super::device::JoinEntry::relayed(&config).await?
                 };
                 if super::device::sign_waiting_join(&mut entry, &config, &expected, from).await? {
                     cloud::enroll::enroll(command, url, token, &identity, progress).await?

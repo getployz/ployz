@@ -293,11 +293,11 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         });
     };
     // Cloud relays this body, so it can name a Cluster of its own; only a route the person
-    // chose, or a Cluster this computer pinned, vouches for it.
-    if !crate::sealing_pin::SealTo::direct(&client)
-        && !crate::sealing_pin::Pins::beside(&config_path(leaf)?).knows(body.cluster)?
+    // chose, or the Cluster this computer pinned for the Organization, vouches for it.
+    if let crate::sealing_pin::SealTo::Pinned(pin) =
+        pin::seal_to(&config_path(leaf)?, &client).await?
     {
-        return Err(unpinned_relay(body));
+        refuse_unpinned(body, pin.as_ref())?;
     }
     if let Some(expected) = *first_key {
         refuse_another_key(body, expected, signing.device_key())?;
@@ -353,13 +353,30 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
 }
 
 /// Where the join this CLI signs came from, which decides what the signed body may name.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum JoinEntry {
-    /// Through Cloud, which could name a Cluster or a Device of its own.
-    Relayed,
+    /// Through Cloud, which could name a Cluster or a Device of its own. Only `pin`, the key
+    /// this computer pinned for the Organization it is signed in to, vouches for the Cluster.
+    Relayed {
+        pin: Option<crate::sealing_pin::Pin>,
+    },
     /// Over a route the person chose, so the body is the entry's own word. `pins_its_devices`
     /// when the joiner's pin also holds the Devices the entry trusts, as `server add` sends.
     Chosen { pins_its_devices: bool },
+}
+
+impl JoinEntry {
+    /// A join relayed through Cloud, vouched for by the pin of the Organization this
+    /// computer is signed in to.
+    ///
+    /// # Errors
+    /// Fails when Cloud can't say which Organization the sign-in acts in, or the pins
+    /// can't be read.
+    pub(super) async fn relayed(config: &Path) -> Result<Self, Error> {
+        Ok(Self::Relayed {
+            pin: pin::organization_pin(config).await?,
+        })
+    }
 }
 
 /// Sign the join waiting for `expected`, narrowed to what the joiner's pin installs, so the
@@ -388,9 +405,7 @@ pub(super) async fn sign_waiting_join(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
     }
-    check_waiting_join(&body, signing.device_key(), entry, |cluster| {
-        crate::sealing_pin::Pins::beside(config).knows(cluster)
-    })?;
+    check_waiting_join(&body, signing.device_key(), &entry)?;
     show_join(&body);
     let approval = sign_join(&signing, &mut body)?;
     client
@@ -405,13 +420,12 @@ pub(super) async fn sign_waiting_join(
 fn check_waiting_join(
     body: &ployz_core::authority::JoinApproval,
     own: DeviceKey,
-    entry: JoinEntry,
-    pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
+    entry: &JoinEntry,
 ) -> Result<(), Error> {
-    if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
-        return Err(unpinned_relay(body));
+    if let JoinEntry::Relayed { pin } = entry {
+        refuse_unpinned(body, pin.as_ref())?;
     }
-    if entry
+    if *entry
         != (JoinEntry::Chosen {
             pins_its_devices: true,
         })
@@ -451,13 +465,20 @@ fn refuse_another_key(
     )))
 }
 
-/// A join relayed through Cloud for a Cluster this computer never pinned.
-fn unpinned_relay(body: &ployz_core::authority::JoinApproval) -> Error {
-    Error::conflict(format!(
-        "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
+/// Refuse a join relayed through Cloud for a Cluster other than `pin`, the one this
+/// computer pinned for the Organization it is signed in to.
+fn refuse_unpinned(
+    body: &ployz_core::authority::JoinApproval,
+    pin: Option<&crate::sealing_pin::Pin>,
+) -> Result<(), Error> {
+    if pin.is_some_and(|pin| pin.public_key == body.cluster) {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "Server {} would join a Cluster other than the one this computer pinned for the Organization you're signed in to, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
         body.machine.name
     ))
-    .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned()))
+    .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned())))
 }
 
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {

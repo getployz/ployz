@@ -135,7 +135,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                             pins_its_devices: true,
                         }
                     } else {
-                        crate::handlers::device::JoinEntry::Relayed
+                        crate::handlers::device::JoinEntry::relayed(config.path()).await?
                     },
                 )
                 .await?

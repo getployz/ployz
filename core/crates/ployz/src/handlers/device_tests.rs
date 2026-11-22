@@ -567,9 +567,14 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
             }
         })
         .await;
-    let error = sign_waiting_join(&mut client, &config, &expected, JoinEntry::Relayed)
-        .await
-        .unwrap_err();
+    let error = sign_waiting_join(
+        &mut client,
+        &config,
+        &expected,
+        JoinEntry::Relayed { pin: None },
+    )
+    .await
+    .unwrap_err();
     assert!(error.to_string().contains("does not match"));
     server.abort();
 }
@@ -618,9 +623,17 @@ fn relayed_join(
 }
 
 fn pin_cluster(config: &std::path::Path, cluster: ployz_core::SealingPublicKey) {
+    pin_cluster_for(config, "org", cluster);
+}
+
+fn pin_cluster_for(
+    config: &std::path::Path,
+    organization: &str,
+    cluster: ployz_core::SealingPublicKey,
+) {
     crate::sealing_pin::Pins::beside(config)
         .set(
-            "org",
+            organization,
             crate::sealing_pin::Pin {
                 public_key: cluster,
                 server: MachineName::parse("entry").unwrap(),
@@ -629,8 +642,8 @@ fn pin_cluster(config: &std::path::Path, cluster: ployz_core::SealingPublicKey) 
         .unwrap();
 }
 
-/// A join relayed through Cloud whose body names `devices`, answering each approval the CLI
-/// sent.
+/// A join relayed through Cloud whose body names `devices`, while this computer is signed
+/// in to Organization "org", answering each approval the CLI sent.
 async fn sign_relayed(
     config: &std::path::Path,
     devices: Vec<DeviceKey>,
@@ -670,7 +683,9 @@ async fn sign_relayed(
             }
         })
         .await;
-    let signed = sign_waiting_join(&mut client, config, &expected, JoinEntry::Relayed).await;
+    let pin = crate::sealing_pin::Pins::beside(config).get("org").unwrap();
+    let signed =
+        sign_waiting_join(&mut client, config, &expected, JoinEntry::Relayed { pin }).await;
     server.abort();
     let sent = sent.lock().unwrap().clone();
     (signed, sent)
@@ -699,6 +714,28 @@ async fn a_relayed_join_to_a_cluster_this_computer_never_pinned_is_refused_unsig
     assert!(
         sent.is_empty(),
         "nothing may be signed for an unknown Cluster"
+    );
+}
+
+/// One Device can be trusted in two Organizations. A join relayed while it is signed in to
+/// one is vouched for only by that Organization's pin, so Cloud can't steer it into signing
+/// a join to the other's Cluster.
+#[tokio::test]
+async fn a_relayed_join_to_another_organizations_cluster_is_refused_unsigned() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.yaml");
+    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
+    let own = super::key::public(&[1; 32]);
+    let other = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    pin_cluster(&config, ployz_core::SealingPublicKey::from_bytes([3; 32]));
+    pin_cluster_for(&config, "other-org", other);
+
+    let (signed, sent) = sign_relayed(&config, vec![own], other).await;
+
+    assert!(signed.is_err());
+    assert!(
+        sent.is_empty(),
+        "nothing may be signed for another Organization"
     );
 }
 

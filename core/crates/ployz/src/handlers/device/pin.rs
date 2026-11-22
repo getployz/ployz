@@ -119,12 +119,20 @@ async fn pin_through(
 /// Fails when Cloud can't say which Organization the sign-in acts in, or the pins can't
 /// be read.
 pub(in crate::handlers) async fn seal_to(config: &Path, client: &Client) -> Result<SealTo, Error> {
-    SealTo::of(client, async || {
-        let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
-        let organization = cloud::account::acting_in(&credential).await?;
-        Ok(Pins::beside(config).get(&organization.id)?)
-    })
-    .await
+    SealTo::of(client, async || organization_pin(config).await).await
+}
+
+/// The key this computer pinned for the Organization its sign-in acts in, not another
+/// Organization's: one Device may hold pins for several.
+///
+/// # Errors
+///
+/// Fails when Cloud can't say which Organization the sign-in acts in, or the pins can't
+/// be read.
+pub(in crate::handlers) async fn organization_pin(config: &Path) -> Result<Option<Pin>, Error> {
+    let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
+    let organization = cloud::account::acting_in(&credential).await?;
+    Ok(Pins::beside(config).get(&organization.id)?)
 }
 
 #[cfg(test)]
