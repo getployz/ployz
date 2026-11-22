@@ -92,19 +92,6 @@ impl Pins {
         Ok(replaced)
     }
 
-    /// Whether this computer pinned `cluster` for any Organization.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the file can't be read or isn't a pin file.
-    pub(crate) fn knows(&self, cluster: SealingPublicKey) -> Result<bool, PinError> {
-        Ok(self
-            .load()?
-            .organizations
-            .values()
-            .any(|pin| pin.public_key == cluster))
-    }
-
     fn load(&self) -> Result<PinFile, PinError> {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| PinError::Malformed {

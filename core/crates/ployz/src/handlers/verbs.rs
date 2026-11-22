@@ -1060,10 +1060,6 @@ const GROUPS: &[Group] = &[
         command: device::group,
     },
     Group {
-        path: "key",
-        command: key::group,
-    },
-    Group {
         path: "domain",
         command: domain::group,
     },
@@ -1078,6 +1074,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "github rule",
         command: github_rule::group,
+    },
+    Group {
+        path: "key",
+        command: key::group,
     },
     Group {
         path: "org",

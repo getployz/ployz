@@ -659,6 +659,28 @@ impl Session {
         })
     }
 
+    /// The joins waiting on the entry Machine for a person to approve them.
+    ///
+    /// # Errors
+    /// Returns cancellation or transport errors.
+    pub async fn pending_joins(&self) -> Result<ployz_core::PendingJoins, RpcError> {
+        self.unary::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, Call::read())
+            .await
+    }
+
+    /// Hand the entry Machine a signed approval of a join waiting there.
+    ///
+    /// # Errors
+    /// Returns the Machine's refusal of the approval, cancellation or transport errors.
+    pub async fn approve_join(
+        &self,
+        approval: ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> Result<(), RpcError> {
+        self.unary::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
+            .await
+            .map(drop)
+    }
+
     /// Inspect the selected Machine, including its Management Client labels.
     ///
     /// # Errors

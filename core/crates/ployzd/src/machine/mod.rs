@@ -137,6 +137,11 @@ pub enum LocalMachineBody {
         bootstrap: Vec<Machine>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         min_store_version: BTreeMap<String, i64>,
+        /// Joined under the trust its admitting Machine sealed, and still waiting for the
+        /// restrictions that Machine answers the confirmation with. It participates only
+        /// once `ConfirmJoin` hands them over.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        awaits_restrictions: bool,
     },
     Participating {
         machine: Machine,
@@ -228,13 +233,7 @@ pub struct LocalMachineRecord {
     removed_members: Vec<RemovedMember>,
 }
 
-/// A Member this Machine no longer admits, by its ID and, when known, its WireGuard key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct RemovedMember {
-    pub id: MachineId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_key: Option<WireGuardPublicKey>,
-}
+pub(crate) use ployz_core::RemovedMember;
 
 /// Public keys held by one Management Client slot. No secret is persisted.
 ///
@@ -389,6 +388,22 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn removed_grants(&self) -> &[ployz_core::authority::SigningPublicKey] {
         &self.removed_grants
+    }
+
+    #[must_use]
+    pub(crate) fn removed_members(&self) -> &[RemovedMember] {
+        &self.removed_members
+    }
+
+    /// Whether this disk enrolled: it joins or participates, or names the enrollment it
+    /// took, also while resetting.
+    #[must_use]
+    pub(crate) fn enrolled(&self) -> bool {
+        self.enrollment.is_some()
+            || matches!(
+                self.body.live(),
+                LiveParts::Joining { .. } | LiveParts::Participating { .. }
+            )
     }
 
     /// Whether this Machine removed `key` for good.
@@ -630,6 +645,7 @@ impl LocalMachineBody {
                 machine,
                 bootstrap,
                 min_store_version,
+                ..
             } => LiveParts::Joining {
                 machine,
                 bootstrap,
@@ -683,6 +699,7 @@ impl LocalMachineBody {
                 machine,
                 bootstrap,
                 min_store_version,
+                ..
             } => LocalMachinePrior::Joining {
                 machine,
                 bootstrap,

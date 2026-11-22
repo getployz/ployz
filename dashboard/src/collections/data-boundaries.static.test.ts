@@ -114,6 +114,8 @@ const ON_DEMAND_READS = {
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
   serviceMarkersQueryOptions: "one per canvas card, asking every Server live; the card shows nothing extra until it answers, so the canvas never waits on a slow Server",
   pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
+  pendingJoinsQueryOptions: "asks every Server live for joins waiting on a passkey, so a slow Server would hold the Servers page; the list appears once they answer",
+  installKeyQueryOptions: "asks the Servers live which passkey they trust, read fresh each time an install command is shown",
   agentThreadsOptions: "read when the agent opens, which every Organization page can do; no page owns it",
   approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
   pendingProposalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",

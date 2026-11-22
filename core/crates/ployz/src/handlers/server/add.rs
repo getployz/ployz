@@ -82,6 +82,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             crate::handlers::rerun(matches, args)
         })?;
         let claimed = crate::enrollment::claims(&token.runtime);
+        let first_key = token.first_key;
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -98,6 +99,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
                 capabilities: Vec::new(),
+                first_key: None,
             },
             &snapshot,
         )?;
@@ -105,6 +107,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         // assignment never holds a claim, so it is set on the copy Register carries.
         let mut assignment = assignment;
         assignment.request.capabilities = claimed.into_iter().map(str::to_owned).collect();
+        assignment.request.first_key = first_key;
         let assigned = assignment.machine.clone();
         let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
             .await
@@ -128,7 +131,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                             pins_its_devices: true,
                         }
                     } else {
-                        crate::device::JoinEntry::Relayed
+                        crate::device::JoinEntry::relayed(config.path()).await?
                     },
                 )
                 .await?
@@ -159,7 +162,18 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             let mut confirmed = assignment.clone();
             confirmed.request.join_confirmation =
                 Some(join_confirmation.ok_or_else(machine::confirmation_missing)?);
-            crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+            let answered = crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+            // The daemon restarts after it enrolls, so this dials the same connection again.
+            crate::enrollment::confirm_join(
+                async || helpers::connect_direct(matches, &connection).await,
+                confirmed
+                    .request
+                    .capabilities
+                    .iter()
+                    .any(|claim| claim == ployz_core::JOIN_TRUST_CAPABILITY),
+                &answered,
+            )
+            .await?;
         }
 
         Ok::<_, Error>(assigned)
@@ -370,6 +384,7 @@ mod tests {
                 )],
                 runtime: Default::default(),
                 capabilities: Vec::new(),
+                first_key: None,
             },
             &joined,
         )

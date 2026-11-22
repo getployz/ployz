@@ -91,6 +91,7 @@ impl Cluster {
             advertised_endpoints: token.advertised_endpoints,
             runtime: token.runtime,
             capabilities: Vec::new(),
+            first_key: None,
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])
             .map_err(|error| TestkitError::Rpc(error.to_string()))?;

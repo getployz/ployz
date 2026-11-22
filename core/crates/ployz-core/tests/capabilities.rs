@@ -50,6 +50,18 @@ const FIELD_FLOOR: &[&str] = &[
 /// Each capability above the floor, and what a caller does when a Machine lacks it.
 const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
+        "ployz.machine.join-trust.v1",
+        "gated: a Server seals the keys and removals it holds only for a recipient whose row claims it, and a joiner that claims it refuses to serve without them, naming the admitting Server to upgrade",
+    ),
+    (
+        "ployz.machine.join.confirm.v1",
+        "gated: the join driver sends it only with restrictions the admitting Server sealed for a joiner that claims join-trust.v1, which is installed with it; without them it refuses and names the admitting Server to upgrade",
+    ),
+    (
+        "ployz.machine.set-key.v1",
+        "refused legibly: `ployz key add` calls it only over the Server's own socket, where it is installed with the daemon; an older daemon refuses the unknown call and nothing is trusted",
+    ),
+    (
         "ployz.network.select-endpoint.v1",
         "refused legibly: `server set --wg-endpoint` lists the Server as missed and still updates the target",
     ),

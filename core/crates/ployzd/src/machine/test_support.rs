@@ -94,6 +94,7 @@ impl ApprovingCluster {
                 &recipient,
                 &Signed::sign(body, &self.signer).unwrap(),
                 None,
+                Some(&trust_of(body)),
             ),
             None => self.sealing_key.seal_to(&recipient),
         };
@@ -104,6 +105,7 @@ impl ApprovingCluster {
             sealing_key: Some(sealed.unwrap()),
             devices: Vec::new(),
             grants: Vec::new(),
+            restrictions: None,
         }
     }
 
@@ -112,9 +114,19 @@ impl ApprovingCluster {
         self.registration_with(joiner, Some(&self.approval(joiner)))
     }
 
-    /// The enroll request `joiner` sends to join this Cluster, unpinned as Cloud drives it.
+    /// The enroll request `joiner` sends to join this Cluster, pinned to its Device.
     pub(crate) fn join(&self, joiner: &LocalMachineRecord) -> EnrollRequest {
-        member(self.registration(joiner), None)
+        member(self.registration(joiner), Some(self.pin()))
+    }
+}
+
+/// The trust an admitting Machine that holds exactly `body`'s keys seals beside it.
+pub(crate) fn trust_of(body: &JoinApproval) -> crate::sealing_key::JoinTrust {
+    crate::sealing_key::JoinTrust {
+        devices: body.devices.clone(),
+        passkeys: body.passkeys.clone(),
+        grants: body.grants.clone(),
+        ..Default::default()
     }
 }
 
@@ -139,4 +151,11 @@ pub(crate) fn member(registration: Registered, pin: Option<JoinPin>) -> EnrollRe
         wireguard_mtu: None,
         pinned: Default::default(),
     }
+}
+
+/// The pin a CLI holding the admitting Server's Devices sends with `registration`.
+pub(crate) fn pin_of(registration: &Registered) -> Option<JoinPin> {
+    Some(JoinPin {
+        devices: registration.devices.clone(),
+    })
 }

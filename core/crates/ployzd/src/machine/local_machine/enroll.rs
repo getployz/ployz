@@ -2,7 +2,7 @@
 
 use ployz_core::{EnrollRequest, Enrolled, LocalMachinePhase, RecoverySeed, RpcError};
 
-use crate::machine::{EnrollPlan, store::Installation};
+use crate::machine::{EnrollPlan, StoreError, store::Installation};
 
 use crate::{
     docker::{ContainerRuntime, LocalDocker},
@@ -33,9 +33,13 @@ impl LocalMachine {
         let now = self
             .approvals
             .observed_now(ployz_core::authority::Timestamp::now())?;
+        // Held from the read to the spend, so no re-arm lands between them.
+        let first_key = ployz_core::first_key::FirstKeyFile::beside(self.owner.data_dir());
+        let held = first_key.lock().map_err(StoreError::from)?;
+        let armed = held.read().map_err(StoreError::from)?;
         let plan = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request, recovery, now))
+            .mutate(move |store| store.plan_enrollment(request, recovery, armed.as_ref(), now))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh(installation) => {
@@ -55,6 +59,8 @@ impl LocalMachine {
                     });
                 }
                 self.install(installation).await?;
+                held.spend(ployz_core::authority::Timestamp::now())
+                    .map_err(StoreError::from)?;
                 self.owner.request_restart();
                 machine
             }

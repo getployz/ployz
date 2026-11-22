@@ -82,7 +82,7 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
     </div>
   ) : (
     <div className="flex flex-col gap-3">
-      <InstallTabs target={mint.data} />
+      <InstallTabs organizationSlug={organizationSlug} target={mint.data} />
       <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("1d")}.</p>
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner />

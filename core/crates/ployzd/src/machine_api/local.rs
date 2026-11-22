@@ -326,6 +326,7 @@ impl MachineRpc for MachineService {
         set_management_client,
         set_device,
         key_step,
+        set_key,
         forget_versions,
         set_push_target,
         update_machine,
@@ -391,6 +392,14 @@ impl MachineRpc for MachineService {
         let local = self.at(&request);
         expect::<op::PendingJoins>(request)?;
         finish(local.pending_joins())
+    }
+
+    async fn confirm_join(&self, request: Request<OpaquePayload>) -> Answer {
+        finish(
+            self.local
+                .confirm_join(expect::<op::ConfirmJoin>(request)?)
+                .await,
+        )
     }
 
     async fn select_endpoint(&self, request: Request<OpaquePayload>) -> Answer {
@@ -1110,8 +1119,27 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 .because(GateReason::JoinAlreadyAdmitted)
                 .inspecting(&["ployz server ls"]),
         )),
+        LocalMachineError::Store(StoreError::FirstKeySpent) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
+                .because(GateReason::FirstKeySpent)
+                .next("sudo ployz key add LINE on this Server, with the key line from your install command"),
+        )),
+        LocalMachineError::Store(StoreError::JoinUnanchored) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY).next(
+                "copy the install command again, or run sudo ployz key add LINE on this Server",
+            ),
+        )),
+        LocalMachineError::Store(StoreError::JoinTrustMissing { .. }) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_TRUST_CAPABILITY),
+        )),
         LocalMachineError::JoinRefused(_)
-        | LocalMachineError::Store(StoreError::JoinRefused(_)) => Err(gated(
+        | LocalMachineError::Store(StoreError::JoinRefused(_) | StoreError::NotFirstKey { .. }) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY)
@@ -1343,7 +1371,13 @@ fn store_error(error: StoreError) -> RpcError {
         return RpcError::caused(RpcErrorCode::Conflict, &error).with_details(details);
     }
     let code = match error {
-        StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        StoreError::JoinRefused(_)
+        | StoreError::NotFirstKey { .. }
+        | StoreError::FirstKeySpent
+        | StoreError::JoinUnanchored
+        | StoreError::JoinTrustMissing { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        StoreError::JoinRestrictionsPending => RpcErrorCode::Conflict,
+        StoreError::FirstKey(_) => RpcErrorCode::Internal,
         StoreError::KeyRemoved(_)
         | StoreError::GrantRemoved(_)
         | StoreError::LastKey(_)

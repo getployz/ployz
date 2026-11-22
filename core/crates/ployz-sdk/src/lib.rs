@@ -345,6 +345,27 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// The joins waiting on the entry Machine for a person to approve them, with the key
+    /// each joiner said it waits for.
+    ///
+    /// # Errors
+    /// Returns cancellation or transport errors.
+    #[napi(ts_return_type = "Promise<PendingJoins>")]
+    pub async fn pending_joins(&self) -> Result<serde_json::Value> {
+        to_json(&self.inner.pending_joins().await.map_err(rpc_to_napi)?)
+    }
+
+    /// Hand the entry Machine `approval`, a signed approval of a join waiting there.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed approval, the Machine's refusal of it, or
+    /// transport errors.
+    #[napi(ts_args_type = "approval: Signed")]
+    pub async fn approve_join(&self, approval: serde_json::Value) -> Result<()> {
+        let approval = from_js(approval).map_err(invalid_argument)?;
+        self.inner.approve_join(approval).await.map_err(rpc_to_napi)
+    }
+
     /// What the dial confirmed about the entry's Cluster: null when the connect expected none.
     #[napi(ts_return_type = "{ verified: boolean; foreign: string[] } | null")]
     pub fn cluster(&self) -> Result<serde_json::Value> {

@@ -125,13 +125,21 @@ export const enrollmentIdentitySchema = Schema.Struct({
   joinConfirmation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
   /** What the client that runs this joiner's catch-up honors, as capability names. Absent claims nothing. Cloud relays it in Register. */
   capabilities: Schema.optionalKey(Schema.Array(Schema.String)),
+  /**
+   * The key the joiner's install command named, which it says it waits for. Cloud relays it in Register so whoever
+   * approves the join signs with that key. A hint: the joiner checks its approval against its own file.
+   */
+  firstKey: Schema.optionalKey(Schema.Struct({
+    kind: Schema.Literals(["device", "passkey"]),
+    code: Schema.String.check(Schema.isPattern(/^[a-z2-7]{10}$/u)),
+  })),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
 
 /**
- * HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. The joiner's `capabilities` and
- * `joinConfirmation` are left out: they ride only the Register Cloud dispatches, never the saved assignment a retry compares.
+ * HTTP enroll identity → SDK RegisterRequest. CLI does not POST runtime. The joiner's `capabilities`, `joinConfirmation`
+ * and `firstKey` are left out: they ride only the Register Cloud dispatches, never the saved assignment a retry compares.
  */
 export function registerRequestFromEnrollmentIdentity(
   identity: EnrollmentIdentity,

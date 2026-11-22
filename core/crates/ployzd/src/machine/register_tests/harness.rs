@@ -96,7 +96,8 @@ pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterReq
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: MachineRuntime::default(),
-        capabilities: Vec::new(),
+        capabilities: vec![ployz_core::JOIN_TRUST_CAPABILITY.to_owned()],
+        first_key: None,
     }
 }
 

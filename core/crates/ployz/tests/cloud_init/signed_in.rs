@@ -60,6 +60,7 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let address = serve_machine(daemon.clone()).await;
     let directory = tempfile::tempdir().unwrap();
@@ -210,14 +211,24 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
         pending.pointer("/next"),
         Some(&json!(format!("ployz server add --wait {ENROLLMENT}")))
     );
+    // The line carries this computer's Device as the key the new Server trusts to approve its join.
+    let command = pending
+        .pointer("/command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    let (line, key) = command.split_once(" --key ").unwrap();
     assert_eq!(
-        pending.pointer("/command"),
-        Some(&json!(format!(
+        line,
+        format!(
             "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --cloud-url '{}'",
             env!("CARGO_PKG_VERSION"),
             cloud.url
-        )))
+        )
     );
+    assert!(matches!(
+        ployz_core::first_key::LineKey::parse(key),
+        Ok(ployz_core::first_key::LineKey::Device { .. })
+    ));
     assert_eq!(pending.pointer("/token"), Some(&json!(TOKEN)));
 
     let joined = harness::cli()

@@ -17,7 +17,7 @@ const FAILED_EXIT: u8 = 1;
 
 const USAGE_EXIT: u8 = 2;
 
-pub(super) const CANCELLED_EXIT: u8 = 130;
+pub(crate) const CANCELLED_EXIT: u8 = 130;
 
 /// The exit code for an error code: 2 when the command line is wrong, else 1.
 #[must_use]

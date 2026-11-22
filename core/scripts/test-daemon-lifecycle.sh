@@ -141,6 +141,11 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         directory-failure) mkdir "$TMP/run/.install.lock" ;;
         active) printf 'existing lock\n' > "$TMP/run/.install.lock" ;;
     esac
+    if [ "$SCENARIO" = active ]; then
+        # An enrolled disk whose install line's key still waits, as after a crash before enrollment spent it.
+        printf '{\n  "enrollment": null,\n  "body": {\n    "phase": "participating"\n  }\n}\n' > "$TMP/state/machine.json"
+        printf '{"state":"waiting","key":{"kind":"device","key":"%064d"}}\n' 0 > "$TMP/state-first-key.json"
+    fi
     if [ "$SCENARIO" = busy ]; then
         exec {lock_fd}>"$TMP/run/.install.lock"
         flock -n "$lock_fd"
@@ -192,6 +197,13 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         grep -Fxq 'systemctl stop ployz-observe.service' "$LOG"
         [ ! -e "$DOCKER_ROOT/ployz-observe" ]
         [ -d "$DOCKER_ROOT/containers" ]
+        if [ "$SCENARIO" = active ]; then
+            # The data directory is gone, and its First Key stays spent beside it.
+            sudo grep -q '"state":"spent"' "$TMP/state-first-key.json" || {
+                echo "uninstall left an enrolled disk's First Key waiting" >&2
+                exit 1
+            }
+        fi
     else
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
@@ -211,7 +223,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     [ -e "$TMP/install/ployz-corrosion" ]
     [ -e "$TMP/etc/config.yaml" ]
     [ -f "$TMP/docker" ] && [ -f "$TMP/images" ] && [ -f "$TMP/volumes" ] && [ -f "$TMP/docker-config" ]
-    sudo rm -rf "$TMP/run" "$TMP/state" "$TMP/checkin" "$TMP/etc"
+    sudo rm -rf "$TMP/run" "$TMP/state" "$TMP/state-first-key.json" "$TMP/state-first-key.lock" "$TMP/checkin" "$TMP/etc"
 done
 
 for flag in --help -h; do

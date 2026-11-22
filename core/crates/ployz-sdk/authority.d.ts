@@ -6,6 +6,9 @@ export type {
   ApprovedChange,
   AutoDeployRule,
   BuildPolicy,
+  JoinApproval,
+  Passkey,
+  PasskeyJoinDraft,
   PayloadDigest,
   PrivateAccessApproval,
   PrivateAccessTerms,
@@ -24,7 +27,7 @@ export type {
   StepKind,
 } from "./generated/payloads";
 
-import type { PrivateAccessTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type { JoinApproval, Passkey, PasskeyJoinDraft, PrivateAccessTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
 
 /**
  * The automatic deploy rule a person approves for `view`, the Store's rule view, under `terms`: the canonical body to
@@ -43,3 +46,16 @@ export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "is
  * this browser, bound by its digest, which ployz-core takes here as the Servers do. Throws an Error for malformed terms.
  */
 export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
+
+/**
+ * The waiting `join` as the one step of a bundle a passkey answers under `operation`, open from `issuedAt` to `expiresAt`
+ * (milliseconds since the epoch): the bundle to answer, and the step body a Server is handed with it, each in canonical
+ * form, as the Servers check them. Throws an Error for a malformed join.
+ */
+export function passkeyJoinStep(join: JoinApproval, operation: string, issuedAt: number, expiresAt: number): PasskeyJoinDraft;
+
+/**
+ * The key an install line carries for `passkey` (`pk1_…`), as the installer and `ployz key add` read it: a fresh Server
+ * trusts it to found or join its Cluster. Throws an Error for a malformed passkey.
+ */
+export function installKey(passkey: Passkey): string;

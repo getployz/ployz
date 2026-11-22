@@ -15,6 +15,7 @@ mod dockerfile;
 pub mod domain;
 mod enrollment;
 pub mod error_chain;
+pub mod first_key;
 pub mod framing;
 pub use enrollment::*;
 mod founding;

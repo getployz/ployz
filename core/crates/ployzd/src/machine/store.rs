@@ -25,6 +25,7 @@ use super::{
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
 use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
+use ployz_core::first_key::{FirstKey, FirstKeyError, FirstKeyFile};
 
 pub(crate) const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
@@ -59,9 +60,20 @@ pub(crate) struct Installation {
     /// The floors sealed beside the Sealing Key, which the joiner takes before the key.
     floors: Floors,
     keys: ployz_core::authority::TrustedKeys,
+    removed: Removed,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
+}
+
+/// The keys and Members a joiner's admitting Machine had removed, which the joiner holds
+/// removed from its first commit.
+#[derive(Default)]
+struct Removed {
+    keys: Vec<KeyRef>,
+    /// The keys of `keys` removed as a CI or agent key.
+    grants: Vec<SigningPublicKey>,
+    members: Vec<RemovedMember>,
 }
 
 /// How the enrolled Machine takes part in its Cluster.
@@ -76,14 +88,15 @@ enum Installing {
 }
 
 /// What an enrollment installs: the Machine, how it takes part, the Cluster's key with
-/// the floors sealed beside it, and the keys its approval names.
-type Enrolled = (
-    Machine,
-    Installing,
-    Option<SealingKey>,
-    Floors,
-    ployz_core::authority::TrustedKeys,
-);
+/// the floors sealed beside it, the keys it trusts, and the ones it holds removed.
+struct Enrolled {
+    machine: Machine,
+    installing: Installing,
+    sealing_key: Option<SealingKey>,
+    floors: Floors,
+    keys: ployz_core::authority::TrustedKeys,
+    removed: Removed,
+}
 
 impl Installation {
     pub(crate) fn machine(&self) -> &Machine {
@@ -284,6 +297,7 @@ impl LocalMachineStore {
         if store.record.phase() == LocalMachinePhase::Resetting {
             return Ok(Opened::Resetting(InterruptedReset(store)));
         }
+        store.spend_first_key_if_enrolled()?;
         store.refresh_runtime()?;
         Ok(Opened::Ready(store))
     }
@@ -384,23 +398,48 @@ impl LocalMachineStore {
         recovery: Option<RecoverySeed>,
     ) -> Result<EnrollPlan, StoreError> {
         let now = ployz_core::authority::Timestamp::now();
-        Ok(match self.plan_enrollment(request, recovery, now)? {
-            EnrollPlan::Fresh(installation) => {
-                self.install(installation, now)?;
-                EnrollPlan::Fresh(())
-            }
-            EnrollPlan::Replay(machine) => EnrollPlan::Replay(machine),
-            EnrollPlan::Conflict(now) => EnrollPlan::Conflict(now),
-        })
+        let file = self.first_key_file();
+        let held = file.lock()?;
+        let first_key = held.read()?;
+        Ok(
+            match self.plan_enrollment(request, recovery, first_key.as_ref(), now)? {
+                EnrollPlan::Fresh(installation) => {
+                    self.install(installation, now)?;
+                    held.spend(now)?;
+                    EnrollPlan::Fresh(())
+                }
+                EnrollPlan::Replay(machine) => EnrollPlan::Replay(machine),
+                EnrollPlan::Conflict(now) => EnrollPlan::Conflict(now),
+            },
+        )
+    }
+
+    /// The First Key file beside this store's data directory.
+    pub(crate) fn first_key_file(&self) -> FirstKeyFile {
+        FirstKeyFile::beside(&self.data_dir)
+    }
+
+    /// Mark the First Key Spent on a disk that enrolled, holding its lock: an enrollment
+    /// that crashed before it spent the key, or a disk from before First Keys.
+    fn spend_first_key_if_enrolled(&self) -> Result<(), StoreError> {
+        if self.record.enrolled() {
+            self.first_key_file()
+                .lock()?
+                .spend(ployz_core::authority::Timestamp::now())?;
+        }
+        Ok(())
     }
 
     /// Whether this Machine takes the request fresh, with the Installation it would
     /// persist, already holds it, or holds another enrollment. `now` is this Machine's
-    /// floored clock, which a Member's join approval must be open at.
+    /// floored clock, which a Member's join approval must be open at. `first_key` is what
+    /// the First Key file holds, read under its lock, which the caller keeps until it
+    /// spends the key after the install.
     pub(crate) fn plan_enrollment(
         &self,
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
+        first_key: Option<&FirstKey>,
         now: ployz_core::authority::Timestamp,
     ) -> Result<EnrollPlan<Installation>, StoreError> {
         if self.record.enrollment.as_ref() == Some(&request) {
@@ -417,7 +456,14 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (machine, installing, sealing_key, floors, keys) = match role {
+        let Enrolled {
+            machine,
+            installing,
+            sealing_key,
+            floors,
+            keys,
+            removed,
+        } = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -425,21 +471,26 @@ impl LocalMachineStore {
                 public_ip,
                 advertised_endpoints,
                 grant,
-            } => self.founder(
-                name,
-                FoundingCluster {
-                    network: cluster_network,
-                    recovery,
-                    grant,
-                },
-                initial_policy,
-                public_ip,
-                advertised_endpoints,
-            )?,
+            } => Enrolled {
+                keys: founding_keys(grant.as_ref(), first_key)?,
+                ..self.founder(
+                    name,
+                    FoundingCluster {
+                        network: cluster_network,
+                        recovery,
+                        grant,
+                    },
+                    initial_policy,
+                    public_ip,
+                    advertised_endpoints,
+                )?
+            },
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
-            EnrollAs::Member { registration, pin } => self.member(registration, pin, now)?,
+            EnrollAs::Member { registration, pin } => {
+                self.member(registration, pin, first_key, now)?
+            }
         };
         let plan = plan_enroll(
             &self.record.now(),
@@ -453,6 +504,7 @@ impl LocalMachineStore {
             sealing_key,
             floors,
             keys,
+            removed,
             wireguard_mtu,
             pinned,
             enrollment,
@@ -488,23 +540,26 @@ impl LocalMachineStore {
             build_concurrency: None,
         };
         let sealing_key = cluster.recovery.is_none().then(SealingKey::generate);
-        Ok((
+        Ok(Enrolled {
             machine,
-            Installing::Founding(cluster),
+            installing: Installing::Founding(cluster),
             sealing_key,
-            Floors::new(),
-            ployz_core::authority::TrustedKeys::default(),
-        ))
+            floors: Floors::new(),
+            keys: ployz_core::authority::TrustedKeys::default(),
+            removed: Removed::default(),
+        })
     }
 
     /// A Member's enrollment, admitted only under an approved capsule: one that opens to this
-    /// Machine and carries a join approval signed by a key in `pin`, or with no pin, by a
-    /// Device the approval lists. A pinned join trusts only the pinned Devices the approval
-    /// names, and no passkey or grant. Anything else is refused and the record stays as it was.
+    /// Machine and carries a join approval signed by a key in `pin` or by the Waiting First
+    /// Key, and the trust its admitting Machine sealed after the floors. The joiner trusts
+    /// exactly that sealed trust: no key a relayed body lists. Anything else is refused and
+    /// the record stays as it was.
     fn member(
         &self,
         registration: Registered,
         pin: Option<ployz_core::JoinPin>,
+        first_key: Option<&FirstKey>,
         now: ployz_core::authority::Timestamp,
     ) -> Result<Enrolled, StoreError> {
         let Registered {
@@ -514,6 +569,7 @@ impl LocalMachineStore {
             sealing_key,
             devices: _,
             grants: _,
+            restrictions: _,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -527,32 +583,47 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
+        let anchor = join_anchor(pin.as_ref(), first_key)?;
         let opened = sealing_key
             .map(|sealed| SealingKey::open_join(&sealed, &self.record.wireguard_private_key))
             .transpose()?;
-        let (sealing_key, approval, floors) = match opened {
-            Some((key, approval, floors)) => (Some(key), approval, floors),
-            None => (None, None, Floors::new()),
-        };
-        let Some(approval) = approval else {
+        let Some(crate::sealing_key::OpenedJoin {
+            key: sealing_key,
+            approval: Some(approval),
+            floors,
+            trust,
+        }) = opened
+        else {
             return Err(StoreError::JoinRefused(
                 ployz_core::authority::AuthorityRefusal::Unsigned {
                     purpose: ployz_core::authority::Purpose::Join,
                 },
             ));
         };
-        // A pinned join's body may come through Cloud, which can name a Device, passkey or
-        // grant of its own beside the person's. The install line already runs Cloud's script.
-        let carries_passkeys = pin.is_none();
-        let ployz_core::authority::join::JoinerApproval { body, devices } =
-            ployz_core::authority::join::verify_as_joiner(
-                &approval,
-                pin.as_ref().map(|pin| pin.devices.as_slice()),
-                &machine,
-                sealing_key.as_ref().map(SealingKey::public_key),
-                now,
-            )
-            .map_err(StoreError::JoinRefused)?;
+        let body = ployz_core::authority::join::verify_as_joiner(
+            &approval,
+            &anchor,
+            &machine,
+            Some(sealing_key.public_key()),
+            now,
+        )
+        .map_err(|refusal| not_first_key(refusal, first_key))?;
+        let Some(trust) = trust else {
+            return Err(StoreError::JoinTrustMissing {
+                admitting: body.admitting_machines.first().copied(),
+            });
+        };
+        let approved_by = match body.signer {
+            ployz_core::authority::SignerKey::Device(signer) => {
+                ployz_core::authority::PasskeyApprover::Device {
+                    code: signer.code(),
+                }
+            }
+            ployz_core::authority::SignerKey::Passkey(_) => {
+                ployz_core::authority::PasskeyApprover::Unknown
+            }
+        };
+        let (keys, removed) = sealed_trust(trust, approved_by)?;
         visible_peers = body
             .bootstrap
             .iter()
@@ -575,51 +646,19 @@ impl LocalMachineStore {
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
-        let approved_by = match body.signer {
-            ployz_core::authority::SignerKey::Device(signer) => {
-                ployz_core::authority::PasskeyApprover::Device {
-                    code: signer.code(),
-                }
-            }
-            ployz_core::authority::SignerKey::Passkey(_) => {
-                ployz_core::authority::PasskeyApprover::Unknown
-            }
-        };
-        let mut approved_passkeys: Vec<ployz_core::authority::TrustedPasskey> = Vec::new();
-        for passkey in body.passkeys.iter().filter(|_| carries_passkeys) {
-            let code = passkey.code();
-            let held = approved_passkeys
-                .iter()
-                .any(|held| held.passkey.code() == code)
-                || body.devices.iter().any(|device| device.code() == code);
-            if !held {
-                approved_passkeys.push(ployz_core::authority::TrustedPasskey {
-                    passkey: passkey.clone(),
-                    approved_by,
-                });
-            }
-        }
-        let approved_grants: Vec<ployz_core::authority::TrustedGrant> = body
-            .grants
-            .iter()
-            .filter(|_| carries_passkeys)
-            .map(|grant| ployz_core::authority::TrustedGrant {
-                grant: grant.clone(),
-                approved_by,
-            })
-            .collect();
         machine.join_approval = Some(approval);
         machine.runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
-        Ok((
+        Ok(Enrolled {
             machine,
-            Installing::Joining {
+            installing: Installing::Joining {
                 bootstrap: visible_peers,
                 min_store_version: target_versions,
             },
-            sealing_key,
+            sealing_key: Some(sealing_key),
             floors,
-            ployz_core::authority::TrustedKeys::new(devices, approved_passkeys, approved_grants),
-        ))
+            keys,
+            removed,
+        })
     }
 
     /// Persist a fresh enrollment. A join's approval, and the bundle it rides in, must
@@ -658,6 +697,7 @@ impl LocalMachineStore {
                     machine: installation.machine,
                     bootstrap,
                     min_store_version,
+                    awaits_restrictions: true,
                 },
             };
             installed.filters_peers = true;
@@ -675,8 +715,23 @@ impl LocalMachineStore {
                 installed
                     .management_clients
                     .retain(|label, _| !DeviceCode::reserves(label));
-                installed.passkeys = installation.keys.passkeys().cloned().collect();
-                installed.grants = installation.keys.grants().cloned().collect();
+            }
+            installed.passkeys = installation.keys.passkeys().cloned().collect();
+            installed.grants = installation.keys.grants().cloned().collect();
+            for key in installation.removed.keys {
+                if !installed.removed_keys.contains(&key) {
+                    installed.removed_keys.push(key);
+                }
+            }
+            for key in installation.removed.grants {
+                if !installed.removed_grants.contains(&key) {
+                    installed.removed_grants.push(key);
+                }
+            }
+            for member in installation.removed.members {
+                if !installed.removed_members.contains(&member) {
+                    installed.removed_members.push(member);
+                }
             }
             installed
                 .management_clients
@@ -784,15 +839,107 @@ impl LocalMachineStore {
     pub fn complete_catch_up(&mut self) -> Result<(), StoreError> {
         self.commit(|record| {
             let LocalMachineBody::Joining {
-                machine, bootstrap, ..
+                machine,
+                bootstrap,
+                awaits_restrictions,
+                ..
             } = record.body.clone()
             else {
                 return Err(StoreError::NotJoining);
             };
+            if awaits_restrictions {
+                return Err(StoreError::JoinRestrictionsPending);
+            }
             record.body = LocalMachineBody::Participating {
                 machine,
                 origin: ParticipationOrigin::Join { bootstrap },
             };
+            Ok(())
+        })
+    }
+
+    /// Take the restrictions this joiner's admitting Machine answered its confirmation with,
+    /// or a holder sealed beside the Sealing Key over Share, in one write: stop trusting each
+    /// removed key, hold it and each removed Member removed, and stop waiting, so a joiner
+    /// may participate. Unlike [`Self::remove_key`] the last key goes too: the other Machine
+    /// removed it. Taking them again changes nothing.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::NotJoining`] when this Machine neither joins nor participates,
+    /// and a storage error if the updated record cannot be saved atomically.
+    pub(crate) fn apply_join_restrictions(
+        &mut self,
+        set: &ployz_core::JoinRestrictionSet,
+    ) -> Result<(), StoreError> {
+        self.commit_if_changed(|record| {
+            match &mut record.body {
+                LocalMachineBody::Joining {
+                    awaits_restrictions,
+                    ..
+                } => *awaits_restrictions = false,
+                LocalMachineBody::Participating { .. } => {}
+                LocalMachineBody::Uninitialized { .. } | LocalMachineBody::Resetting { .. } => {
+                    return Err(StoreError::NotJoining);
+                }
+            }
+            for key in &set.removed_keys {
+                if !record.removed_keys.contains(key) {
+                    record.removed_keys.push(*key);
+                }
+                match *key {
+                    KeyRef::Signing { key } => {
+                        let signing = SigningPublicKey::from(key);
+                        if record.grants.iter().any(|held| held.grant.key == signing)
+                            && !record.removed_grants.contains(&signing)
+                        {
+                            record.removed_grants.push(signing);
+                        }
+                        record.grants.retain(|held| held.grant.key != signing);
+                        let label = key.label();
+                        if let Some(was) = record
+                            .management_clients
+                            .get(&label)
+                            .and_then(|slot| slot.live())
+                            .filter(|live| live.accepted() == Some(ClientKey::from(key)))
+                        {
+                            record
+                                .management_clients
+                                .insert(label, ManagementClientSlot::Cleared { was });
+                        }
+                    }
+                    KeyRef::Passkey { key } => {
+                        record
+                            .passkeys
+                            .retain(|held| held.passkey.public_key != key);
+                    }
+                }
+            }
+            for member in &set.removed_members {
+                if !record.removed_members.contains(member) {
+                    record.removed_members.push(*member);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Hold each of `grants` as removed as a CI or agent key, as another Member sealed them
+    /// beside its removals. A key this Machine doesn't hold removed is skipped.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub(crate) fn hold_removed_grants(
+        &mut self,
+        grants: &[SigningPublicKey],
+    ) -> Result<(), StoreError> {
+        self.commit_if_changed(|record| {
+            for key in grants {
+                if record.removes_key(&KeyRef::Signing { key: (*key).into() })
+                    && !record.removed_grants.contains(key)
+                {
+                    record.removed_grants.push(*key);
+                }
+            }
             Ok(())
         })
     }
@@ -1259,6 +1406,13 @@ impl LocalMachineStore {
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
+        // Spent before anything goes, and the lock held until the record is gone, so no
+        // install line arms this disk while it still shows an enrollment.
+        let file = self.first_key_file();
+        let held = file.lock()?;
+        if self.record.enrolled() {
+            held.spend(ployz_core::authority::Timestamp::now())?;
+        }
         // The record goes last. A cleanup that stops partway, as one killed at the
         // unit's stop timeout does, leaves a directory that still opens as
         // Resetting, so the next start finishes the reset instead of refusing an
@@ -1402,6 +1556,150 @@ fn display_data_directory(path: &Path) -> String {
     text
 }
 
+/// The keys a founding trusts: on a Cloud founding, the Waiting First Key its install line
+/// armed. A Spent First Key refuses a Cloud founding, so a reset disk can't be steered into a
+/// Cluster of someone else's. Other foundings never read the First Key.
+fn founding_keys(
+    grant: Option<&ployz_core::FoundingGrant>,
+    first_key: Option<&FirstKey>,
+) -> Result<ployz_core::authority::TrustedKeys, StoreError> {
+    if !matches!(grant, Some(ployz_core::FoundingGrant::Claim { .. })) {
+        return Ok(ployz_core::authority::TrustedKeys::default());
+    }
+    match first_key {
+        Some(FirstKey::Waiting { key }) => Ok(key.trusted()),
+        Some(FirstKey::Spent { .. }) => Err(StoreError::FirstKeySpent),
+        None => Ok(ployz_core::authority::TrustedKeys::default()),
+    }
+}
+
+/// The only keys whose join approval this Machine takes: the Devices the person's CLI pinned,
+/// and the Waiting First Key. With neither, nothing vouches for the approval.
+fn join_anchor(
+    pin: Option<&ployz_core::JoinPin>,
+    first_key: Option<&FirstKey>,
+) -> Result<ployz_core::authority::TrustedKeys, StoreError> {
+    let pinned = pin.map(|pin| pin.devices.clone()).unwrap_or_default();
+    let anchor = match first_key.and_then(FirstKey::waiting) {
+        Some(ployz_core::first_key::LineKey::Device { key }) => {
+            ployz_core::authority::TrustedKeys::new(pinned.into_iter().chain([*key]), [], [])
+        }
+        Some(line @ ployz_core::first_key::LineKey::Passkey { .. }) => {
+            ployz_core::authority::TrustedKeys::new(pinned, line.trusted().passkeys().cloned(), [])
+        }
+        None => ployz_core::authority::TrustedKeys::new(pinned, [], []),
+    };
+    if anchor.keys().next().is_none() {
+        return Err(StoreError::JoinUnanchored);
+    }
+    Ok(anchor)
+}
+
+/// A join approval no trusted key signed, named against the key the install line armed, so
+/// the person sees which key to approve with.
+fn not_first_key(
+    refusal: ployz_core::authority::AuthorityRefusal,
+    first_key: Option<&FirstKey>,
+) -> StoreError {
+    use ployz_core::authority::AuthorityRefusal::{UnknownKey, UnknownPasskey};
+    match (&refusal, first_key.and_then(FirstKey::waiting)) {
+        (UnknownKey { .. } | UnknownPasskey, Some(line)) => StoreError::NotFirstKey {
+            expected: line.describe(),
+        },
+        _ => StoreError::JoinRefused(refusal),
+    }
+}
+
+/// The keys a joiner trusts from the trust its admitting Machine sealed, and the ones it
+/// holds removed. A sealed list that trusts a key it also removed, or lists one key twice
+/// under two kinds, is refused whole.
+fn sealed_trust(
+    trust: crate::sealing_key::JoinTrust,
+    approved_by: ployz_core::authority::PasskeyApprover,
+) -> Result<(ployz_core::authority::TrustedKeys, Removed), StoreError> {
+    let refused = || {
+        StoreError::JoinRefused(ployz_core::authority::AuthorityRefusal::Mismatch {
+            field: ployz_core::authority::MismatchField::SealedTrust,
+        })
+    };
+    let crate::sealing_key::JoinTrust {
+        mut devices,
+        passkeys: listed,
+        grants,
+        removed_keys,
+        removed_grants,
+        removed_members,
+    } = trust;
+    devices.sort_unstable();
+    devices.dedup();
+    let mut passkeys: Vec<ployz_core::authority::Passkey> = Vec::new();
+    for passkey in listed {
+        if !passkeys.iter().any(|held| held.code() == passkey.code()) {
+            passkeys.push(passkey);
+        }
+    }
+    let mut codes: Vec<DeviceCode> = devices
+        .iter()
+        .map(DeviceKey::code)
+        .chain(passkeys.iter().map(ployz_core::authority::Passkey::code))
+        .chain(grants.iter().map(|grant| grant.key.code()))
+        .collect();
+    let listed = codes.len();
+    codes.sort_unstable();
+    codes.dedup();
+    let removed = |key: KeyRef| removed_keys.contains(&key);
+    if codes.len() != listed
+        || devices
+            .iter()
+            .any(|key| removed(KeyRef::Signing { key: *key }))
+        || passkeys.iter().any(|passkey| {
+            removed(KeyRef::Passkey {
+                key: passkey.public_key,
+            })
+        })
+        || grants.iter().any(|grant| {
+            removed(KeyRef::Signing {
+                key: grant.key.into(),
+            })
+        })
+    {
+        return Err(refused());
+    }
+    Ok((
+        ployz_core::authority::TrustedKeys::new(
+            devices,
+            passkeys
+                .into_iter()
+                .map(|passkey| ployz_core::authority::TrustedPasskey {
+                    passkey,
+                    approved_by,
+                }),
+            grants
+                .into_iter()
+                .map(|grant| ployz_core::authority::TrustedGrant { grant, approved_by }),
+        ),
+        Removed {
+            grants: removed_grants
+                .into_iter()
+                .filter(|key| removed(KeyRef::Signing { key: (*key).into() }))
+                .collect(),
+            keys: removed_keys,
+            members: removed_members,
+        },
+    ))
+}
+
+fn join_trust_missing_text(admitting: Option<&MachineId>) -> String {
+    let member = admitting.map_or_else(
+        || "The admitting Server".to_owned(),
+        |id| format!("Admitting Server {id}"),
+    );
+    format!(
+        "{member} didn't seal the keys this Server must trust ({}). Upgrade that Server, then add this one again.",
+        ployz_core::JOIN_TRUST_CAPABILITY
+    )
+}
+
 fn removed_key_text(key: &KeyRef) -> String {
     match key {
         KeyRef::Signing { key } => format!(
@@ -1419,10 +1717,30 @@ fn removed_key_text(key: &KeyRef) -> String {
 pub enum StoreError {
     #[error("join approval refused: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error(
+        "This Server's disk already started or joined a Cluster, so an install line can't name its first key again."
+    )]
+    FirstKeySpent,
+    #[error(
+        "This Server has no key to check its join approval against: its install line named none, or its disk already used one."
+    )]
+    JoinUnanchored,
+    #[error(
+        "This Server's join was approved by a key it doesn't trust. Approve it with {expected}, the key its install line named."
+    )]
+    NotFirstKey { expected: String },
+    #[error("{}", join_trust_missing_text(.admitting.as_ref()))]
+    JoinTrustMissing { admitting: Option<MachineId> },
+    #[error(
+        "This Server is still waiting for the restrictions its admitting Server answers its join with."
+    )]
+    JoinRestrictionsPending,
+    #[error(transparent)]
+    FirstKey(#[from] FirstKeyError),
     #[error("{}", removed_key_text(.0))]
     KeyRemoved(KeyRef),
     #[error(
-        "CI or agent key {0} was removed from this Server for good. Make a new one with ployz key add."
+        "CI or agent key {0} was removed from this Server for good. Make a new one with ployz key add --ci or --agent."
     )]
     GrantRemoved(DeviceCode),
     #[error(

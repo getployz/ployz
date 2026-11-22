@@ -97,7 +97,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
     target
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
-                pin: None,
+                pin: crate::machine::test_support::pin_of(&replay),
                 registration: replay,
             },
             wireguard_mtu: None,
@@ -131,7 +131,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
-                pin: None,
+                pin: crate::machine::test_support::pin_of(&registered),
                 registration: registered,
             },
             wireguard_mtu: None,
@@ -178,7 +178,7 @@ async fn register_carries_the_entrys_devices_to_the_joiner_in_its_approval() {
     joiner
         .enroll(ployz_core::EnrollRequest {
             role: ployz_core::EnrollAs::Member {
-                pin: None,
+                pin: crate::machine::test_support::pin_of(&registered),
                 registration: registered,
             },
             wireguard_mtu: None,
@@ -216,6 +216,7 @@ async fn client_assignment_publishes_through_entry_and_a_rekeyed_register_is_ref
     assert_eq!(
         ployz_core::Registered {
             sealing_key: first.sealing_key.clone(),
+            restrictions: first.restrictions.clone(),
             ..replayed
         },
         first
@@ -493,14 +494,17 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let target = LocalMachine::new(target_store.clone()).with_cluster(cluster());
     let enroll = |registration| ployz_core::EnrollRequest {
         role: ployz_core::EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
     };
+    let registered = register_published(&entry, &identity).await.unwrap();
+    let restrictions = registered.restrictions.clone().unwrap();
+    target.enroll(enroll(registered)).await.unwrap();
     target
-        .enroll(enroll(register_published(&entry, &identity).await.unwrap()))
+        .confirm_join(ployz_core::ConfirmJoinRequest { restrictions })
         .await
         .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -660,8 +664,8 @@ async fn sealing_entry(prefix: &str) -> (LocalMachine, std::path::PathBuf, Joine
 fn member(registration: ployz_core::Registered) -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
         role: ployz_core::EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),

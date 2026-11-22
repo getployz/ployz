@@ -1099,3 +1099,65 @@ async fn a_member_that_does_not_claim_the_floors_is_shared_a_key_an_older_ployzd
     assert!(Some(opened) == holder.key());
     server.abort();
 }
+
+/// A recovery founder already participates when a holder shares it the Sealing Key, so it
+/// was never sealed the holder's removals as a joiner is. It takes them over Share, so a key
+/// the holder removed stops working on it too, and it keeps the keys it trusts.
+#[tokio::test]
+async fn a_member_given_the_key_takes_the_holders_removals() {
+    use ployz_core::authority::{KeyRef, Signer};
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-removals-holder", &replicated).await;
+    let mut founder = Peer::needing_access("ployzd-removals-founder", &replicated).await;
+    founder
+        .machine
+        .runtime
+        .capabilities
+        .insert(ployz_core::JOIN_TRUST_CAPABILITY.to_owned());
+    replicated
+        .publish_local_machine(&founder.machine)
+        .await
+        .unwrap();
+    let kept = join_signer();
+    let removed = Signer::from_seed(&[2; 32]);
+    for peer in [&holder, &founder] {
+        trust_device(&peer.local, &kept).await;
+        trust_device(&peer.local, &removed).await;
+    }
+    let removed_key = KeyRef::Signing {
+        key: removed.public().into(),
+    };
+    let gone = ployz_core::RemovedMember {
+        id: MachineId::random(),
+        public_key: None,
+    };
+    holder
+        .local
+        .owner()
+        .mutate(move |store| {
+            store.remove_key(removed_key).unwrap();
+            store.remove_members(&[gone]).unwrap();
+        })
+        .await
+        .unwrap();
+
+    let sealed = holder.share_to(&founder).await;
+    founder
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed,
+            public_key: holder.held(),
+        })
+        .await
+        .unwrap();
+
+    let record = founder.local.record();
+    assert_eq!(
+        record.devices().collect::<Vec<_>>(),
+        [ployz_core::DeviceKey::from(kept.public())]
+    );
+    assert_eq!(record.removed_keys(), [removed_key]);
+    assert_eq!(record.removed_members(), [gone]);
+    server.abort();
+}

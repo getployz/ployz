@@ -8,6 +8,13 @@ use ployz_core::{
 
 use crate::machine::StoreError;
 
+/// The pin a CLI holding `signer`'s Device sends.
+fn pinned(signer: &Signer) -> ployz_core::JoinPin {
+    ployz_core::JoinPin {
+        devices: vec![signer.public().into()],
+    }
+}
+
 /// Approve `signer` at `entry`'s console, as a person does on a Server born enforcing.
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
     entry
@@ -112,8 +119,8 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
         joiner
             .enroll(EnrollRequest {
                 role: EnrollAs::Member {
+                    pin: Some(pinned(&signer)),
                     registration,
-                    pin: None
                 },
                 wireguard_mtu: None,
                 pinned: Default::default()
@@ -155,6 +162,138 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     ));
     server.abort();
     drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A joiner takes only the key its install command named. A join answered under another
+/// trusted key spends nothing for good: the join is offered again, another approval under
+/// the wrong key is refused, and a fresh one under the key the joiner waits for replaces
+/// the spent answer. Once the joiner confirms, the join is closed.
+#[tokio::test]
+async fn a_join_answered_under_another_key_heals_with_the_key_the_joiner_waits_for() {
+    let (entry, _, _, directory, server) = participating().await;
+    let wrong = Signer::from_seed(&[1; 32]);
+    let right = Signer::from_seed(&[2; 32]);
+    enforce(&entry, &wrong).await;
+    enforce(&entry, &right).await;
+    let joiner = LocalMachineStore::open(tempfile::tempdir().unwrap().path()).unwrap();
+    let mut request = request("joiner", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    let waits_for = ployz_core::first_key::FirstKeyHint::Device {
+        code: DeviceKey::from(right.public()).code(),
+    };
+    request.first_key = Some(waits_for);
+    assert!(entry.register(request.clone()).await.is_err());
+    assert_eq!(
+        entry
+            .pending_joins()
+            .unwrap()
+            .first_keys
+            .get(&request.machine_id),
+        Some(&waits_for)
+    );
+    let approve = async |signer: &Signer| {
+        let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+        body.signer = signer.public().into();
+        let approval = Signed::sign(&body, signer).unwrap();
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: approval.clone(),
+            })
+            .await
+            .map(|_| approval)
+    };
+
+    let spent = approve(&wrong).await.unwrap();
+    let answered = entry.register(request.clone()).await.unwrap();
+    assert_eq!(answered.assigned_machine.join_approval, Some(spent));
+    assert!(matches!(
+        approve(&wrong).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: MismatchField::FirstKey
+        }))
+    ));
+    let fresh = approve(&right).await.unwrap();
+    let healed = entry.register(request.clone()).await.unwrap();
+    assert_eq!(healed.assigned_machine.join_approval, Some(fresh.clone()));
+    assert!(healed.sealing_key.is_some());
+
+    let key = crate::sealing_key::SealingKey::load(&directory)
+        .unwrap()
+        .unwrap();
+    entry
+        .register(ployz_core::RegisterRequest {
+            join_confirmation: Some(key.confirm_join(&fresh)),
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+    assert!(entry.pending_joins().unwrap().joins.is_empty());
+    let mut body = fresh.open().unwrap();
+    body.issued_at = body.issued_at.plus(1);
+    assert!(matches!(
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: Signed::sign(&body, &right).unwrap(),
+            })
+            .await,
+        Err(LocalMachineError::JoinConsumed(_))
+    ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// The draft of a join answered under the wrong key can go before anyone approves it
+/// again: its window closes and it is pruned, or the answer predates kept drafts. The
+/// joiner's next Register offers the join again with a fresh window and the key it waits
+/// for, and the old answer still stands until an approval under that key replaces it.
+#[tokio::test]
+async fn a_wrong_key_join_is_offered_again_after_its_draft_is_gone() {
+    let (entry, _, _, directory, server) = participating().await;
+    let wrong = Signer::from_seed(&[1; 32]);
+    let right = Signer::from_seed(&[2; 32]);
+    enforce(&entry, &wrong).await;
+    enforce(&entry, &right).await;
+    let joiner = LocalMachineStore::open(tempfile::tempdir().unwrap().path()).unwrap();
+    let mut request = request("joiner", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    let waits_for = ployz_core::first_key::FirstKeyHint::Device {
+        code: DeviceKey::from(right.public()).code(),
+    };
+    request.first_key = Some(waits_for);
+    assert!(entry.register(request.clone()).await.is_err());
+    let approve = async |signer: &Signer| {
+        let mut body = entry.pending_joins().unwrap().joins.pop().expect("offered");
+        body.signer = signer.public().into();
+        let approval = Signed::sign(&body, signer).unwrap();
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: approval.clone(),
+            })
+            .await
+            .map(|_| approval)
+    };
+    let spent = approve(&wrong).await.unwrap();
+    entry.register(request.clone()).await.unwrap();
+    std::fs::remove_file(directory.join("join-approvals.json")).unwrap();
+
+    let replayed = entry.register(request.clone()).await.unwrap();
+
+    assert_eq!(replayed.assigned_machine.join_approval, Some(spent));
+    assert_eq!(
+        entry
+            .pending_joins()
+            .unwrap()
+            .first_keys
+            .get(&request.machine_id),
+        Some(&waits_for)
+    );
+    let fresh = approve(&right).await.unwrap();
+    let healed = entry.register(request.clone()).await.unwrap();
+    assert_eq!(healed.assigned_machine.join_approval, Some(fresh));
+    server.abort();
+    drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -601,7 +740,7 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         ..
     } = Box::pin(joiner.enroll(EnrollRequest {
         role: EnrollAs::Member {
-            pin: None,
+            pin: crate::machine::test_support::pin_of(&registration),
             registration: registration.clone(),
         },
         wireguard_mtu: None,
@@ -648,7 +787,14 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
         })
         .await
         .unwrap();
-    assert_eq!(confirmed, registration);
+    assert_eq!(
+        ployz_core::Registered {
+            restrictions: None,
+            ..confirmed.clone()
+        },
+        registration
+    );
+    assert!(confirmed.restrictions.is_some());
     assert!(
         entry
             .replicated()
@@ -681,8 +827,8 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
     assert!(matches!(
         joiner.enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: crate::machine::test_support::pin_of(&registration),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -770,19 +916,33 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     registration.assigned_machine.join_approval = Some(approval.clone());
     registration.sealing_key = Some(
         fake_key
-            .seal_join(&body.machine.public_key, &approval, None)
+            .seal_join(
+                &body.machine.public_key,
+                &approval,
+                None,
+                Some(&Default::default()),
+            )
             .unwrap(),
     );
-    joiner
-        .enroll(EnrollRequest {
-            role: EnrollAs::Member {
-                registration,
-                pin: None,
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
-        .unwrap();
+    let forged_join = |pin| EnrollRequest {
+        role: EnrollAs::Member {
+            pin,
+            registration: registration.clone(),
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    };
+    assert!(matches!(
+        joiner.enroll(forged_join(Some(pinned(&signer)))),
+        Err(StoreError::JoinRefused(AuthorityRefusal::UnknownKey { .. }))
+    ));
+    assert!(matches!(
+        joiner.enroll(forged_join(None)),
+        Err(StoreError::JoinUnanchored)
+    ));
+    // A joiner that pinned the attacker's own Device joins the attacker's Cluster, and the
+    // real one still never publishes it.
+    joiner.enroll(forged_join(Some(pinned(&attacker)))).unwrap();
     let forged = joiner.record().machine().unwrap();
     assert!(matches!(
         entry
@@ -829,8 +989,8 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
     joiner
         .enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: Some(pinned(&signer)),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -906,8 +1066,8 @@ async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_sta
     let registration = entry.register(request.clone()).await.unwrap();
     let enrollment = EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -1012,8 +1172,8 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     joiner
         .enroll(EnrollRequest {
             role: EnrollAs::Member {
+                pin: crate::machine::test_support::pin_of(&registration),
                 registration,
-                pin: None,
             },
             wireguard_mtu: None,
             pinned: Default::default(),
@@ -1157,8 +1317,8 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let enrollment = EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -1227,8 +1387,8 @@ fn confirmation(
 fn member(registration: ployz_core::Registered) -> EnrollRequest {
     EnrollRequest {
         role: EnrollAs::Member {
+            pin: crate::machine::test_support::pin_of(&registration),
             registration,
-            pin: None,
         },
         wireguard_mtu: None,
         pinned: Default::default(),
@@ -1392,7 +1552,7 @@ async fn an_approval_that_closes_before_the_install_commits_installs_nothing() {
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let now = Timestamp::now();
     let EnrollPlan::Fresh(installation) = joiner
-        .plan_enrollment(member(registration), None, now)
+        .plan_enrollment(member(registration), None, None, now)
         .unwrap()
     else {
         panic!("an approved registration enrolls fresh");

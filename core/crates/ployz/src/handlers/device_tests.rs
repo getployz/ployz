@@ -625,6 +625,20 @@ async fn removal_fleet(
     std::sync::Arc<std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>>,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
+    fleet(lists, 0).await
+}
+
+/// [`removal_fleet`], where `late` Servers join while the run goes: machine 3 once the first
+/// SetDevice lands, listed by every Server, and then machine 4, admitted by machine 3 once
+/// machine 3 took its own SetDevice, and listed only by machine 3.
+async fn fleet(
+    lists: Lists,
+    late: usize,
+) -> (
+    Client,
+    std::sync::Arc<std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
     let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = sent.clone();
     let (client, server) =
@@ -642,14 +656,27 @@ async fn removal_fleet(
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                         enrollment: None,
-                        machines: ['1', '2', '3']
+                        machines: ['1', '2', '3', '4']
+                            .into_iter()
+                            .filter(|hex| {
+                                let seen = seen.lock().unwrap();
+                                match hex {
+                                    '3' => late == 0 || !seen.is_empty(),
+                                    '4' => {
+                                        late >= 2
+                                            && target == id('3')
+                                            && seen.iter().any(|(machine, _)| *machine == id('3'))
+                                    }
+                                    _ => true,
+                                }
+                            })
                             .map(|hex| {
                                 MachineObservation::new(
                                     machine(hex, &format!("machine-{hex}")),
                                     MembershipObservation::Up,
                                 )
                             })
-                            .into(),
+                            .collect(),
                     }),
                     RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
                         attest: None,
@@ -753,6 +780,89 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
             (id('3'), SetDeviceRequest::Remove { code }),
         ]
     );
+    server.abort();
+}
+
+/// Machine 3 joins while `device rm` runs, sealed the keys its admitting Server held before
+/// the removal landed there. The run lists the Members again after its writes and removes
+/// the Device on machine 3 too.
+#[tokio::test]
+async fn rm_reaches_a_server_that_joined_while_it_ran() {
+    let (mut client, sent, server) = fleet(|_| (vec![key(1)], Vec::new()), 1).await;
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1'), id('2'), id('3')]
+    );
+    assert!(settled.gaps.is_complete());
+    server.abort();
+}
+
+/// Machine 3 joins while `device rm` runs, and admits machine 4 once the removal reached
+/// it. The run keeps listing Members until none is new, so machine 4 loses the Device too.
+#[tokio::test]
+async fn rm_reaches_a_server_admitted_by_one_that_joined_while_it_ran() {
+    let (mut client, sent, server) = fleet(|_| (vec![key(1)], Vec::new()), 2).await;
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1'), id('2'), id('3'), id('4')]
+    );
+    assert!(settled.gaps.is_complete());
+    server.abort();
+}
+
+/// A change scoped to one Server with `--connect` reaches that Server only, and the
+/// Members it lists that were there all along are no gap.
+#[tokio::test]
+async fn a_change_scoped_to_one_server_reports_no_other_member_as_missed() {
+    let (client, sent, server) = removal_fleet(|_| (vec![key(1)], Vec::new())).await;
+    let connection =
+        crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
+    let mut client =
+        client.with_full_routes(crate::cluster::FullRoutes::chosen(vec![connection], true));
+    client.enter_at(id('1'));
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1')]
+    );
+    assert!(settled.gaps.is_complete(), "{:?}", settled.gaps);
+    server.abort();
+}
+
+/// A change scoped to one Server with `--connect` reaches that Server only, even when a
+/// Member joins while it runs: that Member is no gap either.
+#[tokio::test]
+async fn a_change_scoped_to_one_server_never_follows_a_member_that_joins() {
+    let (client, sent, server) = fleet(|_| (vec![key(1)], Vec::new()), 1).await;
+    let connection =
+        crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
+    let mut client =
+        client.with_full_routes(crate::cluster::FullRoutes::chosen(vec![connection], true));
+    client.enter_at(id('1'));
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1')]
+    );
+    assert!(settled.gaps.is_complete(), "{:?}", settled.gaps);
     server.abort();
 }
 
@@ -997,6 +1107,7 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
         silent: Vec::new(),
         entry: None,
         names: [(id('1'), MachineName::parse("machine-1").unwrap())].into(),
+        follows_joins: true,
     };
     let [device, passkey] = roster.as_slice() else {
         panic!("one device and one passkey");

@@ -361,6 +361,7 @@ const PIPED: Install<'static> = Install {
     cloud_url: "ployz.dev",
     url_source: None,
     token: Token::Piped,
+    keyed: false,
 };
 const FROM_FILE: Install<'static> = Install {
     token: Token::InFile,

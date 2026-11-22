@@ -25,6 +25,34 @@ safe_owned_directory() {
     case "$1" in /var/lib/ployz|/var/lib/ployz-checkin|/run/ployz|/tmp/*) return ;; *) return 1 ;; esac
 }
 
+# Whether this disk's Machine record names an enrollment, or a joining or participating body
+# (also inside a reset). Read without ployzd, which is gone by the time this runs.
+record_enrolled() {
+    local record="$PLOYZ_DATA_DIR/machine.json"
+    [ -f "$record" ] || return 1
+    tr -d ' \t\n' < "$record" | grep -Eq '"enrollment":[{]|"phase":"(joining|participating)"'
+}
+
+# An enrolled disk's First Key ends Spent, so a later install line can't make this Server trust
+# a new key without someone confirming it at this Server's terminal. It sits beside the data
+# directory, which keeps it through the removal below.
+spend_first_key() {
+    local file="$PLOYZ_DATA_DIR-first-key.json" lock="$PLOYZ_DATA_DIR-first-key.lock"
+    record_enrolled || return 0
+    if [ -L "$file" ] || [ -L "$lock" ]; then
+        error "Refusing symlink First Key file: $file"
+    fi
+    exec {first_key_lock}<>"$lock"
+    if command -v flock >/dev/null 2>&1; then
+        flock "$first_key_lock" || error "Cannot lock $lock; uninstall aborted before deleting Machine state"
+    fi
+    grep -q '"state": *"spent"' "$file" 2>/dev/null && return 0
+    printf '{"state":"spent","at":%s}\n' "$(($(date +%s) * 1000))" > "$file.tmp"
+    sync "$file.tmp" 2>/dev/null || sync
+    mv -f "$file.tmp" "$file"
+    sync "$(dirname "$file")" 2>/dev/null || sync
+}
+
 stop_loaded_units() {
     local units unit rest
     units=$(systemctl list-units --all --plain --no-legend "$1") || error "Cannot inspect $1; uninstall aborted"
@@ -73,6 +101,7 @@ EOF
     fi
     exec {installation_lock}<>"$lock_path"
     flock -n "$installation_lock" || error "Ployz mutation or installation is active; retry uninstall"
+    spend_first_key
     # Stop the socket first: while it listens, any connect restarts the daemon.
     stop_loaded_units ployz.socket
     stop_loaded_units ployz.service

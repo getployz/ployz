@@ -28,6 +28,8 @@ pub(crate) struct Install<'a> {
     pub(crate) cloud_url: &'a str,
     pub(crate) url_source: Option<&'static str>,
     pub(crate) token: Token,
+    /// The install line carried a key to trust first.
+    pub(crate) keyed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -107,9 +109,11 @@ pub(crate) async fn install(
             crate::ui::stream(line);
         }
     }
-    crate::ui::note(
-        "To approve changes from your browser, add a passkey in your Ployz Cloud account once this server joins, then run this on each server:\n  sudo ployz device approve --passkey <code>",
-    );
+    if !install_with.keyed {
+        crate::ui::note(
+            "To approve changes from your browser, add a passkey in your Ployz Cloud account, copy the install command again, and run its key on each Server:\n  sudo ployz key add pk1_…",
+        );
+    }
     Ok(())
 }
 

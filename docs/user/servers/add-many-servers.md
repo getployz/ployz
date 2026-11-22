@@ -32,7 +32,10 @@ counts as that once. After a failed or cancelled enrollment the server stays in 
 you enroll it again. Ployz remembers this by the server's own key, so a server that left Waiting
 and later checks in with the same token again still waits for you.
 That includes a server you removed or forgot: once Ployz Cloud no longer lists it,
-`sudo ployz server checkin --install` on the reset server puts it back in Waiting.
+`sudo ployz server checkin --install` on the reset server puts it back in Waiting. Removing it
+used up the key its install line carried, so before it can join again, run
+`sudo ployz key add` at its terminal with the key from a new install command; see
+[The key on an install line](add-a-server.md#the-key-on-an-install-line).
 Successful joins count for the token's lifetime, including after their waiting rows age out
 after seven days or a joined server is removed. Servers beyond the limit stay in Waiting and
 can be enrolled manually. Manual enrolls of its servers use its capacity too and can take the
@@ -43,7 +46,9 @@ count past N. Revoke stops new arrivals while open enrollments finish.
 1. Open **Servers** and click **Add servers**. Name the token, choose an expiry of 1 day, 7 days
    or 30 days, and click **Create**.
 2. Copy the install line and the token while they are visible. Ployz shows the token once. The
-   **cloud-init** tab carries the same token in the line.
+   **cloud-init** tab carries the same token in the line. Both lines carry your passkey's key, the
+   one each server trusts to approve its join. When your servers trust no passkey of yours, the
+   dialog shows no line and says who can add servers instead.
 3. Run the **Shell** line on each server as root or with `sudo`, and paste the token when it asks.
    For user data, use the cloud-init example instead; it has no terminal to ask at.
    The line returns once check-in is running.
@@ -79,6 +84,10 @@ check-in refreshes the row. Offline servers have stopped checking in.
    and **Builds**. Review the names, storage choices and any **Skip** reasons, then click
    **Enroll N**. For a selection across providers or networks, first check that every source
    belongs to you.
+
+After the first server, each server's join waits for a person to approve it. Approve each one
+under **Waiting for approval** with **Approve with passkey**, then enroll it again. See
+[Approve a join](add-a-server.md#approve-a-join).
 
 **Update ployz** as a skip reason means that server's `ployz` is too old to enroll. Copy a
 current install line from **Add servers** or `ployz server token create`, run it on the server,

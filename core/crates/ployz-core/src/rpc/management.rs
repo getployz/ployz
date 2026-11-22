@@ -66,6 +66,14 @@ pub struct Retired {
     pub by_issued_at: crate::authority::Timestamp,
 }
 
+/// Trust one person's passkey or CLI Device on this Machine alone, as root on this Server
+/// asks with `ployz key add`. No other kind of key can be named.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetKeyRequest {
+    pub key: crate::first_key::LineKey,
+}
+
 /// What a [`SetDeviceRequest`] or [`KeyStepRequest`] changed on this Machine. Each outcome
 /// is final, so a rerun reports `AlreadyApproved` or `NotPresent` rather than failing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

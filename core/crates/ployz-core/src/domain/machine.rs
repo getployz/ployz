@@ -626,6 +626,10 @@ pub struct MachineToken {
     pub disk_total_bytes: Option<u64>,
     #[serde(default)]
     pub disk_available_bytes: Option<u64>,
+    /// The key this Machine's First Key file waits for, when it waits for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_key: Option<crate::first_key::FirstKeyHint>,
 }
 
 #[cfg(test)]
@@ -643,6 +647,7 @@ mod machine_token_tests {
             memory_total_bytes: None,
             disk_total_bytes: None,
             disk_available_bytes: None,
+            first_key: None,
         };
         let mut wire = serde_json::to_value(&token).unwrap();
         assert_eq!(

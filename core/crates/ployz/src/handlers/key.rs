@@ -2,6 +2,9 @@
 //! Device: the places it may deploy to and the Volumes it may mount. The CLI makes the
 //! key, resolves names through the Store, shows what it resolved, and hands the signed
 //! change to every Server over its own connection.
+//!
+//! `ployz key add pk1_…` instead trusts an install command's key on this Server only;
+//! see [`line`].
 
 use std::collections::BTreeMap;
 
@@ -25,6 +28,7 @@ use crate::connect::Client;
 use crate::device::{self, DeviceSigning};
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 
+mod line;
 mod members;
 mod rotate;
 mod wanted;
@@ -42,24 +46,44 @@ const LEAKED: &str = "If a key leaks, run ployz key rm <code>, then deploy from 
 
 pub(crate) fn group(command: Command) -> Command {
     command
-        .about("Make and manage the keys CI and agents deploy with")
+        .about(
+            "Make and manage the keys CI and agents deploy with, or trust an install command's key",
+        )
         .after_help(LEAKED)
 }
 
 pub(crate) fn add_command(command: Command) -> Command {
     scope_args(base(
         command,
-        "Make a CI or agent key on every server, and print its PLOYZ_KEY once",
+        "Make a CI or agent key, or trust the key from an install command on this Server",
+    ))
+    .long_about(concat!(
+        "With --ci or --agent, make a CI or agent key on every server, and print its ",
+        "PLOYZ_KEY once.\n\n",
+        "With the key from an install command (pk1_…), trust it on this Server only. Run it ",
+        "on each Server that should trust it. Before a Server joins a Cluster, it replaces ",
+        "the key the Server trusts to join or found one, once you confirm at this Server's ",
+        "terminal.",
     ))
     .after_help(concat!(
         "Examples:\n",
         "  ployz key add --ci --env production --name github-actions\n",
         "  ployz key add --agent --env staging --service web\n",
-        "  ployz key add --ci --env production --volume db/data",
+        "  ployz key add --ci --env production --volume db/data\n",
+        "  sudo ployz key add pk1_eyJraW5kIjoi…",
     ))
+    .arg(
+        positional("line", false)
+            .help("The key from your install command (pk1_…), to trust on this Server")
+            .conflicts_with_all(["env", "service", "volume", "name"]),
+    )
     .arg(switch("ci", None).help("A key for a CI pipeline"))
     .arg(switch("agent", None).help("A key for an agent; needs --env"))
-    .group(ArgGroup::new("kind").args(["ci", "agent"]).required(true))
+    .group(
+        ArgGroup::new("kind")
+            .args(["line", "ci", "agent"])
+            .required(true),
+    )
 }
 
 pub(crate) fn scope_command(command: Command) -> Command {
@@ -132,6 +156,9 @@ fn scope_args(command: Command) -> Command {
 
 pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
+    if let Some(typed) = leaf.get_one::<String>("line") {
+        return line::add(typed);
+    }
     let kind = match leaf.get_flag("agent") {
         true => GrantKind::Agent,
         false => GrantKind::Ci,

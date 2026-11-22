@@ -136,6 +136,10 @@ struct RuleMark {
 pub(crate) struct JoinResult {
     pub approval: Signed<ployz_core::authority::JoinApproval>,
     pub reply: JoinReply,
+    /// Whether the capsule in `reply` carries this Machine's trust after the floors, as a
+    /// joiner that claims `join-trust.v1` requires. Absent from answers from before it.
+    #[serde(default)]
+    pub sealed_trust: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -412,6 +416,7 @@ impl ConsumptionLog {
         self.read(Error::JoinRecord, |log| log.joins.get(&machine).cloned())
     }
 
+    #[cfg(test)]
     pub(crate) fn require_unused_join(&self, machine: ployz_core::MachineId) -> Result<(), Error> {
         match self.read(Error::JoinRecord, |log| log.joins.contains_key(&machine))? {
             true => Err(Error::JoinConsumed(machine)),
@@ -436,6 +441,54 @@ impl ConsumptionLog {
             log.joins.insert(approval.machine.id, result);
             Ok(Edit::Write(Ok(())))
         })?
+    }
+
+    /// Drop the stored answer to `machine`'s join when another approval than `fresh` made
+    /// it, so `fresh` admits the joiner instead. Only a joiner that refused the stored
+    /// answer and never confirmed it gets a fresh approval, so nothing it holds is lost.
+    ///
+    /// # Errors
+    /// Returns [`Error::JoinRecord`] when the record cannot be read or written.
+    pub(crate) fn release_join(
+        &self,
+        machine: ployz_core::MachineId,
+        fresh: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> Result<(), Error> {
+        self.transact(Error::JoinRecord, |log| {
+            if log
+                .joins
+                .get(&machine)
+                .is_some_and(|stored| &stored.approval != fresh)
+            {
+                log.joins.remove(&machine);
+                return Ok(Edit::Write(()));
+            }
+            Ok(Edit::Keep(()))
+        })
+    }
+
+    /// Replace the stored answer to a join already consumed with `result`, for the same
+    /// approval: a capsule sealed again for a joiner that now opens more of it.
+    ///
+    /// # Errors
+    /// Returns [`Error::JoinRecord`] when the record cannot be read or written, and
+    /// [`Error::JoinConsumed`] when the stored answer is for another approval.
+    pub(crate) fn replace_join_result(&self, result: JoinResult) -> Result<(), Error> {
+        self.transact(Error::JoinRecord, |log| {
+            let machine = result
+                .approval
+                .open()
+                .map_err(Error::JoinRefused)?
+                .machine
+                .id;
+            match log.joins.get_mut(&machine) {
+                Some(stored) if stored.approval == result.approval => {
+                    *stored = result;
+                    Ok(Edit::Write(()))
+                }
+                _ => Err(Error::JoinConsumed(machine)),
+            }
+        })
     }
 
     /// This Machine's clock for a one-shot window: `now`, raised to the highest time this

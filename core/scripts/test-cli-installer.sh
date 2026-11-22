@@ -373,6 +373,16 @@ checked_in_with 1
 enroll PLOYZ_FLEET_TOKEN=$TOKEN FLEET_TOKEN=exported TTY=exported
 checked_in_with ''
 
+# The install command's key reaches ployz, which checks it, and doesn't stand in for the version.
+for args in '--key pk1_line 1.2.3' '1.2.3 --key=pk1_line'; do
+    INSTALL_ARGS=$args enroll PLOYZ_FLEET_TOKEN=$TOKEN
+    grep -Fxq "argv=server checkin --install --token-file $FLEET_TOKEN_FILE --token-stdin --key pk1_line" "$CHECKIN_LOG"
+done
+if INSTALL_ARGS='1.2.3 --key' enroll PLOYZ_FLEET_TOKEN=$TOKEN; then
+    echo "a --key with no key was not refused" >&2
+    exit 1
+fi
+
 mkdir -p "$TMP/dev"
 for args in '--enroll 1.2.3' '1.2.3 --enroll'; do
     printf '%s\n' "$TOKEN" > "$TMP/dev/tty"
