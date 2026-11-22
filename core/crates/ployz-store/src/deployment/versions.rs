@@ -425,11 +425,11 @@ fn signed_parent(
         if tried.contains(&ran.digest) {
             continue;
         }
-        tried.push(ran.digest);
         let Some(statement) = roots(tx, organization, service, ran.digest)?
             .into_iter()
             .next()
         else {
+            tried.push(ran.digest);
             continue;
         };
         if let Some(spec) = ran_spec(tx, id, service.1, ran) {

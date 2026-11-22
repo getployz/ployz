@@ -6,13 +6,13 @@ use ployz_core::authority::{
     deploy::Creation, version,
 };
 use ployz_core::{
-    ContainerKind, DeviceKey, Hint, Namespace, RequestedServiceSpec, ResolvedUpdateConfig,
+    ContainerKind, DeviceKey, Hint, Namespace, Region, RequestedServiceSpec, ResolvedUpdateConfig,
     RpcErrorCode, SealingPublicKey, ServiceId, ServiceName,
 };
 use ployz_store::{Parent, TagPin};
 use serde_json::{Value, json};
 
-use super::{ImageEdit, Refused, children, pending, posted, refuse_forget};
+use super::{ImageEdit, Refused, children, moves, pending, posted, refuse_forget};
 use crate::handlers::device::DeviceSigning;
 
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -480,4 +480,23 @@ fn a_silent_deploy_never_forgets() {
 
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
     assert!(refuse_forget(&deploy_matches(&["--yes"])).is_ok());
+}
+
+/// A staged region moves a Service no silent signer reviewed, so the deploy waits for a
+/// person even when every node change is the named image.
+#[test]
+fn a_staged_region_move_refuses_and_names_the_service() {
+    let service = ServiceName::parse("api").expect("service name");
+    let region = Region::parse("eu").expect("region");
+    let regions = BTreeMap::from([(service.clone(), Some(region))]);
+
+    assert_eq!(moves(&BTreeMap::new()), Ok(()));
+    assert_eq!(
+        moves(&regions),
+        Err(Refused::Pending {
+            node: "api".to_owned(),
+            field: Some("region".to_owned()),
+            service: Some(service),
+        })
+    );
 }

@@ -17,7 +17,7 @@ use ployz_core::authority::{
 };
 use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{
-    Hint, Namespace, PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode,
+    Hint, Namespace, PARENT_VERSIONS_CAPABILITY, Region, RequestedServiceSpec, RpcErrorCode,
     SCOPED_KEYS_CAPABILITY, SealingPublicKey, ServiceName,
 };
 use ployz_store::{
@@ -209,6 +209,7 @@ pub(in crate::handlers) fn sign(
     signing: &DeviceSigning,
 ) -> Result<DeviceApproval, Error> {
     pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
+    moves(&plan.regions).map_err(|refused| refused.error(matches))?;
     let named = plan.target.map(|target| {
         target
             .into_iter()
@@ -384,6 +385,23 @@ pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Refuse a deploy that moves any Service to a staged region, as `regions` lists the
+/// Services it moves. A move is a staged change no silent signer reviewed, so it waits
+/// for a person, like any other.
+///
+/// # Errors
+/// Returns [`Refused::Pending`] at `region` for the first Service the deploy moves.
+pub(super) fn moves(regions: &BTreeMap<ServiceName, Option<Region>>) -> Result<(), Refused> {
+    match regions.keys().next() {
+        Some(service) => Err(Refused::Pending {
+            node: service.to_string(),
+            field: Some("region".to_owned()),
+            service: Some(service.clone()),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Each Service `edits` names, as an edit of its parent in `parents` that changes only its
