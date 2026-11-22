@@ -43,7 +43,6 @@ mod sealing;
 mod sealing_targets;
 mod service;
 mod settings;
-pub mod stderr_log;
 mod storage;
 mod teardown;
 mod trusted;

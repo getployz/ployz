@@ -404,7 +404,7 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap_or_default();
         assert!(
-            at.starts_with("crates/ployz-store/src/stderr_log.rs:"),
+            at.starts_with("crates/ployz/src/sdk/stderr_log.rs:"),
             "{at}"
         );
     }
