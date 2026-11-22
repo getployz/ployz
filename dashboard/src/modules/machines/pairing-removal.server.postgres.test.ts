@@ -1,4 +1,4 @@
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import type { Client, ConnectOptions } from "@ployz/sdk";
 import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -9,7 +9,8 @@ import { connectionAborts } from "#/test/connection-aborts";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";

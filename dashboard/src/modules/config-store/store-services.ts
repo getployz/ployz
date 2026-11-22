@@ -13,7 +13,7 @@ export type NewServiceSource =
   | { type: "git"; repository: string; branch: string | null };
 
 /** The longest Store name: a DNS label. */
-export const MAX_NAME = 63;
+const MAX_NAME = 63;
 
 function sourceName(source: NewServiceSource) {
   if (source.type === "git") return source.repository.split("/").at(-1) ?? "";
@@ -23,7 +23,7 @@ function sourceName(source: NewServiceSource) {
 
 /** Why a name isn't what a Store name must be (a Service's, Volume's, Environment's or Project's): a DNS label. */
 export function dnsLabelError(name: string): string | null {
-  if (name.length > 63) return "Use at most 63 characters.";
+  if (name.length > MAX_NAME) return `Use at most ${MAX_NAME} characters.`;
   return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/u.test(name) ? null
     : "Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
 }

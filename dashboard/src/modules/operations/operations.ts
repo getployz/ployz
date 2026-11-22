@@ -5,14 +5,15 @@ import { PRIVATE_ACCESS_WANTS, SetPrivateAccessInput } from "#/modules/private-a
 import { EnqueueMachineRemoveInput, ForgetServerInput, ForgetServersInput } from "#/modules/machines/machine-removal";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
-import { BuildConcurrencyChangeSchema, RegionSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
+import { RegionSchema } from "#/modules/machines/server-regions";
+import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
 import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
 import type { Permission } from "#/modules/organization/permissions";
-import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run-states";
 
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
 export const OPERATION_TOOLS = [

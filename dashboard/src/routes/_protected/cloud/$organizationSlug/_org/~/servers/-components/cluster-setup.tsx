@@ -13,7 +13,7 @@ import { clusterNameProblem } from "#/modules/cluster-name/cluster-name";
 import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
 import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
 import { checkCloudflareServerFn, listCloudflareZonesServerFn } from "#/modules/ingress/doors.functions";
-import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
 import { holdCloudflare } from "./first-cloudflare";

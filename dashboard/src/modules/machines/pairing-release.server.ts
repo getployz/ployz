@@ -5,8 +5,9 @@ import { and, eq, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
-import type { ServerRelease } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -24,9 +25,6 @@ export const decrypt = Effect.fn("PairingRelease.decrypt")(function* (
   });
 });
 
-/** The advisory lock class of {@link lockOrganizationEnrollment}; the two-key form keeps it apart from every one-key lock. */
-const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
-
 /**
  * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
  * a legacy claim, Fleet Token creation, Forget Servers, a pairing removal, a dead-claim release and Organization
@@ -43,7 +41,7 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRelease.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
 });
 
 /**
@@ -52,7 +50,7 @@ export const lockOrganizationEnrollment = Effect.fn("PairingRelease.lockOrganiza
  */
 export const shareOrganizationEnrollment = Effect.fn("PairingRelease.shareOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ADVISORY_LOCK.organizationEnrollment}, hashtext(${organizationId}))`);
 });
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */

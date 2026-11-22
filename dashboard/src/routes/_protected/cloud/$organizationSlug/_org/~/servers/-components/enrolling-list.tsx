@@ -3,7 +3,8 @@ import { memo, useRef } from "react";
 import { Button } from "#/components/ui/button";
 import { cn } from "#/lib/utils";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
-import { ENROLLMENT_STAGES, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
+import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
+import { type EnrollmentStage } from "#/modules/machines/waiting/enrollment-states";
 
 const BOX_RECT = { width: 0, height: 520 };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";

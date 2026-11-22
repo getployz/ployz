@@ -3,13 +3,7 @@ import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, u
 import { createdAt, type EncryptedSecretValue } from "#/db/tables";
 import type { MachineId } from "@ployz/sdk";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
-import type {
-  EnrollInstruction,
-  EnrollmentFailure,
-  EnrollmentRole,
-  EnrollmentStage,
-  EnrollmentState,
-} from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollInstruction, EnrollmentFailure, EnrollmentRole, EnrollmentStage, EnrollmentState } from "#/modules/machines/waiting/enrollment-states";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 

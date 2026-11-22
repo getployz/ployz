@@ -8,7 +8,7 @@ import { findService, owners, sealedNames, unreadable, unreadableEnvironment } f
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
-import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/machines/connections.server";
+import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/runtime/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { answerMetrics } from "#/modules/metrics/agent-metrics.server";

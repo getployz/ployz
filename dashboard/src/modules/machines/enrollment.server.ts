@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { INSTALL_COMMAND } from "#/modules/machines/installer";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
@@ -16,25 +17,8 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import {
-  JoinApprovalRequired,
-  enrollmentExpiry,
-  MANAGEMENT_CAPABILITY_LENGTH,
-  registerRequestFromEnrollmentIdentity,
-  rustMachineIdSchema,
-  setupReportAccepted,
-  setupReportProperties,
-  type SetupReport,
-  waitForFounder,
-  waitForJoinSlot,
-  type EnrollmentIdentity,
-  type EnrollmentCallback,
-  type EnrollmentCallbackSealing,
-  type CliMintMachineEnrollmentInput,
-  type CliResetPendingEnrollmentInput,
-  type ReadMachineEnrollmentInput,
-  type ResetPendingEnrollmentInput,
-} from "#/modules/machines/enrollment";
+import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
@@ -48,7 +32,7 @@ import {
   createObservePushTargetRequestedEvent,
   createServerEnrollmentCompletedEvent,
 } from "#/modules/inngest/events";
-import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
@@ -56,7 +40,7 @@ import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.se
 import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, managementIdentity, SERVER_REACH_TIMEOUT_MS,
-} from "#/modules/machines/connections.server";
+} from "#/modules/runtime/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -84,7 +68,7 @@ const predatesSealingRefusal = (error: PloyzProviderError) => {
   return new Unavailable({
     message: `This Server runs ${release === undefined ? "a Ployz older than 0.3.3" : `Ployz ${release}`}, which can't finish joining `
       + "a cluster that has a Sealing Key. Update ployz where you run ployz server add: "
-      + "curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server "
+      + `${INSTALL_COMMAND} (with sudo on the Server). Then rerun ployz server add while a server `
       + "that holds your cluster's key is online.",
     userFacing: true,
     cause: error,

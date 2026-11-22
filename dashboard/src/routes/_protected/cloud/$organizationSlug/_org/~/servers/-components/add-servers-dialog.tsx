@@ -10,7 +10,7 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
-import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useRoleGate } from "#/modules/organization/members.queries";

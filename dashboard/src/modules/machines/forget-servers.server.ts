@@ -7,8 +7,8 @@ import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server"
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
-import { decryptPairingSecret, foundingClaimFresh, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
-import { RemovalEndpoints } from "#/modules/machines/pairing-removal";
+import { decryptPairingSecret, foundingClaimFresh, SERVER_REACH_TIMEOUT_MS } from "#/modules/runtime/connections.server";
+import { RemovalEndpoints } from "#/modules/runtime/removal-endpoints";
 import { forgetCluster, seeCluster } from "#/modules/machines/pairing-removal.server";
 import { enrollmentAllocation, organizationMachine } from "#/modules/machines/tables";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";

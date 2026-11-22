@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
-import type { VolumeRunInput, VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
+import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run-states";
 
 /** The name the CLI resolved the Server by and showed, which its run keeps. An older CLI sends none. */
 const shownName = { server_name: Schema.optional(Schema.String) };

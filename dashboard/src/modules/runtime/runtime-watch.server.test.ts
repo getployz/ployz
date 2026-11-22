@@ -27,6 +27,7 @@ import {
 } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
+import { testConfigLayer } from "#/test/config-environment";
 
 const inngest = new Inngest({ id: "runtime-watch-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -47,6 +48,7 @@ describe("openRuntimeWatch", () => {
           organizationSlug: "acme",
         }).pipe(
           Effect.provideService(InngestClient, inngest),
+          Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             Auth,
             asTestDouble<AuthService>()({
@@ -75,6 +77,7 @@ describe("openRuntimeWatchForOrganization", () => {
           organizationId: "org-1",
         }).pipe(
           Effect.provideService(InngestClient, inngest),
+          Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
             asTestDouble<OrganizationRuntimeService>()({
@@ -101,6 +104,7 @@ describe("openRuntimeWatchForOrganization", () => {
           organizationId: "org-1",
         }).pipe(
           Effect.provideService(InngestClient, inngest),
+          Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
             asTestDouble<OrganizationRuntimeService>()({
@@ -151,6 +155,7 @@ describe("openRuntimeWatchForOrganization", () => {
         organizationId: "org-1",
       }).pipe(
         Effect.provideService(InngestClient, inngest),
+        Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
         Effect.provideService(
           OrganizationRuntime,
           asTestDouble<OrganizationRuntimeService>()({
@@ -187,6 +192,7 @@ describe("openRuntimeWatchForOrganization", () => {
         organizationId: "org-1",
       }).pipe(
         Effect.provideService(InngestClient, inngest),
+        Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
         Effect.provideService(
           OrganizationRuntime,
           asTestDouble<OrganizationRuntimeService>()({
@@ -214,6 +220,7 @@ describe("openRuntimeWatchForOrganization", () => {
           organizationId: "org-1",
         }).pipe(
           Effect.provideService(InngestClient, inngest),
+          Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
             asTestDouble<OrganizationRuntimeService>()({
@@ -243,6 +250,7 @@ describe("openRuntimeWatchForOrganization", () => {
         organizationId: "org-1",
       }).pipe(
         Effect.provideService(InngestClient, inngest),
+        Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
         Effect.provideService(
           OrganizationRuntime,
           asTestDouble<OrganizationRuntimeService>()({

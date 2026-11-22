@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { RangeEdge } from "#/modules/uptime/uptime-range";
 
 export const ReadServiceMetricsInput = Schema.Struct({

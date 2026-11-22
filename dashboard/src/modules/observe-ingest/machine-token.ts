@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 /**
  * A Machine's bearer token for Cloud's OTLP routes: `ployz-otlp-v1.<payload>.<signature>`. The payload is the

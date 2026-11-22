@@ -1,19 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
-import {
-  enrollmentExpiry,
-  enrollmentIdentitySchema,
-  type EnrollmentTokenRow,
-  redactIpAddresses,
-  registerRequestFromEnrollmentIdentity,
-  ResetPendingEnrollmentInput,
-  rustMachineIdSchema,
-  setupReportAccepted,
-  setupReportProperties,
-  setupReportSchema,
-  waitForFounder,
-  waitForJoinSlot,
-} from "#/modules/machines/enrollment";
+import { enrollmentExpiry, enrollmentIdentitySchema, type EnrollmentTokenRow, redactIpAddresses, registerRequestFromEnrollmentIdentity, ResetPendingEnrollmentInput, setupReportAccepted, setupReportProperties, setupReportSchema, waitForFounder, waitForJoinSlot } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";

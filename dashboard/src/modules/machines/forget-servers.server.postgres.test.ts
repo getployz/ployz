@@ -12,7 +12,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { member, user } from "#/modules/identity/tables";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {

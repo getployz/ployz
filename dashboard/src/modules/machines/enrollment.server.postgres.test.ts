@@ -1,9 +1,10 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { inspect } from "node:util";
 import { testConfigEnvironment } from "#/test/config-environment";
-import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/runtime/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
-import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
+import { registerRequestFromEnrollmentIdentity } from "./enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
 import { Inngest } from "inngest";
 import {
@@ -45,7 +46,8 @@ import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { asTestDouble } from "#/lib/test-double";
 import { recoveryDigest } from "#/modules/machines/sealing-key.server";
 import { readCollection } from "#/collections/read.server";
-import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";

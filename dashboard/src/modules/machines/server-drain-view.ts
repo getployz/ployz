@@ -1,5 +1,6 @@
 import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
-import type { DrainEndCode, LatestDrains } from "#/modules/machines/server-drain";
+import type { LatestDrains } from "#/modules/machines/server-drain";
+import type { DrainEndCode } from "#/modules/machines/server-drain-states";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { listNames } from "#/lib/plural";
 

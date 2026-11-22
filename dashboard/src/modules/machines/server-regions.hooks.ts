@@ -1,13 +1,13 @@
-import type { ConfigView, OwnedNamespace, NamedRegion } from "@ployz/sdk";
-import { keepPreviousData, useQueries, type QueryState } from "@tanstack/react-query";
+import type { ConfigView, NamedRegion } from "@ployz/sdk";
+import { keepPreviousData, useQueries } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { StoreResult, StoreViewOf } from "#/modules/config-store/store.contract";
+import type { StoreResult } from "#/modules/config-store/store.contract";
 import { queryOf, storeViewOptions, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { toast } from "sonner";
 import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
-import { firstServerRegion } from "#/modules/machines/server-regions";
+import { firstServerRegion, regionLabels, regionOptions, type RegionOption } from "#/modules/machines/server-regions";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 /**
@@ -24,37 +24,6 @@ export function useRegions(organizationSlug: string, labels: readonly string[] |
   }] });
   if (read.data?.ok) return read.data.value.regions;
   return read.data !== undefined || read.isError ? [] : undefined;
-}
-
-/** The Namespaces the Environments own as the Store has told: not yet, not at all, or each with where it runs. */
-export type OwnedNamespaces =
-  | { readonly kind: "reading" }
-  | { readonly kind: "failed" }
-  | { readonly kind: "read"; readonly namespaces: readonly OwnedNamespace[] };
-
-type NamespacesRead = QueryState<StoreResult<StoreViewOf<{ readonly query: "namespaces" }>>>;
-
-function ownedNamespaces(read: NamespacesRead | undefined): OwnedNamespaces {
-  if (read?.status === "error") return { kind: "failed" };
-  if (read === undefined || read.fetchStatus !== "idle" || read.isInvalidated) return { kind: "reading" };
-  if (read.data?.ok) return { kind: "read", namespaces: read.data.value.namespaces };
-  return read.data !== undefined ? { kind: "failed" } : { kind: "reading" };
-}
-
-/**
- * The read of the Namespaces the Organization's Environments own. `shown` is the read as this render found it, for what
- * the page says. `now` asks the read itself when called, for what a write goes by: a read can be asked again between a
- * render and the click it drew.
- */
-export type OwnedNamespacesRead = { readonly shown: OwnedNamespaces; readonly now: () => OwnedNamespaces };
-
-export function useOwnedNamespaces(organizationSlug: string): OwnedNamespacesRead {
-  const scope = useCollectionScope();
-  const options = storeViewOptions(organizationSlug, scope, { query: "namespaces" });
-  // `now` reads the query's own state, so every change to it renders, not only the ones in a field this reads.
-  useQueries({ queries: [{ ...options, notifyOnChangeProps: "all" as const }] });
-  const now = () => ownedNamespaces(scope.queryClient.getQueryState(options.queryKey));
-  return { shown: now(), now };
 }
 
 /**
@@ -138,4 +107,15 @@ function withName(result: StoreResult<ConfigView> | undefined, region: NamedRegi
   if (result?.ok !== true || result.value.view !== "regions") return result;
   const regions = [...result.value.regions.filter((each) => each.key !== region.key), region].sort((a, b) => a.key.localeCompare(b.key));
   return { ok: true, value: { ...result.value, regions } } as const;
+}
+
+/**
+ * The regions a choice offers: those the Servers are in, with the names they were given, and each of `kept` even when no
+ * Server is in it. Only any region until the Servers have been read.
+ */
+export function useRegionOptions(organizationSlug: string, kept: readonly string[] = []): RegionOption[] {
+  const { machines, status } = useRuntimeLens(organizationSlug);
+  // Read once the Servers are known: a read with no labels yet is asked again under another key when they arrive.
+  const names = useRegions(organizationSlug, status === "connecting" ? undefined : regionLabels(machines));
+  return regionOptions(machines, names, kept);
 }

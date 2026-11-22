@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, Select
 import { leavingServer, placedServices, unreadEnvironments } from "#/modules/machines/server-move";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import { regionLabels, regionName, regionOf } from "#/modules/machines/server-regions";
-import { nameNotSaved, useNameRegion, useNewRegions, useOwnedNamespaces } from "#/modules/machines/server-regions.hooks";
+import { useOwnedNamespaces } from "#/modules/config-store/store-namespaces.hooks";
+import { nameNotSaved, useNameRegion, useNewRegions } from "#/modules/machines/server-regions.hooks";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";

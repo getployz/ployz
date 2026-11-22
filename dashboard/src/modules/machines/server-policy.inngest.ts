@@ -1,15 +1,14 @@
 import { Effect, Option, Schema } from "effect";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { serverPolicyChangeRequestedEventType } from "#/modules/inngest/events";
 import { ServerPolicyChangeSchema } from "#/modules/machines/server-policy";
 import { applyServerPolicyChangeActivity } from "#/modules/machines/server-policy.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const ServerPolicyChangeRequestedData = Schema.Struct({
-  organizationId: NonEmptyString,
+  organizationId: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
   change: ServerPolicyChangeSchema,
 });

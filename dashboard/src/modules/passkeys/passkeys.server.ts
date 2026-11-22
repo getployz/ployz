@@ -9,7 +9,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { user, verification } from "#/modules/identity/tables";
-import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/runtime/connections.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { codeOfPasskeyKey, passkeyKeyOf, type PasskeyKey } from "#/modules/passkeys/passkey-key";
 import { passkeyRequest } from "#/modules/passkeys/tables";

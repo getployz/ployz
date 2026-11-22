@@ -7,9 +7,9 @@ import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
-import { firstRuntimeFrame, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
-import { runtimeFrameRecords, runtimeSealingDigest } from "#/modules/runtime/runtime-frame-record.server";
+import { OrganizationRuntimeLive, runtimeFrameRecords, runtimeSealingDigest } from "#/modules/machines/runtime-frame-records.server";
 import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,

@@ -1,24 +1,20 @@
 import type { DrainReport, EnrollmentAssignment, MachineId, MachineName, QualifiedService } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, sqlStringLiterals, updatedAt } from "#/db/tables";
 
+import { MACHINE_ID_SQL } from "#/lib/schema";
 import { user } from "#/modules/identity/tables";
 
-import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
+import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 
-import {
-  CLEANUP_END_CODES,
-  CLEANUP_STATES,
-  type CleanupEndCode,
-  type CleanupState,
-} from "#/modules/machines/namespace-cleanup";
-import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
-import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic";
+import { CLEANUP_END_CODES, CLEANUP_STATES, type CleanupEndCode, type CleanupState } from "#/modules/machines/namespace-cleanup-states";
+import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain-states";
+import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 
 import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
-import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 
 import { sql } from "drizzle-orm";
 
@@ -196,7 +192,7 @@ export const serverDrainAttempt = pgTable(
     index("server_drain_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
     uniqueIndex("server_drain_attempt_approval_uidx").on(table.approvalId).where(sql`${table.approvalId} is not null`),
     check("server_drain_attempt_targets_check", sql`${table.targets} is null or jsonb_typeof(${table.targets}) = 'array'`),
-    check("server_drain_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("server_drain_attempt_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
     check("server_drain_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(DRAIN_STATES)})`),
     // Each end code ends in exactly its state.
     check("server_drain_attempt_end_code_check", sql`${table.endCode} is null or (${table.endCode}, ${table.state}) in (${drainEndPairs})`),
@@ -263,7 +259,7 @@ export const serverWebTrafficAttempt = pgTable(
       .on(table.inngestRunId)
       .where(sql`${table.inngestRunId} is not null`),
     index("server_web_traffic_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
-    check("server_web_traffic_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("server_web_traffic_attempt_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
     check("server_web_traffic_attempt_want_check", sql`${table.want} in (${sqlStringLiterals(WEB_TRAFFIC_WANTS)})`),
     check("server_web_traffic_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(WEB_TRAFFIC_STATES)})`),
     check(
@@ -392,7 +388,7 @@ export const organizationMachine = pgTable(
     check("organization_machine_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
     check(
       "organization_machine_id_format_check",
-      sql`${table.machineId} ~ '^[0-9a-f]{32}$'`,
+      sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`,
     ),
     check("organization_machine_management_identity_check", sql`${table.managementIdentity} ~ '^[0-9a-f]{64}$'`),
   ],
@@ -545,7 +541,7 @@ export const clusterSealingKeyGenerator = pgTable(
   (table) => [
     primaryKey({ columns: [table.organizationId, table.clusterKey] }),
     check("cluster_sealing_key_generator_cluster_key_check", sql`${table.clusterKey} ~ '^[0-9a-f]{64}$'`),
-    check("cluster_sealing_key_generator_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("cluster_sealing_key_generator_machine_id_check", sql`${table.machineId} ~ '${sql.raw(MACHINE_ID_SQL)}'`),
   ],
 );
 

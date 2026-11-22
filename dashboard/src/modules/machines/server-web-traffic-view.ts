@@ -1,4 +1,5 @@
-import type { LatestWebTrafficChanges, WebTrafficWant } from "#/modules/machines/server-web-traffic";
+import type { LatestWebTrafficChanges } from "#/modules/machines/server-web-traffic";
+import type { WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeIncompleteIds, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 

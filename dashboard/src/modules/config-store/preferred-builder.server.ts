@@ -2,13 +2,11 @@ import "@tanstack/react-start/server-only";
 import type { Change, ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect } from "effect";
 import { asRecord } from "#/lib/json";
-import { listOrganizationServers } from "#/modules/machines/connections.server";
+import { MACHINE_ID_PATTERN } from "#/lib/schema";
+import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { StoreRefused } from "./store.contract";
 
 type Server = Effect.Success<ReturnType<typeof listOrganizationServers>>[number];
-
-/** A Machine ID, as `MachineId::parse` takes one. */
-const MACHINE_ID = /^[0-9a-f]{32}$/;
 
 /** Whether `path` is a Service's Preferred Builder, `SERVICE.preferredBuilder`. */
 const isPreferredBuilder = (path: string) => {
@@ -61,7 +59,7 @@ function resolve(text: string, servers: ReadonlyArray<Server>): Effect.Effect<st
       details: null,
     }));
   }
-  if (MACHINE_ID.test(text)) return Effect.succeed(text);
+  if (MACHINE_ID_PATTERN.test(text)) return Effect.succeed(text);
   return Effect.fail(new StoreRefused({ code: "not_found", message: `Server ${escapeDebug(text)} was not found`, details: null }));
 }
 

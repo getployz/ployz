@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { Uuid } from "#/lib/schema";
+import { rustMachineIdSchema, Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { carriedInto, type Gate, gateOperation } from "#/modules/approvals/approvals.server";
@@ -24,7 +24,6 @@ import { refusal } from "#/modules/config-store/config-store.server";
 import { DEVICE_KEY } from "#/modules/devices/device-code";
 import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
 import { readPasskeyRequest } from "#/modules/passkeys/passkeys.server";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";

@@ -31,7 +31,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
-import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { CommandRefusal, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";

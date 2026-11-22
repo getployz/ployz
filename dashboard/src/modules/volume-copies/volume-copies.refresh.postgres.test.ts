@@ -7,7 +7,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { clusterRead, makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";

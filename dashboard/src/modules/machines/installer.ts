@@ -2,6 +2,15 @@ import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token"
 
 const DEFAULT_CLOUD_ORIGIN = "https://ployz.dev";
 
+/** Where Ployz is installed from, and where the daemon reads its Release Channel pointers (core `RELEASE_CHANNEL_URL`). */
+export const INSTALL_ORIGIN = "https://ployz.sh";
+
+/** The line that installs or updates Ployz on the machine that runs it. */
+export const INSTALL_COMMAND = `curl -fsSL ${INSTALL_ORIGIN} | sh`;
+
+/** What a Server on an older management protocol runs to upgrade, from a computer that reaches it over SSH. */
+export const SSH_UPGRADE = `${INSTALL_COMMAND}\nployz server upgrade stable SERVER --connect ssh://USER@HOST`;
+
 export type InstallLines = { readonly shell: string; readonly cloudInit: string };
 
 export type InstallTarget = { readonly cloudOrigin: string; readonly ployzVersion: string; readonly token: string };
@@ -14,8 +23,8 @@ export type InstallTarget = { readonly cloudOrigin: string; readonly ployzVersio
 export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget): InstallLines {
   const cloud = cloudOrigin === DEFAULT_CLOUD_ORIGIN ? "" : `PLOYZ_CLOUD_URL='${cloudOrigin}' `;
   return {
-    shell: `curl -fsSL https://ployz.sh | sudo ${cloud}sh -s -- ${ployzVersion} --enroll`,
-    cloudInit: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh | ${cloud}PLOYZ_FLEET_TOKEN=${token} sh -s -- ${ployzVersion}`,
+    shell: `curl -fsSL ${INSTALL_ORIGIN} | sudo ${cloud}sh -s -- ${ployzVersion} --enroll`,
+    cloudInit: `#cloud-config\nruncmd:\n  - curl -fsSL ${INSTALL_ORIGIN} | ${cloud}PLOYZ_FLEET_TOKEN=${token} sh -s -- ${ployzVersion}`,
   };
 }
 

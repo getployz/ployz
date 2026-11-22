@@ -1,12 +1,7 @@
 import { Schema } from "effect";
-import { RegionSchema } from "#/modules/machines/server-policy";
+import { RegionSchema } from "#/modules/machines/server-regions";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
-
-export type EnrollmentRole = "founder" | "joiner";
-
-export type EnrollmentState = "awaiting_founder" | "instructed" | "running" | "joined" | "failed" | "cancelled";
-
-export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" | "joining" | "publishing";
+import type { EnrollmentStage, EnrollStorage } from "#/modules/machines/waiting/enrollment-states";
 
 export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
 
@@ -25,30 +20,8 @@ export const joinCommitted = (
   row: { readonly reportedAttemptId: string | null; readonly reportedStage: string | null },
 ) => PAST_STORAGE.has(attempt.stage) || (row.reportedAttemptId === attempt.id && PAST_STORAGE.has(row.reportedStage));
 
-export type EnrollStorage = { readonly kind: "none" } | { readonly kind: "zfs"; readonly device?: string };
-
-export type EnrollPolicy = {
-  readonly labels: Readonly<Record<string, string>>;
-  readonly acceptsBuilds: boolean;
-  readonly acceptsServices: boolean;
-  readonly acceptsIngress: boolean;
-};
-
-/** What the host runs once Cloud answers `enroll`; the token travels beside it, never inside it. */
-export type EnrollInstruction = {
-  readonly name: string;
-  readonly storage: EnrollStorage;
-  readonly policy: EnrollPolicy;
-  /** The founder's only: the Cluster Name it founds with, its `--cluster-name`. */
-  readonly clusterName?: string;
-  /** The founder's only: found with every Door closed, its `--ingress-closed`. */
-  readonly ingressClosed?: true;
-};
-
 /** The instruction field a CLI lists in its check-in's `enrollOptions` when it founds closed. */
 export const INGRESS_CLOSED_OPTION = "ingressClosed";
-
-export type EnrollmentFailure = { readonly stage: EnrollmentStage | null; readonly message: string };
 
 /** The first beta that enrolls from Cloud plans. */
 export const ENROLL_MIN_CLI_VERSION = "0.3.0-beta.6";

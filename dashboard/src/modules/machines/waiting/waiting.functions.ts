@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
+import { StrictOrganizationSlug } from "#/lib/schema";
 import { cancelServerEnrollment, previewServerEnrollment, readServerEnrollmentStatus, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { OpenProbeSelectionInput, SELECTION_MAX } from "#/modules/machines/waiting/probe";
@@ -8,12 +9,10 @@ import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
-const OrganizationSlug = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());
-
-const ListWaitingServersInput = Schema.Struct({ organizationSlug: OrganizationSlug });
-const ShowWaitingServerInput = Schema.Struct({ organizationSlug: OrganizationSlug, id: Schema.String.check(Schema.isUUID()) });
+const ListWaitingServersInput = Schema.Struct({ organizationSlug: StrictOrganizationSlug });
+const ShowWaitingServerInput = Schema.Struct({ organizationSlug: StrictOrganizationSlug, id: Schema.String.check(Schema.isUUID()) });
 const RejectWaitingServersInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
+  organizationSlug: StrictOrganizationSlug,
   ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(SELECTION_MAX)),
 });
 
@@ -39,7 +38,7 @@ export const rejectWaitingServersServerFn = createServerFn({ method: "POST" })
 
 const DashboardEnrollInput = Schema.Struct({
   ...EnrollInput.fields,
-  organizationSlug: OrganizationSlug,
+  organizationSlug: StrictOrganizationSlug,
   ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(SELECTION_MAX)),
 });
 

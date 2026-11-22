@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import type { ServerStatus } from "#/modules/machines/server-status";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */

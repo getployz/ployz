@@ -3,7 +3,7 @@ import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
 import { serverDrainRequestedEventType } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import {
   bindDrainRun,
   closeDrainRun,

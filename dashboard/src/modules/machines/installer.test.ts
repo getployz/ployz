@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { installLines } from "./install-lines";
+import { installLines } from "./installer";
 
 const TOKEN = "pflt_example";
 const hosted = { cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3-beta.4", token: TOKEN };

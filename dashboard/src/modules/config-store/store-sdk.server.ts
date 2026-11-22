@@ -3,6 +3,7 @@ import { type ConfigStore, openConfigStore, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Redacted, Semaphore } from "effect";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { StoreRefused } from "./store.contract";
@@ -31,7 +32,7 @@ const attachChangeLog = Effect.gen(function* () {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`select pg_advisory_xact_lock(1256)`);
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.storeChangeLog})`);
     for (const [table, { key }] of Object.entries(storeChangeSources)) {
       const keys = sql.join(key.map((column) => sql`${column}::text`), sql`, `);
       yield* drizzle.execute(sql`

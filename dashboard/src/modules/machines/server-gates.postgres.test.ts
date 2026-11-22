@@ -21,6 +21,7 @@ import { provideServerAccess } from "#/modules/machines/server-access.server";
 import { organization } from "#/modules/organization/tables";
 import { requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { testConfigLayer } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
 const LAB = "00000000-0000-4000-8000-00000000c002";
@@ -77,6 +78,7 @@ const outcomeOf = async (gate: Gated, userId: string) => {
   const exit = await harness.runEffect(Effect.exit(gate({ userId }).pipe(
     Effect.provideService(SupportStaff, supportStaffOf([])),
     Effect.provideService(InngestClient, inngest),
+    Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
   )));
   if (Exit.isSuccess(exit)) return exit.value instanceof Function ? "a plan" : JSON.stringify(exit.value) ?? "undefined";
   const error = Cause.squash(exit.cause);

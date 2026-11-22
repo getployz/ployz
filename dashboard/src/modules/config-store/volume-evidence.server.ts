@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { observeVolumes, type VolumeObservation } from "@ployz/sdk";
 import { Context, Effect, Option, Schema } from "effect";
-import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 

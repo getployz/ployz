@@ -5,8 +5,8 @@ import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
 import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { releasingExpectation } from "#/modules/machines/connections.server";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { releasingExpectation } from "#/modules/runtime/connections.server";
+import { rustMachineIdSchema } from "#/lib/schema";
 import {
   clusterSealingKey, clusterSealingKeyGenerator, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt,
   organizationMachine, serverAccess,
@@ -17,11 +17,11 @@ import { managementClientCleared, Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
-import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
+import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/runtime/removal-endpoints";
 import {
   decrypt, lockOrganizationEnrollment, lockWitnessedPairing, othersRemain, replaced,
 } from "#/modules/machines/pairing-release.server";
-import type { ServerRelease } from "#/modules/machines/machine-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal-states";
 
 type Pairing = typeof organizationPairing.$inferSelect;
 type RemovalAttempt = Pairing & {

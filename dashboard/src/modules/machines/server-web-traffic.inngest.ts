@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent, serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import {
   bindWebTrafficRun,
   closeStaleWebTraffic,

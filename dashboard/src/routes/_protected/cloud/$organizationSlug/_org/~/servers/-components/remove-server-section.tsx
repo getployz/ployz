@@ -16,7 +16,8 @@ import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runt
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { LostVolumeName } from "#/modules/machines/server-operations.server";
 import { removedToast } from "./removed-toast";
-import { removalFailureMessage, type MachineRemoveResult } from "#/modules/machines/machine-removal";
+import { removalFailureMessage } from "#/modules/machines/machine-removal";
+import { type MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import { RowWarning } from "#/components/settings/row-warning";
