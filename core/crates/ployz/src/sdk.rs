@@ -593,17 +593,11 @@ impl Session {
     /// `invalid_argument` for a URL it will not push to, and cancellation or
     /// transport errors.
     pub async fn set_push_target(&self, url: Option<url::Url>) -> Result<(), RpcError> {
-        let description = self.about().await?;
-        if !description.supports(ployz_core::SET_PUSH_TARGET_CAPABILITY) {
-            return Err(name_refusal(
-                RpcError::unsupported(format!(
-                    "{} is not advertised",
-                    ployz_core::SET_PUSH_TARGET_CAPABILITY
-                )),
-                op::SetPushTarget::PATH,
-                &MachineTarget::from(&description.machine_id),
-            ));
-        }
+        self.require(
+            ployz_core::SET_PUSH_TARGET_CAPABILITY,
+            op::SetPushTarget::PATH,
+        )
+        .await?;
         self.unary::<op::SetPushTarget>(ployz_core::SetPushTargetRequest { url }, Call::keyed())
             .await
             .map(drop)
@@ -619,17 +613,11 @@ impl Session {
         &self,
         name: ployz_core::ClusterName,
     ) -> Result<ployz_core::ClusterNamed, RpcError> {
-        let description = self.about().await?;
-        if !description.supports(ployz_core::SET_CLUSTER_NAME_CAPABILITY) {
-            return Err(name_refusal(
-                RpcError::unsupported(format!(
-                    "{} is not advertised",
-                    ployz_core::SET_CLUSTER_NAME_CAPABILITY
-                )),
-                op::SetClusterName::PATH,
-                &MachineTarget::from(&description.machine_id),
-            ));
-        }
+        self.require(
+            ployz_core::SET_CLUSTER_NAME_CAPABILITY,
+            op::SetClusterName::PATH,
+        )
+        .await?;
         self.unary::<op::SetClusterName>(ployz_core::SetClusterNameRequest { name }, Call::keyed())
             .await
     }
@@ -768,6 +756,20 @@ impl Session {
             .await
     }
 
+    /// The entry's description, refusing as `path` would when it does not advertise
+    /// `capability`.
+    async fn require(&self, capability: &str, path: &str) -> Result<ContractDescription, RpcError> {
+        let description = self.about().await?;
+        if description.supports(capability) {
+            return Ok(description);
+        }
+        Err(name_refusal(
+            RpcError::unsupported(format!("{capability} is not advertised")),
+            path,
+            &MachineTarget::from(&description.machine_id),
+        ))
+    }
+
     /// Open a Runtime Watch stream of complete frames.
     ///
     /// Checks the advertised capability name. Missing Watch is unsupported; this
@@ -778,16 +780,11 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, Watch is not
     /// advertised, or the stream cannot be opened.
     pub async fn watch(&self) -> Result<Watch, RpcError> {
-        let description = self.about().await?;
+        let description = self
+            .require(RUNTIME_WATCH_CAPABILITY, op::RuntimeWatch::PATH)
+            .await?;
         let client = self.client()?;
         let entry = MachineTarget::from(&description.machine_id);
-        if !description.supports(RUNTIME_WATCH_CAPABILITY) {
-            return Err(name_refusal(
-                RpcError::unsupported(format!("{RUNTIME_WATCH_CAPABILITY} is not advertised")),
-                op::RuntimeWatch::PATH,
-                &entry,
-            ));
-        }
         let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
             .encode()
             .map_err(ConnectError::from)?;
