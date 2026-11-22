@@ -76,8 +76,8 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 
 /// Whether this CLI holds a Device key, so its Management connections dial as that Device.
 pub(super) fn holds_device_key(matches: &ArgMatches) -> Result<bool, Error> {
-    let key = super::device::key::path(&super::config_path(matches)?);
-    Ok(super::device::key::load(&key)?.is_some())
+    let key = crate::device::key::path(&super::config_path(matches)?);
+    Ok(crate::device::key::load(&key)?.is_some())
 }
 
 /// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.

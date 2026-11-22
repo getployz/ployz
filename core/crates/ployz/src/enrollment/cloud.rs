@@ -21,8 +21,8 @@ use crate::cloud::enroll::{
 use crate::cloud::origin::CloudOrigin;
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
+use crate::device::{self, JoinEntry};
 use crate::failure::Failure as Error;
-use crate::handlers::device::{self, JoinEntry};
 use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
 use crate::ui::{self, Fields};
