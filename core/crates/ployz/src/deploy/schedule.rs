@@ -100,6 +100,18 @@ pub enum GroupRole {
     Tail(Vec<ServiceName>),
 }
 
+impl GroupRole {
+    /// A tail that follows no Service has nothing a prelude prepares for it, so it starts
+    /// beside the preludes: a failed stray cleanup must not leave a retirement unattempted.
+    fn waits_for_preludes(&self) -> bool {
+        match self {
+            Self::Prelude => false,
+            Self::Tail(dependencies) => !dependencies.is_empty(),
+            Self::Service { .. } | Self::Removals(_) => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Action {
     Start(usize),
@@ -521,12 +533,11 @@ impl Schedule {
     }
 
     fn dependencies_done(&self, group: &ServiceGroup) -> bool {
-        let is_prelude = |group: &ServiceGroup| matches!(group.role, GroupRole::Prelude);
-        let preludes_done = is_prelude(group)
+        let preludes_done = !group.role.waits_for_preludes()
             || self
                 .slots
                 .iter()
-                .filter(|slot| is_prelude(&slot.group))
+                .filter(|slot| matches!(slot.group.role, GroupRole::Prelude))
                 .all(|slot| matches!(slot.phase, Phase::Done));
         preludes_done
             && group.dependencies().iter().all(|dependency| {
@@ -1137,6 +1148,31 @@ mod tests {
         schedule.apply(Event::Completed(0));
         schedule.apply(Event::Published(0));
         assert_eq!(starts(&mut schedule), vec![1]);
+        schedule.apply(Event::Completed(1));
+        assert!(schedule.finished());
+    }
+
+    #[test]
+    fn a_tail_that_follows_no_service_starts_beside_the_prelude() {
+        let other = || Task {
+            machine: machine('1'),
+            kind: TaskKind::Other,
+        };
+        let mut schedule = Schedule::new(
+            vec![
+                ServiceGroup {
+                    role: GroupRole::Prelude,
+                    steps: vec![Stage::Serial(0)],
+                },
+                ServiceGroup {
+                    role: GroupRole::Tail(Vec::new()),
+                    steps: vec![Stage::Serial(1)],
+                },
+            ],
+            vec![other(), other()],
+        );
+        assert_eq!(starts(&mut schedule), vec![0, 1]);
+        schedule.apply(Event::Failed(0));
         schedule.apply(Event::Completed(1));
         assert!(schedule.finished());
     }
