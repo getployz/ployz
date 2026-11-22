@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherRunning } from "#/modules/config-store/running-evidence.server";
-import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
+import { connectionsLoader, gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
@@ -111,7 +111,7 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
   const servers = yield* countOrganizationMachines(organizationId);
   const domains = yield* systemDomainEvidence(organizationId);
   const volumes = deploys[event.event]
-    ? yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query))
+    ? yield* systemVolumeEvidence(yield* connectionsLoader(organizationId), (query) => store.read(organizationId, query))
     : undefined;
   const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes" | "members"> = { servers, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
@@ -138,9 +138,10 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
       code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null,
     }))),
   );
-  const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
-  const unanswered = yield* gatherUnanswered(organizationId, call, volumes);
-  const running = yield* gatherRunning(organizationId, call);
+  const connections = yield* connectionsLoader(organizationId);
+  const volumes = yield* gatherVolumeEvidence(connections, call, read);
+  const unanswered = yield* gatherUnanswered(connections, call, volumes);
+  const running = yield* gatherRunning(connections, call);
   // An admission or start carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
   const admits = call.operation === "write" && ADMITS.has(call.command.command);
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
