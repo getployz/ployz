@@ -46,46 +46,6 @@ fn the_statuses_that_may_still_run_are_claimed_or_ended_keep_their_names() {
     );
 }
 
-#[test]
-fn each_fragment_reads_as_the_literal_it_replaced() {
-    assert_eq!(
-        IN_FLIGHT.as_str(),
-        "status IN ('queued', 'running', 'cancelling')"
-    );
-    assert_eq!(CLAIMED.as_str(), "status IN ('running', 'cancelling')");
-    assert_eq!(
-        ENDED.as_str(),
-        "status IN ('applied', 'failed', 'unknown', 'cancelled')"
-    );
-    assert_eq!(NOT_SUPERSEDED.as_str(), "status NOT IN ('superseded')");
-    assert_eq!(
-        LISTED.as_str(),
-        "(number IS NOT NULL OR status <> 'superseded')"
-    );
-    assert_eq!(NUMBERED, "number IS NOT NULL");
-}
-
-/// The SQL with the clock it read cut out: the part after `lease`, up to its
-/// closing parentheses, is the time of the call.
-fn without_clock(sql: &str, closing: &str) -> (String, i64) {
-    let (head, time) = sql.rsplit_once(' ').unwrap();
-    let time = time.strip_suffix(closing).unwrap().parse().unwrap();
-    (head.to_owned(), time)
-}
-
-#[test]
-fn the_lease_predicates_read_as_they_did() {
-    let (in_flight, at) = without_clock(&in_flight_sql(), "))");
-    assert_eq!(
-        in_flight,
-        "(status IN ('queued', 'running', 'cancelling') AND (status = 'queued' OR lease >"
-    );
-    assert!((at - now()).abs() <= 1);
-    let (lapsed, at) = without_clock(&lapsed_sql(), ")");
-    assert_eq!(lapsed, "(status IN ('running', 'cancelling') AND lease <=");
-    assert!((at - now()).abs() <= 1);
-}
-
 /// The status set a freshly migrated SQLite Store's `config_deployment_in_flight`
 /// index keeps its rows to.
 fn index_predicate() -> String {

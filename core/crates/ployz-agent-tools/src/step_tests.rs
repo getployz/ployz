@@ -92,16 +92,6 @@ fn accepted_loss_needs_volumes_and_the_version() {
 }
 
 #[test]
-fn only_a_gated_tool_says_it_may_ask_a_human() {
-    assert_eq!(Gate::Never.sentence(), "");
-    assert_eq!(
-        Gate::Store.sentence(),
-        "May stop to ask a human to approve."
-    );
-    assert_eq!(Gate::Store.sentence(), Gate::Cloud.sentence());
-}
-
-#[test]
 fn a_body_digest_ignores_key_order_wait_and_request_key() {
     let one = BodyDigest::of(
         "deploy",

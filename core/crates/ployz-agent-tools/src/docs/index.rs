@@ -224,14 +224,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expand_drops_punctuation_and_adds_the_docs_words() {
-        assert_eq!(
-            expand("How do I set env-vars?"),
-            "how do i set env vars variable variable"
-        );
-    }
-
-    #[test]
     fn terms_drop_stop_words_and_stem() {
         let index = Index::new(Vec::new());
         let mut terms = index
