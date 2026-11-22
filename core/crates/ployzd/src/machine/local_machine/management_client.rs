@@ -856,6 +856,7 @@ mod tests {
                 ),
             },
             volumes: Vec::new(),
+            name: None,
         }
     }
 

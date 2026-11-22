@@ -112,6 +112,7 @@ fn grant(
                 }]),
             },
             volumes,
+            name: None,
             issued_at: Timestamp::from_millis(issued).unwrap(),
         },
         approved_by: PasskeyApprover::Server,

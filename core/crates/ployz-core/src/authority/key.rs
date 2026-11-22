@@ -18,7 +18,7 @@ use super::{
     open::{open_approval, open_one_shot},
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    scope::{Ask, Grant, GrantKind, GrantVolume, KeyKind, KeyScope},
+    scope::{Ask, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyScope},
     trusted_key::{Passkey, PasskeyPublicKey, TrustedKeys},
 };
 use crate::{DeviceCode, DeviceKey, MachineId, Namespace, SealingPublicKey, WireGuardPublicKey};
@@ -110,6 +110,9 @@ pub enum NewKey {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(optional, as = "Option<Vec<GrantVolume>>")]
         volumes: Vec<GrantVolume>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        name: Option<KeyName>,
     },
     Agent {
         key: SigningPublicKey,
@@ -117,6 +120,9 @@ pub enum NewKey {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(optional, as = "Option<Vec<GrantVolume>>")]
         volumes: Vec<GrantVolume>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        name: Option<KeyName>,
     },
 }
 
@@ -138,17 +144,19 @@ impl NewKey {
     /// `None` for a Device or passkey.
     #[must_use]
     pub fn grant(self, issued_at: Timestamp) -> Option<Grant> {
-        let (key, kind, scope, volumes) = match self {
+        let (key, kind, scope, volumes, name) = match self {
             Self::Ci {
                 key,
                 scope,
                 volumes,
-            } => (key, GrantKind::Ci, scope, volumes),
+                name,
+            } => (key, GrantKind::Ci, scope, volumes, name),
             Self::Agent {
                 key,
                 scope,
                 volumes,
-            } => (key, GrantKind::Agent, scope, volumes),
+                name,
+            } => (key, GrantKind::Agent, scope, volumes, name),
             Self::Device { .. } | Self::Passkey { .. } => return None,
         };
         Some(Grant {
@@ -156,6 +164,7 @@ impl NewKey {
             kind,
             scope,
             volumes,
+            name,
             issued_at,
         })
     }

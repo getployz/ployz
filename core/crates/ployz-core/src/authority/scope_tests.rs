@@ -71,6 +71,7 @@ fn grant(kind: GrantKind, scope: KeyScope, issued_at: u64) -> Grant {
         kind,
         scope,
         volumes: Vec::new(),
+        name: None,
         issued_at: at(issued_at),
     }
 }
@@ -432,6 +433,7 @@ fn a_key_step_refuses_a_ci_or_agent_scope_wider_than_its_kind() {
             places: KeyPlaces::Only(vec![place("app", None)]),
         },
         volumes: Vec::new(),
+        name: None,
     };
     let cluster_agent = NewKey::Agent {
         key: other,
@@ -440,6 +442,7 @@ fn a_key_step_refuses_a_ci_or_agent_scope_wider_than_its_kind() {
             places: KeyPlaces::Cluster,
         },
         volumes: Vec::new(),
+        name: None,
     };
     for key in [wider_caps, cluster_agent] {
         assert_eq!(
@@ -457,6 +460,7 @@ fn a_ci_trust_carries_the_issue_time_of_its_bundle() {
         key: Signer::from_seed(&[4; 32]).public(),
         scope: spec_scope(vec![place("app", None)]),
         volumes: Vec::new(),
+        name: None,
     };
 
     assert_eq!(

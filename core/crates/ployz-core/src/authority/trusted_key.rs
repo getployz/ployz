@@ -246,7 +246,7 @@ impl PasskeyAccount {
             || value.chars().count() > 254
             || value
                 .chars()
-                .any(|character| character.is_control() || is_format(character))
+                .any(unprintable)
         {
             return Err(ValueError::new(
                 "passkey account",
@@ -261,6 +261,11 @@ impl PasskeyAccount {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// A control character, or one of Unicode's format characters, which a label refuses.
+pub(super) fn unprintable(character: char) -> bool {
+    character.is_control() || is_format(character)
 }
 
 /// Unicode's format characters (general category Cf): invisible, and some reorder text.
