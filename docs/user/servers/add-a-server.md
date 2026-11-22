@@ -96,25 +96,29 @@ The line from `ployz server add --command` carries your computer's device. The d
 carries your passkey. The new server refuses an approval signed by any other key.
 
 With the dashboard's line, approve the join from your browser. The **Servers** page lists the
-server under **Waiting for approval**. Choose **Approve with passkey** and answer your passkey's
-prompt. Approve a server only if you added it. Your passkey signs the join for that one server,
-and Ployz Cloud only passes the approval on.
+server under **Waiting for approval**, with its join code. Choose **Approve with passkey** and
+answer your passkey's prompt. Approve a server only if you added it. Your passkey signs the join
+for that one server, and Ployz Cloud only passes the approval on. The prompt offers only the
+passkey the line carried. When that passkey belongs to someone else, the dashboard says so and
+offers no button: ask them to approve it.
 
-You can approve from an approved computer instead. The join also names a 20-character code:
-
-- **The install line from the dashboard.** The code is in the **Servers** page. Open the server
-  under **Waiting**: **Last enroll** names the code and the command to run. The server's own
-  check-in loop doesn't print it.
-- **`ployz server add --command`.** The join command on the server prints the code.
-
-From an approved computer, run the command with that code:
+With the line from `ployz server add --command`, approve from the computer whose device the line
+carries. The join command on the server prints a 20-character code. On that computer, run:
 
 ```sh
 ployz device approve --join CODE
 ```
 
 The code carries 100 bits of the server's identity and key fingerprint. Check the name, subnet
-and endpoints the CLI shows before it signs. It also lists the devices the server will trust, and
+and endpoints the CLI shows before it signs. On a computer whose device isn't the one the line
+carries, the command stops before it signs and names the key the server waits for:
+
+```text
+Server web-2 trusts only passkey tbpigkmhxf from its install command, so it would refuse this computer's device vgu6xrfgwt. Approve it with that passkey: choose Approve with passkey on the Servers page in Ployz Cloud. Nothing was approved.
+```
+
+If a join was approved with another key anyway, the server refuses it and the join stays open
+until the server joins. Approve it again with the key the server waits for, then enroll it again. It also lists the devices the server will trust, and
 the passkeys, if your cluster has any, with what a passkey can do. Then enroll the server again: choose **Enroll**
 for it in the dashboard, or run the same join command on the server again, with its token and
 options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
@@ -258,9 +262,10 @@ trusts none, and you approve a device on it as in
 [Your first server's first key](#your-first-servers-first-key).
 
 For a second server, the install line carries your passkey once every server trusts it. When the
-server checks in, approve its join under **Waiting for approval** with **Approve with passkey**,
-or with `ployz device approve --join CODE` from an approved device. Then choose **Enroll** for
-the server again. It trusts the same devices and passkeys as your first server.
+server checks in, approve its join under **Waiting for approval** with **Approve with passkey**.
+The server takes only that passkey's approval, so `ployz device approve --join` doesn't work for
+it. Then choose **Enroll** for the server again. It trusts the same devices and passkeys as your
+first server.
 
 When your servers trust no passkey of yours, the dashboard shows no install line. It names the
 people whose passkey your servers trust, who can add the server instead, and the command that

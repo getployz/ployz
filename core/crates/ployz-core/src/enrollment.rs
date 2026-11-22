@@ -256,6 +256,7 @@ mod tests {
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
             capabilities: Vec::new(),
+            first_key: None,
         }
     }
 

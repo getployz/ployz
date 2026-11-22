@@ -679,12 +679,9 @@ impl Session {
     ///
     /// # Errors
     /// Returns cancellation or transport errors.
-    pub async fn pending_joins(
-        &self,
-    ) -> Result<Vec<ployz_core::authority::JoinApproval>, RpcError> {
+    pub async fn pending_joins(&self) -> Result<ployz_core::PendingJoins, RpcError> {
         self.unary::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, Call::read())
             .await
-            .map(|pending| pending.joins)
     }
 
     /// Hand the entry Machine a signed approval of a join waiting there.

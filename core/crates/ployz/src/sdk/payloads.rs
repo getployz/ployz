@@ -83,6 +83,7 @@ fn typescript_declarations() -> String {
     declarations.add::<crate::private_access::AccessChanged>();
     declarations.add::<crate::private_access::PrivateAccessOn>();
     declarations.add::<ployz_core::authority::JoinApproval>();
+    declarations.add::<ployz_core::PendingJoins>();
     declarations.add::<ployz_core::authority::KeyApproval>();
     declarations.add::<ployz_core::authority::PasskeyJoinDraft>();
     declarations.add::<ployz_core::authority::PrivateAccessApproval>();

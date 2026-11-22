@@ -19,7 +19,6 @@ import type {
   DrainScope,
   ExecutionError,
   IngressCheck,
-  JoinApproval,
   LocalMachineRemoved,
   MachineDetails,
   MachineTarget,
@@ -27,6 +26,7 @@ import type {
   MachineUpgradeAttempt,
   MachineUpgradeAttemptId,
   ObservedDataLoss,
+  PendingJoins,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
   Signed,
@@ -100,7 +100,7 @@ export interface PloyzSession {
   /** Name the Cluster through the entry; resolves to the name the entry now holds. */
   readonly setClusterName: (name: string) => Effect.Effect<string | null, PloyzSdkError>;
   /** The joins waiting on the entry for a person to approve them. */
-  readonly pendingJoins: () => Effect.Effect<readonly JoinApproval[], PloyzSdkError>;
+  readonly pendingJoins: () => Effect.Effect<PendingJoins, PloyzSdkError>;
   /** Hand the entry a signed approval of a join waiting there. */
   readonly approveJoin: (approval: Signed) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;

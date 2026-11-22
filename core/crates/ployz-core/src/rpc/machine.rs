@@ -181,15 +181,29 @@ pub struct RegisterRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub capabilities: Vec<String>,
+    /// The key the joiner's First Key file waits for, so whoever approves the join signs
+    /// with it. A hint, not part of the retry identity: the joiner checks its approval
+    /// against its own file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_key: Option<crate::first_key::FirstKeyHint>,
 }
 
 /// Read the join requests waiting for a Device's approval on this Machine.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingJoinsRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PendingJoins {
     pub joins: Vec<crate::authority::JoinApproval>,
+    /// The key each waiting joiner said its First Key file waits for, by Machine. Only
+    /// that key's approval lets such a joiner in, unless the person's CLI pinned another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(
+        optional,
+        as = "Option<BTreeMap<MachineId, crate::first_key::FirstKeyHint>>"
+    )]
+    pub first_keys: BTreeMap<MachineId, crate::first_key::FirstKeyHint>,
 }
 
 /// Carry Device authority to the Machine that will admit the join.

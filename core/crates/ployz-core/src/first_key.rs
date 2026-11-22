@@ -52,6 +52,17 @@ impl LineKey {
         self.key().code()
     }
 
+    /// How a joiner waiting for this key names it to whoever approves its join.
+    #[must_use]
+    pub fn hint(&self) -> FirstKeyHint {
+        match self {
+            Self::Device { key } => FirstKeyHint::Device { code: key.code() },
+            Self::Passkey { passkey } => FirstKeyHint::Passkey {
+                code: passkey.code(),
+            },
+        }
+    }
+
     /// The only key a join or founding anchored on this line trusts as signer.
     #[must_use]
     pub fn trusted(&self) -> TrustedKeys {
@@ -100,6 +111,46 @@ impl From<LineKey> for NewKey {
         match key {
             LineKey::Device { key } => Self::Device { key },
             LineKey::Passkey { passkey } => Self::Passkey { passkey },
+        }
+    }
+}
+
+/// The key a joiner's First Key file waits for, as the joiner states it when it asks to
+/// join. A hint for whoever approves, so they sign with the key the joiner takes: the joiner
+/// checks the approval against its own file, so a wrong hint only costs a refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FirstKeyHint {
+    Device { code: DeviceCode },
+    Passkey { code: DeviceCode },
+}
+
+impl FirstKeyHint {
+    #[must_use]
+    pub fn code(&self) -> DeviceCode {
+        match self {
+            Self::Device { code } | Self::Passkey { code } => *code,
+        }
+    }
+
+    /// Whether `approver` is the key this hint names.
+    #[must_use]
+    pub fn names(&self, approver: &crate::authority::Approver) -> bool {
+        match (self, approver) {
+            (Self::Device { code }, crate::authority::Approver::Signing(key)) => {
+                key.code() == *code
+            }
+            (Self::Passkey { code }, crate::authority::Approver::Passkey(signed)) => signed == code,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for FirstKeyHint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Device { code } => write!(formatter, "device {code}"),
+            Self::Passkey { code } => write!(formatter, "passkey {code}"),
         }
     }
 }
@@ -238,6 +289,15 @@ mod file {
             &self.path
         }
 
+        /// What the file holds now, read without the lock: only for a hint, since an
+        /// arming may land right after. Writes replace the file whole, so it reads complete.
+        ///
+        /// # Errors
+        /// Returns [`FirstKeyError`] for an unreadable or malformed file. A missing file is `None`.
+        pub fn peek(&self) -> Result<Option<FirstKey>, FirstKeyError> {
+            read_at(&self.path)
+        }
+
         /// Wait for the lock arming, enrollment and reset share, and hold it.
         ///
         /// # Errors
@@ -265,6 +325,22 @@ mod file {
         }
     }
 
+    fn read_at(path: &Path) -> Result<Option<FirstKey>, FirstKeyError> {
+        match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|source| {
+                FirstKeyError::Unreadable {
+                    path: path.to_owned(),
+                    source,
+                }
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(FirstKeyError::Io {
+                path: path.to_owned(),
+                source,
+            }),
+        }
+    }
+
     /// The First Key file, read and written only while its lock is held.
     #[derive(Debug)]
     pub struct HeldFirstKey<'a> {
@@ -276,20 +352,7 @@ mod file {
         /// # Errors
         /// Returns [`FirstKeyError`] for an unreadable or malformed file. A missing file is `None`.
         pub fn read(&self) -> Result<Option<FirstKey>, FirstKeyError> {
-            let path = &self.file.path;
-            match fs::read(path) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|source| {
-                    FirstKeyError::Unreadable {
-                        path: path.clone(),
-                        source,
-                    }
-                }),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(source) => Err(FirstKeyError::Io {
-                    path: path.clone(),
-                    source,
-                }),
-            }
+            read_at(&self.file.path)
         }
 
         /// Make the file wait for `key` when there is none. The same key again writes

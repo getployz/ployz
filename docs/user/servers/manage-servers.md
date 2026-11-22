@@ -317,8 +317,9 @@ approves nothing by itself: a passkey counts on a server only once that server t
 **Account** shows which servers do.
 
 A server you add trusts the passkeys of the server that admits it; see
-[Approve a join](add-a-server.md#approve-a-join). To make a server trust your passkey, copy an
-install command from the dashboard, take its key (`pk1_…`), and run this as root on the server:
+[Approve a join](add-a-server.md#approve-a-join). While your servers trust no passkey of yours,
+the dashboard shows no install line when you add a server. It shows the command that makes a
+server trust your passkey instead. Run it as root on the server:
 
 ```sh
 sudo ployz key add pk1_…

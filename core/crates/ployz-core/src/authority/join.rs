@@ -366,6 +366,15 @@ pub fn admits_row(row: &Machine, trusted: &TrustedKeys, cluster: Option<SealingP
         && body.cluster == cluster
 }
 
+/// Which of `trusted` signed `signed`, whatever its window. `None` when none of them did.
+#[must_use]
+pub fn approver(signed: &Signed<JoinApproval>, trusted: &TrustedKeys) -> Option<Approver> {
+    let named = signed.open().map(|body| body.cluster).ok();
+    open_approval(signed, trusted, named)
+        .ok()
+        .map(|(_, by, _)| by)
+}
+
 /// Verify the signature, the approval's own window and, for a step of a bundle, the bundle's
 /// window too, against `trusted`.
 ///

@@ -235,6 +235,10 @@ pub(crate) struct EnrollIdentity {
     /// Register, and the Machine refuses a joiner that claims too little for the
     /// Cluster's declared Doors.
     capabilities: Vec<&'static str>,
+    /// The key the joiner's First Key file waits for, which Cloud relays in Register so
+    /// whoever approves the join signs with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_key: Option<ployz_core::first_key::FirstKeyHint>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -270,6 +274,7 @@ impl EnrollIdentity {
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
             join_confirmation: None,
             capabilities: crate::enrollment::claims(&token.runtime),
+            first_key: token.first_key,
         }
     }
 
@@ -1665,6 +1670,7 @@ mod tests {
                 memory_total_bytes: None,
                 disk_total_bytes: None,
                 disk_available_bytes: None,
+                first_key: None,
             },
             StorageChoice::None,
             Default::default(),
@@ -2566,6 +2572,7 @@ mod tests {
                 memory_total_bytes: Some(8_589_934_592),
                 disk_total_bytes: Some(107_374_182_400),
                 disk_available_bytes: Some(85_899_345_920),
+                first_key: None,
             },
             StorageChoice::Zfs,
             Default::default(),

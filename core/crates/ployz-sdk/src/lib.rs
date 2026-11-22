@@ -357,11 +357,12 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// The joins waiting on the entry Machine for a person to approve them.
+    /// The joins waiting on the entry Machine for a person to approve them, with the key
+    /// each joiner said it waits for.
     ///
     /// # Errors
     /// Returns cancellation or transport errors.
-    #[napi(ts_return_type = "Promise<JoinApproval[]>")]
+    #[napi(ts_return_type = "Promise<PendingJoins>")]
     pub async fn pending_joins(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.pending_joins().await.map_err(rpc_to_napi)?)
     }

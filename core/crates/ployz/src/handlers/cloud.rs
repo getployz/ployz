@@ -406,6 +406,7 @@ async fn enroll_current_identity(
                     advertised_endpoints: machine_token.advertised_endpoints.clone(),
                     runtime: Default::default(),
                     capabilities: Vec::new(),
+                    first_key: None,
                 };
                 // This join's pin is this computer's Device alone, whatever the route.
                 let from = if crate::sealing_pin::SealTo::direct(&entry) {
@@ -1376,6 +1377,7 @@ mod tests {
                 memory_total_bytes: None,
                 disk_total_bytes: None,
                 disk_available_bytes: None,
+                first_key: None,
             },
             ployz_core::StorageChoice::None,
             Default::default(),
@@ -1760,6 +1762,7 @@ mod tests {
                         memory_total_bytes: None,
                         disk_total_bytes: None,
                         disk_available_bytes: None,
+                        first_key: None,
                     },
                     machine.name.clone(),
                     policy,
@@ -1926,6 +1929,7 @@ mod tests {
                             memory_total_bytes: None,
                             disk_total_bytes: None,
                             disk_available_bytes: None,
+                            first_key: None,
                         },
                         machine.name.clone(),
                         policy,

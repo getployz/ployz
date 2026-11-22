@@ -860,6 +860,12 @@ impl LocalMachine {
         let record = self.record();
         let discovered = discover_network(public_ip).await?;
         let capacity = host_capacity::observe();
+        // A hint for whoever approves this Machine's join; unread, it names nothing.
+        let first_key = ployz_core::first_key::FirstKeyFile::beside(self.owner.data_dir())
+            .peek()
+            .ok()
+            .flatten()
+            .and_then(|state| state.waiting().map(ployz_core::first_key::LineKey::hint));
         Ok(MachineToken {
             id: record.id(),
             public_key: record.wireguard_private_key.public_key(),
@@ -873,6 +879,7 @@ impl LocalMachine {
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
+            first_key,
         })
     }
 
@@ -1063,6 +1070,11 @@ impl LocalMachine {
             },
             &[],
         )?;
+        let confirmed = replicated
+            .machine(request.machine_id.as_str())
+            .await?
+            .is_some_and(|row| row.public_key == request.public_key);
+        self.give_way_to_a_fresh_approval(request.machine_id, confirmed)?;
         let fresh = match self.enter_join(request.machine_id, |stored| {
             Ok(
                 ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
@@ -1097,6 +1109,7 @@ impl LocalMachine {
             snapshot.network,
             request.join_approval.clone(),
             &snapshot.machines,
+            request.first_key,
         )?;
         assignment.machine.join_approval = Some(approval.clone());
         assignment.machine.runtime.management_identity = None;
@@ -1224,6 +1237,7 @@ impl LocalMachine {
                 return Err(Error::MemberRemoved(machine.id));
             }
         }
+        self.settle_join(machine.id)?;
         if let Some(key) = key {
             let record = self.record();
             let set = ployz_core::JoinRestrictionSet {

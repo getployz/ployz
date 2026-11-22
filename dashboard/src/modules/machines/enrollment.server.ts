@@ -808,7 +808,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           }))(error.cause);
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
-            : `This Server needs a person to approve its join. Approve it with your passkey on the Servers page in Ployz Cloud, or on an approved device run \`ployz device approve --join ${joinCode(assignment.machine.id, assignment.machine.public_key)}\`. Then enroll the Server again.`;
+            : approveWith(input.identity.firstKey, joinCode(assignment.machine.id, assignment.machine.public_key));
           return Effect.fail(forgotten
             ? new Conflict({ message: "This Server was forgotten, so it can't join again as it is. Add it with `ployz server add --reset`, and reinstall it first if it never finished joining.", userFacing: true })
             : cannotKeepDoors
@@ -823,12 +823,28 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
 );
 
 /**
- * The assignment as Register carries it: the joiner's capability claim (empty when it claims nothing) and its join
- * confirmation. Neither is part of the saved assignment, so a retry compares what Cloud allocated, not what the joiner says.
+ * How a person approves a join that waits for them. A Server whose install command named a key takes only that key's
+ * approval, so the message names it and the one way to use it.
+ */
+const approveWith = (firstKey: EnrollmentIdentity["firstKey"], code: string) => {
+  if (firstKey?.kind === "passkey") {
+    return `This Server needs your approval to join. Choose Approve with passkey on the Servers page in Ployz Cloud, using passkey ${firstKey.code}. Then enroll the Server again.`;
+  }
+  if (firstKey?.kind === "device") {
+    return `This Server needs your approval to join. On the computer with device ${firstKey.code}, run \`ployz device approve --join ${code}\`. Then enroll the Server again.`;
+  }
+  return `This Server needs a person to approve its join. Approve it with your passkey on the Servers page in Ployz Cloud, or on an approved device run \`ployz device approve --join ${code}\`. Then enroll the Server again.`;
+};
+
+/**
+ * The assignment as Register carries it: the joiner's capability claim (empty when it claims nothing), its join
+ * confirmation and the key it waits for. None is part of the saved assignment, so a retry compares what Cloud allocated,
+ * not what the joiner says.
  */
 const dispatched = (assignment: EnrollmentAssignment, identity: EnrollmentIdentity): EnrollmentAssignment => {
   const request: RegisterRequest = { ...assignment.request, capabilities: [...identity.capabilities ?? []] };
   if (identity.joinConfirmation !== undefined) request.join_confirmation = identity.joinConfirmation;
+  if (identity.firstKey !== undefined) request.first_key = identity.firstKey;
   return { ...assignment, request };
 };
 

@@ -771,6 +771,7 @@ impl FakeMachine for JoinDaemon {
                 memory_total_bytes: None,
                 disk_total_bytes: None,
                 disk_available_bytes: None,
+                first_key: None,
             }),
             sealing: None,
             founding: *self.inner.founding.lock().unwrap(),

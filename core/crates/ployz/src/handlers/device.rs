@@ -268,15 +268,19 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
             )
             .await
             .map_err(crate::connect::rpc_error)?;
+        let first_keys = pending.first_keys;
         matching.extend(
             pending
                 .joins
                 .into_iter()
                 .filter(|body| body.code() == code)
-                .map(|body| (*machine, body)),
+                .map(|body| {
+                    let hint = first_keys.get(&body.machine.id).copied();
+                    (*machine, body, hint)
+                }),
         );
     }
-    let [(admitting, body)] = matching.as_mut_slice() else {
+    let [(admitting, body, first_key)] = matching.as_mut_slice() else {
         return Err(if matching.is_empty() {
             Error::not_found(format!(
                 "No Server join is waiting for {code}. Run the Server's join command again."
@@ -293,6 +297,9 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         && !crate::sealing_pin::Pins::beside(&config_path(leaf)?).knows(body.cluster)?
     {
         return Err(unpinned_relay(body));
+    }
+    if let Some(expected) = *first_key {
+        refuse_another_key(body, expected, signing.device_key())?;
     }
     show_join(body);
     let approval = sign_join(&signing, body)?;
@@ -416,6 +423,31 @@ fn check_waiting_join(
         )));
     }
     Ok(())
+}
+
+/// Refuse to sign, with `own`, a join whose Server waits for another key from its install
+/// line: it would refuse the approval, and the join would be spent on it.
+fn refuse_another_key(
+    body: &ployz_core::authority::JoinApproval,
+    expected: ployz_core::first_key::FirstKeyHint,
+    own: DeviceKey,
+) -> Result<(), Error> {
+    if expected == (ployz_core::first_key::FirstKeyHint::Device { code: own.code() }) {
+        return Ok(());
+    }
+    let how = match expected {
+        ployz_core::first_key::FirstKeyHint::Passkey { .. } => {
+            "Approve it with that passkey: choose Approve with passkey on the Servers page in Ployz Cloud."
+        }
+        ployz_core::first_key::FirstKeyHint::Device { .. } => {
+            "Run this command on the computer that holds that device."
+        }
+    };
+    Err(Error::conflict(format!(
+        "Server {} trusts only {expected} from its install command, so it would refuse this computer's device {}. {how} Nothing was approved.",
+        body.machine.name,
+        own.code()
+    )))
 }
 
 /// A join relayed through Cloud for a Cluster this computer never pinned.

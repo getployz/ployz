@@ -164,6 +164,85 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A joiner takes only the key its install command named. A join answered under another
+/// trusted key spends nothing for good: the join is offered again, another approval under
+/// the wrong key is refused, and a fresh one under the key the joiner waits for replaces
+/// the spent answer. Once the joiner confirms, the join is closed.
+#[tokio::test]
+async fn a_join_answered_under_another_key_heals_with_the_key_the_joiner_waits_for() {
+    let (entry, _, _, directory, server) = participating().await;
+    let wrong = Signer::from_seed(&[1; 32]);
+    let right = Signer::from_seed(&[2; 32]);
+    enforce(&entry, &wrong).await;
+    enforce(&entry, &right).await;
+    let joiner = LocalMachineStore::open(tempfile::tempdir().unwrap().path()).unwrap();
+    let mut request = request("joiner", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    let waits_for = ployz_core::first_key::FirstKeyHint::Device {
+        code: DeviceKey::from(right.public()).code(),
+    };
+    request.first_key = Some(waits_for);
+    assert!(entry.register(request.clone()).await.is_err());
+    assert_eq!(
+        entry
+            .pending_joins()
+            .unwrap()
+            .first_keys
+            .get(&request.machine_id),
+        Some(&waits_for)
+    );
+    let approve = async |signer: &Signer| {
+        let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+        body.signer = signer.public().into();
+        let approval = Signed::sign(&body, signer).unwrap();
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: approval.clone(),
+            })
+            .await
+            .map(|_| approval)
+    };
+
+    let spent = approve(&wrong).await.unwrap();
+    let answered = entry.register(request.clone()).await.unwrap();
+    assert_eq!(answered.assigned_machine.join_approval, Some(spent));
+    assert!(matches!(
+        approve(&wrong).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "the joiner's First Key"
+        }))
+    ));
+    let fresh = approve(&right).await.unwrap();
+    let healed = entry.register(request.clone()).await.unwrap();
+    assert_eq!(healed.assigned_machine.join_approval, Some(fresh.clone()));
+    assert!(healed.sealing_key.is_some());
+
+    let key = crate::sealing_key::SealingKey::load(&directory)
+        .unwrap()
+        .unwrap();
+    entry
+        .register(ployz_core::RegisterRequest {
+            join_confirmation: Some(key.confirm_join(&fresh)),
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+    assert!(entry.pending_joins().unwrap().joins.is_empty());
+    let mut body = fresh.open().unwrap();
+    body.issued_at = body.issued_at.plus(1);
+    assert!(matches!(
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: Signed::sign(&body, &right).unwrap(),
+            })
+            .await,
+        Err(LocalMachineError::JoinConsumed(_))
+    ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// Once a Forget answers, this Machine holds the forgotten Server removed. Every join route
 /// for it is refused after that, a resend carrying the approval it was admitted under
 /// included, and none lists it again.

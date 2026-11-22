@@ -80,6 +80,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         }
         let policy = policy.settle(listed.or(joining), matches)?;
         let claimed = crate::enrollment::claims(&token.runtime);
+        let first_key = token.first_key;
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -96,6 +97,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
                 capabilities: Vec::new(),
+                first_key: None,
             },
             &snapshot,
         )?;
@@ -103,6 +105,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         // assignment never holds a claim, so it is set on the copy Register carries.
         let mut assignment = assignment;
         assignment.request.capabilities = claimed.into_iter().map(str::to_owned).collect();
+        assignment.request.first_key = first_key;
         let assigned = assignment.machine.clone();
         let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
             .await
@@ -392,6 +395,7 @@ mod tests {
                 )],
                 runtime: Default::default(),
                 capabilities: Vec::new(),
+                first_key: None,
             },
             &joined,
         )

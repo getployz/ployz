@@ -105,13 +105,15 @@ fn registration(assignment: &EnrollmentAssignment) -> RegisterRequest {
 }
 
 /// The Register request for an assignment, once the Cluster's snapshot still agrees with the
-/// identity it saved. The saved assignment never holds a claim, so the check compares without it.
+/// identity it saved. The saved assignment never holds a claim or a First Key hint, so the
+/// check compares without them.
 fn checked_registration(
     assignment: &EnrollmentAssignment,
     snapshot: &ployz_core::EnrollmentSnapshot,
 ) -> Result<RegisterRequest, RpcError> {
     let mut saved = assignment.clone();
     saved.request.capabilities = Vec::new();
+    saved.request.first_key = None;
     ployz_core::allocate_enrollment(&saved.request, snapshot, std::slice::from_ref(&saved))
         .map_err(|error| RpcError::conflict(error.to_string()))?;
     Ok(registration(assignment))
@@ -190,6 +192,7 @@ mod tests {
                 )],
                 runtime: Default::default(),
                 capabilities,
+                first_key: None,
             },
             network: "10.210.0.0/16".parse().unwrap(),
             machine: Machine {

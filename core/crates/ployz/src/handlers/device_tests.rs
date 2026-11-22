@@ -524,6 +524,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         advertised_endpoints: expected_machine.advertised_endpoints.clone(),
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     };
     let mut allocation = JoinAllocation::from(&expected_machine);
     allocation.public_key = ployz_core::WireGuardPublicKey([9; 32]);
@@ -556,9 +557,12 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
                     "a substituted key must never reach ApproveJoin"
                 );
                 Ok(Response::new(
-                    RpcResponse::from(PendingJoins { joins: vec![body] })
-                        .encode()
-                        .unwrap(),
+                    RpcResponse::from(PendingJoins {
+                        joins: vec![body],
+                        first_keys: Default::default(),
+                    })
+                    .encode()
+                    .unwrap(),
                 ))
             }
         })
@@ -592,6 +596,7 @@ fn relayed_join(
         advertised_endpoints: joiner.advertised_endpoints.clone(),
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     };
     let issued_at = Timestamp::now();
     let body = JoinApproval {
@@ -650,7 +655,10 @@ async fn sign_relayed(
                 )]
                 let response = match request.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::PendingJoins(_) => {
-                        RpcResponse::from(ployz_core::PendingJoins { joins: vec![body] })
+                        RpcResponse::from(ployz_core::PendingJoins {
+                            joins: vec![body],
+                            first_keys: Default::default(),
+                        })
                     }
                     RpcRequestBody::ApproveJoin(request) => {
                         seen.lock().unwrap().push(request.approval);
@@ -1337,4 +1345,34 @@ fn rm_json_keeps_the_removed_outcome_and_adds_the_kind() {
             "code": device,
         })
     );
+}
+
+/// A Server whose install command named a key takes only that key's approval, so this
+/// computer refuses to spend the join under its own device, and says which key to use.
+#[test]
+fn a_join_waiting_for_another_key_is_not_signed_with_this_device() {
+    use ployz_core::first_key::FirstKeyHint;
+    let own: DeviceKey = ployz_core::authority::Signer::from_seed(&[1; 32])
+        .public()
+        .into();
+    let other: DeviceKey = ployz_core::authority::Signer::from_seed(&[2; 32])
+        .public()
+        .into();
+    let (_, body) = relayed_join(
+        &crate::global_fixtures::machine('a', "web-3"),
+        vec![own],
+        ployz_core::SealingPublicKey::from_bytes([2; 32]),
+    );
+    let passkey = FirstKeyHint::Passkey { code: other.code() };
+    let refused = super::refuse_another_key(&body, passkey, own).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(&format!("passkey {}", other.code())),
+        "{refused}"
+    );
+    assert!(
+        super::refuse_another_key(&body, FirstKeyHint::Device { code: other.code() }, own).is_err()
+    );
+    super::refuse_another_key(&body, FirstKeyHint::Device { code: own.code() }, own).unwrap();
 }

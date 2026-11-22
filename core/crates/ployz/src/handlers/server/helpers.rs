@@ -710,6 +710,7 @@ mod tests {
             memory_total_bytes: None,
             disk_total_bytes: None,
             disk_available_bytes: None,
+            first_key: None,
         }
     }
 }

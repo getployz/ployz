@@ -415,6 +415,7 @@ impl ConsumptionLog {
         self.read(Error::JoinRecord, |log| log.joins.get(&machine).cloned())
     }
 
+    #[cfg(test)]
     pub(crate) fn require_unused_join(&self, machine: ployz_core::MachineId) -> Result<(), Error> {
         match self.read(Error::JoinRecord, |log| log.joins.contains_key(&machine))? {
             true => Err(Error::JoinConsumed(machine)),
@@ -439,6 +440,30 @@ impl ConsumptionLog {
             log.joins.insert(approval.machine.id, result);
             Ok(Edit::Write(Ok(())))
         })?
+    }
+
+    /// Drop the stored answer to `machine`'s join when another approval than `fresh` made
+    /// it, so `fresh` admits the joiner instead. Only a joiner that refused the stored
+    /// answer and never confirmed it gets a fresh approval, so nothing it holds is lost.
+    ///
+    /// # Errors
+    /// Returns [`Error::JoinRecord`] when the record cannot be read or written.
+    pub(crate) fn release_join(
+        &self,
+        machine: ployz_core::MachineId,
+        fresh: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> Result<(), Error> {
+        self.transact(Error::JoinRecord, |log| {
+            if log
+                .joins
+                .get(&machine)
+                .is_some_and(|stored| &stored.approval != fresh)
+            {
+                log.joins.remove(&machine);
+                return Ok(Edit::Write(()));
+            }
+            Ok(Edit::Keep(()))
+        })
     }
 
     /// Replace the stored answer to a join already consumed with `result`, for the same
