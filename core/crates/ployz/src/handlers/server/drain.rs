@@ -2,7 +2,6 @@
 //! from its Config Store, streams a line per step, and prints the report as `--json`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -17,7 +16,7 @@ use super::target;
 use crate::approval;
 use crate::cloud;
 use crate::cloud::account::Credential;
-use crate::deploy::{Approvals, KeptVersions};
+use crate::deploy::Approvals;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -52,12 +51,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     // The Config Store keeps what each Device signed: Cloud's when signed in, else this
     // CLI's own. Each Server a copy moves to checks those versions, as a Cloud drain hands
     // them on.
-    let kept = store
-        .map(store::Store::into_backend)
-        .map(|backend| match backend {
-            store::Backend::Local(local, who) => KeptVersions::new(local, who.organization),
-            store::Backend::Cloud(_, credential) => KeptVersions::Cloud(Arc::new(credential)),
-        });
+    let kept = store.map(|store| store.into_backend().kept_versions());
     let context = matches.get_one::<String>("context").map(String::as_str);
     crate::handlers::runtime()?.block_on(async {
         let mut client = route::connect(matches, context).await?;

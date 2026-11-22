@@ -52,6 +52,16 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
+    /// Where a drain reads the versions each moved copy carries: this Store, as this CLI.
+    pub(crate) fn kept_versions(self) -> crate::deploy::KeptVersions {
+        match self {
+            Self::Local(store, who) => crate::deploy::KeptVersions::new(store, who.organization),
+            Self::Cloud(_, credential) => {
+                crate::deploy::KeptVersions::Cloud(std::sync::Arc::new(credential))
+            }
+        }
+    }
+
     /// The client for this Store, as this CLI.
     fn client(&self) -> StoreClient<'_> {
         match self {
