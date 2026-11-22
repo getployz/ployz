@@ -163,17 +163,15 @@ impl Serialize for JoinConfirmation {
 impl<'de> Deserialize<'de> for JoinConfirmation {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        super::canonical::hex_bytes(&value)
-            .map(Self)
-            .ok_or_else(|| {
-                serde::de::Error::custom("a join confirmation must be 64 lowercase hex digits")
-            })
+        crate::hex::decode(&value).map(Self).ok_or_else(|| {
+            serde::de::Error::custom("a join confirmation must be 64 lowercase hex digits")
+        })
     }
 }
 
 impl std::fmt::Display for JoinConfirmation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        super::canonical::write_hex(&self.0, formatter)
+        crate::hex::write(&self.0, formatter)
     }
 }
 

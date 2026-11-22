@@ -75,28 +75,6 @@ fn is_hostname(value: &str) -> bool {
     (1..=253).contains(&value.len()) && value.split('.').all(is_dns_label)
 }
 
-/// Lowercase hex text of a fixed number of bytes, which signed and replicated values share.
-pub(crate) mod hex {
-    use std::fmt;
-
-    pub(crate) fn hex_bytes<const N: usize>(value: &str) -> Option<[u8; N]> {
-        if !super::is_lower_hex(value, N * 2) {
-            return None;
-        }
-        let mut bytes = [0; N];
-        for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks(2)) {
-            *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-        }
-        Some(bytes)
-    }
-
-    pub(crate) fn write_hex(bytes: &[u8], formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        bytes
-            .iter()
-            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
-    }
-}
-
 /// A fixed-size byte value written as lowercase hex, after `$prefix`. `$expected` is the text
 /// a refusal says it wanted; left out, it names the prefix and the byte count. `without_debug`
 /// leaves `Debug` to the caller for a type that prints something other than its bytes.
@@ -145,7 +123,7 @@ macro_rules! hex_newtype {
             pub fn parse(value: &str) -> Result<Self, $crate::ValueError> {
                 value
                     .strip_prefix($prefix)
-                    .and_then($crate::value::hex::hex_bytes)
+                    .and_then($crate::hex::decode)
                     .map(Self)
                     .ok_or_else(|| $crate::ValueError::new($label, value, $expected))
             }
@@ -154,7 +132,7 @@ macro_rules! hex_newtype {
         impl ::std::fmt::Display for $name {
             fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 formatter.write_str($prefix)?;
-                $crate::value::hex::write_hex(&self.0, formatter)
+                $crate::hex::write(&self.0, formatter)
             }
         }
 
