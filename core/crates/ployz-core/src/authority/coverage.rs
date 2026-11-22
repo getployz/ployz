@@ -371,9 +371,7 @@ pub const CASES: &[Case] = &[
         CONFIRM_JOIN_CAPABILITY,
         "from Cloud",
         "a ConfirmJoin carrying restrictions Cloud wrote, from Cloud",
-        Expected::Bounded(
-            "the joiner refuses restrictions its admitting Machine didn't MAC under the Sealing Key, and valid ones only narrow what it trusts",
-        ),
+        Expected::Bounded("restrictions Cloud wrote change nothing the Machine trusts"),
     ),
     case(
         SET_PUSH_TARGET_CAPABILITY,
