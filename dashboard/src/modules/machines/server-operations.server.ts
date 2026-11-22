@@ -15,7 +15,7 @@ import {
   operationRuntimeFrame,
   RUNTIME_FRAME_TIMEOUT_MS,
 } from "#/modules/runtime/organization-runtime.server";
-import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
 import { Conflict } from "#/server/public-error";
 
 export const UNREACHABLE_MESSAGE = "Your servers aren't answering. Try again once they are.";

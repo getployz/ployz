@@ -6,7 +6,7 @@ import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/st
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
-import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
+import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.review";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */

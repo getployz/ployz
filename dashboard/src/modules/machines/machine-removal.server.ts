@@ -30,7 +30,8 @@ import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { nameLostVolumes, planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import { observeOrganization, releaseLanesOff } from "#/modules/volume-run/volume-run.server";
+import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
+import { releaseLanesOff } from "#/modules/volume-run/volume-run.cluster.server";
 
 export class MachineRemovalProviderFailure extends Data.TaggedError(
   "MachineRemovalProviderFailure",

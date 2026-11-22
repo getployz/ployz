@@ -24,11 +24,9 @@ import {
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
-import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
-import {
-  appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
-  placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,
-} from "#/modules/volume-placement/volume-placement";
+import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/runtime/daemon-release";
+import { appliedMirrors, editPlacement, observePlacement, type Placement, type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement } from "#/modules/volume-placement/volume-placement";
+import { lossMoment } from "#/utils/relative-time";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { holdersOf } from "#/modules/volume-run/resize-check";

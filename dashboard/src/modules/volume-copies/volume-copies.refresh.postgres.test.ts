@@ -15,7 +15,8 @@ import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { type CopyAnswer, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { type CopyAnswer } from "#/modules/volume-run/volume-run.cluster.server";
+import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";

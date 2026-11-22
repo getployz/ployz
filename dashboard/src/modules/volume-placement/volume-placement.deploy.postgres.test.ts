@@ -12,7 +12,7 @@ import { listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
-import type { CopyAnswer } from "#/modules/volume-run/volume-run.server";
+import type { CopyAnswer } from "#/modules/volume-run/volume-run.cluster.server";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { Database } from "#/server/database.server";

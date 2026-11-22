@@ -15,7 +15,7 @@ import {
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
 import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
-import { observeOrganization } from "#/modules/volume-run/volume-run.server";
+import { observeOrganization } from "#/modules/volume-run/volume-run.orphans.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const MachineRemoveRequestedEnvelope = Schema.Struct({

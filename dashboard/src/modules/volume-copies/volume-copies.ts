@@ -1,6 +1,6 @@
 import type { MachineId, MachineName } from "@ployz/sdk";
 import { Schema } from "effect";
-import type { Heard } from "#/modules/volume-run/volume-run";
+import { type Heard, STALE_AFTER_MS } from "#/modules/volume-run/volume-run";
 import { formatRelativeTime } from "#/utils/relative-time";
 
 export type ServerRef = { readonly id: MachineId; readonly name: MachineName };
@@ -64,8 +64,6 @@ export type VolumeCopies = {
   /** While any is listed, what is outside Live isn't known. */
   readonly unheard: readonly UnheardServer[];
 };
-
-export const STALE_AFTER_MS = 60 * 60_000;
 
 export const COPY_WORDS = { mirror: "Mirror", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
 export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primary" } as const satisfies Record<StagedCopy, string>;

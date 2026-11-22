@@ -3,14 +3,15 @@ import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, Wan
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
-import { originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
-import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { type MachineRef, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 

@@ -24,7 +24,7 @@ import { noPairingChanges } from "#/test/organization-runtime";
 import { type ConnectionAborts, connectionAborts } from "#/test/connection-aborts";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { namedMachines } from "#/modules/volume-run/volume-run.server";
+import { namedMachines } from "#/modules/volume-run/volume-run.rows.server";
 
 const connections: Connection[] = [
   { management: "ployz1:preferred" },

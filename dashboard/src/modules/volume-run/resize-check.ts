@@ -7,7 +7,8 @@ import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/
 import { serverSupports } from "#/modules/runtime/daemon-compat";
 import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { type Bytes, gb, RESIZE_ORDER } from "#/modules/volume-run/resize";
-import { type Member, parseDockerVolumeName } from "#/modules/volume-run/volume-run";
+import { type Member } from "#/modules/volume-run/volume-run";
+import { parseDockerVolumeName } from "#/modules/runtime/naming";
 
 const GB = 1_000_000_000;
 

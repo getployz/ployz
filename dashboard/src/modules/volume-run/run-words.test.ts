@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runWords } from "./volume-copies";
+import { runWords } from "./run-words";
 import { run } from "./volume-run.test-fixture";
 
 describe("runWords", () => {

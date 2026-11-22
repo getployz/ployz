@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 

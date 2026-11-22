@@ -21,14 +21,9 @@ import {
   oldCopies,
   mirrorResourceId,
   parseMirrorResourceId,
-  mergeRestoreGroups,
-  placementGroup,
-  placementLoss,
   presumedPrimary,
   placementLosses,
-  volumeLossItems,
   lossByVolume,
-  lossVersion,
   type PlacementLost,
   restorePoints,
   stagedOffServer,
@@ -40,6 +35,7 @@ import {
   type PlacementItem,
   type PlacementRow,
 } from "./volume-placement";
+import { lossVersion, mergeRestoreGroups, placementGroup, placementLoss, volumeLossItems } from "./volume-placement.review";
 
 const volume = { id: "v1", name: "pg-data" };
 const id = (server: string) => server.padEnd(32, "0") as MachineId;

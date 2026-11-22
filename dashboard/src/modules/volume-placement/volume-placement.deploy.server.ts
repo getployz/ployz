@@ -10,7 +10,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { originBlockers, originUpgradeMessage, placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import { originBlockers, originUpgradeMessage, placementBlockers, placementUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, UNANSWERED, view } from "#/modules/volume-placement/volume-placement.server";
 import {
@@ -18,11 +18,12 @@ import {
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunState } from "#/modules/volume-run/volume-run-states";
-import {
-  askCopy, commitment, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
-} from "#/modules/volume-run/volume-run.server";
+import { askCopy, inspectVolumeCopies, observeVolumeMembers } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitment, getVolumeRun, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { type CopyObserver, observeOrganizationCopies } from "#/modules/volume-run/volume-run.orphans.server";
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */

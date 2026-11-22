@@ -12,7 +12,7 @@ import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { type Bytes, gb } from "#/modules/volume-run/resize";
 import { checkResize, type Holder, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "#/modules/volume-run/volume-run";
-import { runWords } from "#/modules/volume-run/volume-copies";
+import { runWords } from "#/modules/volume-run/run-words";
 import { resizeVolumeServerFn } from "#/modules/volume-run/volume-run.functions";
 import { useWatchVolumeRun, volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { ServiceSettingInput } from "#/components/settings/ServiceSettingInput";

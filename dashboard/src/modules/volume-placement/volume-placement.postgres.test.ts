@@ -15,7 +15,7 @@ import {
   deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stageRestore, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

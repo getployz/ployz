@@ -16,7 +16,8 @@ import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deploymen
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
+import { type PlacementRow } from "#/modules/volume-placement/volume-placement";
+import { lossTime } from "#/utils/relative-time";
 import { advancePlacement, type MemberInspector, type PlacementAdvance } from "#/modules/volume-placement/volume-placement.deploy.server";
 import {
   discardPlacement, listPlacements, stageRestore, stampPlacements, writeAdmitted, type PlacementWrite,

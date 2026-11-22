@@ -7,7 +7,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { findService, ownerOf } from "#/modules/config-store/store-lookup.server";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import { refreshMirrors, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
-import type { CopyAnswer } from "#/modules/volume-run/volume-run.server";
+import type { CopyAnswer } from "#/modules/volume-run/volume-run.cluster.server";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
