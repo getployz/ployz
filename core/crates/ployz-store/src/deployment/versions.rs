@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{TargetNode, now};
+use super::{TargetNode, now, organization};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::Tx;
@@ -126,7 +126,7 @@ pub(crate) fn post(
             }
         })
         .collect();
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     let mut record = record_of(tx, id)?;
     let mut named = BTreeSet::new();
     let mut births = Births::new();
@@ -353,7 +353,7 @@ pub(super) fn pinned(
     if record != recorded {
         write_record(tx, id, &record)?;
     }
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     record
         .services
         .into_iter()

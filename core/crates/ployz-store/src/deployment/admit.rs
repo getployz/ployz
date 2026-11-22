@@ -730,7 +730,7 @@ fn reapply(
         &frozen,
     )?;
     for service in &running {
-        pin_running_commit(tx, (id, &summary.id), service)?;
+        crate::build::pin_running(tx, (id, &summary.id), service)?;
     }
     Ok(summary)
 }
@@ -791,29 +791,4 @@ fn revisions(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Revisio
     .iter()
     .map(|row| row.number(0, "revision"))
     .collect()
-}
-
-/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
-/// Deployment that put it in Applied State. A Service without a Git source has no
-/// build to pin. Builds go by the runtime name, which a rename keeps.
-fn pin_running_commit(
-    tx: &mut dyn Tx,
-    (environment, id): (&EnvironmentId, &DeploymentId),
-    service: &SavedServiceIntent,
-) -> Result<(), RpcError> {
-    tx.execute(
-        "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
-         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
-         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
-         AND b.commit_sha IS NOT NULL",
-        &[
-            id.as_str().into(),
-            environment.as_str().into(),
-            service.id.as_str().into(),
-            service.config.private_dns.as_str().into(),
-        ],
-    )
-    .map(drop)
 }

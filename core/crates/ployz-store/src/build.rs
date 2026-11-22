@@ -10,7 +10,7 @@ use ployz_core::authority::{
     AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, RuleEvidence,
     RuleProof, Signed, VerifiedBuild,
 };
-use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceSource};
+use ployz_core::config::{BuildMethod, SavedServiceIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,11 @@ use ts_rs::TS;
 use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored, clipped};
 use crate::error;
-use crate::id::DeploymentId;
+use crate::id::{DeploymentId, EnvironmentId};
 use crate::storage::{Param, Tx, json_text, name_of};
+
+/// What a GitHub build id that names no build is refused with.
+const NO_GITHUB_BUILD: &str = "No GitHub build has this id";
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -137,8 +140,7 @@ pub(crate) const INTERRUPTED: &str =
     "The deployment ended or lost its runner before this build reported how it ended.";
 
 /// A build's `status` column with its `interrupted` one: only a failed build can be
-/// interrupted. Compares equal to the [`BuildStatus`] its `status` column holds, which
-/// is all a writer of the row reads.
+/// interrupted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RowStatus {
     /// As its last Builder, or the Store, left it.
@@ -169,12 +171,6 @@ impl From<RowStatus> for BuildStatus {
             RowStatus::Reported(status) => status,
             RowStatus::Interrupted => Self::Failed,
         }
-    }
-}
-
-impl PartialEq<BuildStatus> for RowStatus {
-    fn eq(&self, other: &BuildStatus) -> bool {
-        BuildStatus::from(*self) == *other
     }
 }
 
@@ -252,20 +248,76 @@ pub(crate) fn pin(
                 json!({ "service": service, "commit": commit }),
             ));
         }
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
-             FROM config_deployment WHERE id = ?1 \
-             ON CONFLICT (deployment_id, service) DO NOTHING",
-            &[
-                id.as_str().into(),
-                service.as_str().into(),
-                commit.as_str().into(),
-            ],
-        )?;
+        pending(tx, id, service, Some(commit))?;
     }
     Ok(())
+}
+
+/// Add a pending build of `service` to Deployment `id`, of `commit` or of an upload,
+/// unless it has one.
+fn pending(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    service: &ServiceName,
+    commit: Option<&CommitSha>,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
+         FROM config_deployment WHERE id = ?1 \
+         ON CONFLICT (deployment_id, service) DO NOTHING",
+        &[
+            id.as_str().into(),
+            service.as_str().into(),
+            commit.map(CommitSha::as_str).into(),
+        ],
+    )
+    .map(drop)
+}
+
+/// Give retry `id` a pending build of each commit its `source` pinned, which may reuse
+/// the image `source` built, with that image's token and verified build.
+pub(crate) fn retried(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    source: &DeploymentId,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log, \
+          receipt, image_token, verified) \
+         SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
+          image_token, verified \
+         FROM config_build WHERE deployment_id = ?2",
+        &[id.as_str().into(), source.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
+/// Deployment that put it in Applied State. A Service without a Git source has no
+/// build to pin. Builds go by the runtime name, which a rename keeps.
+pub(crate) fn pin_running(
+    tx: &mut dyn Tx,
+    (environment, id): (&EnvironmentId, &DeploymentId),
+    service: &SavedServiceIntent,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
+         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
+         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
+         AND b.commit_sha IS NOT NULL",
+        &[
+            id.as_str().into(),
+            environment.as_str().into(),
+            service.id.as_str().into(),
+            service.config.private_dns.as_str().into(),
+        ],
+    )
+    .map(drop)
 }
 
 /// Record a runner's report on one pinned or uploaded build of `stored`, which it
@@ -277,14 +329,7 @@ pub(crate) fn record(
 ) -> Result<(), RpcError> {
     let id = &stored.summary.id;
     if uploads_of(tx, stored)?.contains_key(&report.service) {
-        tx.execute(
-            "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, NULL, 'pending', NULL, '' \
-             FROM config_deployment WHERE id = ?1 \
-             ON CONFLICT (deployment_id, service) DO NOTHING",
-            &[id.as_str().into(), report.service.as_str().into()],
-        )?;
+        pending(tx, id, &report.service, None)?;
     }
     let Some(row) = rows(tx, id)?
         .into_iter()
@@ -625,7 +670,7 @@ pub(crate) fn routed(
     stored: &Stored,
     saved: &ployz_core::config::SavedEnvironmentIntent,
 ) -> Result<Vec<GitSource>, RpcError> {
-    let organization = organization(tx, &stored.summary.id)?;
+    let organization = deployment::organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for (id, mut source) in git_sources(tx, stored, saved)? {
         (source.builders, source.preferred_machine) = builders::walk(
@@ -706,16 +751,6 @@ fn source_of(
     })
 }
 
-pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
-    tx.query(
-        "SELECT organization_id FROM config_deployment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?
-    .first()
-    .ok_or_else(|| error::corrupt("Deployment"))?
-    .parse(0, "Deployment")
-}
-
 fn append(log: &mut String, more: &str) {
     log.push_str(more);
     if log.len() > LOG_LIMIT {
@@ -741,7 +776,7 @@ impl GithubBuildId {
     /// # Errors
     /// Returns `not_found` for anything else, as no build has that ID.
     pub fn parse(value: &str) -> Result<Self, RpcError> {
-        let unknown = || error::not_found("No GitHub build has this id", json!({}));
+        let unknown = || error::not_found(NO_GITHUB_BUILD, json!({}));
         let (deployment, service) = value.split_once('.').ok_or_else(unknown)?;
         Ok(Self {
             deployment: DeploymentId::parse(deployment).map_err(|_| unknown())?,
@@ -1000,7 +1035,7 @@ fn github_row(tx: &mut dyn Tx, stored: &Stored, id: &GithubBuildId) -> Result<Bu
     rows(tx, &stored.summary.id)?
         .into_iter()
         .find(|row| row.service == id.service)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))
 }
 
 fn no_longer_wanted() -> RpcError {
@@ -1095,7 +1130,7 @@ pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<Github
     }
     row.github_skipped
         .map(|why| GithubHandOff::PassedOn { why })
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))
 }
 
 /// Check a runner's verified OIDC claims against GitHub build `id`: its repository,
@@ -1108,11 +1143,11 @@ pub(crate) fn github_authorize(
     let stored = deployment::load(tx, &id.deployment)?;
     let build = github_row(tx, &stored, id)?
         .github(id)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))?;
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))?;
     let source = unrouted(tx, &stored)?
         .into_iter()
         .find(|source| source.service == id.service)
-        .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))?;
+        .ok_or_else(|| error::not_found(NO_GITHUB_BUILD, json!({})))?;
     let refused =
         |message: &str| Err(RpcError::unauthenticated(message.to_owned()).with_details(json!({})));
     if claims.repository_id != source.repository_id.to_string() {

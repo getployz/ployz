@@ -1150,6 +1150,36 @@ impl Stored {
     }
 }
 
+/// The Organization Deployment `id` belongs to.
+pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
+    tx.query(
+        "SELECT organization_id FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment"))?
+    .parse(0, "Deployment")
+}
+
+/// Insert a `config_deployment` row of `columns`, each named beside its value.
+fn insert(tx: &mut dyn Tx, columns: &[(&str, crate::storage::Param<'_>)]) -> Result<(), RpcError> {
+    let names = columns
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let slots = (1..=columns.len())
+        .map(|at| format!("?{at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values: Vec<crate::storage::Param<'_>> = columns.iter().map(|(_, value)| *value).collect();
+    tx.execute(
+        &format!("INSERT INTO config_deployment ({names}) VALUES ({slots})"),
+        &values,
+    )
+    .map(drop)
+}
+
 /// What a Deployment row reads as, from an unaliased `config_deployment`. The
 /// second-last column is the [`CiVerdict`] of one waiting for CI: failed once a
 /// check suite of its commit completed without passing, by the rule that lets it go.
