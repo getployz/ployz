@@ -5,17 +5,15 @@ import type { ConfigQuery, ConfigView, EnvironmentListing } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider, useParams } from "@tanstack/react-router";
 import { environmentsQuery, projectsQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
+import * as functions from "#/modules/config-store/store.functions";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
-
-const read = vi.hoisted(() => vi.fn());
-vi.mock("#/modules/config-store/store.functions", () => ({ readStoreViewServerFn: read }));
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
   Element.prototype.scrollIntoView ??= () => {};
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function TopBar() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ strict: false });
@@ -168,7 +166,8 @@ it("marks a Protected Environment beside its crumb, and no other", async () => {
 });
 
 it("offers a retry in the Environment switcher when its Store read failed, and lists them once it answers", async () => {
-  read.mockResolvedValue({ ok: true, value: { view: "environments", project: { id: "store", name: "store" }, environments: [listing("production", { default: true }), listing("staging")] } });
+  // SAFETY: the mock answers the one read this test makes.
+  vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: { view: "environments", project: { id: "store", name: "store" }, environments: [listing("production", { default: true }), listing("staging")] } } as never);
   await using _app = await renderAt("/cloud/acme/store/production/logs", { environmentsFail: true });
   fireEvent.click(screen.getByRole("button", { name: "Environment: production" }));
   fireEvent.click(await screen.findByRole("button", { name: "Could not load projects. Retry" }));

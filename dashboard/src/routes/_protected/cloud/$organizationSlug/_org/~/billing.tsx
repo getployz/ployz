@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useHydrated, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
@@ -13,15 +13,11 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/co
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
-import { BASE_PRICE_USD, EXTRA_SERVER_USD, INCLUDED_SERVERS, monthlyPriceUsd } from "#/modules/billing/billing";
-import { billingKeys, billingStateQueryOptions } from "#/modules/billing/billing.queries";
-import {
-  createCustomerPortalServerFn,
-  syncBillingAfterCheckoutServerFn,
-} from "#/modules/billing/billing.functions";
+import { BASE_PRICE_USD, EXTRA_SERVER_USD, INCLUDED_SERVERS, monthlyPriceUsd, periodEndCopy, serversCopy } from "#/modules/billing/billing";
+import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
+import { createCustomerPortalServerFn } from "#/modules/billing/billing.functions";
+import { useSyncBillingAfterCheckout } from "#/modules/billing/use-checkout-return";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
-import { uptimeKeys } from "#/modules/uptime/uptime.queries";
-import { analyticsKeys } from "#/modules/web-analytics/ui/analytics.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { requireBilling } from "#/modules/organization/organization.route-data";
 
@@ -71,10 +67,8 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { checkout_id: checkoutId } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const queryClient = useQueryClient();
   const isHydrated = useHydrated();
   const createCustomerPortal = useServerFn(createCustomerPortalServerFn);
-  const syncBillingAfterCheckout = useServerFn(syncBillingAfterCheckoutServerFn);
   const { data: billingState } = useSuspenseQuery(
     billingStateQueryOptions(organizationSlug)
   );
@@ -82,21 +76,7 @@ function RouteComponent() {
   const { openCheckout, pending: checkoutPending } = useEmbeddedCheckout(organizationSlug);
   const pending = portalPending || checkoutPending;
 
-  useEffect(() => {
-    if (checkoutId === undefined) return;
-    void navigate({ search: {}, replace: true });
-    // The webhook may land a moment after the redirect, so the page reads the subscription itself.
-    void syncBillingAfterCheckout({ data: { organizationSlug } })
-      .then((active) => {
-        if (active) toast.success("Your cluster is in production. Thanks for supporting Ployz!");
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        void queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });
-        // Production opens uptime and analytics, which may hold the answer that asked for it.
-        for (const queryKey of [uptimeKeys.all, analyticsKeys.all, analyticsKeys.requests]) void queryClient.invalidateQueries({ queryKey });
-      });
-  }, [checkoutId]);
+  useSyncBillingAfterCheckout(organizationSlug, checkoutId, () => void navigate({ search: {}, replace: true }));
 
   /** Cancellation and payment changes happen in the Polar portal. */
   async function openBillingPortal() {
@@ -234,15 +214,4 @@ function Plan({
       {children}
     </section>
   );
-}
-
-const serversCopy = (servers: number) => (servers === 1 ? "1 server" : `${servers} servers`);
-
-// UTC so the server render and the browser agree on the day.
-const periodEndFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
-
-function periodEndCopy(state: { currentPeriodEnd: Date | null; cancelAtPeriodEnd: boolean }) {
-  if (state.currentPeriodEnd === null) return "Production is active";
-  const day = periodEndFormat.format(state.currentPeriodEnd);
-  return state.cancelAtPeriodEnd ? `Production ends on ${day}` : `Renews on ${day}`;
 }
