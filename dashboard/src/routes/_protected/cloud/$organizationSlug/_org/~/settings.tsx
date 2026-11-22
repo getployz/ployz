@@ -18,10 +18,10 @@ import { clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { githubWebQueryOptions } from "#/modules/github/github.queries";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { GithubSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/github-settings";
-import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
+import { BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
 import { NetworkSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/NetworkSection";
-import { projectsQuery } from "#/modules/config-store/store-view.queries";
+import { buildOrderQuery, projectsQuery } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { organizationTokensQueryOptions } from "#/modules/identity/organization-token.queries";
 import { TokensSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings";
@@ -85,7 +85,7 @@ export const Route = createFileRoute(
   loaderDeps: ({ search }) => ({ section: search.section, offer: search.offer }),
   loader: ({ params, context, deps }) => {
     const section = SECTION_PAGES[deps.section ?? "general"].prefetch(context, params.organizationSlug, deps.offer);
-    return prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), BUILD_ORDER_QUERY],
+    return prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), buildOrderQuery()],
       organizationMembersQueryOptions(params.organizationSlug)).then(() => section);
   },
   component: RouteComponent,
