@@ -834,7 +834,11 @@ mod tests {
     async fn a_live_log_passes_a_read_error_through() {
         let source: LogSource = Box::pin(futures_util::stream::iter([
             entry(1, "a\n"),
-            Err(JournalError::Docker("gone".into())),
+            Err(JournalError::Docker(
+                bollard::errors::Error::DockerStreamError {
+                    error: "gone".into(),
+                },
+            )),
         ]));
         let items: Vec<_> = scrub_source(source, SealedForms::none()).collect().await;
         assert!(matches!(
