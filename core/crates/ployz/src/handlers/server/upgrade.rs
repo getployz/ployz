@@ -634,7 +634,7 @@ async fn run_all(
     .value();
     let outcome = moved
         .map(drop)
-        .map_err(|error| super::ingress_incomplete("Servers upgraded", error, rerun));
+        .map_err(|error| super::ingress_incomplete("Servers upgraded", error, Hint::Next(rerun)));
     (Some(result), outcome)
 }
 
