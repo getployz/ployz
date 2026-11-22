@@ -160,7 +160,6 @@ impl BuildInputs {
         Ok(target)
     }
 
-    /// The private directory holding every captured input for this attempt.
     pub(super) fn root(&self) -> &Path {
         &self.root
     }
@@ -416,7 +415,6 @@ impl UploadListing {
         })
     }
 
-    /// Whether the listing holds no path at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
