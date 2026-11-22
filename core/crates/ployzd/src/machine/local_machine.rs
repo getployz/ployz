@@ -103,6 +103,7 @@ pub(crate) use sealing_recovery::Error as RecoveryError;
 pub(crate) use sealing_recovery::back_up;
 mod turns;
 mod upgrade;
+mod volume_copy;
 
 /// Failures from Local Machine operations. The RPC adapter maps these once.
 #[derive(Debug, Error)]
@@ -364,7 +365,7 @@ impl LocalMachine {
     /// This handle for work inside the switch `held` keeps, whose creates and starts of a
     /// Provisioned Volume's holder take no lock of their own.
     #[must_use]
-    pub(crate) fn inside_switch(&self, held: &SwitchGuard) -> Self {
+    fn inside_switch(&self, held: &SwitchGuard) -> Self {
         debug_assert!(Arc::ptr_eq(
             tokio::sync::OwnedMutexGuard::mutex(held),
             &self.switch
