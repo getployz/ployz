@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { deployDialOf } from "#/modules/config-store/store-sdk.server";
 import { backfillClusterSealingKey, SealingBackfillUnreachable } from "#/modules/sealing/sealing-backfill.server";
 import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";

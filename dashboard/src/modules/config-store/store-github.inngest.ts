@@ -1,5 +1,4 @@
 import { observeStoreBranch, observeStoreCheckSuite } from "#/modules/config-store/store-github.server";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import {
   closeStoreEnvironments,
   observeStorePullRequest,
@@ -12,6 +11,7 @@ import {
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { githubCheckSuiteReceived, githubPullRequestReceived, githubPushReceived } from "#/modules/github/github.events";
 import { configDeploymentAdmitted, configPrCheckRequested, configSweepRequested } from "#/modules/config-store/config-store.events";
+import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /**

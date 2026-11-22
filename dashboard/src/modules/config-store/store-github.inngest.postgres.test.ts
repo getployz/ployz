@@ -7,7 +7,7 @@ import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
+import { pinStoreSources } from "#/modules/config-store/store-sources.server";
 import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { account } from "#/modules/identity/tables";

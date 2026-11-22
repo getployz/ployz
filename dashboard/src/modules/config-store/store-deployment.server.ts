@@ -1,70 +1,32 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, GitSource } from "@ployz/sdk";
-import { Data, Effect, Option } from "effect";
-import type { InngestClient } from "#/modules/inngest/client";
-import type { Polar } from "#/modules/billing/polar-provider.server";
-import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { callStore, cancelStoreGithubBuilds, deployDialOf, githubMembers, readStore, requestChecks } from "#/modules/config-store/config-store.server";
+import type { ConfigStore } from "@ployz/sdk";
+import { Effect, Option } from "effect";
+import { cloudStore, deployDialOf, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
+import { callStore, readStore, requestChecks } from "#/modules/config-store/config-store.server";
+import { cancelStoreGithubBuilds } from "#/modules/config-store/store-github-builds.server";
+import { fromGithub, pinStoreSources, sourceIdentity, SourceUnreadable } from "#/modules/config-store/store-sources.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
-import type { GithubApi } from "#/modules/github/github-observation.api";
-import { GithubDisconnected } from "#/modules/github/github-access";
-import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
+import { materializeGithubSource } from "#/modules/github/github-source.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
+import { Database } from "#/server/database.server";
+import type { InngestClient } from "#/modules/inngest/client";
+import type { Polar } from "#/modules/billing/polar-provider.server";
+import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import type { GithubApi } from "#/modules/github/github-observation.api";
 import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { AppConfig } from "#/server/config.server";
-import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
+import type { CloudStore } from "#/modules/config-store/store-sdk.server";
 
 /** What Cloud's Store workers need from Cloud. */
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
 /** Runs one of the Store workers' Effects for an Inngest step. */
 export type StoreEffectRunner = EffectRunner<StoreServices>;
-
-/** Cloud could not read a Git Service's source; users read the message. */
-export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
-
-const fromGithub = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError((error) => new SourceUnreadable({
-  message: error instanceof GithubSourceError || error instanceof GithubDisconnected
-    ? error.message
-    : "GitHub didn't answer while reading the source. Deploy again.",
-})));
-
-const identity = (organizationId: string, source: GitSource) => ({
-  organizationId,
-  installationId: source.access.type === "public" ? null : source.access.installationId,
-  repositoryId: source.repository_id,
-});
-
-/**
- * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
- * retried run reads the same commit). Resolves to every source with its pin. A trusted pull request's head pins only
- * while its author is still among the members sent with it, unless a bot opened it from the repository itself.
- */
-export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
-  store: ConfigStore, organizationId: string, deploymentId: string,
-) {
-  const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
-  const heads: Record<string, string> = {};
-  for (const source of sources) {
-    if (source.commit !== null) continue;
-    if (source.branch === null) {
-      return yield* new SourceUnreadable({ message: `Reconnect ${source.service}'s branch before deploying.` });
-    }
-    heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
-  }
-  if (Object.keys(heads).length === 0) return sources;
-  const members = yield* githubMembers(organizationId);
-  // A head it can never build, such as one its pull request hasn't approved, is why it failed.
-  return yield* storeTry(() => store.pinSources(deploymentId, heads, { members })).pipe(
-    Effect.catchIf(refusedWith("invalid_argument"), (refused) => new SourceUnreadable({ message: refused.message })),
-  );
-});
 
 /** Pin the Deployment's Git Services, then check out every pin for the runner until the scope closes. */
 const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
@@ -74,7 +36,7 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
   const checkouts: Record<string, string> = {};
   for (const source of sources) {
     if (source.commit === null) return yield* new SourceUnreadable({ message: `${source.service} has no pinned commit.` });
-    const capture: Parameters<typeof materializeGithubSource>[0] = { ...identity(organizationId, source), sha: source.commit, rootDir: source.root_dir };
+    const capture: Parameters<typeof materializeGithubSource>[0] = { ...sourceIdentity(organizationId, source), sha: source.commit, rootDir: source.root_dir };
     if (source.dockerfile_path !== null) capture.dockerfilePath = source.dockerfile_path;
     checkouts[source.service] = (yield* fromGithub(materializeGithubSource(capture))).repositoryDirectory;
   }

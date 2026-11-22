@@ -15,7 +15,7 @@ import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { deployDialOf } from "#/modules/config-store/store-sdk.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";

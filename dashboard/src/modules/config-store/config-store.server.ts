@@ -1,30 +1,27 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, EnvironmentRef as StoreEnvironmentRef, PullRequestRef, SystemEvent } from "@ployz/sdk";
-import { and, eq } from "drizzle-orm";
+import type { ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, EnvironmentRef as StoreEnvironmentRef, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherRunning } from "#/modules/config-store/running-evidence.server";
 import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
-import { account, member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
 import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
-import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cancelStoreGithubBuilds } from "#/modules/config-store/store-github-builds.server";
+import { githubMembers } from "#/modules/config-store/store-sources.server";
 import { commandEnvironments, isResealPending, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
-import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createGithubBuildRunCompletedEvent } from "#/modules/github/github.events";
 import { variablesResealRequested } from "#/modules/sealing/sealing.events";
 import { type ConfigDeploymentAdmittedEventData, type DeploymentTrigger, configDeploymentAdmitted, configSweepRequested, createConfigDeploymentStartedEvent, createConfigPrCheckRequestedEvent } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
-import { Conflict, Forbidden, NotFound, statusForRefusal, Unavailable, Validation } from "#/server/public-error";
-import { installationAccess } from "#/modules/github/github-access";
-import { cancelGithubRun } from "#/modules/github/github-build.server";
-import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections } from "#/modules/runtime/connections.server";
+import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreResult, ViewAnswer } from "./store.contract";
@@ -35,65 +32,8 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
     Effect.withSpan("ConfigStore.read"),
   );
 
-/**
- * Cancel a run Cloud dispatched, as Cloud itself through the installation that runs it: the Organization's own token
- * is refused once it disconnected. A run that already ended is fine. GitHub refuses every token of an installation it
- * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead.
- */
-export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
-  cancelGithubRun({ access: installationAccess(run.installation_id), fullName: run.repository, runId: run.run_id }).pipe(
-    Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
-  );
-
-/** The build GitHub holds, or held until it ended; `null` once GitHub passed it to the next Builder. */
-export const heldGithubBuild = Effect.fn("ConfigStore.heldGithubBuild")(function* (buildId: string) {
-  const store = yield* cloudStore;
-  const handOff = yield* storeTry(() => store.githubBuild(buildId));
-  return "held" in handOff ? handOff.held : null;
-});
-
-/**
- * Stop a Deployment's builds still on GitHub: fail them and cancel their runs. Their Build Grants expire by
- * themselves. Idempotent. Its cancellation, and a worker that gave up on it, call it.
- */
-export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string) {
-  const store = yield* cloudStore;
-  const builds = yield* storeTry(() => store.githubCancel(deploymentId));
-  yield* Effect.forEach(builds, (build) => cancelDispatchedGithubRun(build.run), { concurrency: 4, discard: true });
-  return builds.length;
-});
-
-/**
- * Stop the GitHub builds that `organizationIds` run through `installationId` once they can't use it: disconnected,
- * suspended or uninstalled. Call it after that change is recorded. Each run is cancelled and its walk woken, so the
- * walk looks now rather than at its next interval, finds the change, and fails the Deployment with it. Idempotent: an
- * ended run answers 409, and the walk ignores a wake for a build it already failed.
- */
-export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubInstallationBuilds")(function* (
-  installationId: number, organizationIds: ReadonlyArray<string>,
-) {
-  const store = yield* cloudStore;
-  const { drizzle } = yield* Database;
-  const stopped: string[] = [];
-  for (const organizationId of organizationIds) {
-    const runs = yield* drizzle.select({ deploymentId: deploymentRun.deploymentId }).from(deploymentRun)
-      .where(eq(deploymentRun.organizationId, organizationId));
-    for (const { deploymentId } of runs) {
-      const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-        Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
-      for (const build of view?.builds ?? []) {
-        if (build.status !== "building") continue;
-        const github = yield* heldGithubBuild(`${deploymentId}.${build.service}`).pipe(
-          Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
-        if (github === null || github.status !== "building" || github.run.installation_id !== installationId) continue;
-        yield* cancelDispatchedGithubRun(github.run);
-        yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `stopped-${github.id}`, runId: github.run.run_id }));
-        stopped.push(github.id);
-      }
-    }
-  }
-  return stopped;
-});
+/** The commands that admit Deployments: Cloud's worker runs them, and the Store refuses one nothing could run. */
+const ADMITS: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "start", "remove", "approve_pull_request"]);
 
 /**
  * Hand an admitted or started Deployment to Cloud's worker. A replayed admission sends the same event, which Inngest
@@ -144,62 +84,12 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
   );
 });
 
-/**
- * A Store refusal as a user's request answers it: the public error of the status `statusForRefusal` gives the CLI, in its fixed
- * copy, since a Store message can name an ID. A 401 stays a 500, since the user's session already passed and the Store
- * means Cloud's own credential, and so does a 501, which has no public error.
- */
-export function publicRefusal(error: StoreRefused) {
-  const { message } = error;
-  switch (statusForRefusal(error.code)) {
-    case 422:
-      return new Validation({ message });
-    case 404:
-      return new NotFound({ message });
-    case 409:
-      return new Conflict({ message });
-    case 403:
-      return new Forbidden({ message });
-    case 503:
-      return new Unavailable({ message });
-    default:
-      return error;
-  }
-}
-
-/** `effect`, answering a Store refusal with its own status rather than a 500. */
-export const refusedPublicly = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.mapError((error) => error instanceof StoreRefused ? publicRefusal(error) : error));
-
 /** Who a user's write is by, as the Store records it (a Deployment's `admitted_by`): their name, else email. */
 const principalFor = Effect.fn("ConfigStore.principalFor")(function* (userId: string | null) {
   if (userId === null) return null;
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
   return row === undefined ? null : row.name || row.email;
-});
-
-/**
- * The Organization's Servers, to dial, with the Cluster the dial expects them in: its pairing's recorded Sealing Key,
- * else none. No Servers while it has no pairing.
- */
-export const deployDialOf = Effect.fn("ConfigStore.deployDialOf")(function* (organizationId: string) {
-  const loaded = yield* loadOrganizationConnections(organizationId);
-  return loaded.kind === "ready"
-    ? { connections: loaded.connections, expect: clusterExpectation(loaded) }
-    : { connections: [], expect: null };
-});
-
-/**
- * The GitHub user ids of the Organization's members who signed in with GitHub: whose pull requests deploy on their own.
- * The Store re-checks a trusted pull request's author against them each time it would deploy its head.
- */
-export const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ accountId: account.accountId }).from(member)
-    .innerJoin(account, and(eq(account.userId, member.userId), eq(account.providerId, "github")))
-    .where(eq(member.organizationId, organizationId));
-  return rows.map((row) => Number(row.accountId)).filter((id) => Number.isSafeInteger(id) && id > 0);
 });
 
 /**
@@ -252,8 +142,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const unanswered = yield* gatherUnanswered(organizationId, call, volumes);
   const running = yield* gatherRunning(organizationId, call);
   // An admission or start carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
-  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
-    || call.command.command === "remove" || call.command.command === "approve_pull_request");
+  const admits = call.operation === "write" && ADMITS.has(call.command.command);
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   // An approval leaves a pull request trusted only while its author is a member or a bot opened it from the repository.
   const approves = call.operation === "write" && call.command.command === "approve_pull_request";
@@ -281,8 +170,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   }
   // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked, as do a removal's first ones
   // and an approved pull request's.
-  if (command.command === "admit" || command.command === "start" || command.command === "remove"
-    || command.command === "approve_pull_request") {
+  if (ADMITS.has(command.command)) {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
@@ -356,11 +244,6 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
   Effect.map(callStore(access.organization.id, actor.userId, call, { approval: "not_required", permissions: access.permissions, environments: access.environments }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
-
-/** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
-export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
-  ? callStore(organizationId, null, call)
-  : callStore(organizationId, by.userId, call, { approval: "not_required", permissions: by.permissions, environments: by.environments });
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or

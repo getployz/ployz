@@ -1,10 +1,10 @@
 import { Effect } from "effect";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { createStartupResealEvent, variablesResealRequested } from "#/modules/sealing/sealing.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
+import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 const legacyOrganizations = Effect.gen(function* () {
