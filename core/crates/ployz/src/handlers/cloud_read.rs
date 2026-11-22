@@ -5,11 +5,11 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use chrono::Utc;
-use ployz_core::{MachineName, QualifiedService, RpcErrorCode, ServiceName, ServiceSelector};
-use ployz_store::tools::{
+use ployz_agent_tools::{
     CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, Timestamp,
     cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
 };
+use ployz_core::{MachineName, QualifiedService, RpcErrorCode, ServiceName, ServiceSelector};
 use reqwest::Method;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;

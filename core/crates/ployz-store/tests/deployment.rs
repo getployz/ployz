@@ -6,11 +6,12 @@
 //! interface only, on SQLite and on Postgres (see `backend`).
 
 use ployz_core::config::ReviewLifecycleKind;
+use ployz_core::scrub::SealedValues;
+use ployz_core::scrub::excerpt::{LineCap, LogExcerpt, LogText, Withheld};
 use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
     MachineName, OperationRow, QualifiedService, RpcError, RpcErrorCode, ServiceName,
 };
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,

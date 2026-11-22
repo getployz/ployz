@@ -40,7 +40,6 @@ use crate::review::{ApprovalRequired, ApprovalSubject, DestructiveEffect, approv
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::teardown::{EnvironmentRemoval, RemovedBecause};
-use crate::tools::Call;
 use crate::trusted::{Approval, Evidence};
 use crate::{Actor, Trusted};
 
@@ -601,13 +600,16 @@ fn refuse_unanswered(
          Remove those Servers, or give up every copy of it wherever one turns up",
         json!({
             "waiting_on": waiting_on,
-            "every_copy": Call::new("remove", json!({
-                "project": remove.project,
-                "environment": remove.environment,
-                "accept_volume_loss": accept,
-                "every_copy": every_copy,
-                "version": version,
-            })),
+            "every_copy": {
+                "tool": "remove",
+                "input": {
+                    "project": remove.project,
+                    "environment": remove.environment,
+                    "accept_volume_loss": accept,
+                    "every_copy": every_copy,
+                    "version": version,
+                },
+            },
         }),
     ))
 }

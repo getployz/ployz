@@ -83,7 +83,8 @@ pub enum DestructiveKind {
 
 impl DestructiveKind {
     /// What this kind does, in the third person, before the name it acts on.
-    pub(crate) const fn verb(self) -> &'static str {
+    #[must_use]
+    pub const fn verb(self) -> &'static str {
         match self {
             Self::RemovesService => "removes service",
             Self::DeletesVolume => "deletes volume data",

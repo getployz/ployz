@@ -812,7 +812,7 @@ fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
 // or image value such as NODE_ENV=production.
 #[test]
 fn a_failed_log_is_scrubbed_of_sealed_values_only() {
-    use ployz_store::tools::{LineCap, LogExcerpt};
+    use ployz_agent_tools::{LineCap, LogExcerpt};
     let scrub = scrub_target();
     let sealed = scrub.values(&scrub.sealed_at_claim, BTreeMap::new());
     let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
@@ -827,7 +827,7 @@ fn a_failed_log_is_scrubbed_of_sealed_values_only() {
 
 #[test]
 fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
-    use ployz_store::tools::{LineCap, LogExcerpt};
+    use ployz_agent_tools::{LineCap, LogExcerpt};
     let env = BTreeMap::from([
         ("DB_PASSWORD".to_owned(), "old-rotated-out".to_owned()),
         ("LOG_LEVEL".to_owned(), "debug-verbose".to_owned()),

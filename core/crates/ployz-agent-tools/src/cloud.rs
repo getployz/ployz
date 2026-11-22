@@ -1,0 +1,307 @@
+//! What Ployz Cloud answers about Servers: the shapes a host returns for each
+//! [`CloudQuery`](super::CloudQuery) and for an [`Act`](super::Act). Plans decode
+//! these and never see a Machine directly.
+
+use std::collections::BTreeSet;
+
+use ployz_core::metrics::MarkerKind;
+use ployz_core::{MachineId, Namespace, Region, ServiceName};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use super::step::{AttemptId, Freshness, ServerName, ServerRef, Timestamp};
+use ployz_core::scrub::excerpt::LogText;
+use ployz_store::{DeploymentId, VolumeName};
+
+/// The answer to `CloudQuery::Servers`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServersAnswer {
+    pub servers: Vec<ServerReport>,
+    pub seen: Freshness,
+    /// The regions the Servers are in, by their `region` label. Left out by an
+    /// answerer that doesn't read labels, and of an answer narrowed to one Server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub regions: Option<BTreeSet<Region>>,
+    /// The region a new Environment starts in, by the Engine's one rule for the Cluster's
+    /// first Server. Left out when no region is pinned, by an answerer that doesn't read
+    /// labels, and of an answer narrowed to one Server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub new_environment_region: Option<Region>,
+}
+
+/// One Server as it last reported.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServerReport {
+    pub machine: MachineId,
+    pub name: ServerName,
+    pub state: ServerState,
+    /// The Ployz release it runs.
+    pub release: Option<String>,
+    /// A newer release on its channel, if any.
+    pub upgrade: Option<String>,
+    pub draining: bool,
+    pub disk: Option<Disk>,
+    /// Its `region` label's value, as the Server holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<String>,
+    /// Every Namespace it runs containers or holds volumes for.
+    pub namespaces: Vec<Namespace>,
+}
+
+impl ServerReport {
+    #[must_use]
+    pub fn reference(&self) -> ServerRef {
+        ServerRef {
+            machine: self.machine,
+            name: self.name.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerState {
+    Online,
+    Offline,
+    Removing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Disk {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// The answer to `CloudQuery::Containers`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ContainersAnswer {
+    pub containers: Vec<ContainerReport>,
+    /// The Servers asked; `seen.unanswered` names those that did not answer.
+    pub servers: Vec<ServerName>,
+    pub seen: Freshness,
+}
+
+/// One container of a Service, by the runtime name its containers carry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ContainerReport {
+    pub server: ServerName,
+    pub service: ServiceName,
+    pub state: ContainerState,
+    pub exit_code: Option<i64>,
+    /// On an `exited` container: its Server stopped it on request, so `exit_code` is
+    /// no crash. A field beside `exited`, not a state, so a reader from before it
+    /// still decodes the answer and reads the exit code as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub stopped: bool,
+    pub health: Option<Health>,
+    /// Absent when the Server does not report it.
+    pub restarts: Option<u32>,
+    pub image: String,
+    pub deployment: Option<DeploymentId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerState {
+    Created,
+    Running,
+    Restarting,
+    Paused,
+    Exited,
+    Dead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Health {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+/// The answer to `CloudQuery::Logs`: each Server's lines, already scrubbed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct LogsAnswer {
+    pub servers: Vec<ServerLog>,
+    pub seen: Freshness,
+    /// Why each unanswered Server did not answer, and which Containers' lines each
+    /// Server withheld because Ployz couldn't check their variables for secret values.
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServerLog {
+    pub server: ServerName,
+    pub text: LogText,
+}
+
+/// The answer to `CloudQuery::Metrics`: what `ployz metrics` prints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricsAnswer {
+    pub since: Timestamp,
+    pub until: Timestamp,
+    /// Empty when no Server reported a reading in the range.
+    pub metrics: Vec<MetricRow>,
+    pub oom_kills: u32,
+    pub exits: u32,
+    pub restarts: u32,
+    /// The newest OOM kills, exits and restarts, newest first.
+    pub events: Vec<MetricEvent>,
+    /// Spans with no readings, and why a Server did not answer.
+    pub notes: Vec<String>,
+    pub seen: Freshness,
+}
+
+/// One metric over the range. A metric with no reading has none of the three.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricRow {
+    pub metric: String,
+    /// Absent when there is no recent reading.
+    pub now: Option<String>,
+    pub avg: Option<String>,
+    pub peak: Option<String>,
+}
+
+/// Something Docker did to a Service container.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricEvent {
+    pub at: Timestamp,
+    pub server: ServerName,
+    pub namespace: Namespace,
+    pub service: ServiceName,
+    pub deployment: Option<DeploymentId>,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub kind: MarkerKind,
+}
+
+/// The answer to `CloudQuery::Copies`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct CopiesAnswer {
+    pub volumes: Vec<VolumeCopies>,
+    pub seen: Freshness,
+}
+
+/// Where one Volume's data is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct VolumeCopies {
+    pub volume: VolumeName,
+    /// The Server with its writable copy.
+    pub writer: Option<ServerRef>,
+    pub mirror: Option<Mirror>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Mirror {
+    pub server: ServerRef,
+    pub synced_at: Option<Timestamp>,
+}
+
+/// The answer to `CloudQuery::Operations`, newest first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct OperationsAnswer {
+    pub operations: Vec<Operation>,
+    /// On a Server's history, its newest Drain with a verdict (done, failed, or `unknown` with
+    /// an `end`), however many runs came after it. Absent when it has none, and from a Cloud
+    /// from before it, whose answer holds only what `operations` lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub settled_drain: Option<Operation>,
+}
+
+/// One requested operation and how it ended so far. An [`Act`](super::Act)
+/// answers with its row; the same attempt answers with the same row.
+///
+/// A refused act carries, in its details: `run` for the run already going,
+/// `writes` when the reply was lost, `fix`, and for a release after the
+/// handover `move_to`, the server the move hands the Volume to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Operation {
+    pub attempt: AttemptId,
+    /// What was asked, in words, e.g. `restart web`.
+    pub run: String,
+    pub state: RunState,
+    /// On an `unknown` run, how it ended, when Cloud knows. A field beside
+    /// `unknown`, not a state, so a reader from before it still decodes the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub end: Option<UnknownEnd>,
+    pub requested_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+    pub reason: Option<String>,
+    pub servers: Vec<Leg>,
+    /// Services a drain left in place, and why.
+    pub kept: Vec<Kept>,
+    pub unanswered: Vec<ServerName>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Accepted,
+    Running,
+    Done,
+    Failed,
+    Unknown,
+    /// A Deploy replaced the container before the step ran.
+    Superseded,
+}
+
+impl RunState {
+    #[must_use]
+    pub const fn ended(self) -> bool {
+        !matches!(self, Self::Accepted | Self::Running)
+    }
+}
+
+/// How a run Cloud has no verdict on ended. Either way it may have done anything.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownEnd {
+    /// Cloud lost track of the run, or got no answer in time.
+    Lost,
+    /// The run was cancelled while it worked.
+    Interrupted,
+}
+
+/// What one Server did for an operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Leg {
+    pub server: ServerName,
+    pub stopped: Option<Receipt>,
+    pub started: Option<Receipt>,
+    pub reason: Option<String>,
+}
+
+/// Whether a Server confirmed a step. A missing receipt is `unknown`, never `no`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Receipt {
+    Yes,
+    No,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Kept {
+    pub service: ServiceName,
+    pub why: String,
+}
+
+/// The answer to `CloudQuery::GithubConnection`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct GithubAnswer {
+    /// Whether GitHub is connected.
+    #[serde(default)]
+    pub connected: bool,
+    /// The repositories Ployz may read, as `owner/name`.
+    #[serde(default)]
+    pub repositories: Vec<String>,
+    /// The page that connects more.
+    #[serde(default)]
+    pub connect_at: Option<String>,
+}

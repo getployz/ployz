@@ -1,11 +1,11 @@
 //! The lines an agent reads from a Machine's Containers or its processes.
 use futures_util::future::join_all;
+use ployz_agent_tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_core::error_chain;
 use ployz_core::{
     ContainerId, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
     MachineTarget, RpcError, RpcErrorCode, TailLogsRequest, op,
 };
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use std::collections::BTreeSet;
 use std::time::Duration;
 

@@ -5,7 +5,7 @@ use clap::ArgMatches;
 use ployz_core::{Hint, RpcErrorCode, ServiceName};
 use std::collections::BTreeMap;
 
-use ployz_store::tools::{Accept, Confirmation};
+use ployz_agent_tools::{Accept, Confirmation};
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,

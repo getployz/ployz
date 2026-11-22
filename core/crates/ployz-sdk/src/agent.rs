@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use ployz_agent_tools as tools;
+use ployz_agent_tools::{Act, Answer, CloudQuery, Place};
 use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
-use ployz_store::tools::{self, Act, Answer, CloudQuery, Place};
 use serde::{Deserialize, Serialize};
 
 use crate::Client;

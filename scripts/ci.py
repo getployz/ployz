@@ -39,16 +39,17 @@ def select(paths, pull_request=False):
     return selected
 
 
-# Everything the ployz-store tests compile or read: the crate, its path dependencies, the docs its build
-# script embeds, and one fixture.
+# Everything the Store group's tests compile or read: ployz-store and ployz-agent-tools, their path
+# dependencies, the docs ployz-agent-tools embeds, and one fixture.
 STORE_INPUTS = (
-    "core/crates/ployz-store/", "core/crates/ployz-core/", "core/crates/ployz-decide/", "docs/user/",
+    "core/crates/ployz-store/", "core/crates/ployz-agent-tools/", "core/crates/ployz-core/", "core/crates/ployz-decide/",
+    "docs/user/",
     "core/crates/ployz/tests/fixtures/published-manifest.json",
 )
 
 
 def store_postgres(paths, pull_request=False):
-    """Whether rust-tests reruns the ployz-store tests on Postgres; their result can't change otherwise."""
+    """Whether rust-tests reruns the Store group's tests on Postgres; their result can't change otherwise."""
     return not pull_request or select_normal(paths) == NORMAL or any(
         path.startswith(STORE_INPUTS) or path.startswith("core/.cargo/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}
         for path in paths
@@ -69,7 +70,7 @@ def release_inputs_changed(paths):
 def select_normal(paths):
     selected = {"contracts"}
     for path in paths:
-        # ployz-store embeds the user docs: the docs tool's catalog entry and its ranking test read them.
+        # ployz-agent-tools embeds the user docs: the docs tool's catalog entry and its ranking test read them.
         if path.startswith("docs/user/") and path.endswith(".md"):
             selected |= RUST
             continue
@@ -108,7 +109,7 @@ def select_normal(paths):
                 continue
             if crate not in sdk_and_config_wasm_crates():
                 return NORMAL.copy()
-            # The Cloud's parity tests read ployz-store's snapshots.
+            # The Cloud's parity tests read ployz-agent-tools' snapshots.
             if not relative.startswith("tests/") or crate == "ployz-sdk" or relative.startswith("tests/snapshots/"):
                 selected.add("cloud")
         elif path == "core/install.sh" or path.startswith("core/relay/"):

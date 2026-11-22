@@ -1351,7 +1351,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
             let RowState::Failed { log, .. } = &row.state else {
                 return None;
             };
-            let Some(ployz_store::tools::LogText::Shown(excerpt)) = log else {
+            let Some(ployz_agent_tools::LogText::Shown(excerpt)) = log else {
                 return Some(Err(log.clone()));
             };
             Some(Ok(excerpt.lines().to_vec()))

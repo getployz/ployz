@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 type Transcript = { tool: string; input: JsonValue; place: Place; call_key: string; turns: { step: Step; answers?: Answer[] }[] };
 
 const snapshot = <T>(name: string): T =>
-  JSON.parse(readFileSync(new URL(`../../../../core/crates/ployz-store/tests/snapshots/${name}`, import.meta.url), "utf8")) as T;
+  JSON.parse(readFileSync(new URL(`../../../../core/crates/ployz-agent-tools/tests/snapshots/${name}`, import.meta.url), "utf8")) as T;
 
 const replay = ({ tool, input, place, call_key, turns }: Transcript): Step[] => {
   let { step, state } = agentStart(tool, input, place, call_key);

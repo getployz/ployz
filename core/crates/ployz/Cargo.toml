@@ -31,6 +31,7 @@ oci-client = "0.17.0"
 ployz-build.workspace = true
 ployz-core.workspace = true
 ployz-decide.workspace = true
+ployz-agent-tools.workspace = true
 ployz-store.workspace = true
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
@@ -52,6 +53,7 @@ tokio-util = "0.7.19"
 tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "registry", "std"] }
 ts-rs.workspace = true
 unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"

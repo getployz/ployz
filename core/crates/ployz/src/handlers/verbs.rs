@@ -2,6 +2,7 @@
 //! to know before calling it. `VERBS` is the only list.
 
 use clap::Command;
+use ployz_agent_tools::ToolId;
 use ployz_store::Permission;
 use serde::Serialize;
 
@@ -1193,7 +1194,7 @@ fn insert(
 
 #[cfg(test)]
 mod tests {
-    use ployz_store::docs::{self, Lookup};
+    use ployz_agent_tools::docs::{self, Lookup};
     use ployz_store::{Claim, Command};
 
     use super::*;
@@ -1295,11 +1296,17 @@ mod tests {
 
     fn claimed() -> impl Iterator<Item = (String, ToolId)> {
         Command::claims().flat_map(|(name, claim)| {
-            let tools: &[ToolId] = match claim {
+            let tools: &[&str] = match claim {
                 Claim::Tools(tools) => tools,
                 Claim::None(_) => &[],
             };
-            tools.iter().map(move |tool| (name.clone(), *tool))
+            tools.iter().map(move |tool| {
+                let id = ToolId::ALL
+                    .iter()
+                    .find(|id| id.name() == *tool)
+                    .unwrap_or_else(|| panic!("`{name}` claims `{tool}`, which is no tool"));
+                (name.clone(), *id)
+            })
         })
     }
 
