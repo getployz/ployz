@@ -389,7 +389,7 @@ impl ConfigStore {
     }
 
     /// The newest verified build kept for `image` of Service `service` in `namespace`,
-    /// under the rule its Environment keeps now: what Deployment `deployment`'s runner
+    /// under the rule and generation its Environment keeps now: what Deployment `deployment`'s runner
     /// carries for a rule-built image it reuses, as a drain does for a copy. In-process
     /// only.
     ///

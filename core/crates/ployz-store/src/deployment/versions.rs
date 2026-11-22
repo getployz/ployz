@@ -844,8 +844,9 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 ///
 /// A built Service is left to its automatic deploy rule while the rule is live, tracks
 /// the Service's branch and approves its spec. Its first Deploy still needs a build under
-/// the rule, which a push to its branch makes; once one ran, a Deploy reuses that image
-/// while only run fields change, and carries its proof.
+/// the rule, which a push to its branch makes; once a Server verified that build under
+/// the rule's current generation, a Deploy reuses its image while only run fields
+/// change, and carries its proof.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a row that doesn't read.
@@ -916,7 +917,12 @@ pub(crate) fn unsigned(
         let built = service
             .is_some_and(|service| !matches!(service.config.source, ServiceSource::Image { .. }));
         let needs = match (built, approved.contains(&spec.name)) {
-            (true, true) if reused.is_some() => continue,
+            (true, true)
+                if reused.is_some()
+                    && proven(tx, (environment, organization, namespace), &spec.name)? =>
+            {
+                continue;
+            }
             (true, true) => Needs::Rebuild,
             (true, false) => Needs::Rule,
             (false, _) if login && !content_addressed(&spec.container.image) => Needs::Digest,
@@ -928,6 +934,27 @@ pub(crate) fn unsigned(
         });
     }
     Ok(unsigned)
+}
+
+/// Whether a Server verified, under the rule and generation `environment` keeps now, the
+/// image a Deploy of `service` reuses: its latest build, the receipt preparation reads
+/// first. The runner carries the same lookup's proof.
+fn proven(
+    tx: &mut dyn Tx,
+    (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),
+    service: &ServiceName,
+) -> Result<bool, RpcError> {
+    let image = crate::deployment::receipts(tx, environment)?
+        .remove(service)
+        .and_then(|receipts| receipts.into_iter().next())
+        .and_then(|receipt| {
+            let reference = receipt.pointer("/image/reference")?.as_str()?;
+            ployz_core::authority::BuiltImageDigest::parse(reference).ok()
+        });
+    let Some(image) = image else {
+        return Ok(false);
+    };
+    Ok(crate::build::verified_proof(tx, organization, (namespace, service), image)?.is_some())
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with

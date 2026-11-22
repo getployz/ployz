@@ -2171,10 +2171,20 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
         .deployment
         .id
         .clone();
-    let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    // A receipt names its image by its bare content digest.
+    let image = format!("sha256:{}", "d".repeat(64));
     built_on_github(&store, &build_id(&pushed, "web"), 41, "token-1", &image);
-    backend::run(&store, &pushed);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&pushed, &runner).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .keep_verified(&pushed, &runner, &[(web, verified_web(1))].into())
+        .unwrap();
+    backend::finish(&store, &pushed, claimed);
     assert_eq!(unsigned(&store, &who), []);
+    // A new generation of the rule refuses the proof the build kept under the last one.
+    approve_rule(&store, &who, 2).unwrap();
+    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
     set(&store, &who, "web.env.GREETING", json!("hello"));
     assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
 }
@@ -2418,10 +2428,7 @@ fn a_persons_redeploy_of_a_rule_built_image_carries_the_rule_and_its_token() {
 /// Environment's rule, and none for another image.
 #[test]
 fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
-    use ployz_core::authority::{
-        AttestKey, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, CommitSha,
-        PayloadDigest, PolicyDigest, RuleEvidence, RuleId, VerifiedBuild,
-    };
+    use ployz_core::authority::{BuiltImageDigest, PayloadDigest, RuleEvidence};
     let (store, who) = shop();
     let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
     publish(&store, &who);
@@ -2435,22 +2442,7 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
     let claimed = store.claim(&pushed, &runner).unwrap();
     let namespace = claimed.rule.as_ref().unwrap().open().unwrap().namespace;
     let web = ServiceName::parse("web").unwrap();
-    let kept = ployz_store::VerifiedClaim {
-        claim: BuildClaim {
-            cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
-            rule: RuleId::from_bytes([9; 16]),
-            generation: 1,
-            service: web.clone(),
-            policy: PolicyDigest::from_bytes([1; 32]),
-            commit: CommitSha::parse(H1).unwrap(),
-            authority: CommitAuthority::Head,
-            stage: BuildStage::Built {
-                image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
-                attest: AttestKey::from_bytes([5; 32]),
-            },
-        },
-        verified: VerifiedBuild::from_bytes([0x5a; 32]),
-    };
+    let kept = verified_web(1);
     store
         .keep_verified(&pushed, &runner, &[(web.clone(), kept.clone())].into())
         .unwrap();
@@ -2486,6 +2478,35 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
     assert_eq!(proof.evidence, RuleEvidence::Verified(kept.verified));
     assert_eq!(proof.claim, kept.claim);
     assert_eq!(drained(&"c".repeat(64)), None);
+    // Under the rule's next generation the kept proof proves nothing, so a build's
+    // fresh token for the same image goes in its place.
+    approve_rule(&store, &who, 2).unwrap();
+    assert_eq!(drained(&"d".repeat(64)), None);
+}
+
+/// What a Server issued for web's image `sha256:dd…` under generation `generation` of
+/// [`approve_rule`]'s rule.
+fn verified_web(generation: u64) -> ployz_store::VerifiedClaim {
+    use ployz_core::authority::{
+        AttestKey, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, CommitSha,
+        PolicyDigest, RuleId, VerifiedBuild,
+    };
+    ployz_store::VerifiedClaim {
+        claim: BuildClaim {
+            cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+            rule: RuleId::from_bytes([9; 16]),
+            generation,
+            service: ServiceName::parse("web").unwrap(),
+            policy: PolicyDigest::from_bytes([1; 32]),
+            commit: CommitSha::parse(H1).unwrap(),
+            authority: CommitAuthority::Head,
+            stage: BuildStage::Built {
+                image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                attest: AttestKey::from_bytes([5; 32]),
+            },
+        },
+        verified: VerifiedBuild::from_bytes([0x5a; 32]),
+    }
 }
 
 #[test]

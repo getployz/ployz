@@ -1576,7 +1576,8 @@ async fn rule_proofs(
         }
     }
     // An image this Deployment reuses without its own evidence carries what a Server
-    // issued for it before, as a drain's copy does, and needs no token or branch head.
+    // issued for it under the rule's current generation, as a drain's copy does, and
+    // needs no token or branch head. With none, its build's token below proves it.
     for (service, receipt) in receipts {
         let Ok(image) = BuiltImageDigest::parse(&receipt.image.reference) else {
             continue;

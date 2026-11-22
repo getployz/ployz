@@ -133,9 +133,10 @@ pub(crate) fn keep_verified(
 }
 
 /// The newest verified build `organization` keeps for `image` of `service` in
-/// `namespace`, under the rule its Environment keeps now, as the proof a Server takes in
-/// place of a token: what a drain sends with a copy a rule built. None when no Server
-/// issued one for that image.
+/// `namespace`, under the rule and generation its Environment keeps now, as the proof a
+/// Server takes in place of a token: what a drain sends with a copy a rule built, and
+/// what a Deploy that reuses the image carries. None when no Server issued one for that
+/// image under that generation, which every Server would refuse.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a row that doesn't read.
@@ -165,7 +166,13 @@ pub(crate) fn verified_proof(
     for row in &rows {
         let rule: Signed<AutoDeployRule> = row.json(0, "Automatic deploy rule")?;
         let kept: VerifiedClaim = row.json(1, "verified build")?;
-        if kept.image() == Some(image) && kept.claim.service == *service {
+        let Ok(current) = rule.open() else {
+            continue;
+        };
+        if kept.image() == Some(image)
+            && kept.claim.service == *service
+            && (kept.claim.rule, kept.claim.generation) == (current.rule, current.generation)
+        {
             return Ok(Some(RuleProof {
                 rule,
                 evidence: RuleEvidence::Verified(kept.verified),
