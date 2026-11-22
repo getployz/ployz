@@ -100,10 +100,9 @@ fn every_root_mark_combination_parses_to_one_copy() {
         WriterEpoch, plan,
     };
 
-    use super::super::{
-        inspect::{PromoteMark, RootCopy, RootMarks},
-        storage::Held,
-    };
+    use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
+
+    use super::super::storage::Held;
 
     // readonly, ployz:cut, ployz:promote, ployz:seed => root, mark.
     let table = [
@@ -236,7 +235,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
             "tank",
         )
         .unwrap();
-        let root = RootCopy::parse(&dataset, marks);
+        let root = RootCopy::parse(dataset.switching(), marks);
         assert_eq!(root, expected_root, "{marks:?} readonly={readonly}");
         let copy = root.view(newest(), epoch, None);
         let VolumeCopy::Root {

@@ -393,30 +393,31 @@ impl DiscoveryService {
         (ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>),
         ployz_core::EnsuredContainer,
     > {
-        let health = match ployz_testkit::rotation::decide(copy.rotation(), want) {
-            Err(refusal) => {
-                return Err(ployz_core::EnsuredContainer::Refused {
-                    now: ployz_core::ContainerNow::Present(copy),
-                    refusal,
-                });
-            }
-            Ok(ployz_core::RotationEdge::Write(rotation)) => {
-                let health = (rotation == ployz_core::CopyRotation::In)
-                    .then_some(ployz_core::HealthVerdict::Healthy);
-                copy.try_update(|parts| parts.rotation = Some(rotation))
-                    .unwrap();
-                self.copies
-                    .lock()
-                    .unwrap()
-                    .insert(copy.container_id, copy.clone());
-                health
-            }
-            Ok(
-                ployz_core::RotationEdge::Keep
-                | ployz_core::RotationEdge::Remove
-                | ployz_core::RotationEdge::Refused(_),
-            ) => None,
-        };
+        let health =
+            match ployz_testkit::rotation::decide(&copy.container_id, copy.rotation(), want) {
+                Err(refusal) => {
+                    return Err(ployz_core::EnsuredContainer::Refused {
+                        now: ployz_core::ContainerNow::Present(copy),
+                        refusal,
+                    });
+                }
+                Ok(ployz_core::RotationEdge::Write(rotation)) => {
+                    let health = (rotation == ployz_core::CopyRotation::In)
+                        .then_some(ployz_core::HealthVerdict::Healthy);
+                    copy.try_update(|parts| parts.rotation = Some(rotation))
+                        .unwrap();
+                    self.copies
+                        .lock()
+                        .unwrap()
+                        .insert(copy.container_id, copy.clone());
+                    health
+                }
+                Ok(
+                    ployz_core::RotationEdge::Keep
+                    | ployz_core::RotationEdge::Remove
+                    | ployz_core::RotationEdge::Refused(_),
+                ) => None,
+            };
         Ok((ployz_core::ContainerNow::Present(copy), health))
     }
 

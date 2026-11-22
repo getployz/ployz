@@ -399,7 +399,7 @@ impl VolumeStorage {
     ///   that record.
     /// - `ployz:cut` goes after the rename, in [`Self::make_writable`].
     ///
-    /// [`RootCopy::parse`]: super::inspect::RootCopy::parse
+    /// [`RootCopy::parse`]: ployz_decide::volume_root::RootCopy::parse
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;

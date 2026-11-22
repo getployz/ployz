@@ -2346,7 +2346,7 @@ async fn a_retirement_out_refused_for_a_moved_copy_leaves_it_where_it_moved() {
         [left_running(
             &old,
             "machine-1",
-            "the copy moved since it was read"
+            "the copy is held by rival, not in as expected"
         )],
         "a RotationMismatch is no Machine being away"
     );
@@ -2488,7 +2488,7 @@ async fn a_refused_restore_after_an_interrupted_hold_is_reported() {
         [left_running(
             &old,
             "machine-1",
-            "interrupted, and it could not go back In: the copy moved since it was read"
+            "interrupted, and it could not go back In: the copy is out, not held by run as expected"
         )]
     );
     client.assert_done();

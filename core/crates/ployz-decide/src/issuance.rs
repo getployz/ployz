@@ -44,6 +44,13 @@ pub fn machine_rank<'id, T: Ord + 'id>(
     machines.into_iter().filter(|id| *id < this).count()
 }
 
+/// Whether a Machine of `rank` records a refusal on the hostname's row. Only the first
+/// rank does, so every Machine refused the same way writes the row once.
+#[must_use]
+pub fn records_refusal(rank: usize) -> bool {
+    rank == 0
+}
+
 /// How long a Machine of `rank` waits, a `step` per rank, before it orders.
 #[must_use]
 pub fn rank_delay(rank: usize, step: Duration) -> Duration {

@@ -67,7 +67,8 @@
 use std::fmt::Write as _;
 
 use ployz_decide::github_build::{
-    self as real, EndKind, EndedRun, First, GithubLook, Hold, Target, github_end_holds,
+    self as real, EndKind, EndedRun, First, GithubLook, Hold, Target, github_check_in_holds,
+    github_end_holds,
 };
 use stateright::{Model, Property};
 
@@ -138,6 +139,16 @@ impl Row {
     fn building_on(self, run: Run) -> Option<Github> {
         self.github
             .filter(|github| self.status == Status::Building && github.run == run)
+    }
+
+    /// How far `run` got, as the Store's `GithubHold::hold` reads it.
+    fn hold(self, run: Run) -> Option<Hold> {
+        self.building_on(run)
+            .map(|github| match (github.grant, github.ended) {
+                (None, _) => Hold::Dispatched,
+                (Some(_), None) => Hold::CheckedIn,
+                (Some(_), Some(_)) => Hold::Reported,
+            })
     }
 
     /// Whether `run` holds the build with a committed check-in.
@@ -669,15 +680,12 @@ impl State {
             End::Failed(_) => EndKind::Failed,
             End::Skipped(_) => EndKind::Skipped,
         };
-        let building_on =
-            self.row
-                .building_on(run)
-                .map(|github| match (github.grant, github.ended) {
-                    (None, _) => Hold::Dispatched,
-                    (Some(_), None) => Hold::CheckedIn,
-                    (Some(_), Some(_)) => Hold::Reported,
-                });
-        if !github_end_holds(kind, Target::Run { building_on }) {
+        if !github_end_holds(
+            kind,
+            Target::Run {
+                building_on: self.row.hold(run),
+            },
+        ) {
             return Err(());
         }
         let status = match end {
@@ -2111,7 +2119,9 @@ impl BuildHandoff {
                     None => false,
                     Some(github) => {
                         let wanted = state.deployment == Deployment::Queued;
-                        if !self.broken.check_in_unguarded && (!wanted || github.grant.is_some()) {
+                        if !self.broken.check_in_unguarded
+                            && !github_check_in_holds(state.row.hold(RUN), wanted)
+                        {
                             false
                         } else {
                             state.granted_after_cancel |= !wanted;

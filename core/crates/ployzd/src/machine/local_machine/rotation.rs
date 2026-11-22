@@ -19,39 +19,14 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerObservation,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     CopyRotation, DeploymentLogId, EnsuredContainer, Gen, HealthVerdict, MachineId,
-    QualifiedService, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget,
-    RunRotation, RunTarget,
+    QualifiedService, ResolvedServiceSpec, RunRotation, RunTarget,
 };
+use ployz_decide::rotation::{Checked, RotationWant, decide};
 
 use super::{AdmittedSpec, Error, LocalMachine, not_found_refusal, redacted, refuse};
 use crate::docker::{ContainerRuntime, published_spec};
 use crate::mesh_peer::{confirmed_row, supersedes};
 use crate::route_acks::{Ackers, Membership, routed};
-
-#[derive(Clone, Debug)]
-pub(super) enum RotationWant {
-    In { run: Option<DeploymentLogId> },
-    Held(DeploymentLogId),
-    Out { allow_empty: bool },
-}
-
-impl RotationWant {
-    fn target(&self) -> RotationTarget {
-        match self {
-            Self::In { run } => RotationTarget::In { run: run.clone() },
-            Self::Held(run) => RotationTarget::Held(run.clone()),
-            Self::Out { .. } => RotationTarget::Out,
-        }
-    }
-
-    fn met_by(&self, rotation: &CopyRotation) -> bool {
-        match (self, rotation) {
-            (Self::In { .. }, CopyRotation::In) | (Self::Out { .. }, CopyRotation::Out) => true,
-            (Self::Held(run), CopyRotation::Held(held)) => run == held,
-            _ => false,
-        }
-    }
-}
 
 /// A copy not created yet has no id.
 #[derive(Clone, Debug)]
@@ -108,21 +83,6 @@ enum Written {
     /// The copy no longer runs, so In was not written.
     NotRunning(ContainerRuntimeObservation),
     Refused(ContainerRefusal),
-}
-
-enum Checked {
-    Met,
-    Allowed(CopyRotation),
-    Refused(ContainerRefusal),
-}
-
-pub(super) fn describe(rotation: &CopyRotation) -> String {
-    match rotation {
-        CopyRotation::Pending => "pending".to_owned(),
-        CopyRotation::In => "in".to_owned(),
-        CopyRotation::Held(run) => format!("held by {run}"),
-        CopyRotation::Out => "out".to_owned(),
-    }
 }
 
 impl LocalMachine {
@@ -705,65 +665,6 @@ pub(super) async fn start_fenced(
     local.start_checked(containers, id).await?;
     drop(turn);
     Ok(None)
-}
-
-fn decide(rotation: &CopyRotation, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
-    if want.met_by(rotation) {
-        return Checked::Met;
-    }
-    if let Some(expect) = expect
-        && expect != rotation
-    {
-        return Checked::Refused(refuse(
-            ContainerRefusalReason::RotationMismatch,
-            format!(
-                "the copy is {}, not {} as expected",
-                describe(rotation),
-                describe(expect)
-            ),
-        ));
-    }
-    match rotation.edge(&want.target()) {
-        RotationEdge::Write(to) => Checked::Allowed(to),
-        RotationEdge::Refused(refusal) => Checked::Refused(edge_refusal(refusal, rotation, want)),
-        RotationEdge::Keep | RotationEdge::Remove => {
-            unreachable!("a met want returned early, and no rotation want removes")
-        }
-    }
-}
-
-fn edge_refusal(
-    refusal: RotationRefusal,
-    rotation: &CopyRotation,
-    want: &RotationWant,
-) -> ContainerRefusal {
-    let from = describe(rotation);
-    match refusal {
-        RotationRefusal::HeldByOtherRun => refuse(
-            ContainerRefusalReason::HeldByOtherRun,
-            format!("the copy is {from}, and only that run may move it"),
-        ),
-        RotationRefusal::InRotation => refuse(
-            ContainerRefusalReason::InRotation,
-            format!("the copy is {from}; take it out of routing first"),
-        ),
-        RotationRefusal::OutIsFinal => refuse(
-            ContainerRefusalReason::RotationMismatch,
-            "the copy is out, and Out is final; deploy again",
-        ),
-        RotationRefusal::NoEdge => refuse(
-            ContainerRefusalReason::RotationMismatch,
-            format!("no move leads from {from} to {}", target_name(want)),
-        ),
-    }
-}
-
-fn target_name(want: &RotationWant) -> String {
-    match want {
-        RotationWant::In { .. } => "in".to_owned(),
-        RotationWant::Held(run) => format!("held by {run}"),
-        RotationWant::Out { .. } => "out".to_owned(),
-    }
 }
 
 fn refused(now: ContainerNow, refusal: ContainerRefusal) -> EnsuredContainer {

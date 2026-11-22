@@ -34,7 +34,7 @@
 //!
 //! One failure inside a handler is modelled: `finish_landing`'s `readonly=off` failing
 //! after `land`'s rename, which leaves a read-only root with `ployz:seed` and
-//! `ployz:promote` that the next Seed finishes. `RootCopy::parse` (inspect.rs) must read
+//! `ployz:promote` that the next Seed finishes. `ployz_decide::volume_root::RootCopy::parse` must read
 //! that root by its marks, not as a cut.
 //!
 //! Out of scope: a seed copy that fails, `ployz:epoch` (no modelled copy carries it), the
@@ -43,6 +43,9 @@
 
 use std::fmt::Write as _;
 
+use ployz_core::VolumeGen;
+use ployz_decide::volume_floor;
+use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
 use stateright::{Model, Property};
 
 use crate::harness::{self, everywhere};
@@ -326,19 +329,9 @@ struct Broken {
     floor_checked_only_before_lock: bool,
     /// The Seed's floor check raises the floor, as `FloorTurn::admit` does.
     seed_raises_floor: bool,
-    /// `RootCopy::parse` (inspect.rs) reads every read-only root as a cut, whatever its
+    /// `RootCopy::parse` reads every read-only root as a cut, whatever its
     /// marks.
     parse_reads_readonly_as_cut: bool,
-}
-
-/// How `RootCopy::parse` (inspect.rs) reads a root, by its `readonly` and marks. The
-/// model drops its `seed`, which no property reads.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Parsed {
-    Writable,
-    Cut,
-    Promote,
-    Unmarked,
 }
 
 /// What a coverage check takes out of the model, to show the `sometimes` naming it is
@@ -406,7 +399,7 @@ const COVERAGE: &[Coverage] = &[
         omit: Some(Omit::Path(SeedPath::Stops)),
         reached: |model, state| {
             took(state, SeedPath::Stops)
-                && matches!(state.into, Into::Root(root) if model.parse(root) == Parsed::Promote)
+                && matches!(state.into, Into::Root(root) if matches!(model.parse(root), RootCopy::Promote { .. }))
         },
     },
     Coverage {
@@ -501,6 +494,15 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
+/// A modelled gen as the lane gen `ployz_decide::volume_floor` reads.
+fn lane(r#gen: u8) -> VolumeGen {
+    VolumeGen::new(r#gen.into())
+}
+
+fn modelled(r#gen: VolumeGen) -> u8 {
+    u8::try_from(r#gen.get()).expect("a modelled gen")
+}
+
 #[derive(Clone, Copy, Debug)]
 struct VolumeMarks {
     scenario: Scenario,
@@ -516,16 +518,24 @@ impl VolumeMarks {
         fs.marks.any() || fs.newest.is_some_and(|newest| fs.pulled != Some(newest))
     }
 
-    /// `RootCopy::parse` (inspect.rs): the read-only split, then `ployz:cut`, then
-    /// `ployz:promote`.
-    fn parse(&self, root: Copy) -> Parsed {
-        match (root.readonly, root.marks.cut, root.marks.promote) {
-            (false, _, _) => Parsed::Writable,
-            (true, _, _) if self.broken.parse_reads_readonly_as_cut => Parsed::Cut,
-            (true, true, _) => Parsed::Cut,
-            (true, false, true) => Parsed::Promote,
-            (true, false, false) => Parsed::Unmarked,
+    fn parse(&self, root: Copy) -> RootCopy {
+        if root.readonly && self.broken.parse_reads_readonly_as_cut {
+            return RootCopy::Cut { seed: false };
         }
+        let promote = if root.marks.promote {
+            PromoteMark::Set {
+                seed: root.marks.seed,
+            }
+        } else {
+            PromoteMark::Unset
+        };
+        RootCopy::parse(
+            root.readonly,
+            RootMarks {
+                cut: root.marks.cut,
+                promote,
+            },
+        )
     }
 
     /// Volume.Seed for one request: the floor check under the switch lock
@@ -640,10 +650,10 @@ impl VolumeMarks {
     /// (`ployzd::machine_api::local_volume_copy::MachineService::admit_gen`), which `set_copy` runs before the switch
     /// lock (`ployzd::machine_api::local_volume_copy::MachineService::set_copy`) and `set_copy_planned` again under it.
     fn admit(state: &mut State, generation: u8) -> bool {
-        if generation < state.floor {
+        let Ok(raised) = volume_floor::admit(lane(state.floor), lane(generation)) else {
             return false;
-        }
-        state.floor = state.floor.max(generation);
+        };
+        state.floor = modelled(raised);
         true
     }
 
@@ -654,7 +664,7 @@ impl VolumeMarks {
         if self.broken.seed_raises_floor {
             return Self::admit(state, generation);
         }
-        generation >= state.floor
+        volume_floor::check(lane(state.floor), lane(generation)).is_ok()
     }
 
     fn step(&self, state: &mut State, action: Action) {
@@ -972,9 +982,9 @@ impl Model for VolumeMarks {
                     return true;
                 };
                 match model.parse(root) {
-                    Parsed::Cut => root.marks.cut,
-                    Parsed::Promote => root.marks.promote && !root.marks.cut,
-                    Parsed::Writable | Parsed::Unmarked => true,
+                    RootCopy::Cut { .. } => root.marks.cut,
+                    RootCopy::Promote { .. } => root.marks.promote && !root.marks.cut,
+                    RootCopy::Writable { .. } | RootCopy::Unmarked => true,
                 }
             }),
         ];
@@ -1401,8 +1411,11 @@ mod tests {
         };
         assert!(root.readonly && root.marks.promote && !root.marks.cut);
         assert_eq!(broken.seed, Some(SeedPath::Stops));
-        assert_eq!(model.parse(root), Parsed::Cut);
-        assert_eq!(fixed(Scenario::Fresh).parse(root), Parsed::Promote);
+        assert!(matches!(model.parse(root), RootCopy::Cut { .. }));
+        assert!(matches!(
+            fixed(Scenario::Fresh).parse(root),
+            RootCopy::Promote { .. }
+        ));
     }
 
     /// Without the `ployz:seed` check on a root, a Seed answers a root another Volume

@@ -16,15 +16,14 @@ use ployz_core::{
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
     PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
-    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal,
-    RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
     HealthcheckSpec, ReadyWait, SETTLE_INSPECT_GRACE, health_monitor, settle_deadline,
 };
 
-use self::rotation::RotationWant;
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
 use super::{AdmittedSpec, Error, LocalMachine};
 use crate::docker::{
@@ -34,6 +33,7 @@ use crate::docker::{
 use crate::docker_image::ImagePull;
 use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
+use ployz_decide::rotation::{RotationWant, in_rotation, in_rotation_refusal};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
@@ -2096,24 +2096,6 @@ fn start_fence(want: &ContainerWant) -> Option<StartFence> {
         | ContainerWant::Out { .. }
         | ContainerWant::Held { .. } => None,
     }
-}
-
-/// True when the copy must leave routing through an Out want first.
-fn in_rotation(rotation: &CopyRotation, target: &RotationTarget) -> bool {
-    matches!(
-        rotation.edge(target),
-        RotationEdge::Refused(RotationRefusal::InRotation)
-    )
-}
-
-fn in_rotation_refusal(container: &ContainerId, rotation: &CopyRotation) -> ContainerRefusal {
-    refuse(
-        ContainerRefusalReason::InRotation,
-        format!(
-            "Container {container} is {}; take it out of routing first",
-            rotation::describe(rotation)
-        ),
-    )
 }
 
 async fn leave_rotation<'a>(
