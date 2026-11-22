@@ -11,6 +11,7 @@ import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { managementClientCleared, type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -27,14 +28,11 @@ export function serverAccessLabel(credentialId: string) {
   return `cli-${credentialId.replaceAll("-", "").slice(0, 28)}`;
 }
 
-/** Provisioning and revoking one credential's holders take turns, so a revocation never misses a fresh holder. */
-const CREDENTIAL_LOCK = 1_349_603;
-
 const lockCredential = (credentialId: string, mode: "exclusive" | "shared") => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(mode === "shared"
-    ? sql`select pg_advisory_xact_lock_shared(${CREDENTIAL_LOCK}, hashtext(${credentialId}))`
-    : sql`select pg_advisory_xact_lock(${CREDENTIAL_LOCK}, hashtext(${credentialId}))`);
+    ? sql`select pg_advisory_xact_lock_shared(${ADVISORY_LOCK.credential}, hashtext(${credentialId}))`
+    : sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.credential}, hashtext(${credentialId}))`);
 });
 
 /**

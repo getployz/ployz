@@ -9,6 +9,7 @@ import {
 } from "#/modules/github/tables";
 import type { GithubRepository } from "#/modules/github/github";
 import { user as schemaUser } from "#/modules/identity/tables";
+import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { Database } from "#/server/database.server";
 
 /** What GitHub told us about an installation. Recording it grants nothing; only a link row does. */
@@ -135,9 +136,6 @@ export const deleteGithubInstallation = Effect.fn(
   }));
 });
 
-/** The advisory lock class of {@link lockGithubRepositoryCache}; the two-key form keeps it apart from every one-key lock. */
-const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
-
 /**
  * Serializes the writers of one installation's cached repositories until their transaction ends: a sync's write, the
  * installation webhooks and forgetting the installation. It takes the advisory lock, then the installation's row, so
@@ -146,7 +144,7 @@ const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
  */
 export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")(function* (installationId: number) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ADVISORY_LOCK.githubRepositoryCache}, ${installationId})`);
   const rows = yield* drizzle.select({ version: schemaGithubInstallation.repositoriesVersion }).from(schemaGithubInstallation)
     .where(eq(schemaGithubInstallation.installationId, installationId)).for("no key update");
   return rows[0]?.version ?? null;
