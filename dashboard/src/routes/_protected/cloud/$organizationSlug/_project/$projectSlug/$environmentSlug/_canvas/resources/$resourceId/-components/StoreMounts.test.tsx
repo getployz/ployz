@@ -3,9 +3,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConfigListing, DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
-import * as writers from "./store-write";
-import { StoreConfigMounts } from "./StoreConfigMounts";
-import { StoreVolumeMounts } from "./StoreVolumeMounts";
+import * as writers from "#/modules/config-store/store-write";
+import { StoreConfigMounts, StoreVolumeMounts } from "./StoreMounts";
 
 const service = asTestDouble<ServiceListing>()({ id: "service-id", name: "web", change: null });
 const config = asTestDouble<ConfigListing>()({ id: "config-id", name: "app", change: null, files: [], mounts: [{ service: "web", dir: "/etc/app" }] });

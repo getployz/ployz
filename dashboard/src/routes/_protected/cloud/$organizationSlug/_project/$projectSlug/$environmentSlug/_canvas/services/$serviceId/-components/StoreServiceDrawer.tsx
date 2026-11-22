@@ -39,7 +39,7 @@ import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_prote
 import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { RegistryCredentialsField } from "./RegistryCredentialsField";
-import { ServiceSettingInput } from "../../../../../../../../../../../components/settings/ServiceSettingInput";
+import { ServiceSettingInput } from "#/components/settings/ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckSettings } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef, useSourceLock } from "./StoreGitFields";

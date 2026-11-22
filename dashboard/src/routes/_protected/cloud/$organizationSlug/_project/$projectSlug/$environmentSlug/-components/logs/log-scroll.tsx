@@ -1,7 +1,7 @@
 import { ArrowDownIcon } from "lucide-react";
-import { Button } from "../../../../../../../../../components/ui/button";
-import { Skeleton } from "../../../../../../../../../components/ui/skeleton";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../../../../../../../../../components/ui/empty";
+import { Button } from "#/components/ui/button";
+import { Skeleton } from "#/components/ui/skeleton";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { useTimeZone, zoneLabel } from "#/utils/time-zone";
 import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";

@@ -8,7 +8,7 @@ import type { ConfigQuery, ConfigView, ConfigWritten, MachineId, ServiceListing,
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
-import * as mounts from "#/modules/config-store/StoreVolumeMounts";
+import * as mounts from "./StoreMounts";
 import * as functions from "#/modules/config-store/store.functions";
 import * as protectedAsk from "#/modules/config-store/use-protected-ask";
 import type { StoreResult } from "#/modules/config-store/store.contract";

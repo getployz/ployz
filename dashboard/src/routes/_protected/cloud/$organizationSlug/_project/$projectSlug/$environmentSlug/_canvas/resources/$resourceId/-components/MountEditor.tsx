@@ -5,8 +5,8 @@ import { FieldError } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { Write } from "#/modules/config-store/store-write";
-import { StoreRefused } from "./store.contract";
-import { mountPathError } from "./store-volumes";
+import { StoreRefused } from "#/modules/config-store/store.contract";
+import { mountPathError } from "#/modules/config-store/store-volumes";
 
 /** A refused choice can still be picked, to read in full why under the field: its option has room only for a few words. */
 export type MountChoice = { id: string; name: string; refusal: { short: string; why: string } | null; directory: string };

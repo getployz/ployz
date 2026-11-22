@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ObserveOffState } from "../../../../../../../../../components/observe/ObserveOffState";
+import { ObserveOffState } from "#/components/observe/ObserveOffState";
 import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLogScroll } from "./log-scroll";
 import { cn } from "#/lib/utils";
 import { logTimestamp, useTimeZone } from "#/utils/time-zone";

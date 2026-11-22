@@ -1,4 +1,4 @@
-import { StoreConfigMounts } from "#/modules/config-store/StoreConfigMounts";
+import { StoreConfigMounts } from "./StoreMounts";
 import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";

@@ -1,4 +1,4 @@
-import { StoreVolumeMounts } from "#/modules/config-store/StoreVolumeMounts";
+import { StoreVolumeMounts } from "./StoreMounts";
 import { useState } from "react";
 import { Schema } from "effect";
 import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Item, ItemActions } from "#/components/ui/item";
-import { CARD_CHILD, SettingsAddButton, SettingsText } from "../../../../../../../../../../../components/settings/settings-section";
+import { CARD_CHILD, SettingsAddButton, SettingsText } from "#/components/settings/settings-section";
 
 const FIRST_CONTROL = "input, textarea, [data-slot=select-trigger], [data-slot=toggle-group-item], [data-slot=switch]";
 
