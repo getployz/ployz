@@ -213,18 +213,20 @@ That covers data that differs from your approved version, data your approved ver
 your servers no longer run, a move to another driver, the first time a service mounts data that
 already exists, and a new volume that takes a path where other data was. The line says which
 service uses the data now, or that no server lists a container using it. A server that doesn't
-answer is named, since it may hold other data. Answer no and nothing is signed. With no terminal,
-the deploy stops before it signs.
+answer is named, since it may hold other data. Try again when it answers, or remove it with
+`ployz server rm`. Answer no and nothing is signed. With no terminal, the deploy stops before it
+signs.
 
 A volume from before this version passes only when the version you approved mounts it, or a
 server lists a container that uses it. Otherwise the deploy stops and names the service and
-volume. If a server didn't answer, try again when it does. If the service's old container is
-gone, start it once from its last deploy, or restore the data into a new volume.
+volume. If a server didn't answer, try again when it does, or remove it with `ployz server rm`. If
+the service's old container is gone, start it once from its last deploy, or restore the data into
+a new volume.
 
 `ployz deploy` reads your servers' keys and containers over a route whose server answers for
 itself: `--connect`, a context, or the local daemon. Through Ployz Cloud alone it can't, so it
-warns, every mount prints in full and asks, and a volume from before this version passes only
-when your approved version mounts it. Retry with `--connect ssh://<server>`.
+warns, every mount prints in full and asks, and a volume from before this version is refused.
+Retry with `--connect ssh://<server>`.
 
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a

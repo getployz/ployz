@@ -495,7 +495,7 @@ fn a_stale_base_asks_when_the_servers_run_other_data() {
     .unwrap();
     assert_eq!(confirm.len(), 1, "{confirm:#?}");
     assert!(
-        confirm[0].contains(", not what files uses now"),
+        confirm[0].contains(", not what a container of files mounts"),
         "{confirm:#?}"
     );
 }
@@ -593,7 +593,13 @@ fn legacy_data_passes_only_on_an_approved_version_or_a_listed_container() {
         &none,
     );
     assert!(
-        matches!(unbirthed, Err(BirthError::Unbirthed { .. })),
+        matches!(
+            unbirthed,
+            Err(BirthError::Legacy {
+                why: Unvouched::Unbirthed,
+                ..
+            })
+        ),
         "{unbirthed:?}"
     );
 }
@@ -610,4 +616,30 @@ fn a_first_attach_names_the_service_that_uses_the_data_or_says_none_does() {
         confirm[0].contains(", that no server lists a container using"),
         "{confirm:#?}"
     );
+}
+
+/// A new volume that takes the path of a bind mount hides the host's files there, so it
+/// asks, whether the approved version or a listed Container holds that path.
+#[test]
+fn a_new_volume_in_place_of_a_bind_mount_asks() {
+    let bound = mounting(
+        json!({"kind": "bind", "machine_path": "/srv/web"}),
+        json!({"volume": "data", "target": "/srv/previews"}),
+    );
+    let fresh = thumbs(5);
+    let minted = Births::from([(declared(), fresh.clone())]);
+    for (before, containers) in [
+        (approved(&bound), vec![]),
+        (Before::New, vec![listed(&bound, true, false)]),
+    ] {
+        let (_, confirm) =
+            reviewed(&files(Some(&fresh)), before, &containers, &[], &minted).unwrap();
+        assert!(
+            confirm
+                .first()
+                .is_some_and(|line| line
+                    .contains("a new, empty volume in place of the data at /srv/previews")),
+            "{confirm:#?}"
+        );
+    }
 }

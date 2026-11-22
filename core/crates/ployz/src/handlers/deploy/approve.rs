@@ -9,20 +9,21 @@ use std::time::Duration;
 use clap::ArgMatches;
 use ployz_core::authority::{
     Against, Approved, ApprovedChange, Before, Held, Mounts, ServiceVersion, SignerKey, Timestamp,
-    TrustedKeys, Unknown, birth,
+    Unknown, birth,
     deploy::{ChangeError, content_addressed},
 };
 use ployz_core::{
     Claim, ContainerObservation, EnvironmentValues, Hint, InspectRequest, MachineId,
     MachineObservation, MachineTarget, Namespace, PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec,
-    RpcErrorCode, SCOPED_KEYS_CAPABILITY, SIGNED_VERSION_CAPABILITY, Sealing, SealingPublicKey,
-    ServiceName, cluster_sealing_key, op,
+    RpcErrorCode, SCOPED_KEYS_CAPABILITY, SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName,
+    cluster_sealing_key, op,
 };
 use ployz_store::{
     EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, TagPin,
 };
 use serde_json::json;
 
+use super::super::key::members::Member;
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::silent::{self, ImageEdit};
@@ -186,13 +187,12 @@ pub(in crate::handlers) fn sign(
             error,
         )
     })?;
-    let evidence = evidence.filter(|evidence| evidence.cluster == Some(enforcing.cluster));
+    let evidence = evidence.filter(|evidence| evidence.entry.cluster == Some(enforcing.cluster));
     if evidence.is_none() && target.iter().any(named_mounts) {
         crate::ui::warn(
             "Couldn't read your servers' keys and containers over a route that answers for \
-             itself, so every volume shows in full. Data from before births passes only when \
-             the version you approved mounts it. Retry with --connect ssh://<server> or a \
-             direct context.",
+             itself, so every volume shows in full and data from before births is refused. \
+             Retry with --connect ssh://<server> or a direct context.",
         );
     }
     let before = bases(
@@ -202,8 +202,10 @@ pub(in crate::handlers) fn sign(
         &evidence,
         enforcing.cluster,
     );
-    let held =
-        evidence.map(|evidence| Held::of(&namespace, &evidence.containers, evidence.unanswered));
+    let held = evidence.map(|evidence| {
+        let unanswered = unanswered(&enforcing, &evidence);
+        Held::of(&namespace, &evidence.containers, unanswered)
+    });
     let mounts = Mounts {
         namespace: &namespace,
         volumes: &plan.volumes,
@@ -360,11 +362,12 @@ fn consent(
 /// What this Device read over a Full route whose entry answers for itself: the keys and
 /// Cluster key the entry holds, and every Server's Containers.
 struct Evidence {
-    trusted: TrustedKeys,
-    cluster: Option<SealingPublicKey>,
+    entry: Member,
     containers: Vec<ContainerObservation>,
-    /// The Servers that failed or didn't answer the listing, by name.
-    unanswered: Vec<String>,
+    /// The Servers whose listing came back.
+    answered: BTreeSet<MachineId>,
+    /// Each Server this route knew of, by the name it reports.
+    names: BTreeMap<MachineId, String>,
 }
 
 /// The [`Evidence`] a mount's line is checked against, or `None` when no Full route
@@ -379,7 +382,8 @@ fn evidence(matches: &ArgMatches) -> Option<Evidence> {
     runtime.block_on(async {
         let (client, machines, details) = tokio::time::timeout(PROBE_TIMEOUT, async {
             let mut client = route::connect_full(matches, context).await.ok()?;
-            let entry = client.entry_id().await.ok()?;
+            // The entry the dial confirmed, which every read below goes through.
+            let entry = client.entry_machine()?;
             if !client.answers_for_itself(&entry) {
                 return None;
             }
@@ -402,17 +406,16 @@ fn evidence(matches: &ArgMatches) -> Option<Evidence> {
             .await
             .ok()?
             .containers;
-        let name = |id: MachineId| {
-            machines
-                .iter()
-                .find(|seen| seen.machine.id == id)
-                .map_or_else(|| id.to_string(), |seen| seen.machine.name.to_string())
-        };
-        let failed = live.failures.iter().map(|failure| failure.machine_id);
         Some(Evidence {
-            trusted: TrustedKeys::new(details.devices, details.passkeys, details.grants),
-            cluster: details.sealing.and_then(Sealing::held_key),
-            unanswered: failed.chain(live.omissions).map(name).collect(),
+            entry: Member::of(details),
+            answered: live
+                .successes
+                .iter()
+                .map(|success| success.machine_id)
+                .collect(),
+            names: (machines.into_iter())
+                .map(|seen| (seen.machine.id, seen.machine.name.to_string()))
+                .collect(),
             containers: live
                 .successes
                 .into_iter()
@@ -458,12 +461,29 @@ fn bases(
                 } => Approved::verify(
                     &statement,
                     *spec,
-                    (&evidence.trusted, cluster),
+                    (&evidence.entry.trusted, cluster),
                     (namespace, &service),
                 )
                 .map_or(Before::Unknown(Unknown::Unchecked), Before::Approved),
             };
             (service, before)
+        })
+        .collect()
+}
+
+/// Each Server the probe or `evidence`'s route knew of whose listing didn't come back, by
+/// name. The two may enter through different Servers, so either roster may miss one.
+fn unanswered(enforcing: &Enforcing, evidence: &Evidence) -> Vec<String> {
+    let known: BTreeSet<&MachineId> = (enforcing.machines.iter())
+        .chain(evidence.names.keys())
+        .collect();
+    known
+        .into_iter()
+        .filter(|id| !evidence.answered.contains(id))
+        .map(|id| {
+            (enforcing.names.get(id))
+                .or_else(|| evidence.names.get(id))
+                .map_or_else(|| id.to_string(), Clone::clone)
         })
         .collect()
 }

@@ -29,7 +29,7 @@ use crate::device::{self, DeviceSigning};
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 
 mod line;
-mod members;
+pub(super) mod members;
 mod rotate;
 mod wanted;
 
