@@ -10,7 +10,7 @@ use super::{
     Approver, AuthorityRefusal, Purpose, Signed, SignerKey, Statement, Timestamp,
     open::{bundle_window, open_approval},
     proposal::{ProposalRef, StepBody, StepKind},
-    refusal::{field, first_mismatch},
+    refusal::{MismatchField, first_mismatch},
     scope::Ask,
     scope::Grant,
     trusted_key::{PasskeyApprover, TrustedKeys, TrustedPasskey},
@@ -205,9 +205,9 @@ pub fn verify(
 ) -> Result<JoinApproval, AuthorityRefusal> {
     let (body, by) = verify_signature(signed, trusted, now)?;
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
+        (MismatchField::Cluster, body.cluster == cluster),
         (
-            "approved Devices",
+            MismatchField::ApprovedDevices,
             approves_signer(&body, &by)
                 && body
                     .devices
@@ -215,27 +215,27 @@ pub fn verify(
                     .all(|key| trusted.devices().any(|held| held == *key)),
         ),
         (
-            "approved passkeys",
+            MismatchField::ApprovedPasskeys,
             body.passkeys
                 .iter()
                 .all(|passkey| trusted.passkeys().any(|held| &held.passkey == passkey)),
         ),
         (
-            "approved grants",
+            MismatchField::ApprovedGrants,
             body.grants
                 .iter()
                 .all(|grant| trusted.grants().any(|held| &held.grant == grant)),
         ),
         (
-            "an admitting Machine",
+            MismatchField::AdmittingMachine,
             body.admitting_machines.contains(&admitting),
         ),
         (
-            "a Machine allocation",
+            MismatchField::MachineAllocation,
             &body.machine == machine && body.network == network,
         ),
         (
-            "a sealing recipient",
+            MismatchField::SealingRecipient,
             body.sealing_recipient == machine.public_key,
         ),
     ])?;
@@ -288,7 +288,7 @@ pub fn verify_as_joiner(
     let (body, by) = verify_signature(signed, &trusted, now)?;
     if !grants_apart(&body) {
         return Err(AuthorityRefusal::Mismatch {
-            field: "approved grants",
+            field: MismatchField::ApprovedGrants,
         });
     }
     let devices: Vec<DeviceKey> = body
@@ -304,7 +304,7 @@ pub fn verify_as_joiner(
         || body.admitting_machines.is_empty()
     {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a joining Machine",
+            field: MismatchField::JoiningMachine,
         });
     }
     let signer_approved = match body.signer {
@@ -313,7 +313,7 @@ pub fn verify_as_joiner(
     };
     if !signer_approved {
         return Err(AuthorityRefusal::Mismatch {
-            field: "approved Devices",
+            field: MismatchField::ApprovedDevices,
         });
     }
     Ok(JoinerApproval { body, devices })
@@ -350,7 +350,7 @@ pub fn verify_signature(
     let (body, by, _) = open_approval(signed, trusted, named)?;
     if body.admitting_machines.len() != 1 {
         return Err(AuthorityRefusal::Mismatch {
-            field: "one admitting Machine",
+            field: MismatchField::OneAdmittingMachine,
         });
     }
     windows(signed, now)?;
@@ -543,7 +543,7 @@ mod tests {
     fn a_joiner_refuses_an_approval_that_does_not_name_it_in_every_field() {
         let joiner = joiner();
         let mismatch = AuthorityRefusal::Mismatch {
-            field: "a joining Machine",
+            field: MismatchField::JoiningMachine,
         };
         let renamed = machine("renamed", "10.210.1.0/24", 7);
         let moved = machine("joining", "10.210.2.0/24", 7);
@@ -597,7 +597,7 @@ mod tests {
             assert_eq!(
                 verify_as_joiner(&sign(&body, 1), None, &joiner, Some(cluster(5)), now()),
                 Err(AuthorityRefusal::Mismatch {
-                    field: "one admitting Machine"
+                    field: MismatchField::OneAdmittingMachine
                 })
             );
         }
@@ -644,7 +644,7 @@ mod tests {
         };
         let signed = sign(&leaves_out_signer, 1);
         let approved_devices = AuthorityRefusal::Mismatch {
-            field: "approved Devices",
+            field: MismatchField::ApprovedDevices,
         };
 
         assert_eq!(
@@ -699,7 +699,7 @@ mod tests {
                 now()
             ),
             Err(AuthorityRefusal::Mismatch {
-                field: "a joining Machine"
+                field: MismatchField::JoiningMachine
             })
         );
     }
@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(
             verify_signature(&sign(&two_and_late, 1), &devices, late).unwrap_err(),
             AuthorityRefusal::Mismatch {
-                field: "one admitting Machine"
+                field: MismatchField::OneAdmittingMachine
             }
         );
         let one_and_late = approval(&joiner);
@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(
             verify_signature(&sign(&other_signer, 1), &devices, late).unwrap_err(),
             AuthorityRefusal::Mismatch {
-                field: "the signer"
+                field: MismatchField::Signer
             }
         );
     }

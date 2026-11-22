@@ -42,10 +42,12 @@ pub struct LocalMachine {
     settled: container::SettledCreations,
     approvals: Arc<ConsumptionLog>,
     pacing: private_access::Pacing,
-    /// The switch lock an Operator's start of a Provisioned Volume's holder takes, so it
-    /// never runs inside a `SetVolumeCopy`. Set only on the ensure path, which holds no
-    /// switch guard of its own.
-    switch: Option<SwitchLock>,
+    /// The lock `SetVolumeCopy`, `Volume.Seed` and `SetVolumeSize` hold through each
+    /// switch, and every create or start of a Provisioned Volume's holder waits out.
+    switch: Arc<tokio::sync::Mutex<()>>,
+    /// This handle runs inside a switch whose guard its caller holds, so it takes no
+    /// switch lock of its own.
+    in_switch: bool,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -53,9 +55,6 @@ pub struct LocalMachine {
 }
 
 const PEER_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// The lock `SetVolumeCopy` holds through each Volume switch.
-pub(crate) type SwitchLock = Arc<tokio::sync::Mutex<()>>;
 
 /// How a test answers another Machine's copy in place of the mesh.
 #[cfg(test)]
@@ -85,7 +84,7 @@ pub(crate) use admission::{AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Scope};
 pub(crate) use consumption::ConsumptionLog;
-pub(crate) use container::CutRefusal;
+pub(crate) use container::{CutRefusal, SwitchGuard};
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
@@ -296,7 +295,8 @@ impl LocalMachine {
             proc_root: PathBuf::from("/proc"),
             settled: container::SettledCreations::default(),
             pacing: private_access::Pacing::default(),
-            switch: None,
+            switch: Arc::default(),
+            in_switch: false,
             #[cfg(test)]
             peers: None,
             #[cfg(test)]
@@ -351,11 +351,34 @@ impl LocalMachine {
         &self.plugin
     }
 
-    /// Make subsequent creates and starts of a Provisioned Volume's holder take `switch`.
+    /// Wait out any switch on this Machine and hold it off until the guard drops. The lock
+    /// is one for the Machine, not one per Volume: a create reads each Volume's origin,
+    /// and no promote or seed may land between that read and Docker.
+    pub(crate) async fn lock_switch(&self) -> SwitchGuard {
+        Arc::clone(&self.switch).lock_owned().await
+    }
+
+    /// This handle for work inside the switch `held` keeps, whose creates and starts of a
+    /// Provisioned Volume's holder take no lock of their own.
     #[must_use]
-    pub(crate) fn with_switch(mut self, switch: SwitchLock) -> Self {
-        self.switch = Some(switch);
-        self
+    pub(crate) fn inside_switch(&self, held: &SwitchGuard) -> Self {
+        debug_assert!(Arc::ptr_eq(
+            tokio::sync::OwnedMutexGuard::mutex(held),
+            &self.switch
+        ));
+        Self {
+            in_switch: true,
+            ..self.clone()
+        }
+    }
+
+    /// The switch guard a create or start of a Provisioned Volume's holder takes, or
+    /// `None` inside a switch its caller holds.
+    async fn wait_out_switch(&self) -> Option<SwitchGuard> {
+        if self.in_switch {
+            return None;
+        }
+        Some(self.lock_switch().await)
     }
 
     #[must_use]

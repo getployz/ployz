@@ -3069,14 +3069,16 @@ mod set_volume_copy {
         ensuring.abort();
         assert!(ensuring.await.unwrap_err().is_cancelled());
         assert!(
-            service.switch_mutation.try_lock().is_err(),
+            tokio::time::timeout(std::time::Duration::ZERO, service.local().lock_switch())
+                .await
+                .is_err(),
             "the caller hung up and freed the switch lock while the holder's start still ran"
         );
 
         started.wait().await;
         let _freed = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            service.switch_mutation.lock(),
+            service.local().lock_switch(),
         )
         .await
         .expect("the start ended and freed the switch lock");

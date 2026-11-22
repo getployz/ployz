@@ -1,5 +1,6 @@
 //! Keys, signatures, and the signed envelope every authority statement travels in.
 
+use crate::authority::MismatchField;
 use std::{fmt, marker::PhantomData};
 
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
@@ -364,7 +365,9 @@ impl<T: Statement> Signed<T> {
             return Ok(approvers);
         }
         if !T::TAKES_ASSERTION {
-            return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
+            return Err(AuthorityRefusal::Mismatch {
+                field: MismatchField::Passkey,
+            });
         }
         let challenge = self.challenge();
         for assertion in &self.assertions {

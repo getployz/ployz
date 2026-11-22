@@ -1,6 +1,7 @@
 //! A Member enrolls only under an approved capsule, and a record from before that rule
 //! awaits its Cluster's activation.
 
+use ployz_core::authority::MismatchField;
 use ployz_core::{
     DeviceKey, Enrolled, LocalMachinePhase, MachineId, ManagementScope, Registered,
     authority::{AuthorityRefusal, Purpose},
@@ -171,7 +172,7 @@ fn a_pinned_join_refuses_an_approval_that_leaves_out_its_own_signer() {
         matches!(
             refused,
             Err(StoreError::JoinRefused(AuthorityRefusal::Mismatch {
-                field: "approved Devices"
+                field: MismatchField::ApprovedDevices
             }))
         ),
         "{refused:?}"

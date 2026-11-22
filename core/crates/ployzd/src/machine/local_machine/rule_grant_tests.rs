@@ -285,7 +285,7 @@ impl Fixture {
 fn refused(result: Result<AdmittedRule, Error>, field: &str) {
     match result {
         Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field: named })) => {
-            assert_eq!(named, field);
+            assert_eq!(named.text(), field);
         }
         other => panic!("expected a refusal naming {field}, got {other:?}"),
     }
@@ -578,7 +578,9 @@ async fn a_token_for_another_branch_is_refused_naming_ref() {
         matches!(
             result,
             Err(Error::RuleProofRefused(ProofRefusal::Claim(
-                AuthorityRefusal::Mismatch { field: "ref" }
+                AuthorityRefusal::Mismatch {
+                    field: MismatchField::ClaimRef
+                }
             )))
         ),
         "{result:?}"

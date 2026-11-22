@@ -1,6 +1,7 @@
 //! The signed lifetime and clock-skew limits shared by Device approvals.
 
 use super::{AuthorityRefusal, Timestamp};
+use crate::authority::MismatchField;
 
 /// Maximum signed lifetime, excluding clock skew.
 pub const MAX_LIFETIME_MILLIS: u64 = 15 * 60 * 1000;
@@ -31,12 +32,12 @@ pub fn verify_within(
 ) -> Result<(), AuthorityRefusal> {
     if expires_at < issued_at || expires_at.as_millis() - issued_at.as_millis() > max_lifetime {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a lifetime",
+            field: MismatchField::Lifetime,
         });
     }
     if issued_at > now.plus(CLOCK_SKEW_MILLIS) {
         return Err(AuthorityRefusal::Mismatch {
-            field: "an issue time",
+            field: MismatchField::IssueTime,
         });
     }
     if now > expires_at.plus(CLOCK_SKEW_MILLIS) {

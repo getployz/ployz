@@ -20,7 +20,7 @@ use super::{
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
 };
@@ -419,33 +419,36 @@ impl RuleSource {
             });
         }
         first_mismatch([
-            ("repository_id", claims.repository_id == self.repository_id),
             (
-                "repository_owner_id",
+                MismatchField::ClaimRepositoryId,
+                claims.repository_id == self.repository_id,
+            ),
+            (
+                MismatchField::ClaimRepositoryOwnerId,
                 claims.repository_owner_id == self.owner_id,
             ),
-            ("ref_type", claims.ref_type == "branch"),
-            ("ref", claims.git_ref == git_ref),
+            (MismatchField::ClaimRefType, claims.ref_type == "branch"),
+            (MismatchField::ClaimRef, claims.git_ref == git_ref),
             (
-                "event_name",
+                MismatchField::ClaimEventName,
                 self.events
                     .iter()
                     .any(|event| event.as_str() == claims.event_name),
             ),
             (
-                "workflow_ref",
+                MismatchField::ClaimWorkflowRef,
                 claims.workflow_ref == format!("{}/{}@{git_ref}", self.repository, self.workflow),
             ),
             (
-                "job_workflow_sha",
+                MismatchField::ClaimJobWorkflowSha,
                 claims.job_workflow_sha == self.builder.sha,
             ),
             (
-                "job_workflow_ref",
+                MismatchField::ClaimJobWorkflowRef,
                 claims.job_workflow_ref == self.builder.r#ref,
             ),
             (
-                "runner_environment",
+                MismatchField::ClaimRunnerEnvironment,
                 claims.runner_environment == self.runner.as_str(),
             ),
         ])
@@ -502,7 +505,7 @@ pub fn verify_signature(
     cluster: Option<SealingPublicKey>,
 ) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
     let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
-    first_mismatch([(field::CLUSTER, body.cluster == cluster)])?;
+    first_mismatch([(MismatchField::Cluster, body.cluster == cluster)])?;
     Ok((body, by))
 }
 
@@ -675,7 +678,7 @@ impl AutoDeployRule {
     ) -> Result<BuiltImageDigest, AuthorityRefusal> {
         let mismatch = |field| AuthorityRefusal::Mismatch { field };
         if creation.service != facts.service || &creation.spec.name != facts.service {
-            return Err(mismatch("a Service"));
+            return Err(mismatch(MismatchField::Service));
         }
         if self.source.builder.retired() {
             return Err(AuthorityRefusal::RetiredBuilder {
@@ -688,53 +691,60 @@ impl AutoDeployRule {
             .map(|service| PolicyDigest::of(&service.policy));
         first_mismatch([
             (
-                field::CLUSTER,
+                MismatchField::Cluster,
                 self.cluster == facts.cluster && claim.cluster == facts.cluster,
             ),
             (
-                "a Machine",
+                MismatchField::Machine,
                 !placement_signed(&requested) || self.machines.contains(facts.machine),
             ),
-            (field::ENVIRONMENT, &self.namespace == facts.namespace),
-            ("an ended rule", !self.ended),
             (
-                "a Service",
+                MismatchField::Environment,
+                &self.namespace == facts.namespace,
+            ),
+            (MismatchField::EndedRule, !self.ended),
+            (
+                MismatchField::Service,
                 policy.is_some() && &claim.service == facts.service,
             ),
-            ("a rule", claim.rule == self.rule),
-            ("a generation", claim.generation == self.generation),
+            (MismatchField::Rule, claim.rule == self.rule),
             (
-                "a policy",
+                MismatchField::Generation,
+                claim.generation == self.generation,
+            ),
+            (
+                MismatchField::Policy,
                 policy.is_some_and(|policy| policy.ok() == Some(claim.policy)),
             ),
             (
-                "a commit",
+                MismatchField::Commit,
                 facts.head.is_none_or(|head| claim.commit == head),
             ),
         ])?;
         let (image, attest) = match claim.stage {
             BuildStage::Built { image, attest } => (image, attest),
-            BuildStage::Grant { .. } => return Err(mismatch("a stage")),
+            BuildStage::Grant { .. } => return Err(mismatch(MismatchField::Stage)),
         };
         if attest != facts.attest {
-            return Err(mismatch("the attest key"));
+            return Err(mismatch(MismatchField::AttestKey));
         }
         if BuiltImageDigest::named_by(&creation.spec.container.image) != Some(image) {
-            return Err(mismatch("an image"));
+            return Err(mismatch(MismatchField::Image));
         }
         if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
-            return Err(mismatch("a hook"));
+            return Err(mismatch(MismatchField::Hook));
         }
         if !creation.spec.volume_graph().born_in(facts.namespace) {
-            return Err(mismatch("a Volume's Environment"));
+            return Err(mismatch(MismatchField::VolumesEnvironment));
         }
         let approved = self
             .service(facts.service)
             .map(|service| service.template)
-            .ok_or_else(|| mismatch("a Service"))?;
-        let template = template(&requested, facts.namespace).map_err(|_| mismatch("a payload"))?;
+            .ok_or_else(|| mismatch(MismatchField::Service))?;
+        let template =
+            template(&requested, facts.namespace).map_err(|_| mismatch(MismatchField::Payload))?;
         if template != approved {
-            return Err(mismatch("a payload"));
+            return Err(mismatch(MismatchField::Payload));
         }
         Ok(image)
     }
