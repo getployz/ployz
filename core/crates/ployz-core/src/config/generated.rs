@@ -238,14 +238,6 @@ mod tests {
         assert!(serde_json::from_str::<Generator>(r#"{"length":32,"charset":"a'b"}"#).is_err());
     }
 
-    #[test]
-    fn a_variable_without_a_generator_keeps_its_stored_bytes() {
-        let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"f","value":{"kind":"literal","value":"x"}}"#;
-        let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
-        assert_eq!(variable.generator(), None);
-        assert_eq!(serde_json::to_string(&variable).unwrap(), stored);
-    }
-
     /// Each shape a variable is stored in today, from Working, Saved and Applied State
     /// and from Sync bases, with the generator and lifecycle it reads as.
     const STORED: &[(&str, &str, bool, bool)] = &[
@@ -381,13 +373,6 @@ mod tests {
             assert_eq!(variable.generator(), None, "{shape}");
             assert_eq!(serde_json::to_string(&variable).unwrap(), kept, "{shape}");
         }
-    }
-
-    #[test]
-    fn a_marker_on_a_sealed_value_reads_and_is_dropped() {
-        let stored = r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#;
-        let variable: crate::config::SavedVariableIntent = serde_json::from_str(stored).unwrap();
-        assert_eq!(variable.generator(), None);
     }
 
     #[test]

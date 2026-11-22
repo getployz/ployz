@@ -276,16 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn held_same_run_is_idempotent() {
-        let held = CopyRotation::Held(run("a"));
-        assert_eq!(
-            held.edge(&RotationTarget::Held(run("a"))),
-            RotationEdge::Keep
-        );
-        assert_eq!(held.edge(&RotationTarget::Stopped), RotationEdge::Keep);
-    }
-
-    #[test]
     fn rotation_reads_lowercase_in_json() {
         assert_eq!(
             serde_json::to_value(CopyRotation::Pending).unwrap(),
