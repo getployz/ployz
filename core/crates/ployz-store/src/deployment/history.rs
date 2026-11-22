@@ -197,7 +197,7 @@ fn may_run(
         let settler = tx.query(
             &format!(
                 "SELECT number, run FROM config_deployment \
-                 WHERE environment_id = ?1 AND status = 'applied' AND {full} \
+                 WHERE environment_id = ?1 AND status = '{APPLIED}' AND {full} \
                  AND number < ?2 ORDER BY number DESC LIMIT 1",
                 full = scope_sql::FULL
             ),
@@ -256,7 +256,7 @@ fn in_doubt(
         &format!(
             "SELECT saved_revision, nodes, status, run, id FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
-             AND (status IN ('unknown', 'failed', 'cancelled') OR {lapsed}) \
+             AND (status IN ('{UNKNOWN}', '{FAILED}', '{CANCELLED}') OR {lapsed}) \
              AND number > ?2 AND number < ?3",
             lapsed = lapsed_sql(),
         ),
@@ -409,7 +409,7 @@ pub(crate) fn settling(
         environment,
         &format!(
             "started IS NOT NULL AND (ended >= {since} \
-             OR ((ended IS NULL OR status IN ('running', 'cancelling', 'unknown')) \
+             OR ((ended IS NULL OR status IN ('{RUNNING}', '{CANCELLING}', '{UNKNOWN}')) \
              AND lease >= {since}))"
         ),
     )
@@ -424,7 +424,10 @@ pub(crate) fn last_ran(
     latest_where(
         tx,
         environment,
-        "(started IS NOT NULL OR (status = 'applied' AND saved_revision = 0))",
+        &format!(
+            "(started IS NOT NULL OR (status = '{APPLIED}' AND saved_revision = {}))",
+            NOTHING.0
+        ),
     )
 }
 
@@ -470,7 +473,7 @@ pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Revision>, RpcError> {
-    let mut condition = "status = 'applied'".to_owned();
+    let mut condition = format!("status = '{APPLIED}'");
     loop {
         let Some(deployment) = latest_where(tx, environment, &condition)? else {
             return Ok(None);
@@ -478,7 +481,10 @@ pub(crate) fn live(
         if !deployment.all_waiting {
             return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
         }
-        condition = format!("status = 'applied' AND number < {}", deployment.numbered()?);
+        condition = format!(
+            "status = '{APPLIED}' AND number < {}",
+            deployment.numbered()?
+        );
     }
 }
 
@@ -564,9 +570,11 @@ pub(crate) fn held_for_head(
     head: &CommitSha,
 ) -> Result<Vec<(DeploymentId, EnvironmentId, GitPush)>, RpcError> {
     tx.query(
-        "SELECT id, environment_id, push_branch FROM config_deployment \
+        &format!(
+            "SELECT id, environment_id, push_branch FROM config_deployment \
          WHERE organization_id = ?1 AND push_repository_id = ?2 AND push_head = ?3 \
-         AND status = 'waiting_for_ci' ORDER BY environment_id, admitted, id",
+         AND status = '{WAITING_FOR_CI}' ORDER BY environment_id, admitted, id"
+        ),
         &[
             who.organization.as_str().into(),
             repository_id.into(),
@@ -595,8 +603,8 @@ pub(crate) fn held_by_push(
     push: &GitPush,
 ) -> Result<Option<DeploymentId>, RpcError> {
     tx.query(
-        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND push_repository_id = ?2 \
-         AND push_branch = ?3 AND push_head = ?4 AND status = 'waiting_for_ci'",
+        &format!("SELECT id FROM config_deployment WHERE environment_id = ?1 AND push_repository_id = ?2 \
+         AND push_branch = ?3 AND push_head = ?4 AND status = '{WAITING_FOR_CI}'"),
         &[
             environment.as_str().into(),
             push.repository_id.into(),
@@ -628,8 +636,10 @@ pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<St
 /// (Unix seconds), oldest first: those whose dispatch may have been lost.
 pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
     tx.query(
-        "SELECT organization_id, environment_id, id, admitted, number FROM config_deployment \
-         WHERE status = 'queued' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id",
+        &format!(
+            "SELECT organization_id, environment_id, id, admitted, number FROM config_deployment \
+         WHERE status = '{QUEUED}' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id"
+        ),
         &[before.into()],
     )?
     .iter()

@@ -151,12 +151,14 @@ pub(crate) fn admit(
         if held {
             return tx
                 .execute(
-                    "UPDATE config_deployment SET status = 'queued', number = ?13, \
+                    &format!(
+                        "UPDATE config_deployment SET status = '{QUEUED}', number = ?13, \
                      listed = ?14, \
                      saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
                      credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
                      admitted_by = ?11, message = ?12, service_uploads = ?15 \
-                     WHERE id = ?1 AND status = 'waiting_for_ci'",
+                     WHERE id = ?1 AND status = '{WAITING_FOR_CI}'"
+                    ),
                     &[
                         id.as_str().into(),
                         saved,
@@ -178,12 +180,14 @@ pub(crate) fn admit(
                 .map(|_| ());
         }
         tx.execute(
-            "INSERT INTO config_deployment \
+            &format!(
+                "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
               message, push_repository_id, push_branch, push_head, listed, service_uploads) \
-             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-              ?16, ?17, ?18, ?19, ?20)",
+             VALUES (?1, ?2, ?3, ?4, '{QUEUED}', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+              ?16, ?17, ?18, ?19, ?20)"
+            ),
             &[
                 id.as_str().into(),
                 who.organization.as_str().into(),
@@ -305,7 +309,9 @@ pub(super) fn inherit(
             .any(|service| service.config.private_dns == *runtime)
     };
     let rows = tx.query(
-        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        &format!(
+            "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = '{QUEUED}'"
+        ),
         &[environment.as_str().into()],
     )?;
     for row in &rows {
@@ -368,14 +374,18 @@ pub(super) fn queue(
 ) -> Result<u64, RpcError> {
     let now = now();
     let superseded = tx.execute(
-        "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
-         WHERE environment_id = ?1 AND status = 'queued'",
+        &format!(
+            "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?2 \
+         WHERE environment_id = ?1 AND status = '{QUEUED}'"
+        ),
         &[environment.as_str().into(), now.into()],
     )?;
     if !keeps_holds {
         tx.execute(
-            "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
-             WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
+            &format!(
+                "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?2 \
+             WHERE environment_id = ?1 AND status = '{WAITING_FOR_CI}'"
+            ),
             &[environment.as_str().into(), now.into()],
         )?;
     }
@@ -436,8 +446,10 @@ pub(crate) fn hold(
         push.branch.as_str().into(),
     ];
     let held = tx.query(
-        "SELECT push_head FROM config_deployment WHERE environment_id = ?1 \
-         AND push_repository_id = ?2 AND push_branch = ?3 AND status = 'waiting_for_ci'",
+        &format!(
+            "SELECT push_head FROM config_deployment WHERE environment_id = ?1 \
+         AND push_repository_id = ?2 AND push_branch = ?3 AND status = '{WAITING_FOR_CI}'"
+        ),
         &key,
     )?;
     if held
@@ -450,8 +462,8 @@ pub(crate) fn hold(
     }
     let [environment_param, repository_param, branch_param] = key;
     tx.execute(
-        "UPDATE config_deployment SET status = 'superseded', ended = ?4 WHERE environment_id = ?1 \
-         AND push_repository_id = ?2 AND push_branch = ?3 AND status = 'waiting_for_ci'",
+        &format!("UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?4 WHERE environment_id = ?1 \
+         AND push_repository_id = ?2 AND push_branch = ?3 AND status = '{WAITING_FOR_CI}'"),
         &[
             environment_param,
             repository_param,
@@ -463,12 +475,14 @@ pub(crate) fn hold(
     let deployment = DeploymentId::fresh();
     let listed = next_listed(tx, id)?;
     tx.execute(
-        "INSERT INTO config_deployment \
+        &format!(
+            "INSERT INTO config_deployment \
          (id, organization_id, environment_id, status, saved_revision, services, nodes, \
           namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
           push_services, listed) \
-         VALUES (?1, ?2, ?3, 'waiting_for_ci', ?4, ?5, '[]', ?6, ?7, '{}', ?8, ?9, ?10, ?11, \
-          ?12, ?13)",
+         VALUES (?1, ?2, ?3, '{WAITING_FOR_CI}', ?4, ?5, '[]', ?6, ?7, '{{}}', ?8, ?9, ?10, ?11, \
+          ?12, ?13)"
+        ),
         &[
             deployment.as_str().into(),
             who.organization.as_str().into(),
@@ -504,8 +518,10 @@ pub(crate) fn supersede_held(
         branch.as_str().into(),
         head.into(),
     ];
-    let condition = "organization_id = ?1 AND push_repository_id = ?2 AND push_branch = ?3 \
-                     AND push_head <> ?4 AND status = 'waiting_for_ci'";
+    let condition = &format!(
+        "organization_id = ?1 AND push_repository_id = ?2 AND push_branch = ?3 \
+                     AND push_head <> ?4 AND status = '{WAITING_FOR_CI}'"
+    );
     let environments = tx
         .query(
             &format!("SELECT environment_id FROM config_deployment WHERE {condition}"),
@@ -521,7 +537,7 @@ pub(crate) fn supersede_held(
     let [organization, repository, branch, head] = params;
     tx.execute(
         &format!(
-            "UPDATE config_deployment SET status = 'superseded', ended = ?5 WHERE {condition}"
+            "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?5 WHERE {condition}"
         ),
         &[organization, repository, branch, head, now().into()],
     )?;
@@ -532,8 +548,10 @@ pub(crate) fn supersede_held(
 /// caller holds its lock.
 pub(crate) fn cancel_held_in(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_deployment SET status = 'cancelled', ended = ?2 \
-         WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
+        &format!(
+            "UPDATE config_deployment SET status = '{CANCELLED}', ended = ?2 \
+         WHERE environment_id = ?1 AND status = '{WAITING_FOR_CI}'"
+        ),
         &[environment.as_str().into(), now().into()],
     )?;
     Ok(())
@@ -678,7 +696,7 @@ pub(crate) fn cancel_in_flight(
     let rows = tx.query(
         &format!(
             "SELECT id FROM config_deployment WHERE organization_id = ?1 \
-             AND ({} OR status = 'waiting_for_ci') ORDER BY admitted, id",
+             AND ({} OR status = '{WAITING_FOR_CI}') ORDER BY admitted, id",
             in_flight_sql()
         ),
         &[who.organization.as_str().into()],

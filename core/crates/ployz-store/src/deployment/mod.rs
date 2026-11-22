@@ -369,6 +369,11 @@ impl IngressFailure {
 /// The most characters a Deployment message has.
 pub(crate) const MESSAGE_MAX: usize = 500;
 
+/// `text` cut to [`MESSAGE_MAX`] characters.
+pub(crate) fn clipped(text: &str) -> String {
+    text.chars().take(MESSAGE_MAX).collect()
+}
+
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
 pub(crate) const LEASE: i64 = 10 * 60;

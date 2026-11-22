@@ -4,7 +4,6 @@
 //! Deployment's upload. The runner reports each build's progress and log here.
 
 use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
-use crate::storage::json_text;
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{
@@ -19,10 +18,10 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
-use crate::deployment::{self, Stored};
+use crate::deployment::{self, Stored, clipped};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::{Param, Tx, name_of};
+use crate::storage::{Param, Tx, json_text, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -185,10 +184,13 @@ impl PartialEq<BuildStatus> for RowStatus {
 /// GitHub holds stays Building, so Cloud still finds its run to cancel
 /// ([`github_outstanding`]). Settling again changes nothing.
 pub(crate) fn settle(tx: &mut dyn Tx, id: &DeploymentId, ended: i64) -> Result<(), RpcError> {
+    let (failed, building) = (name_of(BuildStatus::Failed), name_of(BuildStatus::Building));
     tx.execute(
-        "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+        &format!(
+            "UPDATE config_build SET status = '{failed}', interrupted = 1, message = ?2, \
          finished = COALESCE(finished, ?3) \
-         WHERE deployment_id = ?1 AND status = 'building' AND github IS NULL",
+         WHERE deployment_id = ?1 AND status = '{building}' AND github IS NULL"
+        ),
         &[id.as_str().into(), INTERRUPTED.into(), ended.into()],
     )?;
     Ok(())
@@ -303,7 +305,7 @@ pub(crate) fn record(
     }
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = report.message.as_deref().map(trimmed);
+    let message = report.message.as_deref().map(clipped);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = NULL, \
          server = COALESCE(?6, server) \
@@ -726,10 +728,6 @@ fn append(log: &mut String, more: &str) {
             .unwrap_or(log.len());
         log.drain(..cut);
     }
-}
-
-fn trimmed(message: &str) -> String {
-    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -1526,14 +1524,14 @@ pub(crate) fn github_end(
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                Some(trimmed(message)),
+                Some(clipped(message)),
                 row.stage.github(),
             )
         }
         // The next Builder starts it afresh: the run holds it no more.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, Some(trimmed(message)), None)
+            (BuildStatus::Pending, Some(clipped(message)), None)
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;

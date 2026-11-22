@@ -12,7 +12,6 @@
 //! keeps its newest result.
 
 use crate::id::{BranchName, CommitSha, RepositoryId};
-use crate::storage::json_text;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
@@ -21,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::build::BuildStatus;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
@@ -29,7 +29,7 @@ use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::{Row, Tx, json_text, name_of};
 use crate::volume::size::VolumeResized;
 use crate::{Actor, Trusted, build, registry};
 
@@ -960,11 +960,14 @@ fn last_built(
     id: &EnvironmentId,
     service: &SavedServiceIntent,
 ) -> Result<Option<CommitSha>, RpcError> {
+    let (built, reused) = (name_of(BuildStatus::Built), name_of(BuildStatus::Reused));
     let rows = tx.query(
-        "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
+        &format!(
+            "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
          JOIN config_deployment d ON d.id = b.deployment_id \
          WHERE d.environment_id = ?1 AND d.nodes LIKE ?2 AND b.commit_sha IS NOT NULL \
-         AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
+         AND b.status IN ('{built}', '{reused}') ORDER BY d.admitted DESC"
+        ),
         &[
             id.as_str().into(),
             deployment::node_pattern(&service.id).as_str().into(),

@@ -122,11 +122,13 @@ fn ran_as(
         runtimes.extend([service.config.private_dns.clone()]);
     }
     let rows = tx.query(
-        "SELECT nodes, run, status FROM config_deployment \
+        &format!(
+            "SELECT nodes, run, status FROM config_deployment \
          WHERE environment_id = ?1 AND number IS NOT NULL \
-         AND (started IS NOT NULL OR status = 'queued') \
+         AND (started IS NOT NULL OR status = '{QUEUED}') \
          AND nodes LIKE ?2 \
-         ORDER BY number DESC",
+         ORDER BY number DESC"
+        ),
         &[
             environment.as_str().into(),
             node_pattern(id.as_str()).as_str().into(),
@@ -229,7 +231,7 @@ pub(crate) fn dropped(
         &format!(
             "SELECT nodes FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
-             AND status != 'applied' AND NOT {in_flight}"
+             AND status != '{APPLIED}' AND NOT {in_flight}"
         ),
         &[environment.as_str().into()],
     )?;

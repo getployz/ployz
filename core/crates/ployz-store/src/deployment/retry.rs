@@ -279,14 +279,16 @@ pub(crate) fn retry(
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state, and runs the images its source ran.
         tx.execute(
-            "INSERT INTO config_deployment \
+            &format!(
+                "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
               message, listed, service_uploads, ran) \
-             SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+             SELECT ?1, organization_id, environment_id, ?2, '{QUEUED}', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
               ?10, ?11 \
-             FROM config_deployment WHERE id = ?4",
+             FROM config_deployment WHERE id = ?4"
+            ),
             &[
                 id.as_str().into(),
                 i64::try_from(number)
@@ -494,7 +496,7 @@ fn retried(
     for row in &tx.query(
         &format!(
             "SELECT nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND status = 'queued' AND {named}",
+             WHERE environment_id = ?1 AND status = '{QUEUED}' AND {named}",
             named = scope_sql::NAMED
         ),
         &[environment.as_str().into()],
