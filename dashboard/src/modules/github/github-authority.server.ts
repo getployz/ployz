@@ -3,10 +3,10 @@ import crypto from "node:crypto";
 import { AwsClient } from "aws4fetch";
 import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect";
 import {
-  GITHUB_BUILD_WORKFLOW_FILE, GITHUB_WORKFLOW_TEMPLATES, type GithubWorkflowTemplate,
+  GITHUB_BUILD_WORKFLOW_FILE, GITHUB_BUILD_WORKFLOW_PATH, GITHUB_WORKFLOW_TEMPLATES, type GithubWorkflowTemplate,
 } from "#/modules/github/github-build-workflow";
 import type { GithubAccess } from "#/modules/github/github-access";
-import { githubIdSchema, githubTimestampSchema, isValidGithubExactSha, isValidGithubId } from "#/modules/github/github-ingestion.contracts";
+import { encodeGithubPath, githubIdSchema, githubNonEmptyStringSchema, githubTimestampSchema, isValidGithubExactSha, isValidGithubId } from "#/modules/github/github-ingestion.contracts";
 import {
   GITHUB_API_VERSION, GithubApi, GithubObservationError, githubResponseError, type GithubObservationOperation,
 } from "#/modules/github/github-observation.api";
@@ -25,8 +25,6 @@ export type GithubReadPermissions = Partial<Record<GithubReadPermission, "read">
 
 /** The most a token Cloud holds may read. A token request names a subset, or gets all of it. */
 export const GITHUB_READ_SET = { contents: "read", metadata: "read", pull_requests: "read", checks: "read" } as const satisfies GithubReadPermissions;
-
-const BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 
 /** SHA-256 of a workflow file after CRLF becomes LF, as hex, the way the minter compares a file with Ployz's. */
 export function githubBuildWorkflowDigest(bytes: Uint8Array): string {
@@ -228,7 +226,7 @@ export function createGithubAppJwt(input: { readonly appId: string; readonly pri
 }
 
 const tokenSchema = Schema.Struct({
-  token: Schema.String.check(Schema.isMinLength(1)),
+  token: githubNonEmptyStringSchema,
   expires_at: githubTimestampSchema,
   permissions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
@@ -255,12 +253,12 @@ const checkRunsSchema = Schema.Struct({
   })),
 });
 const checkRunSchema = Schema.Struct({ id: githubIdSchema });
-const userAccessTokenSchema = Schema.Struct({ access_token: Schema.String.check(Schema.isMinLength(1)) });
-const userSchema = Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)) });
+const userAccessTokenSchema = Schema.Struct({ access_token: githubNonEmptyStringSchema });
+const userSchema = Schema.Struct({ login: githubNonEmptyStringSchema });
 const userInstallationsSchema = Schema.Struct({
   installations: Schema.Array(Schema.Struct({
     id: githubIdSchema,
-    account: Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String, avatar_url: Schema.NullOr(Schema.String) }),
+    account: Schema.Struct({ login: githubNonEmptyStringSchema, type: Schema.String, avatar_url: Schema.NullOr(Schema.String) }),
     suspended_at: Schema.NullOr(Schema.String),
   })),
 });
@@ -271,8 +269,6 @@ const INSTALLATION_PAGES = 10;
 
 const runOf = (run: typeof runSchema.Type): GithubBuildRun =>
   ({ id: run.id, url: run.html_url, headSha: run.head_sha, event: run.event, status: run.status, conclusion: run.conclusion });
-
-const encodeBranch = (name: string) => name.split("/").map(encodeURIComponent).join("/");
 
 /** The App's authority held in this Cloud, from `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_CLIENT_SECRET`. */
 export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(function* (secrets: {
@@ -371,7 +367,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 
   const buildRunOf = Effect.fn("GithubAuthority.buildRunOf")(function* (token: string, input: GithubBuildRunRef, operation: GithubObservationOperation) {
     const run = yield* call(runSchema, { operation, token, path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}` });
-    if (run.path !== BUILD_WORKFLOW_PATH) return yield* refused(operation, "the run is not of the build workflow");
+    if (run.path !== GITHUB_BUILD_WORKFLOW_PATH) return yield* refused(operation, "the run is not of the build workflow");
     return run;
   });
 
@@ -396,12 +392,12 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       call(workflowSchema, {
         operation: "fetch_workflow", token, path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
       }).pipe(Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null))),
-      defaultBranchFile(token, input.repositoryId, BUILD_WORKFLOW_PATH),
+      defaultBranchFile(token, input.repositoryId, GITHUB_BUILD_WORKFLOW_PATH),
     ], { concurrency: "unbounded" });
     return {
       fullName: repository.full_name,
       defaultBranch: repository.default_branch,
-      state: workflow !== null && workflow.path === BUILD_WORKFLOW_PATH ? workflow.state : null,
+      state: workflow !== null && workflow.path === GITHUB_BUILD_WORKFLOW_PATH ? workflow.state : null,
       template: file === null ? null : templates.get(githubBuildWorkflowDigest(file)) ?? null,
       dispatchable: true,
     };
@@ -414,7 +410,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       token: yield* own(input, "runs"),
       path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/runs?${query.toString()}`,
     });
-    return runs.workflow_runs.filter((run) => run.path === BUILD_WORKFLOW_PATH).map(runOf);
+    return runs.workflow_runs.filter((run) => run.path === GITHUB_BUILD_WORKFLOW_PATH).map(runOf);
   });
 
   const buildRun: GithubAuthorityService["buildRun"] = Effect.fn("GithubAuthority.local.buildRun")(function* (input) {
@@ -426,7 +422,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const token = yield* own(input, "dispatch");
     const repository = yield* call(repositorySchema, { operation: "resolve_repository", token, path: `/repositories/${input.repositoryId}` });
     const branch = yield* call(branchSchema, {
-      operation: "resolve_branch_head", token, path: `/repositories/${input.repositoryId}/git/ref/heads/${encodeBranch(input.branch)}`,
+      operation: "resolve_branch_head", token, path: `/repositories/${input.repositoryId}/git/ref/heads/${encodeGithubPath(input.branch)}`,
     }).pipe(Effect.catchIf((error) => error.code === "not_found", () => refused(operation, "branch not found")));
     if (branch.object.type !== "commit") return yield* refused(operation, "branch does not point at a commit");
     const head = branch.object.sha;
@@ -435,7 +431,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       operation, token, method: "POST", path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
       body: { ref: `refs/heads/${input.branch}`, inputs: { ...inputs, cloud }, return_run_details: true },
     });
-    return { runId: run.workflow_run_id, runUrl: run.html_url, headSha: head, workflowRef: `${repository.full_name}/${BUILD_WORKFLOW_PATH}@refs/heads/${input.branch}` };
+    return { runId: run.workflow_run_id, runUrl: run.html_url, headSha: head, workflowRef: `${repository.full_name}/${GITHUB_BUILD_WORKFLOW_PATH}@refs/heads/${input.branch}` };
   });
 
   const dispatchApprovedBuild: GithubAuthorityService["dispatchApprovedBuild"] = Effect.fn("GithubAuthority.local.dispatchApprovedBuild")(function* (input) {
@@ -531,7 +527,7 @@ const minterGithubSchema = Schema.Union([
   }),
   Schema.Struct({ error: Schema.Literal("github"), operation: Schema.String, failure: Schema.Literals(["unreachable", "unreadable", "overbroad"]) }),
 ]);
-const minterTokenSchema = Schema.Struct({ token: Schema.String.check(Schema.isMinLength(1)), expires_at: Schema.String });
+const minterTokenSchema = Schema.Struct({ token: githubNonEmptyStringSchema, expires_at: Schema.String });
 const minterInstallationSchema = Schema.Struct({ url: Schema.String, permissions: Schema.Record(Schema.String, Schema.String) });
 const minterWorkflowSchema = Schema.Struct({
   full_name: Schema.String, default_branch: Schema.String, state: Schema.NullOr(Schema.String), digest: Schema.NullOr(Schema.String), canonical: Schema.Boolean,
@@ -542,7 +538,7 @@ const minterRunSchema = Schema.Struct({ ...minterListedRunSchema.fields, conclus
 const minterDispatchSchema = Schema.Struct({ run_id: githubIdSchema, run_url: Schema.String, head_sha: Schema.String, workflow_ref: Schema.String });
 const minterCheckSchema = Schema.Struct({ check_run_id: githubIdSchema });
 const minterConnectSchema = Schema.Struct({
-  login: Schema.String.check(Schema.isMinLength(1)),
+  login: githubNonEmptyStringSchema,
   installations: Schema.Array(Schema.Struct({
     id: githubIdSchema,
     account: Schema.Struct({ login: Schema.String, type: Schema.String, avatar_url: Schema.NullOr(Schema.String) }),

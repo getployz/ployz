@@ -1,5 +1,4 @@
 import {
-  createGithubRepositoriesSyncRequestedEvent,
   githubInstallationReceivedEvent,
   githubInstallationReceivedEventType,
   githubInstallationRepositoriesReceivedEvent,
@@ -12,12 +11,13 @@ import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { Schema } from "effect";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
+import { githubSyncRequested } from "#/modules/github/inngest-sync/sync-request";
 import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
-} from "#/modules/github/github.server";
+} from "#/modules/github/github-installation.server";
 import {
   githubInstallationRepositoriesWebhookEventDataSchema,
   githubInstallationWebhookEventDataSchema,
@@ -68,10 +68,7 @@ export async function executeProcessGithubInstallationReceived(
   if (result.shouldSyncRepositories) {
     await step.sendEvent(
       "request-repository-sync",
-      createGithubRepositoriesSyncRequestedEvent({
-        installationId: result.installationId,
-        reason: `installation.${payload.action}`,
-      }),
+      githubSyncRequested(result.installationId, `installation.${payload.action}`),
     );
   }
 
@@ -102,10 +99,7 @@ export async function executeProcessGithubInstallationRepositoriesReceived(
   if (result.shouldSyncRepositories) {
     await step.sendEvent(
       "request-repository-sync",
-      createGithubRepositoriesSyncRequestedEvent({
-        installationId: result.installationId,
-        reason: `installation_repositories.${payload.action}`,
-      }),
+      githubSyncRequested(result.installationId, `installation_repositories.${payload.action}`),
     );
   }
 

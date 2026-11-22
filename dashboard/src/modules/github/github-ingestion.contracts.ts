@@ -93,7 +93,10 @@ function isCanonicalRepositoryPath(value: string): boolean {
     .every((segment) => segment !== "." && segment !== "..");
 }
 
-const nonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
+export const githubNonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
+
+/** A slash-separated GitHub name or path with each segment URL-encoded, for a request path. */
+export const encodeGithubPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const positiveSafeIntegerSchema = Schema.Finite.check(
   Schema.isInt(),
   Schema.isGreaterThan(0),
@@ -179,7 +182,7 @@ export const githubPushWebhookSchema = Schema.Struct({
   installationId: githubIdSchema,
   repositoryId: githubIdSchema,
   ref: githubSafeBranchRefSchema,
-  branch: nonEmptyStringSchema,
+  branch: githubNonEmptyStringSchema,
   beforeSha: githubExactShaSchema,
   afterSha: githubExactShaSchema,
   created: Schema.Boolean,
@@ -224,11 +227,11 @@ export const githubPullRequestWebhookSchema = Schema.Struct({
 
 export const githubPushReceivedEventInputSchema = Schema.Struct({
   ...githubPushWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubPushReceivedEventDataSchema = Schema.Struct({
   ...githubPushReceivedEventInputSchema.fields,
-  branchKey: nonEmptyStringSchema,
+  branchKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>
@@ -243,11 +246,11 @@ export const githubPushReceivedEventDataSchema = Schema.Struct({
 
 export const githubCheckSuiteReceivedEventInputSchema = Schema.Struct({
   ...githubCheckSuiteWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
   ...githubCheckSuiteReceivedEventInputSchema.fields,
-  checkSuiteKey: nonEmptyStringSchema,
+  checkSuiteKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>
@@ -261,11 +264,11 @@ export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
 
 export const githubPullRequestReceivedEventInputSchema = Schema.Struct({
   ...githubPullRequestWebhookSchema.fields,
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
 });
 export const githubPullRequestReceivedEventDataSchema = Schema.Struct({
   ...githubPullRequestReceivedEventInputSchema.fields,
-  pullRequestKey: nonEmptyStringSchema,
+  pullRequestKey: githubNonEmptyStringSchema,
 }).check(
   Schema.makeFilter(
     (value) =>

@@ -7,7 +7,7 @@ import {
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
-import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_PATH } from "#/modules/github/github-build-workflow";
 import {
   createGithubBuildRunCompletedEvent,
   createGithubCheckSuiteReceivedEvent,
@@ -89,7 +89,7 @@ export const handleGithubWebhookRequest = Effect.fn(
   // every other run is ignored.
   if (event === "workflow_run") {
     const run = Schema.decodeUnknownOption(workflowRunPayloadSchema)(payload.value);
-    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === GITHUB_BUILD_WORKFLOW_PATH) {
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: deliveryId, runId: run.value.workflow_run.id }));
     }
     return new Response("OK", { status: 200 });

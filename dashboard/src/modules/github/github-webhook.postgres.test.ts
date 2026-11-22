@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github.server";
+import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github-installation.server";
 import { linkGithubInstallation } from "./github.repository";
 import { startPostgresTestHarness } from "#/test/postgres";
 

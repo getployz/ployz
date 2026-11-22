@@ -4,16 +4,16 @@ import { Context, Effect, Layer } from "effect";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
 import {
-  GithubApi, isGithubObservationNotFound, listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents,
+  GithubApi, isGithubObservationNotFound, listGithubRepositoryBranches, readGithubRepositoryContents,
 } from "#/modules/github/github-observation.api";
 import {
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
   listGithubRepositoryNamesForOrganization,
+  repositoryCountOf,
 } from "#/modules/github/github.repository";
 import { githubConnectHref } from "#/modules/github/github-connect";
-import { basicGlob } from "#/modules/github/github.server";
-import { repositoryOwnerId, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
+import { repositoryOwnerId, repositoryPaths, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
 import type { Caller } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -36,7 +36,7 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
       account_type: installation.accountType,
       connected_by: installation.connectedByName,
       connected_at: installation.connectedAt.toISOString(),
-      repositories: repositories.filter((repository) => repository.installationId === installation.installationId).length,
+      repositories: repositoryCountOf(repositories, installation.installationId),
     })),
     repositories: repositories
       .map((repository) => ({
@@ -97,17 +97,15 @@ export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
   repository: ReadableRepository, query: Omit<GithubTreeQuery, "repository">,
 ) {
   const at = query.ref ?? repository.defaultBranch;
-  const listed = yield* listGithubRepositoryFiles(accessFor(repository.organizationId, repository.installationId), repository.fullName, at).pipe(
+  const listed = yield* repositoryPaths(accessFor(repository.organizationId, repository.installationId), repository.fullName, at, {
+    cap: TREE_PATHS, directory: directoryOf(query.path), match: query.match,
+  }).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
-  const directory = directoryOf(query.path);
-  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file === directory || file.startsWith(`${directory}/`));
-  const matcher = query.match === undefined ? null : basicGlob(query.match);
-  const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
     repository: repository.fullName,
     ref: at,
-    paths: matching.slice(0, TREE_PATHS),
-    truncated: listed.truncated || matching.length > TREE_PATHS,
+    paths: listed.paths,
+    truncated: listed.truncated,
   } satisfies GithubTreeView;
 });
 
@@ -160,12 +158,12 @@ const githubFile = Effect.fn("GithubCli.file")(function* (caller: Caller, query:
 }, Effect.catchTags({ NotFound: missing, Validation: invalid }));
 
 /** What a tree or file read fails with: a refusal, or the database or GitHub failing. */
-type GithubReadError = Effect.Error<ReturnType<typeof githubFile>>;
+type GithubRepositoryReadError = Effect.Error<ReturnType<typeof githubFile>>;
 
 /** Reads of a repository's files, the Organization's to read; a refusal names what was wrong. */
 export class GithubRepositories extends Context.Service<GithubRepositories, {
-  readonly tree: (caller: Caller, query: GithubTreeQuery) => Effect.Effect<GithubTreeView, GithubReadError>;
-  readonly file: (caller: Caller, query: GithubFileQuery) => Effect.Effect<GithubFileView, GithubReadError>;
+  readonly tree: (caller: Caller, query: GithubTreeQuery) => Effect.Effect<GithubTreeView, GithubRepositoryReadError>;
+  readonly file: (caller: Caller, query: GithubFileQuery) => Effect.Effect<GithubFileView, GithubRepositoryReadError>;
 }>()("ployz/GithubRepositories") {}
 
 /** GitHub itself, through the App's installations or as a public repository. */

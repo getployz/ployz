@@ -10,8 +10,10 @@ import {
   githubCompareStatusSchema,
   githubExactShaSchema,
   githubIdSchema,
+  githubNonEmptyStringSchema,
   githubRepositoryFullNameSchema,
   githubResolvedRepositorySchema,
+  encodeGithubPath,
   githubRepositoryPathSchema,
   githubSafeBranchRefSchema,
   githubTimestampSchema,
@@ -161,15 +163,14 @@ const pullRequestResponseSchema = Schema.Struct({
   commits: Schema.Number,
   updated_at: Schema.optional(Schema.String),
 });
-const nonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const installationRepositoriesSchema = Schema.Struct({
   repositories: Schema.Array(Schema.Struct({
     id: githubIdSchema,
-    name: nonEmptyString,
-    full_name: nonEmptyString,
+    name: githubNonEmptyStringSchema,
+    full_name: githubNonEmptyStringSchema,
     private: Schema.Boolean,
-    default_branch: nonEmptyString,
-    html_url: nonEmptyString,
+    default_branch: githubNonEmptyStringSchema,
+    html_url: githubNonEmptyStringSchema,
     updated_at: Schema.DateFromString,
   })),
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
@@ -460,7 +461,7 @@ type GithubInstallationReposPage = {
 };
 
 const GithubBranchesResponse = Schema.Array(
-  Schema.Struct({ name: nonEmptyString }),
+  Schema.Struct({ name: githubNonEmptyStringSchema }),
 );
 const RepositoryFullName = Schema.String.check(
   Schema.isPattern(/^[^/\s]+\/[^/\s]+$/),
@@ -524,7 +525,7 @@ export const listGithubRepositoryBranches = Effect.fn(
 export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryFiles")(
   function* (access: GithubAccess, repositoryFullName: string, ref: string) {
     const api = yield* GithubApi;
-    const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
+    const repositoryPath = encodeGithubPath(repositoryFullName);
     const base: `/${string}` = `/repos/${repositoryPath}`;
     const commit = yield* api.json({
       access,
@@ -560,8 +561,8 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
 export const readGithubRepositoryContents = Effect.fn("Github.readGithubRepositoryContents")(
   function* (access: GithubAccess, repositoryFullName: string, path: string, ref: string) {
     const api = yield* GithubApi;
-    const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
-    const filePath = path.split("/").map(encodeURIComponent).join("/");
+    const repositoryPath = encodeGithubPath(repositoryFullName);
+    const filePath = encodeGithubPath(path);
     return yield* api.json({
       access,
       path: `/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,

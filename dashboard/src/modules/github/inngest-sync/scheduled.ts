@@ -1,8 +1,6 @@
-import {
-  createGithubRepositoriesSyncRequestedEvent,
-} from "#/modules/inngest/events";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
+import { githubSyncRequested } from "#/modules/github/inngest-sync/sync-request";
 import { listAllGithubInstallationIds } from "#/modules/github/github.repository";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
@@ -21,10 +19,7 @@ export async function executeScheduleGithubRepositorySync(
   await step.sendEvent(
     "request-repository-syncs",
     installationIds.map((installationId) =>
-      createGithubRepositoriesSyncRequestedEvent({
-        installationId,
-        reason: "scheduled",
-      }),
+      githubSyncRequested(installationId, "scheduled"),
     ),
   );
   return { installationCount: installationIds.length };

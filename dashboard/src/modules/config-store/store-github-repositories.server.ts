@@ -4,7 +4,7 @@ import type { AutoDeployRule } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { callStoreAsMember, stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
-import { GITHUB_BUILD_WORKFLOW_FILE, type GithubBuildReadiness, type GithubBuildRepository, type GithubWorkflowTemplate } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_PATH, type GithubBuildReadiness, type GithubBuildRepository, type GithubWorkflowTemplate } from "#/modules/github/github-build-workflow";
 import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import { checkGithubBuildWorkflow } from "#/modules/github/github-build.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -88,7 +88,7 @@ const contentsSchema = Schema.Struct({ content: Schema.String, encoding: Schema.
  */
 const callsReusableWorkflow = Effect.fn("Github.callsReusableWorkflow")(function* (access: GithubAccess, repositoryId: number) {
   const file = yield* (yield* GithubApi).json({
-    access, path: `/repositories/${repositoryId}/contents/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`, operation: "fetch_contents", schema: contentsSchema,
+    access, path: `/repositories/${repositoryId}/contents/${GITHUB_BUILD_WORKFLOW_PATH}`, operation: "fetch_contents", schema: contentsSchema,
   });
   return /^\s*uses:\s*\S+\/\.github\/workflows\/\S+@/m.test(Buffer.from(file.content, "base64").toString("utf8"));
 });

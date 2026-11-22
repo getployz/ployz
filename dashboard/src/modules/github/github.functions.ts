@@ -2,9 +2,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { setResponseHeader } from "@tanstack/react-start/server";
 import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
+import { resolvePublicGithubRepository } from "#/modules/github/readable-repository.server";
 import {
   githubRepositoryOwner,
-  resolvePublicGithubRepository,
   getGithubWeb,
   getGithubRepoAccessState,
   listGithubBranches,

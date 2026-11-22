@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { Effect, Schema } from "effect";
-import { GITHUB_BUILD_WORKFLOW_FILE, type GithubBuildReadiness } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_FILE, GITHUB_BUILD_WORKFLOW_PATH, type GithubBuildReadiness } from "#/modules/github/github-build-workflow";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github/github-ingestion.contracts";
 import type { GithubAccess } from "#/modules/github/github-access";
@@ -71,7 +71,7 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
 export const dispatchApprovedGithubBuild = Effect.fn("Github.dispatchApprovedBuild")(function* (input: {
   access: GithubAccess; repositoryId: number; branch: string; workflow: string; commit: string;
 }) {
-  if (input.workflow !== `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+  if (input.workflow !== GITHUB_BUILD_WORKFLOW_PATH) {
     return yield* new GithubObservationError({
       code: "invalid_argument", operation: "dispatch_workflow", retriable: false, message: `Ployz dispatches only .github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}.`,
     });
@@ -88,7 +88,7 @@ export const dispatchApprovedGithubBuild = Effect.fn("Github.dispatchApprovedBui
 export const findGithubPushRun = Effect.fn("Github.findPushRun")(function* (input: {
   access: GithubAccess; repositoryId: number; workflow: string; commit: string;
 }) {
-  if (input.workflow !== `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+  if (input.workflow !== GITHUB_BUILD_WORKFLOW_PATH) {
     return yield* new GithubObservationError({
       code: "invalid_argument", operation: "list_push_runs", retriable: false, message: `Ployz follows only .github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}.`,
     });

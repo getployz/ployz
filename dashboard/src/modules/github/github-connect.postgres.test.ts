@@ -11,7 +11,7 @@ import {
   deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization,
   pruneCachedGithubRepositories, upsertCachedGithubRepositories, upsertGithubInstallation,
 } from "./github.repository";
-import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github.server";
+import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github-installation.server";
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
 import { executeSyncGithubRepositories, GITHUB_REPOSITORY_PAGE_DEADLINE, syncGithubRepositories } from "./inngest-sync/sync";

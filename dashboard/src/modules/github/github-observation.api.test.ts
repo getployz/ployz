@@ -1,4 +1,5 @@
-import { getGithubAppInstallUrl, resolvePublicGithubRepository } from "./github.server";
+import { getGithubAppInstallUrl } from "./github-connect.server";
+import { resolvePublicGithubRepository } from "./readable-repository.server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import {
