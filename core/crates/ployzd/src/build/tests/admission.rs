@@ -14,7 +14,7 @@ async fn build_revocation_rejects_new_and_queued_work_but_preserves_admitted_upl
     ));
     fixture
         .local
-        .update(
+        .update_machine(
             serde_json::from_value(serde_json::json!({
                 "update": { "accepts_builds": false }
             }))
@@ -61,7 +61,7 @@ async fn running_build_finishes_after_build_acceptance_is_revoked() {
         .unwrap();
         fixture
             .local
-            .update(
+            .update_machine(
                 serde_json::from_value(serde_json::json!({
                     "update": { "accepts_builds": false }
                 }))
@@ -135,7 +135,7 @@ async fn capability_check_waits_for_active_build_and_rechecks_acceptance() {
         if revoke {
             fixture
                 .local
-                .update(
+                .update_machine(
                     serde_json::from_value(
                         serde_json::json!({"update": {"accepts_builds": false}}),
                     )

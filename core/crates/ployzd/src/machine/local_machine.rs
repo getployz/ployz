@@ -807,7 +807,10 @@ impl LocalMachine {
     /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when the update is not legal, and [`Error::Cluster`]
     /// when listing visible Machines fails.
-    pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
+    pub async fn update_machine(
+        &self,
+        request: UpdateMachineRequest,
+    ) -> Result<MachineUpdated, Error> {
         // Policy edits affect new admission without waiting for active Builds.
         // Ordinary mutations remain serialized; all updates exclude installation.
         if request.update.is_policy_edit() {

@@ -286,20 +286,11 @@ macro_rules! catalog_ops {
 }
 ployz_core::rpc_catalog!(catalog_ops);
 
-macro_rules! local_call {
-    ($local:ident, $method:ident => $renamed:ident, $request:ident) => {
-        $local.$renamed($request)
-    };
-    ($local:ident, $method:ident, $request:ident) => {
-        $local.$method($request)
-    };
-}
-
 /// Handlers that decode the request, pass it to the [`LocalMachine`] method of the same
-/// name (or the one after `=>`), and answer its result. Written as `async_trait` expands
+/// name, and answer its result. Written as `async_trait` expands
 /// an `async fn`, because the attribute leaves a macro in the impl unexpanded.
 macro_rules! pass_through {
-    ($($method:ident $(=> $renamed:ident)?,)+) => {
+    ($($method:ident,)+) => {
         $(
             fn $method<'life0, 'async_trait>(
                 &'life0 self,
@@ -312,7 +303,7 @@ macro_rules! pass_through {
                 Box::pin(async move {
                     let local = self.at(&request);
                     let request = expect::<op_of!($method)>(request)?;
-                    finish(local_call!(local, $method $(=> $renamed)?, request).await)
+                    finish(local.$method(request).await)
                 })
             }
         )+
@@ -337,9 +328,9 @@ impl MachineRpc for MachineService {
         key_step,
         forget_versions,
         set_push_target,
-        update_machine => update,
+        update_machine,
         share_sealing_key,
-        request_machine_upgrade => request_upgrade,
+        request_machine_upgrade,
         leave,
         forget,
         prune_images,
