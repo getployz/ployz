@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
@@ -17,9 +17,9 @@ use super::{
 use crate::{
     machine::LocalMachineRecord,
     runtime_unit::{
-        self, UNIT_DIR, UnitSupervision,
+        ConvergeError, ServingUnit, UNIT_DIR, UnitSupervision,
         process_identity::{InstalledExe, identity_of},
-        restart_needed, systemctl,
+        restart_needed,
     },
     units::Unit,
 };
@@ -38,9 +38,7 @@ struct Inner {
     run_dir: PathBuf,
     upstreams: Vec<SocketAddr>,
     spec_file: SpecFile,
-    unit_file: PathBuf,
-    unit_text: String,
-    own_exe: InstalledExe,
+    unit: ServingUnit,
 }
 
 impl DnsService {
@@ -66,17 +64,19 @@ impl DnsService {
                 run_dir: run_dir.to_path_buf(),
                 upstreams,
                 spec_file: SpecFile::in_run_dir(run_dir),
-                unit_file: Path::new(UNIT_DIR).join(Unit::Dns.name()),
-                unit_text: unit_text(own_exe.path(), socket),
-                own_exe,
+                unit: ServingUnit::new(
+                    Path::new(UNIT_DIR),
+                    Unit::Dns,
+                    unit_text(own_exe.path(), socket),
+                    own_exe,
+                ),
             }),
         };
         service.converge(service.spec_of(record).as_ref()).await?;
         Ok(service)
     }
 
-    /// Restart the process onto this daemon's binary once, then follow the
-    /// record until shutdown.
+    /// Follow the record until shutdown.
     ///
     /// # Errors
     ///
@@ -86,9 +86,6 @@ impl DnsService {
         mut records: watch::Receiver<Arc<LocalMachineRecord>>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        if self.inner.supervision == UnitSupervision::Systemd {
-            self.move_onto_own_binary().await;
-        }
         loop {
             tokio::select! {
                 changed = records.changed() => {
@@ -131,10 +128,10 @@ impl DnsService {
     }
 
     async fn downgrade_pending(&self) -> bool {
-        let path = self.inner.own_exe.path();
-        let installed = identity_of(path).ok();
-        restart_needed(installed, self.inner.own_exe.identity())
-            && Successor::at(path).probe().await == Probe::CannotServe
+        let own = self.inner.unit.exe();
+        let installed = identity_of(own.path()).ok();
+        restart_needed(installed, own.identity())
+            && Successor::at(own.path()).probe().await == Probe::CannotServe
     }
 
     async fn converge(&self, spec: Option<&DnsSpec>) -> io::Result<()> {
@@ -142,43 +139,25 @@ impl DnsService {
             Some(spec) => {
                 self.inner.spec_file.publish(Some(spec))?;
                 if self.inner.supervision == UnitSupervision::Systemd {
-                    runtime_unit::install(&self.inner.unit_file, &self.inner.unit_text).await?;
-                    systemctl(&["start", "--no-block", Unit::Dns.name()]).await;
+                    match self.inner.unit.converge().await {
+                        Ok(()) => {}
+                        Err(ConvergeError::Install(error)) => return Err(error),
+                        // The spec is published, and the next record or daemon start
+                        // tries the unit again; refusing here would stop the daemon.
+                        Err(refused @ ConvergeError::Refused { .. }) => {
+                            tracing::warn!(error = %refused, "Internal DNS did not start");
+                        }
+                    }
                 }
             }
             None => {
                 if self.inner.supervision == UnitSupervision::Systemd {
-                    retire_unit(&self.inner.unit_file).await?;
+                    self.inner.unit.retire().await?;
                 }
                 self.inner.spec_file.publish(None)?;
             }
         }
         Ok(())
-    }
-
-    async fn move_onto_own_binary(&self) {
-        if runtime_unit::runs_other_software(Unit::Dns.name(), &self.inner.own_exe).await {
-            systemctl(&["restart", "--no-block", Unit::Dns.name()]).await;
-        }
-    }
-}
-
-/// Stop the unit, then remove its file and reload. The file stays while the
-/// stop is unfinished: systemd 255, as Ubuntu 24.04 ships it, closes a unit's
-/// stored fds twice when a reload lowers its `FileDescriptorStoreMax`, as a
-/// missing file does, and PID 1 aborts (systemd/systemd#35288, fixed in 257).
-/// A stopped unit has released its store.
-async fn retire_unit(unit_file: &Path) -> io::Result<()> {
-    if systemctl(&["stop", Unit::Dns.name()]).await.is_none() {
-        return Ok(());
-    }
-    match fs::remove_file(unit_file) {
-        Ok(()) => {
-            systemctl(&["daemon-reload"]).await;
-            Ok(())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
     }
 }
 
@@ -254,7 +233,7 @@ pub(crate) enum Probe {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use std::{env, fs};
 
     use super::*;
     use crate::dns::tests::write_script;
@@ -347,7 +326,15 @@ esac"#;
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(retire_unit(&root.join(Unit::Dns.name())))
+                .block_on(
+                    ServingUnit::new(
+                        &root,
+                        Unit::Dns,
+                        String::new(),
+                        InstalledExe::current().unwrap(),
+                    )
+                    .retire(),
+                )
                 .unwrap();
             fs::write(root.join("child-completed"), case).unwrap();
             return;
