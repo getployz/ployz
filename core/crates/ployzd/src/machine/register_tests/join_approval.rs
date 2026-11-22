@@ -311,8 +311,8 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// A Share with no join approval reaches a Machine whose published row carries the approval
-/// that admitted it, and no Machine without one.
+/// A Share with no join approval reaches a Machine this one pinned when it listed the row
+/// carrying the approval that admitted it, and no Machine without one.
 #[tokio::test]
 async fn an_unsigned_share_reaches_only_an_approved_member() {
     let (entry, replicated, _, directory, server) = participating().await;
@@ -328,6 +328,7 @@ async fn an_unsigned_share_reaches_only_an_approved_member() {
     row.public_key = stranger.public_key;
     row.join_approval = None;
     replicated.publish_local_machine(&row).await.unwrap();
+    entry.replicated().unwrap().machines().await.unwrap();
     let unsigned = |machine: &RegisterRequest| ShareSealingKeyRequest {
         join_approval: None,
         machine: machine.machine_id,

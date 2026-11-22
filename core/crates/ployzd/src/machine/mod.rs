@@ -367,11 +367,13 @@ impl LocalMachineRecord {
         )
     }
 
-    /// Whether this Machine's own record makes `machine` a Member, with this ID, WireGuard key
-    /// and subnet: pinned, or carrying a join approval a key trusted here signed. Unlike
-    /// [`Self::accepts_machine`], a record that doesn't filter peers trusts no Member.
+    /// Whether this Machine's own record pins `machine` as a Member, with this ID, WireGuard
+    /// key and subnet, and never saw it removed. Unlike [`Self::accepts_machine`], it reads no
+    /// approval off the row, and a record that doesn't filter peers trusts no Member.
     pub(crate) fn trusts_member(&self, machine: &Machine) -> bool {
-        self.filters_peers && self.accepts_machine(machine)
+        self.filters_peers
+            && !self.removes_member(machine.id, Some(machine.public_key))
+            && self.pins_machine(machine)
     }
 
     /// The keys this Machine removed for good.
