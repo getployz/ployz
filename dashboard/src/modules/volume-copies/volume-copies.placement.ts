@@ -4,7 +4,18 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/run-words";
 import { copyName, type Heard, heardFrom, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 import type { MirrorCopy, OldCopy, PrimaryServer, ServerRef, StagedCopy, VolumeCopies } from "./volume-copies";
+
+/** What a run says on the copy it targets: seeding or removing one; the others show on Live or on no copy. */
+const BUSY_ON_TARGET = {
+  mirror: "Seeding", delete_mirror: "Removing", sync: null, move: null, release: null, restore: null, seed: null, resize: null, deploy: null,
+} as const satisfies Record<VolumeRunKind, string | null>;
+
+/** The runs that keep Live from taking another, and so say so on its badge. */
+const BUSIES_LIVE = {
+  move: true, release: true, restore: true, seed: true, deploy: true, mirror: false, sync: false, delete_mirror: false, resize: false,
+} as const satisfies Record<VolumeRunKind, boolean>;
 
 /** What the mirror syncs last saw of one mirror. A pull that lands later never clears an older failure. */
 export type MirrorStatusView = {
@@ -40,12 +51,7 @@ export function copiesFromPlacement(input: {
   };
   const target = active === null ? null : runTarget(active);
 
-  const busyOn = (server: MachineName): string | null => {
-    if (active === null) return null;
-    if (active.kind === "mirror" && target === server) return "Seeding";
-    if (active.kind === "delete_mirror" && target === server) return "Removing";
-    return null;
-  };
+  const busyOn = (server: MachineName): string | null => (active !== null && target === server ? BUSY_ON_TARGET[active.kind] : null);
   const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
     const from = heard(item.server.id);
     const status = input.statuses.find((each) => each.machine === item.server.id);
@@ -117,7 +123,7 @@ export function copiesFromPlacement(input: {
       server: primary,
       restore: seed === undefined ? null : { label: seed.point.name },
       moveTo: moving ? form.primary.server : null,
-      busy: active !== null && ["move", "release", "restore", "seed", "deploy"].includes(active.kind) ? runWords(active) : null,
+      busy: active !== null && BUSIES_LIVE[active.kind] ? runWords(active) : null,
     },
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),

@@ -19,7 +19,7 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  cardLine, COPY_WORDS, HEARD_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.hooks";
@@ -167,7 +167,7 @@ function RecoveryAlert({ organizationSlug, forgetGate, volume, disabled, deployi
   if (recovered.kind === "unreported") {
     const { server, heard, lack } = recovered;
     return <Alert>
-      <AlertTitle>{server.name} {heard === "outdated" ? "needs a newer Ployz" : "can't report this copy"}</AlertTitle>
+      <AlertTitle>{HEARD_WORDS[heard].clause(server.name)}</AlertTitle>
       <AlertDescription>{`Copies can't tell whether ${server.name} still holds ${volume.name}'s primary. ${lack}`}</AlertDescription>
     </Alert>;
   }
