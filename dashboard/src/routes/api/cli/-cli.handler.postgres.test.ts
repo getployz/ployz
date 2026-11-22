@@ -42,8 +42,8 @@ import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/
 import { volumeRun } from "#/modules/volume-run/tables";
 import { deviceRequest } from "#/modules/devices/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
-import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
-import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
+import { cliReply } from "#/routes/api/cli/-cli.handler";
+import { handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
 import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/sealing/sealing-key";
@@ -331,14 +331,11 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   if (as.via !== undefined) headers.set("x-ployz-via", as.via);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
-  if (Exit.isSuccess(exit) && exit.value instanceof Response) {
-    const text = yield* Effect.promise(() => (exit.value as Response).text());
-    return { status: exit.value.status, json: decodeReply(text), text };
-  }
+  const exit = yield* Effect.exit(cliReply(new Request(`${origin}/api/cli/${path}`, init)));
   if (Exit.isSuccess(exit)) {
-    const text = JSON.stringify(exit.value);
-    return { status: 200, json: decodeReply(text), text };
+    const response = exit.value;
+    const text = yield* Effect.promise(() => response.text());
+    return { status: response.status, json: decodeReply(text), text };
   }
   const empty: Reply = {};
   const error = encodePublicError(Cause.squash(exit.cause));
@@ -635,7 +632,7 @@ it.live(
           headers: { cookie: alice.cookie, origin: "https://evil.example", "sec-fetch-site": "cross-site" },
           body: JSON.stringify({ name: "forged", expires_in_days: 365 }),
         });
-        const refused = yield* handleCliRequest(forged).pipe(
+        const refused = yield* cliReply(forged).pipe(
           Effect.map((response) => response instanceof Response ? response.status : 200),
           Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
         );
