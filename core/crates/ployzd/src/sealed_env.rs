@@ -65,7 +65,6 @@ pub struct SealingKeyStore {
 }
 
 impl SealingKeyStore {
-    /// The Sealing Key kept in `data_dir`.
     #[must_use]
     pub fn at(data_dir: PathBuf) -> Self {
         Self {

@@ -59,7 +59,6 @@ pub(crate) async fn served(
     (MachineRpcClient::new(channel_to(socket).await), server)
 }
 
-/// A channel to the Machine API served on `socket`.
 pub(crate) async fn channel_to(socket: &Path) -> Channel {
     tonic::transport::Endpoint::try_from("http://machine.invalid")
         .unwrap()

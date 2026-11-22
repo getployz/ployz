@@ -86,7 +86,6 @@ impl VolumeName {
     }
 }
 
-/// The dataset names of one Machine Pool.
 #[derive(Clone, Copy, Debug)]
 pub struct DatasetLayout<'pool> {
     pool: &'pool str,
@@ -99,7 +98,6 @@ impl<'pool> DatasetLayout<'pool> {
         Self { pool }
     }
 
-    /// The layout of an imported Machine Pool.
     #[must_use]
     pub fn of(pool: &'pool MachinePool) -> Self {
         Self::new(pool.name())

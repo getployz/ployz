@@ -28,7 +28,6 @@ use ployz_core::{
 
 use crate::filesystem::atomic_write;
 
-/// The file in the node state directory that holds the state's ID.
 const STATE_ID_FILE: &str = "ployz-state-id";
 
 /// Present while a connector the Tunnel Door closing could not remove may still be in

@@ -42,7 +42,6 @@ pub(crate) struct IngressSite {
 /// A hostname's singular owner and at-most-one publication per protocol.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct IngressPublication {
-    /// Qualified Service that owns the hostname.
     pub(super) owner: QualifiedService,
     /// Ordered Serving Container endpoints published over HTTP.
     pub(super) http: Option<Vec<IngressEndpoint>>,

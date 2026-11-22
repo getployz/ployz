@@ -367,7 +367,6 @@ impl LocalMachineRecord {
         )
     }
 
-    /// The keys this Machine removed for good.
     #[must_use]
     pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {
         &self.removed_keys
@@ -486,7 +485,6 @@ impl LocalMachineRecord {
             .any(|slot| slot.accepted().as_ref() == Some(remote))
     }
 
-    /// Label of the slot holding `remote` as its pending key.
     #[must_use]
     pub fn pending_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
@@ -495,7 +493,6 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
-    /// Label of the slot holding `remote` as its accepted key.
     #[must_use]
     pub fn accepted_label(&self, remote: &ClientKey) -> Option<&ManagementClientLabel> {
         self.management_clients
@@ -767,7 +764,6 @@ impl LocalMachineRecord {
         }
     }
 
-    /// Secret behind this Machine's Management Identity.
     #[must_use]
     pub fn management_secret(&self) -> &ManagementSecret {
         &self.management_secret
@@ -802,7 +798,6 @@ impl LocalMachineRecord {
         self.body.id()
     }
 
-    /// Local Machine Phase of this record.
     #[must_use]
     pub fn phase(&self) -> LocalMachinePhase {
         self.body.phase()

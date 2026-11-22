@@ -376,7 +376,6 @@ fn failed(step: &'static str) -> impl FnOnce(Error) -> BuildFailure {
     move |cause| BuildFailure { step, cause }
 }
 
-/// Runs one build step's command under the step's name.
 fn run_step(step: &'static str, command: &mut Command) -> Result<(), BuildFailure> {
     run_command(step, command).map(drop).map_err(failed(step))
 }

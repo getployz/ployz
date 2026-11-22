@@ -56,7 +56,6 @@ pub(crate) async fn inspect_id(
         .ok_or(Error::ContainerNotFound(*container_id))
 }
 
-/// A failed [`inspect`] as the module's [`Error`].
 pub(crate) fn failed(error: DockerError) -> Error {
     let DockerError::JsonSerdeError { err } = error else {
         return Error::Docker(error);

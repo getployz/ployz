@@ -47,7 +47,6 @@ impl Provenance {
         self.scope
     }
 
-    /// The call `caller` makes with these marks.
     pub(super) fn call(self, caller: Caller) -> Call {
         Call::new(caller, self.scope, self.cloud_routed)
     }
