@@ -170,7 +170,6 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    let remote = plan.destination().is_some();
     // First, so a failed first install still reports what it ran on.
     if dials_this_host(plan) {
         report.read_host();
@@ -187,10 +186,12 @@ where
     let cluster_network = plan.shaping().network();
 
     progress(EnrollStage::Installing);
-    if remote && !plan.no_install() {
+    if let Some(remote) = plan.remote_target()
+        && !plan.no_install()
+    {
         // A remote host is provisioned once, up front, with this CLI's release.
         crate::provisioning::provision_target(
-            plan.remote_target(),
+            remote,
             &plan.shaping().version(),
             &requested_storage,
         )
@@ -369,7 +370,7 @@ async fn enroll_current_identity(
 > {
     let (details, machine_token) =
         crate::handlers::server::inspect_token(client, token_request).await?;
-    let initial_policy = asked.settle(existing(&details), plan.reach())?;
+    let initial_policy = asked.settle(existing(&details), |args| plan.reach().rerun(args))?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
     let recovery_supported = cloud_enroll::recovery_compat::supported(client).await?;
     let identity = EnrollIdentity::from_machine_token(
@@ -384,9 +385,9 @@ async fn enroll_current_identity(
         Err(error)
             if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
         {
-            let config = super::config_path(plan.reach())?;
+            let config = plan.reach().config();
             if super::device::key::load(&super::device::key::path(&config))?.is_some() {
-                let mut entry = super::route::connect(plan.reach(), None).await?;
+                let mut entry = plan.reach().entry().await?;
                 let expected = ployz_core::RegisterRequest {
                     join_approval: None,
                     join_confirmation: None,
@@ -454,7 +455,7 @@ fn cli_join_pin(
     plan: &EnrollPlan,
     name: &MachineName,
 ) -> Result<Option<ployz_core::JoinPin>, Error> {
-    let own = super::device::key::load(&super::device::key::path(&config_path(plan.reach())?))?
+    let own = super::device::key::load(&super::device::key::path(&plan.reach().config()))?
         .map(|secret| super::device::key::public(&secret));
     match own {
         Some(device) => Ok(Some(ployz_core::JoinPin {
@@ -585,7 +586,7 @@ where
     let capability = set_cloud_management_client(plan, &mut ready).await?;
     let (unarrived, catch_up) =
         crate::global_catch_up::follow_globals(&mut ready, &assigned, |args| {
-            super::rerun(plan.reach(), args)
+            plan.reach().rerun(args)
         })
         .await;
     // Cloud may use the replacement after publication, revoking this key.
@@ -618,7 +619,7 @@ where
         ),
         catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
-                super::rerun(plan.reach(), args)
+                plan.reach().rerun(args)
             })
         }),
     ))
@@ -799,7 +800,7 @@ where
 
     let unnamed = match plan.shaping().cluster_name()? {
         Some(name) => {
-            let next = super::rerun(plan.reach(), &["cluster", "name", name.as_str()]);
+            let next = plan.reach().rerun(&["cluster", "name", name.as_str()]);
             super::cluster::set(&ready, name).await.err().map(|error| {
                 error
                     .context("Server initialized; the Cluster has no name yet.")
@@ -814,7 +815,7 @@ where
     {
         return Err(ingress_incomplete(
             command,
-            super::ingress_hints(error, |args| super::rerun(plan.reach(), args)),
+            super::ingress_hints(error, |args| plan.reach().rerun(args)),
         ));
     }
     if machine.accepts_ingress
@@ -829,7 +830,7 @@ where
         let elsewhere = error.only_elsewhere(&machine.id);
         let error = ingress_incomplete(
             command,
-            super::ingress_hints(error.into(), |args| super::rerun(plan.reach(), args)),
+            super::ingress_hints(error.into(), |args| plan.reach().rerun(args)),
         );
         if !elsewhere {
             return Err(error);
@@ -998,7 +999,7 @@ async fn set_cloud_management_client(
         )
     })?;
     if matches!(client.connection().transport(), Transport::Management(_)) {
-        crate::context::Config::load(config_path(plan.reach())?)?
+        crate::context::Config::load(plan.reach().config())?
             .save_management_capability(&capability)?;
     }
     Ok(capability)
@@ -1089,13 +1090,12 @@ async fn dial(plan: &EnrollPlan) -> Result<Client, ConnectError> {
         {
             connection = connection.with_ssh_key_file(key)?;
         }
-        return super::server::connect_direct(plan.reach(), &connection).await;
+        return super::server::connect_direct_within(plan.reach().ssh_timeout(), &connection).await;
     }
     crate::connect::connect_selected_in_order(
         local_selection(plan)?,
         std::sync::Arc::new(
-            crate::connect::SystemConnector::default()
-                .with_ssh_timeout(crate::cli::ssh_timeout(plan.reach())),
+            crate::connect::SystemConnector::default().with_ssh_timeout(plan.reach().ssh_timeout()),
         ),
     )
     .await
@@ -1104,14 +1104,9 @@ async fn dial(plan: &EnrollPlan) -> Result<Client, ConnectError> {
 /// What a run with no destination dials: `--connect`, the current context or the local socket.
 fn local_selection(plan: &EnrollPlan) -> Result<SelectedConnections, ConnectError> {
     let reach = plan.reach();
-    let config = crate::context::expand_home(std::path::Path::new(
-        reach
-            .get_one::<String>("ployz-config")
-            .expect("ployz-config has a default"),
-    ));
     crate::connect::resolve_connections(
-        &config,
-        reach.get_one::<String>("connect").map(String::as_str),
+        &reach.config(),
+        reach.connect().as_deref(),
         None,
         &ployz_core::MachineLayout::production().socket(),
     )
@@ -1243,7 +1238,8 @@ async fn wait_phase(
         ConnectError::is_start_retryable,
         async |joining| {
             if let Awaited::Enrolled { id, via } = awaited {
-                let mut client = super::server::connect_direct(plan.reach(), via).await?;
+                let mut client =
+                    super::server::connect_direct_within(plan.reach().ssh_timeout(), via).await?;
                 check_enrolled(&mut client, id, joining).await?;
                 return Ok(client);
             }

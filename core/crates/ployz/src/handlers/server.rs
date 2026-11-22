@@ -54,12 +54,10 @@ mod waiting;
 
 use add::add;
 pub(super) use asked_policy::AskedPolicy;
-#[cfg(test)]
-pub(crate) use enroll::engine_view;
 pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
 pub(crate) use enroll_plan::{EnrollPlan, Shaping};
 pub(super) use helpers::{
-    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct, enroll,
+    Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct_within, enroll,
     enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned,
 };
 use init::init;

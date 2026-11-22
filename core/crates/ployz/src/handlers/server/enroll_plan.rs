@@ -1,15 +1,24 @@
-//! What one `ployz server add` asks to enroll, read once from the command line.
+//! What one `ployz server add` asks to enroll, read once from the command line or from the
+//! enroll instruction Cloud sends the check-in loop.
 //!
 //! Every flag that shapes the Server is read here, once, with the text it was given as, so the
 //! line `--command` prints repeats exactly the flags the command line or the environment gave
 //! and the engine reads the same values. A malformed value is refused when the engine reads it,
-//! in the order the engine reads it, so building a plan never fails.
+//! in the order the engine reads it, so building a plan from the command line never fails.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::ArgMatches;
 use clap::parser::ValueSource;
 use ipnet::Ipv4Net;
-use ployz_core::{ClusterName, InspectRequest, MachineName, MachineRelease, StoragePreparation};
+use ployz_core::{
+    ClusterName, InspectRequest, MachineLayout, MachineName, MachineRelease, StoragePreparation,
+    ValueError, ZfsDevice,
+};
 
+use crate::checkin::{EnrollInstruction, EnrollStorage};
+use crate::connect::Client;
 use crate::handlers::{Error, leaf_matches, string_values};
 use crate::provisioning::RemoteTarget;
 
@@ -187,15 +196,42 @@ impl Shaping {
 }
 
 /// What `server add` was asked to enroll: the flags that shape the Server, where to install
-/// it, and the connection options the command carried.
+/// it, and how it reaches the Server.
 pub(crate) struct EnrollPlan {
     shaping: Shaping,
-    remote: RemoteTarget,
-    destination: Option<String>,
-    ssh_key: Option<String>,
+    destination: Option<Destination>,
     no_install: bool,
     show_recovery_code: bool,
-    reach: ArgMatches,
+    reach: Reach,
+}
+
+/// The Server `DESTINATION` names, which `server add` installs over SSH.
+struct Destination {
+    address: String,
+    ssh_key: Option<String>,
+    remote: RemoteTarget,
+}
+
+/// Where an enrollment reaches the Server it enrolls, and the config it keeps.
+pub(crate) enum Reach {
+    /// The command's connection options: `--ployz-config`, `--connect`, `--context` and
+    /// `--ssh-timeout`.
+    CommandLine(ArgMatches),
+    /// This host's daemon over its socket, as the check-in loop enrolls it.
+    ThisHost { config: PathBuf },
+}
+
+/// A value in Cloud's enroll instruction that `server add` refuses before it enrolls.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EnrollInstructionError {
+    #[error("Cloud asked for the {field} {value:?}, which can't start with '-'.")]
+    LeadingDash { field: &'static str, value: String },
+    #[error("Cloud asked for ZFS on the device {device:?}.")]
+    ZfsDevice {
+        device: String,
+        #[source]
+        source: ValueError,
+    },
 }
 
 impl EnrollPlan {
@@ -212,29 +248,122 @@ impl EnrollPlan {
         let text = |id: &str| matches.try_get_one::<String>(id).ok().flatten().cloned();
         Self {
             shaping: Shaping::from_matches(matches),
-            remote: RemoteTarget::from_matches(matches),
-            destination: text("destination"),
-            ssh_key: text("ssh-key"),
+            destination: text("destination").map(|address| Destination {
+                address,
+                ssh_key: text("ssh-key"),
+                remote: RemoteTarget::from_matches(matches),
+            }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),
-            reach: matches.clone(),
+            reach: Reach::CommandLine(matches.clone()),
         }
+    }
+
+    /// What Cloud's enroll `instruction` asks of this host: `server add --yes` through its
+    /// daemon's socket, keeping `config`. A value `server add` refuses as a flag, such as one
+    /// starting with `-`, is refused here; one the engine refuses is left to the engine.
+    pub(crate) fn from_instruction(
+        instruction: &EnrollInstruction,
+        config: PathBuf,
+    ) -> Result<Self, EnrollInstructionError> {
+        let unflagged = |field: &'static str, value: &str| {
+            if value.starts_with('-') && value != "-" {
+                Err(EnrollInstructionError::LeadingDash {
+                    field,
+                    value: value.to_owned(),
+                })
+            } else {
+                Ok(value.to_owned())
+            }
+        };
+        let storage = match &instruction.storage {
+            EnrollStorage::None => StoragePreparation::None,
+            EnrollStorage::Zfs { device } => StoragePreparation::Zfs {
+                device: device
+                    .as_deref()
+                    .map(|device| {
+                        ZfsDevice::parse(device).map_err(|source| {
+                            EnrollInstructionError::ZfsDevice {
+                                device: device.to_owned(),
+                                source,
+                            }
+                        })
+                    })
+                    .transpose()?,
+            },
+        };
+        let policy = &instruction.policy;
+        let mut labels = Vec::new();
+        for (key, value) in &policy.labels {
+            let label = unflagged("label", &format!("{key}={value}"))?;
+            // `--label-add` splits its value at commas.
+            labels.extend(label.split(',').map(str::to_owned));
+        }
+        let shaping = Shaping {
+            name: (!instruction.name.is_empty())
+                .then(|| unflagged("Server name", &instruction.name))
+                .transpose()?,
+            storage: Some(storage),
+            public_ip: Some("auto".to_owned()),
+            wg_endpoints: Vec::new(),
+            wg_mtu: None,
+            labels,
+            region: None,
+            accepts: [
+                Some(policy.accepts_builds),
+                Some(policy.accepts_services),
+                Some(policy.accepts_ingress),
+            ],
+            network: Some(
+                super::enroll::CLUSTER_NETWORK
+                    .parse()
+                    .expect("the default Cluster network parses"),
+            ),
+            cluster_name: instruction
+                .founding_cluster_name
+                .as_deref()
+                .map(|name| unflagged("Cluster name", name))
+                .transpose()?,
+            version: Some(
+                env!("CARGO_PKG_VERSION")
+                    .parse()
+                    .expect("this CLI's release parses"),
+            ),
+            reset: false,
+            yes: true,
+            ingress_closed: instruction.founding_ingress_closed,
+            pasted: Vec::new(),
+        };
+        Ok(Self {
+            shaping,
+            destination: None,
+            no_install: false,
+            show_recovery_code: false,
+            reach: Reach::ThisHost { config },
+        })
     }
 
     pub(crate) fn shaping(&self) -> &Shaping {
         &self.shaping
     }
 
-    pub(crate) fn remote_target(&self) -> &RemoteTarget {
-        &self.remote
+    /// `DESTINATION`, to provision over SSH.
+    pub(crate) fn remote_target(&self) -> Option<&RemoteTarget> {
+        self.destination
+            .as_ref()
+            .map(|destination| &destination.remote)
     }
 
     pub(crate) fn destination(&self) -> Option<&str> {
-        self.destination.as_deref()
+        self.destination
+            .as_ref()
+            .map(|destination| destination.address.as_str())
     }
 
     pub(crate) fn ssh_key(&self) -> Option<&str> {
-        self.ssh_key.as_deref()
+        self.destination
+            .as_ref()
+            .and_then(|destination| destination.ssh_key.as_deref())
     }
 
     pub(crate) fn no_install(&self) -> bool {
@@ -245,9 +374,73 @@ impl EnrollPlan {
         self.show_recovery_code
     }
 
-    /// The connection options of the command (`--ployz-config`, `--connect`, `--context`,
-    /// `--ssh-timeout`), which dialing and the commands a hint tells to run read.
-    pub(crate) fn reach(&self) -> &ArgMatches {
+    pub(crate) fn reach(&self) -> &Reach {
         &self.reach
     }
+}
+
+impl Reach {
+    /// The config this enrollment reads and saves to.
+    pub(crate) fn config(&self) -> PathBuf {
+        match self {
+            Self::CommandLine(matches) => crate::context::expand_home(Path::new(
+                matches
+                    .get_one::<String>("ployz-config")
+                    .expect("ployz-config has a default"),
+            )),
+            Self::ThisHost { config } => config.clone(),
+        }
+    }
+
+    /// The connection asked for, which wins over the current context and the local socket.
+    pub(crate) fn connect(&self) -> Option<String> {
+        match self {
+            Self::CommandLine(matches) => matches.get_one::<String>("connect").cloned(),
+            Self::ThisHost { .. } => Some(this_host()),
+        }
+    }
+
+    pub(crate) fn ssh_timeout(&self) -> Duration {
+        match self {
+            Self::CommandLine(matches) => crate::cli::ssh_timeout(matches),
+            Self::ThisHost { .. } => crate::connect::DEFAULT_SSH_TIMEOUT,
+        }
+    }
+
+    /// `args` as a command that reaches the same Cluster.
+    pub(crate) fn rerun(&self, args: &[&str]) -> String {
+        match self {
+            Self::CommandLine(matches) => crate::handlers::rerun(matches, args),
+            Self::ThisHost { config } => shell_words::join(
+                [
+                    "ployz",
+                    "--ployz-config",
+                    &config.to_string_lossy(),
+                    "--connect",
+                    &this_host(),
+                ]
+                .into_iter()
+                .chain(args.iter().copied()),
+            ),
+        }
+    }
+
+    /// The Cluster entry that signs a join waiting for approval.
+    pub(crate) async fn entry(&self) -> Result<Client, Error> {
+        match self {
+            Self::CommandLine(matches) => super::super::route::connect(matches, None).await,
+            Self::ThisHost { config } => Ok(crate::connect::connect_with_ssh_timeout(
+                config,
+                Some(&this_host()),
+                None,
+                crate::connect::DEFAULT_SSH_TIMEOUT,
+            )
+            .await?),
+        }
+    }
+}
+
+/// This host's daemon socket, as a `--connect` value.
+fn this_host() -> String {
+    format!("unix://{}", MachineLayout::production().socket().display())
 }
