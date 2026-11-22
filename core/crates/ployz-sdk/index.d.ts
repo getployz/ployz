@@ -8,6 +8,7 @@ import type {
   DeployIntent,
   DeployOutcome,
   DeployPreview,
+  DialTiming,
   ExecutionError,
   PruneTarget,
   MachineId,
@@ -87,22 +88,6 @@ export type ConnectOptions = {
    * `allowUnverified`. Absent or null: any entry, as before.
    */
   readonly expect?: { readonly sealingPublicKey: string; readonly allowUnverified?: boolean } | null;
-};
-
-/** Native stages observed before a pending management dial settled. No identity or address is retained. */
-export type DialTiming = {
-  readonly correlation?: string;
-  readonly totalMs: number;
-  readonly endpointBindMs?: number;
-  readonly irohConnectMs?: number;
-  readonly proofMs?: number;
-  readonly http2ChannelMs?: number;
-  readonly probeDescribeContractMs?: number;
-  readonly entryDescribeContractMs?: number;
-  readonly pathKind: "direct" | "relayed" | "unknown";
-  readonly unfinishedStage?: "endpoint_bind" | "iroh_connect" | "proof" | "http2_channel" | "probe_describe_contract" | "entry_describe_contract";
-  readonly outcome: "answered" | "cancelled" | "timed_out" | "refused" | "unanswered";
-  readonly stoppedBy?: "sdk_deadline" | "caller";
 };
 
 export type WatchOptions = {
