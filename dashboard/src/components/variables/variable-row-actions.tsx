@@ -18,7 +18,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
-import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 
 export function VariableRowActions({
   variableKey,
@@ -27,13 +26,12 @@ export function VariableRowActions({
   exported,
   isSealed,
   plainValue,
-  showMetadata,
   onCancelEdit,
   onDelete,
   onOpenEdit,
   onOpenSealDialog,
   onSave,
-  onUpdateMetadata,
+  onToggleExported,
   neverSynced,
   onToggleNeverSync,
   onOpenRename,
@@ -45,19 +43,17 @@ export function VariableRowActions({
   exported: boolean;
   isSealed: boolean;
   plainValue: string;
-  showMetadata: boolean;
   onCancelEdit: () => void;
   /** Stages the deletion; Discard undoes it. */
   onDelete: () => void;
   onOpenEdit: (value: string) => void;
   onOpenSealDialog: () => void;
   onSave: () => void;
-  onUpdateMetadata: (patch: VariableMetadataPatch) => void;
-  /** Whether it is marked Never sync; null offers no Never sync item. */
-  neverSynced: boolean | null;
+  onToggleExported: () => void;
+  /** Whether it is marked Never sync. */
+  neverSynced: boolean;
   onToggleNeverSync: () => void;
-  /** Null offers no Rename item. */
-  onOpenRename: (() => void) | null;
+  onOpenRename: () => void;
 }) {
   if (editing) {
     return (
@@ -108,26 +104,18 @@ export function VariableRowActions({
               Seal
             </DropdownMenuItem>
           ) : null}
-          {onOpenRename ? (
-            <DropdownMenuItem onClick={onOpenRename}>
-              <TextCursorInputIcon />
-              Rename
-            </DropdownMenuItem>
-          ) : null}
-          {showMetadata ? (
-            <DropdownMenuItem
-              onClick={() => onUpdateMetadata({ exported: !exported })}
-            >
-              <Share2Icon />
-              {exported ? "Stop exporting" : "Export"}
-            </DropdownMenuItem>
-          ) : null}
-          {neverSynced !== null ? (
-            <DropdownMenuItem onClick={onToggleNeverSync}>
-              {neverSynced ? <PinOffIcon /> : <PinIcon />}
-              {neverSynced ? "Sync again" : "Never sync"}
-            </DropdownMenuItem>
-          ) : null}
+          <DropdownMenuItem onClick={onOpenRename}>
+            <TextCursorInputIcon />
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onToggleExported}>
+            <Share2Icon />
+            {exported ? "Stop exporting" : "Export"}
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onToggleNeverSync}>
+            {neverSynced ? <PinOffIcon /> : <PinIcon />}
+            {neverSynced ? "Sync again" : "Never sync"}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={onDelete}>
             <TrashIcon />
             Delete

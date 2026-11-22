@@ -20,8 +20,6 @@ function renderForm(onCreateVariable = vi.fn(), state: SealedControls["state"] =
       onCreateVariable={onCreateVariable}
       onCancel={() => {}}
       sealing={{ state, addServer: <a href="/servers">Add server</a> }}
-      defaultExported={false}
-      supportsExport={false}
       serviceNames={["web"]}
     />,
   );

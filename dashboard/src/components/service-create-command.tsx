@@ -103,21 +103,6 @@ type RootPanelProps = {
   isPending: boolean;
 };
 
-type GitPanelReposProps = {
-  mode: CreateMode;
-  organizationSlug: string;
-  query: string;
-  disabled: boolean;
-  onSelectRepo: (repo: {
-    fullName: string;
-    repositoryId: number;
-    access: import("@ployz/sdk").ServiceGitAccess;
-    defaultBranch: string;
-  }) => void;
-};
-
-type GitPanelProps = GitPanelReposProps;
-
 function RootPanel({ mode, organizationSlug, onSelectItem, isPending }: RootPanelProps) {
   const { queryClient, sessionId } = useCollectionScope();
   const [chosen, setChosen] = useState<CreateMenuItem["id"] | null>(null);
@@ -158,10 +143,6 @@ function RootPanel({ mode, organizationSlug, onSelectItem, isPending }: RootPane
       )}
     </CommandGroup>
   );
-}
-
-function GitPanel(props: GitPanelProps) {
-  return <GitRepoSelector {...props} />;
 }
 
 function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void }) {
@@ -437,8 +418,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
             />
           ) : null}
           {panel.kind === "git" ? (
-            <GitPanel
-              mode={mode}
+            <GitRepoSelector
               organizationSlug={props.organizationSlug}
               query={query}
               disabled={isPending}

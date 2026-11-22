@@ -8,17 +8,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "#/components/ui/dialog";
-import {
-  Empty,
-  EmptyHeader,
-  EmptyTitle,
-} from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
 import { VariableAddForm } from "#/components/variables/variable-add-form";
-import {
-  VariableRow,
-  type VariableMetadataPatch,
-} from "#/components/variables/variable-row";
+import { VariableRow } from "#/components/variables/variable-row";
 import type { Write } from "#/modules/config-store/store-write";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
@@ -44,12 +36,11 @@ export function VariablesPanel({
   countNoun,
   onCreateVariable,
   onSealVariable,
-  onUpdateMetadata,
+  onSetExported,
   onNeverSync,
   onRename,
   referrersOf,
   sealing,
-  defaultExported = false,
   headerActions,
   renderAfterList,
   emptyState,
@@ -68,25 +59,21 @@ export function VariablesPanel({
   onCreateVariable: (input: VariableAddInput) => Write;
   /** Seals a plain variable's value, or sets a sealed one's, in the background. */
   onSealVariable: (variable: PlainVariableRecord) => Write;
-  /** When provided, each row's menu marks it Never sync, or syncs it again. */
-  onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
-  /** When provided, each row's menu renames it; with `updateReferences`, the variables using it switch too. */
-  onRename?: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
+  /** Each row's menu marks it Never sync, or syncs it again. */
+  onNeverSync: (variable: VariableRecord, marked: boolean) => void;
+  /** Each row's menu renames it; with `updateReferences`, the variables using it switch too. */
+  onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
   /** The variables that reference one, as `SERVICE.KEY`, which its rename switches to the new name. */
-  referrersOf?: (variable: VariableRecord) => readonly string[];
-  onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  /** Offers Sealed in the add form; none: plain variables only. */
-  sealing?: SealedControls;
-  /** Whether the "Exported" toggle starts checked. */
-  defaultExported?: boolean;
-  /** Extra buttons rendered next to "New Variable" (e.g. a raw editor). */
-  headerActions?: ReactNode;
-  /** Rendered below the variable rows (e.g. managed system variables). */
-  renderAfterList?: () => ReactNode;
-  /** Override the default empty state. */
-  emptyState?: ReactNode;
+  referrersOf: (variable: VariableRecord) => readonly string[];
+  /** Each row's menu marks it exported, or stops exporting it. */
+  onSetExported: (variable: VariableRecord, exported: boolean) => void;
+  sealing: SealedControls;
+  /** Buttons next to "New Variable". */
+  headerActions: ReactNode;
+  /** Rendered below the variable rows. */
+  renderAfterList: () => ReactNode;
+  emptyState: ReactNode;
 }) {
-  const supportsExport = onUpdateMetadata != null;
   const [isAdding, setIsAdding] = useState(false);
   const [draft, setDraft] = useState<VariableAddInput>();
 
@@ -126,8 +113,6 @@ export function VariablesPanel({
             initial={draft}
             onCancel={() => setIsAdding(false)}
             sealing={sealing}
-            defaultExported={defaultExported}
-            supportsExport={supportsExport}
             valueTargets={valueTargets}
             serviceNames={serviceNames}
           />
@@ -146,26 +131,18 @@ export function VariablesPanel({
                 collection={collection}
                 valueTargets={valueTargets}
                 onSealVariable={onSealVariable}
-                onUpdateMetadata={onUpdateMetadata}
+                onSetExported={onSetExported}
                 onNeverSync={onNeverSync}
                 onRename={onRename}
-                referrers={referrersOf?.(variable)}
+                referrers={referrersOf(variable)}
               />
             ))}
           </div>
         ) : null}
 
-        {showEmptyState ? (
-          emptyState ?? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>No variables yet</EmptyTitle>
-              </EmptyHeader>
-            </Empty>
-          )
-        ) : null}
+        {showEmptyState ? emptyState : null}
 
-        {renderAfterList?.()}
+        {renderAfterList()}
       </div>
     </div>
   );

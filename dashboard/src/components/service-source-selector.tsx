@@ -24,7 +24,6 @@ import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions
 import { githubConnectHref } from "#/modules/github/github-connect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
-import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
 const imageExamples = [
   "hello-world",
@@ -324,15 +323,10 @@ function GitRepoList({
     },
   });
   const repoCount = repoCountRows?.[0]?.count ?? 0;
-  const selectorState = getGitRepoSelectorState({
-    hasInstallations: accessState.hasInstallations,
-    repoCount,
-    filteredRepoCount: repos.length,
-  });
 
   if (isLoading) return <SelectorLoading />;
 
-  if (selectorState === "no-installations") {
+  if (!accessState.hasInstallations) {
     return null;
   }
 
@@ -341,9 +335,9 @@ function GitRepoList({
       {stale && <GithubRepositoryRefreshNotice />}
       <CommandSeparator />
 
-      {selectorState === "empty" ? (
+      {repoCount === 0 ? (
         <SelectorEmpty>No repositories found</SelectorEmpty>
-      ) : selectorState === "no-results" ? (
+      ) : repos.length === 0 ? (
         <SelectorEmpty>No repositories match your search</SelectorEmpty>
       ) : (
         <CommandGroup>

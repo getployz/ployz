@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useEffectEvent, useId, useState, type ReactNode } from "react";
 import { GitBranchIcon, HardDriveIcon, LayersIcon, PackageIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import {

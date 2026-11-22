@@ -5,12 +5,10 @@ import {
   variableRowReducer,
 } from "#/components/variables/variable-row-state";
 import { VariableRowActions } from "#/components/variables/variable-row-actions";
-import { VariableRowDialogs } from "#/components/variables/variable-row-dialogs";
+import { ConfirmDialog } from "#/components/confirm-dialog";
 import { VariableRowHeading } from "#/components/variables/variable-row-heading";
 import { VariableRowValue } from "#/components/variables/variable-row-value";
 import { VariableRenameDialog } from "#/components/variables/variable-rename-dialog";
-export type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
-import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { Write } from "#/modules/config-store/store-write";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { referencesDeletedOwner } from "#/modules/variables/variable-template";
@@ -23,7 +21,7 @@ export function VariableRow({
   collection,
   valueTargets,
   onSealVariable,
-  onUpdateMetadata,
+  onSetExported,
   onNeverSync,
   onRename,
   referrers,
@@ -34,15 +32,12 @@ export function VariableRow({
   valueTargets?: ReferenceTarget[];
   /** Seals a plain variable's value, or sets a sealed one's, in the background. */
   onSealVariable: (variable: PlainVariableRecord) => Write;
-  /**
-   * When provided, the row exposes export controls and badges. Owners that don't
-   * model exports (e.g. plain service variables) omit this.
-   */
-  onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  /** When provided, the menu marks the variable Never sync, or syncs it again. */
-  onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
-  /** When provided, the menu renames the variable; with `updateReferences`, the variables using it switch too. */
-  onRename?: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
+  /** Marks the variable exported, or stops exporting it. */
+  onSetExported: (variable: VariableRecord, exported: boolean) => void;
+  /** Marks the variable Never sync, or syncs it again. */
+  onNeverSync: (variable: VariableRecord, marked: boolean) => void;
+  /** With `updateReferences`, the variables using it switch to the new name too. */
+  onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
   /** The variables that reference this one, as `SERVICE.KEY`, which a rename switches to the new name. */
   referrers?: readonly string[];
 }) {
@@ -54,7 +49,6 @@ export function VariableRow({
   const isSealed = variable.value.type === "sealed";
   const notSet = variable.value.type === "sealed" && variable.value.notSet === true;
   const [plainValue, hold] = useCommitHold(variable.value.type === "plain" ? variable.value.value : "");
-  const showMetadata = onUpdateMetadata != null;
   const brokenRefWarning = referencesDeletedOwner(plainValue)
     ? "References a variable whose service was deleted — it resolves to empty at deploy."
     : null;
@@ -89,7 +83,6 @@ export function VariableRow({
         variableKey={variable.key}
         exported={variable.exported}
         neverSynced={variable.neverSynced ?? false}
-        showMetadata={showMetadata}
         warnings={[variable.broken ? `Broken reference: ${variable.broken}` : brokenRefWarning]}
       />
 
@@ -120,7 +113,6 @@ export function VariableRow({
         exported={variable.exported}
         isSealed={isSealed}
         plainValue={plainValue}
-        showMetadata={showMetadata}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}
         onDelete={() => collection.delete(variable.id)}
         onOpenEdit={(value) =>
@@ -130,31 +122,36 @@ export function VariableRow({
           dispatch({ type: "sealDialogChanged", open: true })
         }
         onSave={handleSave}
-        onUpdateMetadata={(patch) => onUpdateMetadata?.(variable, patch)}
-        neverSynced={onNeverSync ? variable.neverSynced ?? false : null}
-        onToggleNeverSync={() => onNeverSync?.(variable, !variable.neverSynced)}
-        onOpenRename={onRename ? () => dispatch({ type: "renameDialogChanged", open: true }) : null}
+        onToggleExported={() => onSetExported(variable, !variable.exported)}
+        neverSynced={variable.neverSynced ?? false}
+        onToggleNeverSync={() => onNeverSync(variable, !variable.neverSynced)}
+        onOpenRename={() => dispatch({ type: "renameDialogChanged", open: true })}
       />
 
       </div>
 
-      <VariableRowDialogs
-        variableKey={variable.key}
-        confirmSealOpen={state.confirmSealOpen}
-        onSealOpenChange={(open) =>
-          dispatch({ type: "sealDialogChanged", open })
+      {/* Sealing can't be undone here, so it asks; deleting is staged, so it doesn't. */}
+      <ConfirmDialog
+        open={state.confirmSealOpen}
+        onOpenChange={(open) => dispatch({ type: "sealDialogChanged", open })}
+        title="Seal Variable"
+        description={
+          <>
+            Seal <strong>{variable.key}</strong>? You can't reveal or edit its value here afterwards.
+          </>
         }
-        onConfirmSeal={handleSeal}
+        actionLabel="Seal variable"
+        pendingLabel="Sealing…"
+        variant="destructive"
+        onConfirm={handleSeal}
       />
-      {onRename ? (
-        <VariableRenameDialog
-          variableKey={variable.key}
-          referrers={referrers}
-          open={state.renameOpen}
-          onOpenChange={(open) => dispatch({ type: "renameDialogChanged", open })}
-          onRename={(to, updateReferences) => onRename(variable, to, updateReferences)}
-        />
-      ) : null}
+      <VariableRenameDialog
+        variableKey={variable.key}
+        referrers={referrers}
+        open={state.renameOpen}
+        onOpenChange={(open) => dispatch({ type: "renameDialogChanged", open })}
+        onRename={(to, updateReferences) => onRename(variable, to, updateReferences)}
+      />
     </div>
   );
 }

@@ -25,10 +25,6 @@ import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-st
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
 /**
- * `project / environment`, each crumb a switcher; places other than Architecture add their name. A Branch reads
- * `project / parent ⑂ branch`, and its Parent's crumb opens the Parent.
- */
-/**
  * On phones the path keeps its last two crumbs; the rest move into a "…" menu so the bar never wraps.
  * `branchAt` marks the crumb a Branch starts at: ⑂ separates it from its Parent instead of "/".
  * `flush` pulls a first crumb that is a ghost button out by its padding, so its text lines up with the bar's edge.
