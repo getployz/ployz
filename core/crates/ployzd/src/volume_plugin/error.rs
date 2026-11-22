@@ -62,6 +62,22 @@ impl From<&str> for PluginError {
     }
 }
 
+/// A capacity refusal answers with its own code, and every other refusal as internal.
+impl From<PluginError> for ployz_core::RpcError {
+    fn from(error: PluginError) -> Self {
+        match error.into_capacity() {
+            Ok(error) => error.into_rpc_error(),
+            Err(error) => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<crate::dataset_layout::InvalidVolumeName> for ployz_core::RpcError {
+    fn from(error: crate::dataset_layout::InvalidVolumeName) -> Self {
+        PluginError::from(error).into()
+    }
+}
+
 impl PluginError {
     /// The capacity refusal itself, or this error when it is anything else.
     pub(super) fn into_capacity(self) -> Result<ployz_core::StorageCapacityError, Self> {

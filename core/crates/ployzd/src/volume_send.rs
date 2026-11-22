@@ -37,6 +37,7 @@ pub mod protocol;
 
 use crate::{
     dataset_layout::DatasetLayout,
+    host_command::{self, Exit, Ran},
     machine_pool,
     storage::Plugin,
     volume_copy::{SEND_POINT_ROUTE, SendPoint, SendPointRequest},
@@ -312,6 +313,7 @@ async fn bound(programs: &Programs, name: &DockerVolumeName) -> Result<String, R
     let mut output = lines(
         &programs.zfs,
         &["get", "-Hp", "-o", "value", "refquota", &root],
+        Exit::Status,
     )
     .await?;
     match output.pop() {
@@ -326,7 +328,7 @@ async fn bound(programs: &Programs, name: &DockerVolumeName) -> Result<String, R
 /// the slot until the target promotes, and the target still pulls the final increment
 /// from there.
 async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<String, Refusal> {
-    let pools = lines(&programs.zpool, &machine_pool::ZPOOL_LIST).await?;
+    let pools = lines(&programs.zpool, &machine_pool::ZPOOL_LIST, Exit::Status).await?;
     let pool = machine_pool::one_usable(&pools.join("\n"))
         .map_err(|error| Refusal::Zfs(error.to_string()))?
         .ok_or_else(|| {
@@ -335,6 +337,7 @@ async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<St
     let filesystems = lines(
         &programs.zfs,
         &["list", "-H", "-o", "name", "-t", "filesystem"],
+        Exit::Status,
     )
     .await?;
     let layout = DatasetLayout::new(pool.name());
@@ -350,7 +353,7 @@ async fn stream_args(
     stream: &SendStream,
     root: &str,
 ) -> Result<Vec<String>, Refusal> {
-    let snapshots = complete_lines(
+    let snapshots = lines(
         &programs.zfs,
         &[
             "list",
@@ -363,6 +366,7 @@ async fn stream_args(
             "1",
             root,
         ],
+        Exit::Listing,
     )
     .await?;
     let snapshots: Vec<(&str, &str)> = snapshots
@@ -450,29 +454,16 @@ fn names_a_missing_snapshot<'a>(
         })
 }
 
-async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
-    lines_with(program, args, false).await
-}
-
-/// Like [`lines`], for a listing a 404 is judged from. ZFS exits 0 when it stopped
-/// iterating on an error and says so only on stderr, so any stderr fails the listing.
-async fn complete_lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
-    lines_with(program, args, true).await
-}
-
-async fn lines_with(program: &Path, args: &[&str], quiet: bool) -> Result<Vec<String>, Refusal> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
+async fn lines(program: &Path, args: &[&str], exit: Exit) -> Result<Vec<String>, Refusal> {
+    let output = host_command::run(program, args)
         .await
         .map_err(|error| Refusal::Zfs(format!("could not run {}: {error}", program.display())))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() || (quiet && !stderr.trim().is_empty()) {
+    if exit.judge(&output) != Ran::Succeeded {
         return Err(Refusal::Zfs(format!(
             "{} {} failed: {}",
             program.display(),
             args.join(" "),
-            stderr.trim()
+            String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout)

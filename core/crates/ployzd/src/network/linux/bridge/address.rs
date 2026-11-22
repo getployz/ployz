@@ -11,9 +11,9 @@ use ployz_core::MachineSubnet;
 use super::DOCKER_NETWORK_NAME;
 
 /// The ployz endpoint of a Container, with `ipv4` pinned. Only a Container that
-/// [`super::takes_bridge_ipv6`] takes IPv6.
+/// [`super::takes_ipv6`] takes IPv6.
 pub(crate) fn endpoint(ipv6: bool, ipv4: Option<Ipv4Addr>) -> EndpointSettings {
-    pin(super::bridge_endpoint(ipv6).unwrap_or_default(), ipv4)
+    pin(super::base_endpoint(ipv6).unwrap_or_default(), ipv4)
 }
 
 /// `endpoint` with `ipv4` pinned, keeping any other address it asks for.

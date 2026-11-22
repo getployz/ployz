@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::docker_network::BridgeMember;
+use super::BridgeMember;
 
 const FILE: &str = "bridge-member-addresses.json";
 

@@ -27,7 +27,7 @@ use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 
-use super::{Dataset, VolumeName, VolumeStorage, inspect::internal};
+use super::{Dataset, VolumeName, VolumeStorage};
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
@@ -88,7 +88,7 @@ impl VolumeStorage {
             ..StorageDeparture::default()
         };
         for name in names {
-            let departed = departed_name(&name.to_string())?;
+            let departed = name.wire();
             match self
                 .demote_copy(&held, &pool, &name, now_unix_seconds, mirrors)
                 .await
@@ -285,7 +285,7 @@ pub(super) async fn demote(
         storage
             .demote_all(now, Mirrors::Destroy)
             .await
-            .map_err(internal),
+            .map_err(RpcError::from),
     )
 }
 
@@ -298,7 +298,7 @@ pub(super) async fn seal(
         storage
             .demote_all(now, Mirrors::Keep)
             .await
-            .map_err(internal),
+            .map_err(RpcError::from),
     )
 }
 

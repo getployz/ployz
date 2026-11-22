@@ -7,12 +7,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::host_command;
 use crate::machine_pool::{self, DeviceMarker, DevicePoolFiles, MachinePool};
 use ployz_core::MachineLayout;
 
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
-    checked_output, run_command,
+    checked_output,
     storage::{CreateOptions, parse_create},
 };
 
@@ -226,7 +227,7 @@ impl PoolStorage {
     /// Returns an error for failed inspection, conflicting backing, or failed ownership recording.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
         let args = machine_pool::ZPOOL_LIST;
-        let output = match run_command(&self.zpool, &args).await {
+        let output = match host_command::run(&self.zpool, &args).await {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             output => checked_output(&self.zpool, &args, output)?,
         };
@@ -286,7 +287,7 @@ impl PoolStorage {
         }
         if !has_backing {
             let device_pool = machine_pool::DEVICE_BACKED_POOL_NAME;
-            let output = match run_command(&self.zpool, &["import"]).await {
+            let output = match host_command::run(&self.zpool, &["import"]).await {
                 Err(error)
                     if error.kind() == io::ErrorKind::NotFound && !self.has_device_pool()? =>
                 {

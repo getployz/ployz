@@ -20,7 +20,7 @@ use ployz_core::{
 use super::{Error, doors::Door};
 
 mod healthcheck;
-use crate::{machine::AdmittedSpec, sealed_env};
+use crate::{machine::AdmittedSpec, network::bridge, sealed_env};
 pub(super) use healthcheck::{docker_healthcheck, effective_healthcheck};
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
@@ -283,7 +283,7 @@ pub(super) fn container_create_body(
             None => (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
         },
         exposed_ports: exposed_ports.filter(|_| on_bridge),
-        networking_config: super::bridge_endpoint(super::takes_bridge_ipv6(&labels))
+        networking_config: bridge::base_endpoint(bridge::takes_ipv6(&labels))
             .filter(|_| on_bridge)
             .map(|endpoint| NetworkingConfig {
                 endpoints_config: Some(HashMap::from([(
