@@ -27,4 +27,4 @@ agent-browser --session $S open 'http://localhost:<port>/cloud/ada/~/settings?se
 
 - Quote URLs that contain `~`, or the shell expands them.
 - **Add servers** mints a fleet token for a real machine. Here, verify only the dialog. Pairing a real server takes `SERVERS=1` or `core/`.
-- Code: `dashboard/src/routes/_protected/cloud/$organizationSlug/_org/~/`, `_org/-components/` (members, tokens, account menu), `dashboard/src/components/dashboard-navigation-model.ts`.
+- Code: `dashboard/src/routes/_protected/cloud/$organizationSlug/_org/~/`, `_org/-components/` (members, tokens, account menu), `dashboard/src/components/shell/dashboard-navigation-model.ts`.
