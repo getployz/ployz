@@ -8,6 +8,7 @@ use crate::sealing_key::SealingKey;
 
 mod backfill;
 mod doors;
+mod floors;
 mod harness;
 mod join_approval;
 mod policy;

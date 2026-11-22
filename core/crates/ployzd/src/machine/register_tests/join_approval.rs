@@ -755,7 +755,7 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     registration.assigned_machine.join_approval = Some(approval.clone());
     registration.sealing_key = Some(
         fake_key
-            .seal_join(&body.machine.public_key, &approval)
+            .seal_join(&body.machine.public_key, &approval, None)
             .unwrap(),
     );
     joiner

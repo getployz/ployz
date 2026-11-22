@@ -1118,10 +1118,20 @@ impl LocalMachine {
         )?;
         assignment.machine.join_approval = Some(approval.clone());
         assignment.machine.runtime.management_identity = None;
-        let sealing_key = SealingKey::load(self.owner.data_dir())
+        let sealing_key = match SealingKey::load(self.owner.data_dir())
             .map_err(Error::JoinRecord)?
-            .map(|key| key.seal_join(&assignment.machine.public_key, &approval))
-            .transpose()?;
+        {
+            Some(key) => {
+                // The joiner's claim, not the row: Cloud's Register carries no runtime.
+                let opens_floors = request
+                    .capabilities
+                    .iter()
+                    .any(|claimed| claimed == ployz_core::FORGET_VERSIONS_CAPABILITY);
+                let floors = self.floors_for(&key, opens_floors)?;
+                Some(key.seal_join(&assignment.machine.public_key, &approval, floors.as_ref())?)
+            }
+            None => None,
+        };
         let registration = registered(
             assignment.machine,
             snapshot.machines,
@@ -1419,6 +1429,9 @@ impl LocalMachine {
     /// what the mirror holds (#3591). Only a Leave destroys mirrors.
     async fn install(&self, installation: Installation) -> Result<(), Error> {
         self.depart_storage(StorageExit::KeepEveryCopy).await?;
+        if let Some((cluster, floors)) = installation.floors() {
+            self.approvals.install_floors(cluster, floors)?;
+        }
         let now = self
             .approvals
             .observed_now(ployz_core::authority::Timestamp::now())?;

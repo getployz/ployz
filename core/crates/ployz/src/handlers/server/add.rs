@@ -79,6 +79,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .1;
         }
         let policy = policy.settle(listed.or(joining), matches)?;
+        let claimed = crate::enrollment::claims(&token.runtime);
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -101,7 +102,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         // This CLI runs the joiner's catch-up, so it claims what it honors. The saved
         // assignment never holds a claim, so it is set on the copy Register carries.
         let mut assignment = assignment;
-        assignment.request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
+        assignment.request.capabilities = claimed.into_iter().map(str::to_owned).collect();
         let assigned = assignment.machine.clone();
         let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
             .await
