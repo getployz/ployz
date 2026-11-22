@@ -169,10 +169,13 @@ pub(crate) fn rows(table: &Table) {
 /// # Errors
 ///
 /// Returns a serialization or stdout write error.
-pub(crate) fn fields<T: Serialize + ?Sized>(value: &T, record: &Fields) -> Result<(), Failure> {
-    finish(value, || {
-        let _ = record.write(&mut super::stdout(), aligned());
-    })
+pub(crate) fn fields<T: Serialize + ?Sized>(value: &T, fields: &Fields) -> Result<(), Failure> {
+    finish(value, || record(fields))
+}
+
+/// A record's human form, inside a `finish` that owns the result.
+pub(crate) fn record(fields: &Fields) {
+    let _ = fields.write(&mut super::stdout(), aligned());
 }
 
 /// One record on stdout, for a value a person must copy before the command ends.
