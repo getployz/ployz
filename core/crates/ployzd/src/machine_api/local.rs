@@ -25,6 +25,7 @@ use crate::{
         AdmittedSpec, Caller, LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError,
         Scope, SealingError, StoreError,
     },
+    management::build_grant::{Mint, Minter},
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
@@ -1020,13 +1021,13 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before `Mint::check_admitted`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
-        let admitted = match (&request.rule, local.scope()) {
+        let minter = match (&request.rule, local.scope()) {
             (None, Scope::Operator) => {
                 return local_error(LocalMachineError::BuildRefused {
                     capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
                 });
             }
-            (None, Scope::Full(_)) => None,
+            (None, Scope::Full(full)) => Minter::Full(full),
             (Some(grant), _) => {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
@@ -1036,7 +1037,7 @@ impl MachineRpc for MachineService {
                     ));
                 };
                 match admitted {
-                    Ok(admitted) => Some(admitted),
+                    Ok(admitted) => Minter::Rule(admitted),
                     Err(error) => return local_error(error),
                 }
             }
@@ -1045,9 +1046,7 @@ impl MachineRpc for MachineService {
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
-        let mint = match crate::management::build_grant::Mint::check_admitted(
-            request, key_dir, admitted,
-        ) {
+        let mint = match Mint::check_admitted(request, key_dir, minter) {
             Ok(mint) => mint,
             Err(refused) => return respond(refused),
         };

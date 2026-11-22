@@ -69,6 +69,12 @@ impl FullCaller {
     pub(crate) fn cloud_routed(self) -> bool {
         self.0.cloud_routed
     }
+
+    /// The daemon's own Full access, for a test that has no Machine to ask.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self(Call::daemon())
+    }
 }
 
 impl LocalMachine {
