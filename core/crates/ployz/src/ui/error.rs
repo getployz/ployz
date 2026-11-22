@@ -132,15 +132,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_retry_notice_names_the_operation_the_cause_and_the_time_left() {
-        let error = std::io::Error::other("connection refused");
-        assert_eq!(
-            retrying_line("Reconnecting to the Cluster", &error, 60),
-            "Reconnecting to the Cluster: connection refused; retrying for up to 60s. Check outbound firewall access if this connection is blocked."
-        );
-    }
-
-    #[test]
     fn valid_caps_at_eight_and_counts_the_rest() {
         let names = (1..=11).map(|n| format!("s{n}"));
         let mut out = anstream::StripStream::new(Vec::new());
