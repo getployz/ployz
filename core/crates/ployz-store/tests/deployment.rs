@@ -9347,6 +9347,184 @@ fn two_services_with_one_signer_keep_their_own_pins() {
     );
 }
 
+/// Apply web and api signed at P1, then make web read api's address, so a Deploy of web
+/// alone also ships api, unchanged.
+fn web_reads_api(store: &ConfigStore, who: &Actor) {
+    admit_signed(
+        store,
+        who,
+        1,
+        vec![posted(store, who, "web", P1), posted(store, who, "api", P1)],
+    );
+    apply(store, 1);
+    set(
+        store,
+        who,
+        "web.env.API",
+        json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
+    );
+}
+
+/// Admit a Deploy of `services` alone as `n`, carrying `versions`.
+fn admit_services(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, services): (u8, &[&str]),
+    versions: Vec<ployz_store::PostedVersion>,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: services
+                .iter()
+                .map(|name| ServiceName::parse(*name).unwrap())
+                .collect(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions,
+        }),
+        &Trusted::default(),
+    )
+}
+
+#[test]
+fn a_deploy_of_one_service_keeps_the_pin_of_an_unchanged_service_it_references() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let web = posted(&store, &who, "web", P1);
+    admit_services(&store, &who, (2, &["web"]), vec![web]).unwrap();
+    assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+}
+
+#[test]
+fn a_deploy_of_one_service_runs_each_version_its_plan_asks_a_device_to_sign() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let plan = store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("web").unwrap()],
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    // A Device signs every spec the plan shows it, the tag now pointing at P2.
+    let signed: Vec<(String, String, usize)> = plan
+        .target
+        .unwrap()
+        .iter()
+        .map(|spec| (spec.name.to_string(), P2.to_owned(), 1))
+        .collect();
+    let versions = signed
+        .iter()
+        .map(|(service, image, _)| posted(&store, &who, service, image))
+        .collect();
+    admit_services(&store, &who, (2, &["web"]), versions).unwrap();
+    let claimed = store.claim(&id(2), &runner("runner-a")).unwrap();
+    let ran: Vec<(String, String, usize)> = claimed
+        .intent
+        .target
+        .iter()
+        .map(|spec| {
+            let pinned = &claimed.ran[&spec.name];
+            let image = pinned.ran.pin.as_ref().unwrap().image.clone();
+            (spec.name.to_string(), image, pinned.versions.len())
+        })
+        .collect();
+    assert_eq!(ran, signed);
+}
+
+#[test]
+fn a_new_version_of_a_service_a_deploy_of_one_service_references_stays_once_it_ran() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let versions = vec![
+        posted(&store, &who, "web", P1),
+        posted(&store, &who, "api", P2),
+    ];
+    admit_services(&store, &who, (2, &["web"]), versions).unwrap();
+    assert_eq!(runs(&store, 2, "api"), Some((P2.to_owned(), 1)));
+    apply(&store, 2);
+    // A Deploy that signs nothing new for api reuses what ran last, not the older P1.
+    let web = posted(&store, &who, "web", P1);
+    admit_services(&store, &who, (3, &["web"]), vec![web]).unwrap();
+    assert_eq!(runs(&store, 3, "api"), Some((P2.to_owned(), 1)));
+}
+
+/// `version` signed again to forget every older version of its Service, as a Deploy
+/// with `--forget-older` signs it.
+fn forgetting(mut version: ployz_store::PostedVersion) -> ployz_store::PostedVersion {
+    let mut body = version.statement.open().unwrap();
+    body.forget_older = true;
+    let signer = ployz_core::authority::Signer::from_seed(&[7; 32]);
+    version.statement = ployz_core::authority::Signed::sign(&body, &signer).unwrap();
+    version
+}
+
+#[test]
+fn a_deploy_of_one_service_that_forgets_older_versions_runs_what_it_forgot_them_for() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    // The CLI sends api's forget to every Server, whose floor for api then passes P1.
+    let api = forgetting(posted(&store, &who, "api", P2));
+    let versions = vec![forgetting(posted(&store, &who, "web", P1)), api.clone()];
+    admit_services(&store, &who, (2, &["web"]), versions).unwrap();
+    let claimed = store.claim(&id(2), &runner("runner-a")).unwrap();
+    let pinned = &claimed.ran[&ServiceName::parse("api").unwrap()];
+    assert_eq!(
+        pinned.ran.pin.as_ref().map(|pin| pin.image.as_str()),
+        Some(P2)
+    );
+    assert_eq!(pinned.versions, [api.statement]);
+}
+
+#[test]
+fn a_retry_that_rolls_back_a_service_it_references_records_the_image_it_ran() {
+    let (store, who) = shop();
+    set(&store, &who, "api.image", json!(P1));
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set(
+        &store,
+        &who,
+        "web.env.API",
+        json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
+    );
+    admit_services(&store, &who, (2, &["web"]), Vec::new()).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    store
+        .record(
+            &id(2),
+            &runner("runner-a"),
+            RunEvidence::NotExecuted("stopped".into()),
+        )
+        .unwrap();
+    set(&store, &who, "api.image", json!(P2));
+    admit_services(&store, &who, (3, &["api"]), Vec::new()).unwrap();
+    apply(&store, 3);
+    assert_eq!(changed(&store, &who), ["web"]);
+
+    retry_of(&store, &who, (4, 2)).unwrap();
+    let ran = apply(&store, 4);
+    let api = ran
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "api")
+        .unwrap();
+    assert_eq!(api.container.image, P1);
+    // api runs P1 again, so the P2 saved since is staged once more.
+    assert_eq!(changed(&store, &who), ["api"]);
+}
+
 #[test]
 fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_one() {
     let (store, who) = shop();

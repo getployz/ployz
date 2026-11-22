@@ -35,8 +35,9 @@ changed: every GitHub service moves to the newest commit on its Git branch, and 
 or lost a server, replicas spread over the servers you have now (if a service's volume was on a
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
 Everything else keeps running as it is. Deploying only some services, such as with
-`ployz deploy web`, also deploys the saved changes of the services they reference, and the
-deployment's page lists them. A secret that is **Not set** never stops a deploy: the
+`ployz deploy web`, also deploys the services they reference, with their saved changes, and the
+deployment's page lists them. Each runs the image you approve for it, as a service you name
+does, so if `web` reads `api` and `api`'s tag has moved, `api` runs the new image. A secret that is **Not set** never stops a deploy: the
 deploy skips it, and any variable that references it, and warns. A
 [broken reference](../services/variables.md#reference-another-services-variable), to a service or
 variable that isn't there, doesn't either: the deploy leaves that variable out the same way, or
