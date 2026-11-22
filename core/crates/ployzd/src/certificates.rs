@@ -303,8 +303,8 @@ pub(crate) enum Error {
     NoHttp01(IngressHost),
     #[error("certificate key type {0} is not supported")]
     UnsupportedKeyType(String),
-    #[error("certificate key: {0}")]
-    Key(String),
+    #[error("certificate key")]
+    Key(#[from] rcgen::Error),
     #[error("external account binding hmac_key is not base64")]
     InvalidEab,
 }
@@ -807,14 +807,10 @@ fn certificate_request(
         CertificateKeyType::Unrecognized(kind) => {
             return Err(Error::UnsupportedKeyType(kind.clone()));
         }
-    }
-    .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
-    let mut params = rcgen::CertificateParams::new(vec![hostname.as_str().to_owned()])
-        .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
+    }?;
+    let mut params = rcgen::CertificateParams::new(vec![hostname.as_str().to_owned()])?;
     params.distinguished_name = rcgen::DistinguishedName::new();
-    let csr = params
-        .serialize_request(&key)
-        .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
+    let csr = params.serialize_request(&key)?;
     Ok((key.serialize_pem(), csr.der().as_ref().to_vec()))
 }
 
