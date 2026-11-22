@@ -1,7 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { Context, Effect, Layer } from "effect";
-import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
 import {
@@ -11,12 +10,11 @@ import {
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
   listGithubRepositoryNamesForOrganization,
-  unlinkGithubInstallation,
 } from "#/modules/github/github.repository";
+import { githubConnectHref } from "#/modules/github/github-connect";
 import { basicGlob } from "#/modules/github/github.server";
 import { repositoryOwnerId, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { requireAccess } from "#/modules/organization/access.server";
+import type { Caller } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -30,7 +28,7 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
   const installations = yield* listGithubInstallationsForOrganization(caller.organization.id);
   const repositories = yield* listCachedGithubRepositoriesForOrganization(caller.organization.id);
   return {
-    connect_url: new URL(`/api/github/connect?${new URLSearchParams({ organization: caller.organization.slug }).toString()}`, config.app.url).href,
+    connect_url: new URL(githubConnectHref(caller.organization.slug, false), config.app.url).href,
     ready: repositories.length > 0,
     installations: installations.map((installation) => ({
       id: installation.installationId,
@@ -181,26 +179,3 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
     file: (caller, query) => provided(githubFile(caller, query)),
   };
 }));
-
-/**
- * Disconnect, from Organization › GitHub or `ployz github disconnect LOGIN`: the Organization lets go of the GitHub
- * account it links by that login (a `manage` call). The link goes first, so nothing new reads or builds through it;
- * then its builds running on GitHub through that installation are cancelled as Cloud and their Deployments fail with
- * the disconnect. A stop that fails is caught by the build walk's next look. Other Organizations linked to the
- * installation keep it. Uninstalling the App happens on GitHub.
- */
-export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (actor: Actor, organizationSlug: string, login: string) {
-  const { origins } = (yield* AppConfig).github;
-  const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
-  const installation = (yield* listGithubInstallationsForOrganization(organization.id))
-    .find((linked) => linked.accountLogin.toLowerCase() === login.toLowerCase());
-  if (installation === undefined) return yield* new NotFound({ message: `No GitHub account ${login} in this Organization.` });
-  yield* unlinkGithubInstallation({ organizationId: organization.id, installationId: installation.installationId });
-  yield* stopGithubInstallationBuilds(installation.installationId, [organization.id]).pipe(
-    Effect.catch((error) => Effect.logWarning("Could not stop a disconnected installation's GitHub builds.", error)),
-  );
-  const settings = installation.accountType === "Organization"
-    ? `${origins.web}/organizations/${installation.accountLogin}/settings/installations/${installation.installationId}`
-    : `${origins.web}/settings/installations/${installation.installationId}`;
-  return { disconnected: { id: installation.installationId, account: installation.accountLogin }, uninstall_url: settings };
-});

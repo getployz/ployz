@@ -12,7 +12,7 @@ import {
   requestGithubRepoSync,
   searchGithubFiles,
 } from "#/modules/github/github.server";
-import { listGithubBuildRepositories } from "#/modules/github/github-build.server";
+import { listGithubBuildRepositories } from "#/modules/config-store/store-github-repositories.server";
 import {
   actorMiddleware,
   publicErrorMiddleware,

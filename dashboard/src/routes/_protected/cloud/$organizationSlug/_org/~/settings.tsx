@@ -12,7 +12,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { ORGANIZATION_SETTINGS_SECTIONS, type OrganizationSettingsSection } from "#/components/shell/dashboard-navigation-model";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
-import { CONNECT_NOTICES } from "#/modules/github/github-connect";
+import { CONNECT_NOTICES, OFFER_MAX_LENGTH } from "#/modules/github/github-connect";
 import { clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { githubWebQueryOptions } from "#/modules/github/github.queries";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
@@ -38,7 +38,7 @@ const settingsSearchSchema = Schema.Struct({
     Schema.catchDecoding(() => Effect.succeed(Option.some("general" as const))),
   )),
   connect: Schema.optional(Schema.Literals(CONNECT_NOTICES).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
-  offer: Schema.optional(Schema.String.check(Schema.isMaxLength(8192)).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
+  offer: Schema.optional(Schema.String.check(Schema.isMaxLength(OFFER_MAX_LENGTH)).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
 });
 
 interface SectionProps {
