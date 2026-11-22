@@ -502,7 +502,6 @@ export const OPERATIONS = {
   }),
 } as const;
 
-export type OperationName = keyof typeof OPERATIONS;
 
 /** The operation each Volume Run kind a caller requests is. */
 export const VOLUME_OPERATIONS = {

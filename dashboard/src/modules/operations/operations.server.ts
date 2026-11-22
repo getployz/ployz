@@ -144,14 +144,9 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
   })));
 
-/** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
-export const removeServer = (
-  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall, serverName?: MachineName,
-) => removal(caller, machineId, confirmed, call, serverName);
-
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
 export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
-  removal(caller, machineId, null, call, serverName);
+  removeServer(caller, machineId, null, call, serverName);
 
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
 export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
@@ -164,9 +159,13 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
     return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
   });
 
-/** Its run keeps `serverName`, the name the caller showed, else the Server's name in the frame it planned from. */
-const removal = (
-  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName: MachineName | undefined,
+/**
+ * Takes Server `machineId` out of the Cluster: a reset deleting exactly the Data Loss the caller `confirmed`, or, with
+ * `null`, a Forget with no reset. Null when no Server has `machineId`. Its run keeps `serverName`, the name the caller
+ * showed, else the Server's name in the frame it planned from.
+ */
+export const removeServer = (
+  caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall, serverName?: MachineName,
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
