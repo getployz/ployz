@@ -20,6 +20,8 @@ use ployz_store::DeploymentId;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+pub use crate::cloud::account::CloudCall;
+
 use super::Session;
 use crate::cluster::HealthWaitError;
 use crate::deploy::cleanup::{self, UserStarted};

@@ -16,7 +16,6 @@ use ployz_agent_tools::{
 };
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{Actor, ConfigStore, OrganizationId};
-use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Icon, Implementation,
@@ -37,7 +36,7 @@ use super::{Error, leaf_matches, store};
 use crate::agent_call::{self, Started};
 use crate::approval::{self, Asked, Verb};
 use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError, StoreClient};
+use crate::cloud::account::{CloudCall, Credential, StoreCallError, StoreClient};
 use crate::cloud::http::{CALL_DEADLINE, Via};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::failure::Failure;
@@ -284,14 +283,8 @@ impl Backend<'_> {
             (_, Ask::Store(query)) => called(self.client().read_json(query).await),
             (Self::Local(..), Ask::Cloud(_)) => Err(cloud_only()),
             (Self::Cloud(cloud), Ask::Cloud(query)) => called(
-                cloud::account::approved_answer(
-                    &cloud.credential,
-                    Method::POST,
-                    "agent/ask",
-                    &json!({ "ask": query }),
-                    None,
-                )
-                .await,
+                cloud::account::agent_call(&cloud.credential, &CloudCall::Ask(query.clone()), None)
+                    .await,
             ),
         }
     }
@@ -303,11 +296,9 @@ impl Backend<'_> {
             }
             (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
             (Self::Cloud(cloud), Write::Act(act)) => written(
-                cloud::account::approved_answer(
+                cloud::account::agent_call(
                     &cloud.credential,
-                    Method::POST,
-                    "agent/act",
-                    &json!({ "act": act }),
+                    &CloudCall::Act(act.clone()),
                     approval,
                 )
                 .await,

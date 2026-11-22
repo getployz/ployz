@@ -1,9 +1,10 @@
 //! Calls to `/api/cli`: one that answers at once, one Cloud runs durably and the CLI
 //! follows, and Cloud's own refusals.
 
+use ployz_agent_tools::{Act, CloudQuery};
 use ployz_core::RpcError;
 use reqwest::{Method, StatusCode};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{
     credential::Credential,
@@ -32,6 +33,32 @@ pub(crate) async fn start_run(
     }
     let queued: Queued = approved_answer(credential, method, path, body, approval).await?;
     Ok(queued.id)
+}
+
+/// What `ployz mcp` hands Cloud: an ask's query or an Act.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum CloudCall {
+    Ask(CloudQuery),
+    Act(Act),
+}
+
+/// Cloud's answer to `call`, carrying `approval` when Cloud asked for one.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, `approval_required` among them, or a Cloud failure.
+pub(crate) async fn agent_call<T: DeserializeOwned>(
+    credential: &Credential,
+    call: &CloudCall,
+    approval: Option<&str>,
+) -> Result<T, StoreCallError> {
+    let path = match call {
+        CloudCall::Ask(_) => "agent/ask",
+        CloudCall::Act(_) => "agent/act",
+    };
+    let body = serde_json::to_value(call).expect("a Cloud call is JSON");
+    approved_answer(credential, Method::POST, path, &body, approval).await
 }
 
 /// Cloud's answer to `/api/cli/<path>`, carrying `approval` when Cloud asked for one.
