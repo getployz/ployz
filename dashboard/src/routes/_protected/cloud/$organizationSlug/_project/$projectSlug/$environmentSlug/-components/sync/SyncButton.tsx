@@ -27,6 +27,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
 
 /**
  * Sync, at the canvas's top right: it opens the one Sync dialog, which makes a picked place match this one. On a
@@ -108,7 +109,7 @@ function BranchSync({ params, store, branch, environments }: {
   const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
   function deployAgain() {
-    writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
+    writer.commit(admitDeploy(store, crypto.randomUUID()));
   }
 
   return (
