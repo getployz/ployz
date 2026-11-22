@@ -9304,10 +9304,7 @@ fn web_reads_api(store: &ConfigStore, who: &Actor) {
         store,
         who,
         1,
-        vec![
-            posted(store, who, "web", P1),
-            posted(store, who, "api", P1),
-        ],
+        vec![posted(store, who, "web", P1), posted(store, who, "api", P1)],
     );
     apply(store, 1);
     set(

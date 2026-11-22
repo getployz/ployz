@@ -252,7 +252,7 @@ fn take(
             stored.summary.environment_id.as_str(),
             stored.namespace(),
         ),
-        (&stored.nodes, &intent.target),
+        (&saved, &intent.target),
     )?;
     Ok(Taken::Claimed(Box::new(Claimed {
         deployment: stored.summary,

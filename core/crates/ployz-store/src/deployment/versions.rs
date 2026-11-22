@@ -12,6 +12,7 @@ use ployz_core::authority::{
     Births, BuiltImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion,
     Signed, SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
 };
+use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
     ServiceName,
@@ -104,9 +105,9 @@ enum Origin {
 ///
 /// # Errors
 /// Returns `invalid_argument` for a statement whose body doesn't parse, names another
-/// Namespace or a Service `id` doesn't deploy, or names a Service an earlier statement
-/// already named, or a pin that isn't content-addressed; what recording a birth refuses;
-/// or a storage error.
+/// Namespace or a Service `id` doesn't hand its runner, or names a Service an earlier
+/// statement already named, or a pin that isn't content-addressed; what recording a
+/// birth refuses; or a storage error.
 pub(crate) fn post(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -126,6 +127,9 @@ pub(crate) fn post(
             }
         })
         .collect();
+    // A Deploy of named Services also hands its runner each one they reference, which
+    // is a node only when it changed: lowered once a statement names one.
+    let mut referenced: Option<BTreeSet<ServiceName>> = None;
     let organization = crate::build::organization(tx, id)?;
     let mut record = record_of(tx, id)?;
     let mut named = BTreeSet::new();
@@ -142,7 +146,16 @@ pub(crate) fn post(
                 json!({}),
             )
         })?;
-        if body.namespace != *stored.namespace() || !services.contains(&body.service) {
+        let handed = services.contains(&body.service) || {
+            if referenced.is_none() {
+                let saved = super::held_revision(tx, &stored)?;
+                referenced = Some(super::lowered(tx, &stored, &saved)?.shipped);
+            }
+            referenced
+                .as_ref()
+                .is_some_and(|shipped| shipped.contains(&body.service))
+        };
+        if body.namespace != *stored.namespace() || !handed {
             return Err(error::invalid(
                 format!(
                     "A signed version is for {} in {}, which this deploy doesn't deploy",
@@ -318,7 +331,7 @@ pub(crate) fn versions(
 pub(super) fn pinned(
     tx: &mut dyn Tx,
     (id, environment, namespace): (&DeploymentId, &str, &Namespace),
-    (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
+    (saved, target): (&SavedEnvironmentIntent, &[RequestedServiceSpec]),
 ) -> Result<BTreeMap<ServiceName, Pinned>, RpcError> {
     let recorded = record_of(tx, id)?;
     let mut record = recorded.clone();
@@ -337,7 +350,7 @@ pub(super) fn pinned(
             continue;
         }
         let from = match &record.origin {
-            Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
+            Origin::Own => reused(tx, environment, (saved, spec), namespace)?,
             Origin::Legacy => None,
             Origin::Replay { .. } => replays.get(&spec.name).cloned(),
         };
@@ -464,24 +477,24 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
-/// that pin has the digest it ran: the same tag, and only run fields changed.
+/// What the Deployment that last applied `spec`'s Service in `saved` ran, when `spec`
+/// with that pin has the digest it ran: the same tag, and only run fields changed. A
+/// Service a Deploy hands its runner only because another references it is no node of
+/// it, and keeps what runs the same way.
 fn reused(
     tx: &mut dyn Tx,
     environment: &str,
-    (nodes, spec): (&[TargetNode], &RequestedServiceSpec),
+    (saved, spec): (&SavedEnvironmentIntent, &RequestedServiceSpec),
     namespace: &Namespace,
 ) -> Result<Option<RanService>, RpcError> {
-    let Some(node) = nodes.iter().find_map(|node| match node {
-        TargetNode::Service { id, runtime, .. } if *runtime == spec.name => Some(id),
-        TargetNode::Service { .. }
-        | TargetNode::Retire { .. }
-        | TargetNode::Volume { .. }
-        | TargetNode::Config { .. } => None,
-    }) else {
+    let Some(service) = saved
+        .services
+        .iter()
+        .find(|service| service.config.private_dns == spec.name)
+    else {
         return Ok(None);
     };
-    let Some(last) = last_applied(tx, environment, node.as_str(), &spec.name)? else {
+    let Some(last) = last_applied(tx, environment, &service.id, &spec.name)? else {
         return Ok(None);
     };
     let mut pinned = spec.clone();
