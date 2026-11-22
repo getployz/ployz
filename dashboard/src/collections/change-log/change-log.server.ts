@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { ChangeSource } from "#/collections/change-log/change-log.sources";
-import { organizationChange as change } from "#/modules/organization/tables";
+import { organizationChangeLog as change } from "#/collections/change-log/tables";
 import { Database } from "#/server/database.server";
 
 /** The xid horizon: every transaction below it has finished. */

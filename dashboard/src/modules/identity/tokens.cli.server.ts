@@ -5,7 +5,7 @@ import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { createOrganizationToken, knownEnvironment, listCredentials, revokeCredential } from "#/modules/identity/organization-token.server";
 import { TOKEN_PRESETS, presetOf } from "#/modules/identity/token-grant";
 import { pendingServerRevocations, retireServerAccess } from "#/modules/machines/server-access.server";
-import { decodeBody, personOnly, type CliRoutes } from "#/server/cli-call";
+import { decodeBody, personOnly, type CliRoutes } from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse, NotFound, Validation } from "#/server/public-error";
 
 const NewToken = Schema.Struct({

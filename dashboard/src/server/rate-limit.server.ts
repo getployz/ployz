@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { Effect, Random } from "effect";
 import ipaddr from "ipaddr.js";
-import { checkinRateLimit, rateLimitEvent } from "#/modules/machines/waiting/tables";
+import { checkinRateLimit, rateLimitEvent } from "#/server/rate-limit.tables";
 import { Database } from "#/server/database.server";
 
 const thisSecond = sql`date_trunc('second', now())`;

@@ -115,11 +115,11 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
  * Every minute: a queued Deployment whose hand-off to the worker was lost goes to it again, unkeyed like "Deploy now",
  * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing.
  */
-export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
+export const createRedispatchStoreDeployments = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "redispatch-store-deployments", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
-      const unclaimed = await step.run("unclaimed", () => runEffect(unclaimedStoreDeployments(new Date())));
+      const unclaimed = await step.run("unclaimed", () => runInngestEffect(unclaimedStoreDeployments(new Date())));
       if (unclaimed.length > 0) await step.sendEvent("dispatch", unclaimed.map(createConfigDeploymentStartedEvent));
       return { redispatched: unclaimed.map((deployment) => deployment.deploymentId) };
     },

@@ -33,7 +33,7 @@ export async function executeRetryClusterNames({ step }: { step: StepTools<"run"
   return { organizationCount: organizationIds.length };
 }
 
-export const createClusterNameFunctions = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => [
+export const createClusterNameFunctions = (inngest: PloyzInngest) => [
   inngest.createFunction(
     {
       id: "apply-cluster-name",
@@ -42,10 +42,10 @@ export const createClusterNameFunctions = (inngest: PloyzInngest, runEffect: Eff
       // One set at a time per Organization, so an older set never lands after a newer one. Each try reads the name saved last.
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
-    async ({ event, step }) => executeApplyClusterName({ event, step }, runEffect),
+    async ({ event, step }) => executeApplyClusterName({ event, step }, runInngestEffect),
   ),
   inngest.createFunction(
     { id: "retry-cluster-names", retries: 3, triggers: [{ cron: "TZ=UTC 30 * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => executeRetryClusterNames({ step }, runEffect),
+    async ({ step }) => executeRetryClusterNames({ step }, runInngestEffect),
   ),
 ];

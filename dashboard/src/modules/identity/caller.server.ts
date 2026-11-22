@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, exists, gt, isNull, notExists, or, type SQL } from "drizzle-orm";
-import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { VIA_HEADER } from "@ployz/sdk/cloud-contract";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
@@ -21,9 +21,7 @@ import {
   rateLimitAddress,
   type RateWindow,
 } from "#/server/rate-limit.server";
-
-/** The client address of the request being served, as the app trusts it behind its proxy; null outside an HTTP request. */
-export const ClientAddress = Context.Reference<string | null>("ployz/ClientAddress", { defaultValue: () => null });
+import { ClientAddress } from "#/server/client-ip";
 
 /** How many failed authentications one address gets before it waits. Successes never count. */
 export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [

@@ -1,5 +1,5 @@
 import type { DrainReport, EnrollmentAssignment, MachineId, MachineName, QualifiedService } from "@ployz/sdk";
-import { approvalIndex, attemptColumns, attemptConstraints, endCodeCheck, machineIdCheck } from "#/db/attempt-table";
+import { approvalIndex, attemptColumns, attemptConstraints, endCodeCheck, machineIdCheck } from "#/modules/inngest/attempt-table";
 import { createdAt, type EncryptedSecretValue, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { MACHINE_ID_SQL } from "#/lib/schema";

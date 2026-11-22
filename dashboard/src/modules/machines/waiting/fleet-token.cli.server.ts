@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { decodeBody, personOnly, type CliRoutes } from "#/server/cli-call";
+import { decodeBody, personOnly, type CliRoutes } from "#/modules/commands/cli-call.server";
 
 const NewFleetToken = Schema.Struct({
   name: Schema.optional(FleetTokenName),

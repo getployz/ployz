@@ -4,7 +4,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "#/components/ui/ca
 import { ENVIRONMENT_LIVE_NODE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { LiveLabel } from "./PickableNode";
 import { liveName, liveNodeId } from "./nodes";
-import { nodeLabel } from "#/modules/runtime/node-status";
+import { nodeLabel } from "./node-status";
 import type { StoreLiveNode as StoreLive } from "./types";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 

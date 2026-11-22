@@ -1,9 +1,9 @@
 import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
-import { ClientAddress } from "#/modules/identity/caller.server";
+import { organizationSlugSchema } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
-import { observedIp } from "#/server/client-ip";
+import { ClientAddress, observedIp } from "#/server/client-ip";
 import { methodNotAllowedFor, publicErrorResponse, Validation } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
@@ -112,3 +112,17 @@ export const decodeJsonBody = <S extends Schema.Decoder<unknown>>(schema: S, req
     Effect.flatMap((body) => Schema.decodeUnknownEffect(schema)(body)),
     Effect.mapError(() => refusal),
   );
+
+const OrganizationSearch = Schema.Struct({ organizationSlug: organizationSlugSchema });
+
+/** {@link apiRoute} serving GET for the Organization `?organizationSlug=` names; a missing or invalid slug is refused first. */
+export const organizationSearchRoute = (
+  handler: (request: Request, organizationSlug: string) => Effect.Effect<Response, unknown, AppServices>,
+) =>
+  apiRoute({
+    GET: ({ request }) =>
+      Effect.flatMap(
+        decodeSearch(OrganizationSearch, request, new Validation({ message: "A valid organization slug is required" })),
+        ({ organizationSlug }) => handler(request, organizationSlug),
+      ),
+  });

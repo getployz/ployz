@@ -4,12 +4,12 @@ import { observeCrashReceived } from "#/modules/observe-ingest/observe.events";
 import { pruneInBatches } from "#/modules/inngest/prune";
 import { claimCrashMail, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
 import { observeServerNames } from "#/modules/server-upgrade/server-upgrade.server";
-import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
+import { runInngestEffect } from "#/modules/inngest/run.server";
 
 const MAX_CLAIMS = 3;
 const SERVICE_KEY = "event.data.organizationId + '/' + event.data.serviceId";
 
-const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
+const createMailCrashes = (inngest: PloyzInngest) =>
   inngest.createFunction(
     {
       id: "mail-crashes",
@@ -24,10 +24,10 @@ const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
     async ({ event, step }) => {
       const { organizationId, serviceId } = event.data;
       const names = await step.run("server-names", () =>
-        runEffect(observeServerNames(organizationId).pipe(Effect.map((map) => [...map]))));
+        runInngestEffect(observeServerNames(organizationId).pipe(Effect.map((map) => [...map]))));
       for (let claim = 0; claim < MAX_CLAIMS; claim += 1) {
         const claimed = await step.run(`claim-${claim}`, () =>
-          runEffect(claimCrashMail(organizationId, serviceId, new Date(), new Map(names))));
+          runInngestEffect(claimCrashMail(organizationId, serviceId, new Date(), new Map(names))));
         if (claimed.kind !== "wait") return claimed;
         await step.sleepUntil(`mail-gap-${claim}`, claimed.until);
       }
@@ -35,7 +35,7 @@ const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
     },
   );
 
-const createPruneCrashEvents = (inngest: PloyzInngest, runEffect: EffectRunner) =>
+const createPruneCrashEvents = (inngest: PloyzInngest) =>
   inngest.createFunction(
     {
       id: "prune-crash-events",
@@ -43,10 +43,10 @@ const createPruneCrashEvents = (inngest: PloyzInngest, runEffect: EffectRunner) 
       triggers: [{ cron: "TZ=UTC 40 3 * * *" }],
       concurrency: [{ limit: 1 }],
     },
-    async ({ step }) => pruneInBatches(step, "prune", () => runEffect(pruneCrashEvents(new Date()))),
+    async ({ step }) => pruneInBatches(step, "prune", () => runInngestEffect(pruneCrashEvents(new Date()))),
   );
 
-export const createCrashMailFunctions = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => [
-  createMailCrashes(inngest, runEffect),
-  createPruneCrashEvents(inngest, runEffect),
+export const createCrashMailFunctions = (inngest: PloyzInngest) => [
+  createMailCrashes(inngest),
+  createPruneCrashEvents(inngest),
 ];
