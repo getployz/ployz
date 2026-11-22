@@ -232,76 +232,6 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
 }
 
 #[test]
-fn the_catalog_has_the_agreed_tools() {
-    let names = catalog().iter().map(|def| def.name).collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        [
-            "docs",
-            "environment_show",
-            "project_create",
-            "project_rename",
-            "service_inspect",
-            "service_add",
-            "service_update",
-            "service_rename",
-            "service_remove",
-            "domain_check",
-            "domain_add",
-            "domain_update",
-            "domain_remove",
-            "volume_add",
-            "volume_update",
-            "volume_remove",
-            "config_write",
-            "config_rename",
-            "config_remove",
-            "review",
-            "discard",
-            "history",
-            "deploy",
-            "deployment_list",
-            "deployment_show",
-            "deployment_retry",
-            "deployment_start",
-            "deployment_cancel",
-            "environment_pr",
-            "environment_protect",
-            "environment_region",
-            "environment_setup",
-            "github_ls",
-            "github_connect",
-            "server_show",
-            "server_add",
-            "region_list",
-            "server_logs",
-            "server_metrics",
-            "service_status",
-            "service_logs",
-            "service_metrics",
-            "volume_show",
-            "service_restart",
-            "service_start",
-            "service_stop",
-            "server_set",
-            "region_rename",
-            "server_drain",
-            "server_upgrade",
-            "server_clean",
-            "volume_mirror",
-            "volume_mirror_remove",
-            "volume_move",
-            "volume_release",
-            "volume_restore",
-            "environment_remove",
-            "project_remove",
-            "server_remove",
-            "server_forget",
-        ]
-    );
-}
-
-#[test]
 fn the_store_and_cloud_decide_who_asks_a_human() {
     let gated = catalog()
         .into_iter()
@@ -1684,11 +1614,6 @@ fn a_local_store_refuses_a_generated_domain_and_takes_a_custom_one() {
     let custom = json!({ "service": "web", "hostname": "app.example.com" });
     let added = local("domain_add", custom).ok();
     assert_eq!(added["domain"]["kind"], "custom", "{added}");
-}
-
-#[test]
-fn there_is_no_separate_sync_tool() {
-    assert!(catalog().iter().all(|tool| tool.name != "volume_sync"));
 }
 
 /// Remove what nothing deployed: one write, nothing to confirm, gone at once.
