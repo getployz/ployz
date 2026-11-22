@@ -1,5 +1,5 @@
 ## participating / mesh
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -68,7 +68,7 @@ ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## participating / mesh with operator header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -137,7 +137,7 @@ ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## participating / mesh with cloud-routed header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -206,7 +206,7 @@ ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## participating / local socket
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -275,7 +275,7 @@ ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status InvalidArgument: truncated stream frame header 
 ployz.build.v1 | no statement => served
 ## participating / local socket with operator header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -344,7 +344,7 @@ ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: ployz.container.exec.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.container.exec.v1","next":"ployz device request"}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## resetting / mesh
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -413,7 +413,7 @@ ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not particip
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## resetting / mesh with operator header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -482,7 +482,7 @@ ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not particip
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## resetting / mesh with cloud-routed header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -551,7 +551,7 @@ ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not particip
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
 ## resetting / local socket
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
@@ -620,7 +620,7 @@ ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not particip
 ployz.container.exec.v1 | from the mesh => status InvalidArgument: truncated stream frame header 
 ployz.build.v1 | no statement => served
 ## resetting / local socket with operator header
-ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: join approval refused: the join approval carries no signature {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
+ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
 ployz.machine.enroll.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
 ployz.machine.enroll-for-recovery.v1 | founder => error InvalidArgument: at least one advertised endpoint is required null
