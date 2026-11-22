@@ -85,6 +85,43 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
     args
 }
 
+/// The subcommand words of `matches`, `server add`.
+pub(crate) fn command_path(mut matches: &clap::ArgMatches) -> String {
+    let mut parts = Vec::new();
+    while let Some((name, child)) = matches.subcommand() {
+        parts.push(name);
+        matches = child;
+    }
+    parts.join(" ")
+}
+
+pub(crate) fn leaf_matches(mut matches: &clap::ArgMatches) -> &clap::ArgMatches {
+    while let Some((_, child)) = matches.subcommand() {
+        matches = child;
+    }
+    matches
+}
+
+pub(crate) fn config_path(
+    matches: &clap::ArgMatches,
+) -> Result<std::path::PathBuf, crate::failure::Failure> {
+    matches
+        .get_one::<String>("ployz-config")
+        .map(std::path::Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| crate::failure::Failure::usage("Ployz config path is required"))
+}
+
+/// This command line as typed, then `extra`.
+pub(crate) fn typed_with(extra: &[&str]) -> String {
+    std::iter::once("ployz".to_owned())
+        .chain(std::env::args().skip(1))
+        .chain(extra.iter().map(|arg| (*arg).to_owned()))
+        .map(|arg| crate::ui::shell_word(&arg).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// SSH setup budget shared by every CLI connection path.
 pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
     std::time::Duration::from_secs(u64::from(
