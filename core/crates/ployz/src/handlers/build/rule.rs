@@ -317,7 +317,15 @@ impl Cloud {
             });
         }
         let body = response.bytes().await.unwrap_or_default();
+        // The build endpoints also answer a bare `{"message": ...}`.
         let message = crate::cloud::reply::message(&body)
+            .or_else(|| {
+                serde_json::from_slice::<Value>(&body)
+                    .ok()?
+                    .get("message")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| status.canonical_reason().unwrap_or("refused").to_owned());
         Err(Error::unavailable(format!(
             "Ployz Cloud refused the build (HTTP {}): {message}",
