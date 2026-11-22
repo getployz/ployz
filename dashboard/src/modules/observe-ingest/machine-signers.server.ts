@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createPublicKey, verify } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { Effect } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { managementIdentity } from "#/modules/machines/management-identity";
 import { organizationMachine } from "#/modules/machines/tables";

@@ -15,7 +15,7 @@ class SignOutError extends Data.TaggedError("SignOutError")<{
   readonly cause: unknown;
 }> {}
 
-export function useAuthSession(): AuthSessionValue {
+function useAuthSession(): AuthSessionValue {
   const serverSession = RootRoute.useLoaderData().session ?? null;
   const hydrated = useHydrated();
   const state = authClient.useSession();
@@ -48,8 +48,4 @@ export function useSignOut() {
       return Result.fail(new SignOutError({ cause }));
     }
   };
-}
-
-export function getSignOutErrorMessage(_error: SignOutError) {
-  return "Couldn't sign out. Try again";
 }

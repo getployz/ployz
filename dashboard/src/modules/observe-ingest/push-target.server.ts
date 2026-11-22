@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { decryptPairingSecret, releasingExpectation } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";

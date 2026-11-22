@@ -2,12 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { getAuthSessionEffect } from "#/auth/auth.server";
 import { type CommandName, runCommand } from "#/modules/commands/commands.server";
 import type { Caller } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { acceptInvite, readInvite } from "#/modules/organization/invitation.server";
 import { manages } from "#/modules/organization/members.commands.server";
+import { Auth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Validation } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
@@ -85,7 +85,7 @@ export const readInviteServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(Schema.Struct({ token: Schema.String })))
   .handler(({ data }) => {
     const { headers, signal } = getRequest();
-    return runActor({ signal }, getAuthSessionEffect(headers).pipe(Effect.flatMap((session) => readInvite(data.token, session?.user.id ?? null))));
+    return runActor({ signal }, Effect.flatMap(Auth, (auth) => auth.getSession(headers)).pipe(Effect.flatMap((session) => readInvite(data.token, session?.user.id ?? null))));
   });
 
 export const acceptInviteServerFn = createServerFn({ method: "POST" })

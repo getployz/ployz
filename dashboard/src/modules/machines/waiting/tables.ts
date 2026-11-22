@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { createdAt, type EncryptedSecretValue, type MachineId } from "#/db/tables";
+import { createdAt, type EncryptedSecretValue } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type {
   EnrollInstruction,

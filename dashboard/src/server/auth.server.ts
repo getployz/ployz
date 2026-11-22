@@ -67,8 +67,6 @@ import { RequestScope } from "#/server/request-scope.server";
 import { runRedactedLog } from "#/server/log-redaction";
 import { Unauthorized } from "#/server/public-error";
 
-export { Unauthorized };
-
 export class AuthenticationUnavailable extends Data.TaggedError(
   "AuthenticationUnavailable",
 )<{ readonly cause: unknown }> {

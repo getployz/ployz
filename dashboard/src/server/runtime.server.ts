@@ -16,7 +16,7 @@ import { GithubTokensLive } from "#/modules/github/github-token.server";
 import { InngestLive } from "#/modules/inngest/client";
 import { AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
-import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
+import { DatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { RedactedLogsLive, redactSpanExits } from "#/server/log-redaction";
@@ -30,7 +30,6 @@ const InfrastructureLive = Layer.mergeAll(
   InngestLive,
   GithubRepositoriesLive,
   GithubOidcKeysLive,
-  ReportingDatabaseLive,
   CloudStoreLive,
 ).pipe(
   Layer.provideMerge(GithubApiLive),
@@ -55,7 +54,7 @@ const TracingLive = redactSpanExits(OtelTracer.layerGlobal.pipe(
 ));
 
 // Every log, to the console and the span, names a failed query by its kind and never its params.
-export const AppLive = AuthLive.pipe(
+const AppLive = AuthLive.pipe(
   Layer.provideMerge(InfrastructureLive),
   Layer.merge(RuntimeLive),
   Layer.provideMerge(TracingLive),

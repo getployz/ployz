@@ -9,9 +9,7 @@ import { Client, Pool } from "pg";
 import { inject } from "vitest";
 import {
   Database,
-  ReportingDatabase,
   makeDatabaseService,
-  makeReportingDatabase,
 } from "#/server/database.server";
 import { startPostgresServer } from "#/test/postgres.global-setup";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -93,7 +91,6 @@ export async function startPostgresTestHarness({ ownServer = false } = {}) {
           return makeDatabaseService(effectDatabase);
         }),
       ).pipe(
-        Layer.merge(Layer.effect(ReportingDatabase, makeReportingDatabase(databaseUrl))),
         Layer.merge(Layer.succeed(SecretEncryption, makeSecretEncryption("test-encryption-secret"))),
         Layer.provide(Reactivity.layer),
       ),
@@ -105,12 +102,11 @@ export async function startPostgresTestHarness({ ownServer = false } = {}) {
     const database = await databaseRuntime.runPromise(Database);
     return {
       databaseUrl,
-      reportingDatabase: await databaseRuntime.runPromise(ReportingDatabase),
       db: drizzle({ client: pool }),
       database,
       pool,
       runEffect<Success, Failure>(
-        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase | SecretEncryption>,
+        operation: Effect.Effect<Success, Failure, Database | SecretEncryption>,
       ) {
         return databaseRuntime.runPromise(operation);
       },

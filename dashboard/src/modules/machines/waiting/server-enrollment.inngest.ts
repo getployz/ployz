@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import {

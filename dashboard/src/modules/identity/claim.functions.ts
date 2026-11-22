@@ -1,9 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { deleteCookie, getCookie, getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
-import { getAuthSessionEffect } from "#/auth/auth.server";
 import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/identity/claim.server";
 import { CLAIM_SIGN_IN_COOKIE, startedClaimSignIn } from "#/modules/identity/claim-sign-in.server";
+import { Auth } from "#/server/auth.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const ClaimInput = Schema.Struct({ secret: Schema.String });
@@ -13,7 +13,7 @@ const ClaimInput = Schema.Struct({ secret: Schema.String });
  * from the GitHub sign-in this page started keeps the sandbox here, so one click claims it.
  */
 const readClaimAs = (headers: Headers, secret: string, signingIn: boolean) =>
-  getAuthSessionEffect(headers).pipe(
+  Effect.flatMap(Auth, (auth) => auth.getSession(headers)).pipe(
     Effect.flatMap((session) => {
       if (session === null) return readClaim(secret, null);
       const actor = { userId: session.user.id, credential: { kind: "session", id: session.session.id } } as const;

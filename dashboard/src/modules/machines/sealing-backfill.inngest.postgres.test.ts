@@ -13,7 +13,7 @@ import { chooseSealingKeyGenerator, recordSealingPublicKey } from "#/modules/mac
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
-import type { Database, ReportingDatabase } from "#/server/database.server";
+import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -34,7 +34,7 @@ describe("ensure-cluster-sealing-key", () => {
   const requests: BackfillSealingKeyRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
+    operation: Effect.Effect<A, E, Database | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
   ) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
       env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl },

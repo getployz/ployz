@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { bigint, boolean, check, foreignKey, index, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { type MachineId, updatedAt } from "#/db/tables";
+import { updatedAt } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { organizationMachine } from "#/modules/machines/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });

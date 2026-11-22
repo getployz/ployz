@@ -1,7 +1,7 @@
-import type { MachineName } from "@ployz/sdk";
+import type { MachineId, MachineName } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
+import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import {

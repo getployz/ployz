@@ -2,7 +2,7 @@ import type { JsonObject } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
 import { Cause, Option } from "effect";
 
-export interface ErrorEvidence {
+interface ErrorEvidence {
   code?: string;
   constraint?: string;
   failureCode?: string;
@@ -65,25 +65,4 @@ export function isUniqueViolation(
   cause: Error | JsonObject | null | undefined,
 ) {
   return parseErrorEvidence(cause).code === "23505";
-}
-
-export function findErrorEvidence(
-  cause: Error | JsonObject | null | undefined,
-  match: (evidence: ErrorEvidence) => boolean,
-  maxDepth = 5,
-): ErrorEvidence | null {
-  let current: Error | JsonObject | null | undefined = cause;
-  for (let depth = 0; depth < maxDepth && current != null; depth += 1) {
-    const evidence = parseErrorEvidence(current, 1);
-    if (match(evidence)) return evidence;
-    const nestedCause =
-      current instanceof Error ? current.cause : asRecord(current)?.["cause"];
-    current =
-      nestedCause instanceof Error ? nestedCause : asRecord(nestedCause);
-  }
-  return null;
-}
-
-export function errorEvidenceFrom<T>(error: T) {
-  return parseErrorEvidence(error instanceof Error ? error : asRecord(error));
 }

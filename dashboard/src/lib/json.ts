@@ -38,11 +38,11 @@ export function asBoolean<T>(value: T): boolean | null {
   return Option.getOrNull(decodeBoolean(value));
 }
 
-export function asBigInt<T>(value: T): bigint | null {
+function asBigInt<T>(value: T): bigint | null {
   return Option.getOrNull(decodeBigInt(value));
 }
 
-export function asNonEmptyTrimmedString<T>(value: T): string | null {
+function asNonEmptyTrimmedString<T>(value: T): string | null {
   const text = asString(value);
   if (text === null) return null;
   const trimmed = text.trim();
@@ -56,14 +56,6 @@ export function asReferenceId<T>(value: T): string | null {
   if (number !== null) return String(number);
   const bigint = asBigInt(value);
   return bigint === null ? null : String(bigint);
-}
-
-export function parseJsonObject<T>(value: T): JsonObject | null {
-  return asRecord(value);
-}
-
-export function projectJsonObject<T>(value: T): JsonObject | null {
-  return asRecord(value);
 }
 
 export function projectJsonValue<T>(value: T): JsonValue | undefined {

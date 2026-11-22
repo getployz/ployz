@@ -4,7 +4,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon, PlusIcon, UserIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
-  getSignOutErrorMessage,
   useAuth,
   useSignOut,
 } from "#/auth/auth.hooks";
@@ -96,7 +95,7 @@ export default function DashboardAccountMenu({
     const result = await signOut();
 
     if (Result.isFailure(result)) {
-      toast.error(getSignOutErrorMessage(result.failure));
+      toast.error("Couldn't sign out. Try again");
     }
   }
 

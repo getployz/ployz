@@ -238,7 +238,7 @@ const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* 
  * Who holds the GitHub App's private key and client secret. Local: this Cloud, as a Self-hosted Cloud does. Minter:
  * a service outside Cloud, which Cloud asks for read tokens and narrow operations, so Cloud's env holds neither.
  */
-export type GithubAuthorityConfiguration =
+type GithubAuthorityConfiguration =
   | { readonly mode: "local"; readonly appPrivateKey: Redacted.Redacted<string>; readonly appClientSecret: Redacted.Redacted<string> }
   | { readonly mode: "minter"; readonly url: URL; readonly auth: GithubMinterAuth };
 
@@ -326,7 +326,6 @@ const makeAppConfig = Effect.gen(function* () {
     auth: {
       secret: raw.betterAuthSecret,
       trustedOrigins: raw.betterAuthTrustedOrigins,
-      url: raw.appUrl,
       // Elsewhere better-auth's default: a single-address X-Forwarded-For.
       clientIpHeaders: raw.railwayEnvironmentId === undefined ? undefined : ["x-real-ip"],
     },

@@ -1,5 +1,5 @@
-import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService } from "@ployz/sdk";
-import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
+import type { DrainReport, EnrollmentAssignment, MachineId, MachineName, QualifiedService } from "@ployz/sdk";
+import { createdAt, type EncryptedSecretValue, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
 

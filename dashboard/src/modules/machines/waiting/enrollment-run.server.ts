@@ -4,7 +4,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
-import type { MachineId } from "#/db/tables";
+import type { MachineId } from "@ployz/sdk";
 import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { enrollmentAllocation, machineEnrollmentToken } from "#/modules/machines/tables";
