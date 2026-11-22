@@ -50,8 +50,8 @@ pub use rule::{
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use scope::{
-    Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyPlace, KeyPlaces, KeyScope,
-    PlaceService, Reach, TrustedGrant, ValueReach,
+    Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyPlace, KeyPlaces,
+    KeyScope, PlaceService, Reach, TrustedGrant, ValueReach,
 };
 pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKey,

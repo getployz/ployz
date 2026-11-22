@@ -35,9 +35,9 @@ fn trust(members: Vec<KeyMember>, signer: SignerKey) -> KeyStep {
     KeyStep {
         cluster: cluster(),
         change: KeyChange::Trust {
-            key: NewKey::Device {
+            key: Box::new(NewKey::Device {
                 key: DeviceKey::from_bytes([3; 32]),
-            },
+            }),
             members,
             prior: None,
         },

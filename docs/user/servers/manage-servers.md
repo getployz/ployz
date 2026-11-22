@@ -332,6 +332,57 @@ them.
 When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
 their devices.
 
+### Add a CI or agent key
+
+A CI or agent key lets a pipeline or an agent ship new images of services a person approved,
+with no terminal and no device. Make one from your approved device:
+
+```sh
+ployz key add --ci --env production --name github-actions
+```
+
+- `--ci` or `--agent` says who holds it. An agent key needs at least one `--env`. A CI key with
+  no `--env` can deploy to every environment.
+- `--env` names an environment the key can deploy to. Repeat it for more.
+- `--service web` limits the key to that one service, in the one `--env` you name.
+- `--volume db/data` lets the key's deploys mount the `data` volume of `db`, in each `--env`.
+  `db` needs a deploy a person approved first.
+- `--name` is a label for the key, such as the pipeline that holds it.
+
+`ployz key add` shows the key's code, each environment and volume it can reach, and the servers
+that will trust it, then asks. It needs a terminal and every server to answer. It prints
+`PLOYZ_KEY=...` once. Store it as a secret where the key deploys from; see
+[Deploy from CI with a key](../deploy/deployments.md#deploy-from-ci-with-a-key).
+
+`ployz key ls` lists each key with its kind, name, where it can deploy, its volumes and the
+servers that trust it.
+
+To change where a key can deploy, run `ployz key scope` with its code and the new flags:
+
+```sh
+ployz key scope mmg42klgyq --env production --service web
+```
+
+A change that only narrows the key goes through without asking. One that widens it, or that a
+server doesn't answer for, asks first, and `--yes` makes it fail instead of asking. If a server's
+copy of the key changed while the command ran, it reads the key again and retries.
+
+To swap a key for a new one with the same scope, for example on a schedule, run
+`ployz key rotate <code>`. It lists each service that runs a version the old key signed, with its
+image, when it was signed and its digest, and asks. Then it gives every server the new key,
+prints the new `PLOYZ_KEY=...`, redeploys those services under the new key, and removes the old
+key. Until then the old key keeps working. If a server misses the new key, run the same command
+again: it carries on with the same new key.
+
+If a key leaks, run `ployz key rm <code>`, then deploy from a terminal. Don't rotate a leaked
+key: a rotation signs again whatever the old key deployed, including anything someone shipped
+with it. After `key rm`, a container the key approved keeps running until it stops, and then its
+server refuses to start it with
+`The key that approved this was rotated or removed; deploy again.`
+
+Removing the device that approved a version also stops CI and agent deploys built on that
+version, until a person deploys from a terminal again.
+
 ### What needs an approved device
 
 A server checks these itself, whoever asks. Ployz Cloud carries a signature but can't make one.

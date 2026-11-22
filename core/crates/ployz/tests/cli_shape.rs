@@ -434,6 +434,18 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
+fn an_agent_key_without_an_environment_is_refused_before_anything_is_read() {
+    let (code, json, stderr) = run_json(&["key", "add", "--agent", "--json"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
+    );
+    assert!(message(&json).contains("--env"), "{json}");
+}
+
+#[test]
 fn a_cluster_name_past_63_characters_or_not_one_label_is_refused_before_any_server_is_reached() {
     let long = "a".repeat(64);
     for args in [

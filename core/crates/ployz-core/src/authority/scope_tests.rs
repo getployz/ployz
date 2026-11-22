@@ -401,7 +401,7 @@ fn verify_key(
 
 fn trust(key: NewKey) -> KeyChange {
     KeyChange::Trust {
-        key,
+        key: Box::new(key),
         members: vec![here()],
         prior: None,
     }
@@ -469,7 +469,7 @@ fn a_ci_trust_carries_the_issue_time_of_its_bundle() {
             &ci_in_app()
         ),
         Ok(KeyVerified::Trust {
-            key,
+            key: Box::new(key),
             issued_at: at(NOW - 5),
             prior: None,
         }),

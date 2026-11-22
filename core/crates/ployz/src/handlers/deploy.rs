@@ -528,7 +528,7 @@ struct WithApproved<'a> {
 }
 
 impl Shipped {
-    fn finish(self) -> Result<(), Error> {
+    pub(super) fn finish(self) -> Result<(), Error> {
         if let Some(skipped) = prune_skipped(&self.view.deployment, self.view.preview.as_ref()) {
             ui::warn(skipped);
         }

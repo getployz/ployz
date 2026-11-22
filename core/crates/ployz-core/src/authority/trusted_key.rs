@@ -242,12 +242,7 @@ impl PasskeyAccount {
     /// # Errors
     /// Returns a [`ValueError`] for an empty, overlong or unprintable account.
     pub fn parse(value: &str) -> Result<Self, ValueError> {
-        if value.is_empty()
-            || value.chars().count() > 254
-            || value
-                .chars()
-                .any(unprintable)
-        {
+        if value.is_empty() || value.chars().count() > 254 || value.chars().any(unprintable) {
             return Err(ValueError::new(
                 "passkey account",
                 value,

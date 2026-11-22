@@ -193,14 +193,15 @@ impl Standing {
 /// A kept admission's refusal for keys this Machine no longer trusts, which says they
 /// went away rather than that they never approved: a rotation or removal took them.
 fn gone_key(refusal: AuthorityRefusal) -> AuthorityRefusal {
-    match refusal {
-        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
-            AuthorityRefusal::Mismatch {
-                field: field::KEPT_KEY,
-            }
-        }
-        refusal => refusal,
+    if matches!(
+        refusal,
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey
+    ) {
+        return AuthorityRefusal::Mismatch {
+            field: field::KEPT_KEY,
+        };
     }
+    refusal
 }
 
 /// The refusal for a time `admits` refused.

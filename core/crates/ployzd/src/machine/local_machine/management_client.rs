@@ -159,7 +159,7 @@ impl LocalMachine {
                             key,
                             issued_at,
                             prior,
-                        } => trust(store, (key, prior), by, issued_at),
+                        } => trust(store, (*key, prior), by, issued_at),
                         KeyVerified::Remove { key } => {
                             let removed = store.remove_key(key)?;
                             Ok(removal(key.code(), removed, by))
@@ -781,7 +781,7 @@ mod tests {
         let step = KeyStep {
             cluster: cluster_of(local),
             change: KeyChange::Trust {
-                key,
+                key: Box::new(key),
                 members: vec![KeyMember {
                     id: record.id(),
                     public_key: record.private_key().public_key(),

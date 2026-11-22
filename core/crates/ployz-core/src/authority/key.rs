@@ -65,7 +65,7 @@ pub enum KeyChange {
     /// Trust `key` on each of `members` and no other Machine, so a Server reset since the
     /// approval, which comes back with a new identity, never takes it.
     Trust {
-        key: NewKey,
+        key: Box<NewKey>,
         members: Vec<KeyMember>,
         /// The grant this trust edits or replaces, as its signer read it. Absent for a key
         /// no Machine holds yet.
@@ -242,7 +242,7 @@ pub struct KeyFacts<'a> {
 pub enum KeyVerified {
     /// Trust `key`, under a bundle issued at `issued_at`, over the grant `prior` names.
     Trust {
-        key: NewKey,
+        key: Box<NewKey>,
         issued_at: Timestamp,
         prior: Option<Prior>,
     },

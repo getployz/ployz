@@ -795,6 +795,7 @@ async fn remove_on(
         return Ok(None);
     }
     let mut passkey = false;
+    let mut grant = false;
     let mut approved_passkeys = Vec::new();
     let mut request = SetDeviceRequest::Remove { code };
     let marks = compat::supports(&client, &target, KEY_STEP_CAPABILITY).await?;
@@ -802,11 +803,15 @@ async fn remove_on(
         if let Some(key) = key {
             request = SetDeviceRequest::RemoveKey { key };
         }
-        let listed = client
+        let details = client
             .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
             .await
-            .map_err(crate::connect::rpc_error)?
-            .passkeys;
+            .map_err(crate::connect::rpc_error)?;
+        grant = details
+            .grants
+            .iter()
+            .any(|trusted| trusted.grant.key.code() == code);
+        let listed = details.passkeys;
         passkey = listed.iter().any(|trusted| trusted.passkey.code() == code);
         let approver = PasskeyApprover::Device { code };
         approved_passkeys = listed
@@ -821,6 +826,7 @@ async fn remove_on(
         .map_err(crate::connect::rpc_error)?
     {
         DeviceSet::Removed { code } if passkey => Removal::RemovedPasskey { code },
+        DeviceSet::Removed { code } if grant => Removal::RemovedKey { code },
         DeviceSet::Removed { code } => Removal::RemovedDevice {
             code,
             approved_passkeys,
@@ -906,7 +912,7 @@ pub(super) struct Reach {
 }
 
 impl Reach {
-    async fn full(client: &mut Client) -> Result<Self, Error> {
+    pub(super) async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
         if client.full_routes().single() {
@@ -960,6 +966,11 @@ impl Reach {
         (answers, gaps)
     }
 
+    /// The Machine this CLI entered through, when the fan-out asks it.
+    pub(super) fn entry(&self) -> Option<MachineId> {
+        self.entry.filter(|id| self.asked.contains(id))
+    }
+
     pub(super) fn name(&self, machine_id: &MachineId) -> String {
         self.names
             .get(machine_id)
@@ -1002,6 +1013,10 @@ enum Removal {
         approved_passkeys: Vec<DeviceCode>,
     },
     RemovedPasskey {
+        code: DeviceCode,
+    },
+    /// A CI or agent key.
+    RemovedKey {
         code: DeviceCode,
     },
     NotPresent {
@@ -1047,6 +1062,11 @@ fn removal_json<S: serde::Serializer>(removed: &Removal, serializer: S) -> Resul
             kind: "passkey",
             approved_passkeys: &[],
         },
+        Removal::RemovedKey { code } => RemovalJson::Removed {
+            code: *code,
+            kind: "key",
+            approved_passkeys: &[],
+        },
         Removal::NotPresent { code } => RemovalJson::NotPresent { code: *code },
         Removal::NotMarked { code } => RemovalJson::NotMarked { code: *code },
     };
@@ -1079,6 +1099,7 @@ impl Settled {
                 Outcome::Set(DeviceSet::Removed { .. })
                 | Outcome::Removed(Removal::RemovedDevice { .. }) => ("removed device", Tone::Good),
                 Outcome::Removed(Removal::RemovedPasskey { .. }) => ("removed passkey", Tone::Good),
+                Outcome::Removed(Removal::RemovedKey { .. }) => ("removed key", Tone::Good),
                 Outcome::Set(DeviceSet::NotPresent { .. })
                 | Outcome::Removed(Removal::NotPresent { .. }) => ("not present", Tone::Good),
                 Outcome::Removed(Removal::NotMarked { .. }) => ("not marked removed", Tone::Bad),

@@ -1371,12 +1371,10 @@ pub enum StoreError {
     },
     #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
     AmbiguousCode(DeviceCode),
-    #[error(
-        "Key {0} already holds a grant on this Server, and the change doesn't name it. Run ployz key scope to change it."
-    )]
+    #[error("Key {0} is already on this Server. Change it with ployz key scope.")]
     GrantHeld(DeviceCode),
     #[error(
-        "Key {0}'s grant changed on this Server after it was read. Nothing changed here. Read it again and retry."
+        "Key {0} changed on this Server while this ran. Nothing changed here. Run the command again."
     )]
     GrantMoved(DeviceCode),
     #[error("local Machine record I/O failed")]

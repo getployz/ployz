@@ -326,13 +326,28 @@ A service built from source, by an automatic deploy rule, or deployed before Plo
 has no approved version to start from. Switch it to an image and deploy it once at a terminal
 first.
 
-A CI key does the same without an approved device: set it as `PLOYZ_KEY` beside `PLOYZ_TOKEN`, and
-`ployz deploy --image` signs with it instead of the device's own key. A server runs a CI key's
-version only when it builds on one a person approved, and only within what the key was granted,
-so a leaked CI key can't start a service no person approved. Every server needs the current
-version of Ployz for this, and `ployz deploy` names any older one so you can upgrade it. Removing
-the device that approved a version stops CI deploys built on it, and stops scaling and moving the
-services that run it, until a person deploys from a terminal again.
+### Deploy from CI with a key
+
+A CI key does the same without an approved device. Make one from your approved device with
+`ployz key add --ci`; see [Add a CI or agent key](../servers/manage-servers.md#add-a-ci-or-agent-key).
+It prints `PLOYZ_KEY=...` once. Store that value and a `PLOYZ_TOKEN` as secrets in your CI, and
+deploy with `--image`:
+
+```yaml
+# GitHub Actions
+- run: ployz deploy web --image web=ghcr.io/acme/web:${{ github.sha }}
+  env:
+    PLOYZ_TOKEN: ${{ secrets.PLOYZ_TOKEN }}
+    PLOYZ_KEY: ${{ secrets.PLOYZ_KEY }}
+```
+
+With `PLOYZ_KEY` set, `ployz deploy --image` signs with the key instead of a device, and needs no
+`--yes`. A server runs a CI key's version only when it builds on one a person approved, and only
+within the environments, services and volumes the key was given, so a leaked CI key can't start a
+service no person approved. Every server needs the current version of Ployz for this, and
+`ployz deploy` names any older one so you can upgrade it. Removing the device that approved a
+version stops CI deploys built on it, and stops scaling and moving the services that run it, until
+a person deploys from a terminal again.
 
 ### Upgrade servers before you sign
 
