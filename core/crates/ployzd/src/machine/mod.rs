@@ -367,6 +367,15 @@ impl LocalMachineRecord {
         )
     }
 
+    /// Whether this Machine's own record pins `machine` as a Member, with this ID, WireGuard
+    /// key and subnet, and never saw it removed. Unlike [`Self::accepts_machine`], it reads no
+    /// approval off the row, and a record that doesn't filter peers trusts no Member.
+    pub(crate) fn trusts_member(&self, machine: &Machine) -> bool {
+        self.filters_peers
+            && !self.removes_member(machine.id, Some(machine.public_key))
+            && self.pins_machine(machine)
+    }
+
     /// The keys this Machine removed for good.
     #[must_use]
     pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {

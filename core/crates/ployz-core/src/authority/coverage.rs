@@ -416,8 +416,14 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SHARE_SEALING_KEY_CAPABILITY,
-        "no join approval",
-        "a ShareSealingKey to a Machine no join approval names",
+        "no join approval, to a Member",
+        "a ShareSealingKey to a Member this Machine trusts, sealed to the WireGuard key it trusts it under",
+        Expected::Served,
+    ),
+    case(
+        SHARE_SEALING_KEY_CAPABILITY,
+        "no join approval, to another Machine",
+        "a ShareSealingKey to a listed Machine that is no Member here",
         Expected::Refused(&[SHARE_SEALING_KEY_CAPABILITY, JOIN_APPROVAL_CAPABILITY]),
     ),
     case(
