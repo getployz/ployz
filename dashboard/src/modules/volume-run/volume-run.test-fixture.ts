@@ -1,4 +1,9 @@
 import type { MachineId, VolumeCopy } from "@ployz/sdk";
+import { Effect } from "effect";
+import { asTestDouble } from "#/lib/test-double";
+import { requirements } from "#/modules/runtime/daemon-compat";
+import type { ConnectedRuntimeClient, OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
+import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 
 const snapshot = { name: "w-1-4", guid: "11", created_unix_seconds: 1_790_000_000 };
@@ -41,3 +46,33 @@ export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], st
   id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, epoch: 1, message: null,
   created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null,
 });
+
+/** The Volume verbs a Server's daemon serves: the placement set, and the check of where a copy's data began. */
+export const PLACEMENT_VERBS = [requirements.volumeMove.capability, requirements.volumeOrigin.capability];
+
+type OtherServer = { readonly name: string; readonly capabilities: readonly string[]; readonly storage?: "stateless" | "pool" };
+
+/**
+ * A Cluster whose first report lists the Servers `names`, each with storage and every placement verb, then `others` as
+ * they say; `null` is a Cluster never paired.
+ */
+export const clusterShowing = (names: readonly string[] | null, others: readonly OtherServer[] = []) => {
+  const frame = names === null ? null : {
+    machines: [...names.map((name): OtherServer => ({ name, capabilities: PLACEMENT_VERBS })), ...others].map((server) => ({
+      machine: { id: server.name.padEnd(32, "0"), name: server.name, runtime: { capabilities: server.capabilities } },
+      storage: { state: server.storage ?? "pool" },
+    })),
+    volumes: [],
+    incomplete_ids: { machines: [] },
+  };
+  return asTestDouble<OrganizationRuntimeService>()({
+    cancel: () => Effect.void,
+    open: () => Effect.succeed(frame === null
+      ? { status: "no_connection" as const }
+      : { status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({ watchFirstFrame: () => Effect.succeed(frame) }) }),
+  });
+};
+
+/** Replaces what the Servers answer a Volume's runs and syncs. Whatever `answers` leaves out still asks the Cluster. */
+export const answeringWith = (answers: Partial<typeof VolumeCluster.Service>) =>
+  Effect.updateService(VolumeCluster, (cluster) => ({ ...cluster, ...answers }));

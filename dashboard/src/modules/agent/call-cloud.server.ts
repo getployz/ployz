@@ -34,7 +34,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/runtime/naming";
-import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { refreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };

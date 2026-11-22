@@ -17,7 +17,8 @@ import {
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
-import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { refreshMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.round.server";
+import { advancePlacement, type PlacementAdvance, type PlacementWait } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";

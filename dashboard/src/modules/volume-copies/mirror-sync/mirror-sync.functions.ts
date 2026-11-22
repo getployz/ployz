@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { requireAccess } from "#/modules/organization/access.server";
-import { mirrorStatuses, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { mirrorStatuses, refreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });

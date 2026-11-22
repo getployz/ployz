@@ -4,13 +4,12 @@ import { and, eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
 import type { StoreRefusal } from "#/lib/refusal";
 import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type CopyAsk, failureLines, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
-import { type BlockerReader, placementRefusal, readPlacementBlockers } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { UNANSWERED } from "#/modules/volume-placement/volume-placement.server";
-import { volumeMirrorStatus } from "#/modules/volume-run/tables";
+import { failureLines, syncMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.server";
+import { placementRefusal, UNANSWERED } from "#/modules/volume-placement/volume-placement.gates.server";
+import { volumeMirrorStatus } from "#/modules/volume-copies/mirror-sync/tables";
 import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
 import { unheardOf } from "#/modules/volume-run/volume-run";
-import { askCopy, inspectVolumeCopies, observeVolumeMembers } from "#/modules/volume-run/volume-run.cluster.server";
+import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { resolveVolume } from "#/modules/volume-run/volume-run.rows.server";
 import { Database } from "#/server/database.server";
 
@@ -46,11 +45,8 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   environment: EnvironmentRef,
   volumeId: string,
-  read: BlockerReader = readPlacementBlockers,
-  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
-  observe: MemberObserver = observeVolumeMembers,
-  ask: CopyAsk = askCopy,
 ) {
+  const { inspect } = yield* VolumeCluster;
   const named = (fallback: StoreRefusal) => Effect.map(
     inspect(caller.organizationId, environment, volumeId).pipe(Effect.orElseSucceed(() => [])),
     (members) => {
@@ -62,11 +58,11 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
       return { ok: false, refusal } as const;
     },
   );
-  const refusal = yield* placementRefusal(caller.organizationId, read);
+  const refusal = yield* placementRefusal(caller.organizationId);
   if (refusal === UNANSWERED) return yield* named(UNANSWERED);
   if (refusal !== null) return { ok: false, refusal } as const;
   const volume = yield* resolveVolume(caller.organizationId, environment, volumeId);
-  const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
+  const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment })
     .pipe(Effect.result);
   if (Result.isFailure(answer)) return yield* named(UNANSWERED);
   const { reported, sync, lines } = answer.success;

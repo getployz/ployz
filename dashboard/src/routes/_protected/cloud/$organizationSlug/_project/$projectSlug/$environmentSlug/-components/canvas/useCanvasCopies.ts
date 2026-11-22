@@ -3,7 +3,7 @@ import type { EnvironmentRef } from "@ployz/sdk";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
-import { mirrorStatusesQueryOptions } from "#/modules/volume-copies/volume-copies.queries";
+import { mirrorStatusesQueryOptions } from "#/modules/volume-copies/mirror-sync/mirror-sync.queries";
 import { mirroredVolumes, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";

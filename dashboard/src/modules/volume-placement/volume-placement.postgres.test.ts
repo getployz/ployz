@@ -12,11 +12,12 @@ import { InngestClient } from "#/modules/inngest/client";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stageRestore, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stageRestore, stampPlacements, writeAdmitted, writePlacement,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
+import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
-import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { answeringWith, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, statusForRefusal } from "#/server/public-error";
@@ -57,7 +58,8 @@ describe("volume placement", () => {
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;
 
   // A placement with no restore staged never writes the Store; its writer's services only fill the type.
-  const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
+  const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>, inspect?: (typeof VolumeCluster.Service)["inspect"]) => harness.runEffect(operation.pipe(
+    (effect) => inspect === undefined ? effect : effect.pipe(answeringWith({ inspect })),
     Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
     Effect.provideService(GithubApi, fakeGithubApi().service),
     Effect.provideService(GithubAuthority, fakeGithubAuthority().service),
@@ -93,7 +95,7 @@ describe("volume placement", () => {
     }),
   ));
   const stage = (primary: string, mirrors: string[] = []) =>
-    run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web(primary), mirrors: mirrors.map(web), deletes: [] }, mirrors: [web("web-2")] }));
+    run(writePlacement(organizationId, { environment, volumeId, staged: { primary: web(primary), mirrors: mirrors.map(web), deletes: [] }, mirrors: [web("web-2")] }));
 
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness?.stop(); });
@@ -167,7 +169,7 @@ describe("volume placement", () => {
       refusing = code;
       return encodePublicError(await run(staging().pipe(refusedPublicly, Effect.flip)));
     };
-    const placement = () => stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] });
+    const placement = () => writePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] });
     const restore = () => stageRestore(organizationId, null, { volumeId, environment, guid: "point", name: "point", at: 0 });
     // As the CLI answers each code, except that Cloud's own credential failing isn't the user's session, and a 501 has
     // no public error.
@@ -200,7 +202,7 @@ describe("volume placement", () => {
   it("deletes only an old copy at once, never the writer or a mirror", async () => {
     await stage("web-1", ["web-2", "web-4"]);
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old"), member("web-4", "mirror")];
-    const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }, () => Effect.succeed(members)));
+    const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }), () => Effect.succeed(members));
     for (const server of ["web-1", "web-2", "web-4"]) {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
     }
@@ -220,8 +222,8 @@ describe("volume placement", () => {
 
   describe("an old copy its Server reports", () => {
     const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "old_copy" } } as const;
-    const request = (inspect: () => Effect.Effect<Member[], Error>) =>
-      requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null }, inspect);
+    const request = (inspect: (typeof VolumeCluster.Service)["inspect"]) =>
+      requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null }).pipe(answeringWith({ inspect }));
     const recorded = (mirrors: string[]) => harness.pool.query(
       "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ($1, $2, 'env-1', $3, null) on conflict (volume_id) do update set mirrors = excluded.mirrors",
       [volumeId, organizationId, JSON.stringify(mirrors.map(web))],
@@ -342,8 +344,8 @@ describe("volume placement", () => {
 
   describe("an old copy a staged restore reads", () => {
     const deleting = () => run(requestUnclaimedRun({ userId: null, organizationId },
-      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "old_copy" } }, { server: web("web-3"), point: "10" },
-      () => Effect.succeed([member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")])));
+      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "old_copy" } }, { server: web("web-3"), point: "10" }),
+      () => Effect.succeed([member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")]));
     const restoring = (guid: string, deploymentId: string | null = null) => harness.pool.query(
       "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged, deployment_id) values ('vol3', $1, 'env-1', '[]', $2, $3)",
       [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed: {
@@ -388,7 +390,7 @@ describe("volume placement", () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
-    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }), () => Effect.succeed(members)))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 
@@ -396,7 +398,7 @@ describe("volume placement", () => {
     await stage("web-3", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
-    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }), () => Effect.succeed(members)))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 
@@ -433,10 +435,10 @@ describe("volume placement", () => {
     const admit = (accept: string[], version: string | null = "v1"): ConfigCommand =>
       ({ command: "admit", admit: "deploy", id: "dep-1", environment, services: [], version, accept_volume_loss: accept });
     const admission = (command: ConfigCommand, inspect: () => Effect.Effect<Member[], Error> = () => Effect.succeed(members)) =>
-      run(writeAdmitted(organizationId, command, write, inspect).pipe(
+      run(writeAdmitted(organizationId, command, write).pipe(
         Effect.map(() => ({ ok: true as const, command: writes.at(-1) })),
         Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
-      ));
+      ), inspect);
     const holder = async () => (await run(listPlacements(organizationId)))[0]?.deploymentId;
     /** The version a refusal binds to the loss it showed. */
     const shown = async () => {
@@ -468,7 +470,7 @@ describe("volume placement", () => {
       const shown = await admission(admit([]), old);
       if (shown.ok) throw new Error("expected a refusal");
       const { accept, version } = shown.refusal.details as { accept: string[]; version: string };
-      await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [web("web-3")] }, mirrors: [web("web-2")] }));
+      await run(writePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [web("web-3")] }, mirrors: [web("web-2")] }));
       expect(await admission(admit(accept, version), old)).toMatchObject({ ok: false, refusal: {
         code: "confirmation_required",
         details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-3") }, { machine_id: web("web-2") }], loss: "data" }] },
@@ -483,10 +485,10 @@ describe("volume placement", () => {
       const store = (command: ConfigCommand) => command.command === "admit" && command.admit === "deploy" && command.accept_volume_loss?.includes("data")
         ? write(command)
         : Effect.fail(new StoreRefused({ code: "confirmation_required", message: "Deploying deletes data. Accept each by name", details: { accept: ["data"] } }));
-      const admitStore = (command: ConfigCommand) => run(writeAdmitted(organizationId, command, store, () => Effect.succeed(members)).pipe(
+      const admitStore = (command: ConfigCommand) => run(writeAdmitted(organizationId, command, store).pipe(
         Effect.map(() => ({ ok: true as const, command: writes.at(-1) })),
         Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
-      ));
+      ), () => Effect.succeed(members));
       expect(await admitStore(admit([]))).toMatchObject({ ok: false, refusal: { message: "Deploying deletes data. Accept each by name" } });
       expect(await admitStore(admit(["data"]))).toEqual({ ok: true, command: admit(["data"]) });
       expect(await holder()).toBe("dep-1");
@@ -541,7 +543,7 @@ describe("volume placement", () => {
       await stage("web-1");
       const staging = { project: "shop", environment: "staging" };
       const restage = (primary: string) =>
-        run(stagePlacement(organizationId, { environment: staging, volumeId: "vol2", staged: { primary: web(primary), mirrors: [], deletes: [] }, mirrors: [] }));
+        run(writePlacement(organizationId, { environment: staging, volumeId: "vol2", staged: { primary: web(primary), mirrors: [], deletes: [] }, mirrors: [] }));
       await restage("web-1");
       let edit: Promise<unknown> | undefined;
       let meanwhile: unknown;

@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { mirrorStatuses } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { mirrorStatuses } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000f05";
 const machine = (name: string) => name.padEnd(32, "0");
-const backfill = new URL("../../../drizzle/20261014082609_volume_mirror_status_backfill/migration.sql", import.meta.url);
+const backfill = new URL("../../../../drizzle/20261014082609_volume_mirror_status_backfill/migration.sql", import.meta.url);
 
 describe("the mirror status backfill", () => {
   let harness: PostgresTestHarness;

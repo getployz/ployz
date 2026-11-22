@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ContainerId, CopyRefusal, DockerVolume, EnvironmentRef, ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, SnapshotGuid, SwitchError, VolumeCopy, VolumeSwitchRequest, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, notInArray, or } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
@@ -40,7 +40,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   if ((input.kind === "mirror" || input.kind === "move") && born) {
-    const refusal = yield* originRefusal(organizationId, volume, input.args);
+    const refusal = yield* originRefusal(organizationId, volume, [], unanswered, input.args);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
@@ -712,4 +712,13 @@ export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(
     Effect.catchIf(unreachable, () => Effect.succeed(null)),
   );
+});
+
+/** What a Volume's placement and mirror sync ask the Servers with. The real asks, unless a test provides others. */
+export const VolumeCluster = Context.Reference<{
+  readonly inspect: typeof inspectVolumeCopies;
+  readonly observe: typeof observeVolumeMembers;
+  readonly ask: typeof askCopy;
+}>("ployz/VolumeCluster", {
+  defaultValue: () => ({ inspect: inspectVolumeCopies, observe: observeVolumeMembers, ask: askCopy }),
 });

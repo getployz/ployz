@@ -21,9 +21,9 @@ import {
   cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
-import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
+import { useRefreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
-import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
+import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/mirror-sync/mirror-sync.words";
 import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/runtime/daemon-release";
 import { appliedMirrors, editPlacement, observePlacement, type Placement, type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement } from "#/modules/volume-placement/volume-placement";
 import { lossMoment } from "#/utils/relative-time";
