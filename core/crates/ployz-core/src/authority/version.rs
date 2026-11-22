@@ -11,7 +11,7 @@ use ts_rs::TS;
 use super::{
     canonical::Timestamp,
     deploy::{Creation, PayloadDigest, content_addressed, host_reach},
-    keys::{Approver, Purpose, Signed, SignerKey, Statement},
+    keys::{Approver, Purpose, Signed, SignerKey, SigningPublicKey, Statement},
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
@@ -40,6 +40,12 @@ pub struct ServiceVersion {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub forget_older: bool,
+    /// The digest of the version this one edits: one a person or full CLI signed for the
+    /// same Service, which names no parent itself. A CI or agent key's version must name
+    /// one, so such a key never signs a Service's first version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent: Option<PayloadDigest>,
 }
 
 impl Statement for ServiceVersion {
@@ -149,47 +155,67 @@ pub struct VersionAdmitted {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Approved {
     pub by: Approver,
+    /// The signer's own clock, which a Machine refuses when it is too far ahead.
     pub signed_at: Timestamp,
+    /// The older of `signed_at` and its parent's, which a Service's floor checks, so a
+    /// forget that reaches the parent also reaches every edit of it.
+    pub floor_at: Timestamp,
     pub forget_older: bool,
 }
 
-/// Check `versions` against the creation `facts` names. Each statement whose signature a
-/// key trusted here made, opened as a proposal step or alone, admits when it names this
-/// Cluster, Namespace and Service and the digest of the requested spec, the spec runs a
-/// content-addressed image, a hook creation has a hook, and its one signer covers the
-/// whole spec: its host reach, every Sealed part it opens and every Volume it mounts.
-/// Statements are opened in order, each charged to `budget` first, until the next costs
-/// more than is left.
+/// Check `versions` against the creation `facts` names. Only a statement with the digest
+/// of the requested spec may admit it; any other is presented as a parent. Each statement
+/// whose signature a key trusted here made, opened as a proposal step or alone, admits
+/// when it names this Cluster, Namespace and Service, the spec runs a content-addressed
+/// image, a hook creation has a hook, and its one signer covers the whole spec: its host
+/// reach, every Sealed part it opens and every Volume it mounts. A CI or agent key's
+/// statement must also name a parent, and one that names a parent must find one among
+/// the statements presented with that digest: a parentless version of the same Service
+/// that a person or full CLI signed. Statements are opened in order, each charged to
+/// `budget` first, until the next costs more than is left.
 ///
 /// # Errors
 /// Returns the first statement's refusal when none admits,
 /// [`AuthorityRefusal::Overspent`] when the budget ran out before any was opened, and
-/// [`AuthorityRefusal::Unsigned`] when there are none. A statement marked to forget that a
-/// key trusted here signed must admit itself: its refusal, or
-/// [`AuthorityRefusal::Overspent`] when it was left unopened, refuses the creation even
-/// when another statement admits it. One no trusted key signed is ignored, so a removed
-/// Device's old forget never blocks a fresh approval.
+/// [`AuthorityRefusal::Unsigned`] when there are none. A statement of the requested
+/// digest marked to forget that a person or full CLI key trusted here signed must admit
+/// itself: its refusal, or [`AuthorityRefusal::Overspent`] when it was left unopened,
+/// refuses the creation even when another statement admits it. One no such key signed is
+/// ignored, so a removed Device's old forget never blocks a fresh approval.
 pub fn verify(
     versions: &[Signed<ServiceVersion>],
     facts: &VersionFacts<'_>,
     budget: &mut Budget,
 ) -> Result<VersionAdmitted, AuthorityRefusal> {
-    let Requested {
-        digest,
-        reaches_host,
-        reach,
-    } = requested(facts.namespace, facts.creation)?;
+    let requested = requested(facts.namespace, facts.creation)?;
+    let presented = versions.get(..MAX_PRESENTED).unwrap_or(versions);
+    let mut candidates: Vec<&Signed<ServiceVersion>> = presented
+        .iter()
+        .filter(|version| {
+            version
+                .open()
+                .map_or(true, |body| body.digest == requested.digest)
+        })
+        .collect();
+    // With none of this digest nothing admits, so each is opened for its refusal.
+    if candidates.is_empty() {
+        candidates = presented.iter().collect();
+    }
+    let mut parents = Parents {
+        presented,
+        found: Vec::new(),
+    };
     let mut by = Vec::new();
     let mut first = None;
     let mut forget_refused = None;
     let mut opened = 0;
-    for version in versions.iter().take(MAX_PRESENTED) {
+    for version in &candidates {
         if let Err(overspent) = budget.reserve(version, facts.trusted) {
             first.get_or_insert(overspent);
             break;
         }
         opened += 1;
-        match admits(version, facts, digest, reaches_host, &reach) {
+        match admits(version, facts, &requested, &mut parents, budget) {
             Ok(approved) => by.push(approved),
             Err(refusal) => {
                 if claims_forget(version, facts.trusted) {
@@ -199,7 +225,7 @@ pub fn verify(
             }
         }
     }
-    if versions
+    if candidates
         .iter()
         .skip(opened)
         .any(|version| claims_forget(version, facts.trusted))
@@ -214,27 +240,55 @@ pub fn verify(
             purpose: Purpose::Workflow,
         }));
     }
-    Ok(VersionAdmitted { by, digest, reach })
+    Ok(VersionAdmitted {
+        by,
+        digest: requested.digest,
+        reach: requested.reach,
+    })
 }
 
-/// Whether `version` reads as a forget and a key trusted here signed it. Only such a
-/// forget binds: one no trusted key signed is ignored everywhere.
+/// Whether `version` reads as a forget and a key trusted here that may forget, a
+/// person's or a full CLI's, signed it. Only such a forget binds: one no such key signed
+/// is ignored everywhere.
 #[must_use]
 pub fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> bool {
-    verifications(version, trusted) > 0 && version.open().is_ok_and(|body| body.forget_older)
+    signed_whole_cluster(version, trusted) && version.open().is_ok_and(|body| body.forget_older)
 }
 
-/// Whether `version` admits the creation whose spec has `digest`. Its signer alone must
-/// cover the spec: [`Cap::HostReach`] when it `reaches_host`, and a place and Volume list
-/// that hold all of `reach`.
+/// Whether a person's or full CLI's key trusted here signed `signed` or the bundle it
+/// rides in. Nothing is verified.
+fn signed_whole_cluster<T>(signed: &Signed<T>, trusted: &TrustedKeys) -> bool {
+    whole_cluster_envelope(signed, trusted)
+        || signed
+            .proposal
+            .as_deref()
+            .is_some_and(|bundle| whole_cluster_envelope(bundle, trusted))
+}
+
+fn whole_cluster_envelope<T>(signed: &Signed<T>, trusted: &TrustedKeys) -> bool {
+    signed.signatures.iter().any(|signature| {
+        trusted
+            .devices()
+            .any(|device| SigningPublicKey::from(device) == signature.key)
+    }) || signed.assertions.iter().any(|assertion| {
+        trusted
+            .passkeys()
+            .any(|passkey| passkey.passkey.credential_id == assertion.credential_id)
+    })
+}
+
+/// Whether `version` admits the creation `requested` describes. Its signer alone must
+/// cover the spec: [`Cap::HostReach`] when it reaches its host, and a place and Volume
+/// list that hold all of its reach. A version that names a parent takes the older of its
+/// own time and the parent's as the time a floor checks.
 ///
 /// [`Cap::HostReach`]: super::scope::Cap::HostReach
 fn admits(
     version: &Signed<ServiceVersion>,
     facts: &VersionFacts<'_>,
-    digest: PayloadDigest,
-    reaches_host: bool,
-    reach: &Reach,
+    requested: &Requested,
+    parents: &mut Parents<'_>,
+    budget: &mut Budget,
 ) -> Result<Approved, AuthorityRefusal> {
     let (body, by, cluster) = open_approval(version, facts.trusted, facts.cluster)?;
     facts.trusted.covers(
@@ -243,10 +297,14 @@ fn admits(
             namespace: &body.namespace,
             service: &body.service,
             forgets: body.forget_older,
-            reaches_host,
-            reach,
+            reaches_host: requested.reaches_host,
+            reach: &requested.reach,
         },
     )?;
+    let scoped = facts
+        .trusted
+        .of(&by)
+        .is_some_and(|key| !key.kind().whole_cluster());
     let creation = facts.creation;
     first_mismatch([
         (MismatchField::Cluster, body.cluster == cluster),
@@ -259,13 +317,90 @@ fn admits(
             !body.forget_older || !body.namespace.is_system(),
         ),
         (MismatchField::Service, &body.service == creation.service),
-        (MismatchField::Payload, body.digest == digest),
+        (MismatchField::Payload, body.digest == requested.digest),
+        (
+            MismatchField::ForgetParent,
+            !body.forget_older || body.parent.is_none(),
+        ),
+        (MismatchField::Parent, !scoped || body.parent.is_some()),
     ])?;
+    let floor_at = match body.parent {
+        Some(parent) => parents
+            .signed_at(parent, &body, facts.trusted, budget)?
+            .min(body.signed_at),
+        None => body.signed_at,
+    };
     Ok(Approved {
         by,
         signed_at: body.signed_at,
+        floor_at,
         forget_older: body.forget_older,
     })
+}
+
+/// The statements presented beside a creation, as parents of the versions that admit it.
+/// Each parent digest is looked up once, whichever version names it.
+struct Parents<'a> {
+    presented: &'a [Signed<ServiceVersion>],
+    found: Vec<(PayloadDigest, Result<Timestamp, AuthorityRefusal>)>,
+}
+
+impl Parents<'_> {
+    /// When the parent `digest` of `child` was signed: the first statement presented with
+    /// that digest that opens under a key trusted here, each charged to `budget` first,
+    /// and is a parentless version of `child`'s Cluster, Namespace and Service that a
+    /// person or full CLI signed.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`] when the budget ran out before one was
+    /// found, and [`AuthorityRefusal::Mismatch`] naming [`MismatchField::Parent`] when none is.
+    fn signed_at(
+        &mut self,
+        digest: PayloadDigest,
+        child: &ServiceVersion,
+        trusted: &TrustedKeys,
+        budget: &mut Budget,
+    ) -> Result<Timestamp, AuthorityRefusal> {
+        if let Some((_, found)) = self.found.iter().find(|(held, _)| *held == digest) {
+            return found.clone();
+        }
+        let found = self.find(digest, child, trusted, budget);
+        self.found.push((digest, found.clone()));
+        found
+    }
+
+    fn find(
+        &self,
+        digest: PayloadDigest,
+        child: &ServiceVersion,
+        trusted: &TrustedKeys,
+        budget: &mut Budget,
+    ) -> Result<Timestamp, AuthorityRefusal> {
+        let with_digest = self
+            .presented
+            .iter()
+            .filter(|statement| statement.open().is_ok_and(|body| body.digest == digest));
+        for statement in with_digest {
+            budget.reserve(statement, trusted)?;
+            let Ok((body, by, _)) = open_approval(statement, trusted, Some(child.cluster)) else {
+                continue;
+            };
+            let human = trusted
+                .of(&by)
+                .is_some_and(|key| key.kind().whole_cluster());
+            if human
+                && body.parent.is_none()
+                && body.cluster == child.cluster
+                && body.namespace == child.namespace
+                && body.service == child.service
+            {
+                return Ok(body.signed_at);
+            }
+        }
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Parent,
+        })
+    }
 }
 
 /// A signed version that asks every Member to forget the versions of its Service signed
@@ -277,8 +412,8 @@ pub struct Forget {
 }
 
 /// Open each of `versions` as a [`Forget`] for this Machine's Cluster `cluster`: signed
-/// by a key trusted here, alone or as a step of a bundle, marked to forget, and outside
-/// the system Namespace. It creates nothing, so no digest is checked. Statements are
+/// by a key trusted here, alone or as a step of a bundle, marked to forget, naming no
+/// parent, and outside the system Namespace. It creates nothing, so no digest is checked. Statements are
 /// charged to one [`Budget`] in order; one past it is refused as overspent.
 #[must_use]
 pub fn verify_forget(
@@ -297,6 +432,7 @@ pub fn verify_forget(
                 (MismatchField::Cluster, body.cluster == cluster),
                 (MismatchField::Forget, body.forget_older),
                 (MismatchField::SystemNamespace, !body.namespace.is_system()),
+                (MismatchField::ForgetParent, body.parent.is_none()),
             ])?;
             Ok(Forget {
                 service: QualifiedService::new(body.namespace, body.service),

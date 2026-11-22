@@ -40,7 +40,10 @@ pub fn admits(at: Timestamp, floor: Option<Timestamp>, now: Timestamp) -> Result
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Signature<K> {
     pub key: K,
+    /// The time the floor checks: the version's own, or its parent's when that is older.
     pub at: Timestamp,
+    /// The signer's own clock, which the guard checks.
+    pub signed: Timestamp,
     pub forget: bool,
 }
 
@@ -53,9 +56,10 @@ pub struct Admitted<K> {
 }
 
 /// Which of `signatures` admit a new Container at `now` on a Machine whose floor for its
-/// Service is `floor`. The guard runs on each signature, so one signed ahead never hides
-/// another by the same key. A forget among them raises the floor first, so the versions
-/// it forgets admit nothing.
+/// Service is `floor`. The guard runs on each signature's own time, so one signed ahead
+/// never hides another by the same key, and the floor on the time it checks. A forget
+/// among them raises the floor to its own time first, so the versions it forgets admit
+/// nothing. Each key keeps the newest time the floor checked.
 ///
 /// # Errors
 /// Returns [`Refused::Ahead`] when a forget is past the guard, since a forget that can't
@@ -67,14 +71,15 @@ pub fn admit<K: Copy + PartialEq>(
 ) -> Result<Admitted<K>, Refused> {
     let mut floor = floor;
     for forget in signatures.iter().filter(|signature| signature.forget) {
-        if let Raise::Raised(raised) = raise(floor, forget.at, now)? {
+        if let Raise::Raised(raised) = raise(floor, forget.signed, now)? {
             floor = Some(raised);
         }
     }
     let mut keys: Vec<(K, Timestamp)> = Vec::new();
     let mut first = None;
     for signature in signatures {
-        if let Err(refused) = admits(signature.at, floor, now) {
+        let checked = admits(signature.signed, None, now).and(admits(signature.at, floor, now));
+        if let Err(refused) = checked {
             first.get_or_insert(refused);
             continue;
         }

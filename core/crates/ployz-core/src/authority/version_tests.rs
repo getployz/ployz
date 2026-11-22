@@ -5,6 +5,8 @@ use super::*;
 use crate::authority::{
     keys::Signer,
     proposal::{ProposalApproval, ProposalStep, StepDigest},
+    scope::{Cap, CapSet, Grant, GrantKind, KeyPlaces, KeyScope, TrustedGrant},
+    trusted_key::PasskeyApprover,
     trusted_key::{Base64Url, CredentialId, PasskeyAssertion, tests::trusted_eddsa_passkey},
 };
 use crate::{
@@ -54,6 +56,7 @@ fn body(by: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
         signed_at: Timestamp::from_millis(100_000).unwrap(),
         signer: SignerKey::Device(DeviceKey::from(by.public())),
         proposal: None,
+        parent: None,
     }
 }
 
@@ -240,7 +243,8 @@ fn steps_sharing_one_signed_bundle_each_pay_for_the_bundle() {
     let (first, second) = (signer(1), signer(2));
     let spec = requested("a");
     let operation = OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
-    let mut step = body(&first, &requested("not this one"));
+    let mut step = body(&first, &spec);
+    step.service = ServiceName::parse("api").unwrap();
     step.proposal = Some(ProposalRef {
         operation,
         index: 0,
@@ -271,7 +275,7 @@ fn steps_sharing_one_signed_bundle_each_pay_for_the_bundle() {
     assert_eq!(
         check(&versions, &trusting(&[&first, &second]), &resolved(&spec)),
         Err(AuthorityRefusal::Mismatch {
-            field: MismatchField::Payload
+            field: MismatchField::Service
         }),
         "four steps at two verifications each spend the budget before the fifth statement"
     );
@@ -373,4 +377,207 @@ fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
         .iter()
         .map(|approved| approved.by.clone())
         .collect()
+}
+
+/// A Machine trusting `person` as a Device and `ci` as a CI key over the whole Cluster.
+fn trusting_ci(person: &Signer, ci: &Signer) -> TrustedKeys {
+    TrustedKeys::new(
+        [DeviceKey::from(person.public())],
+        [],
+        [TrustedGrant {
+            grant: Grant {
+                key: ci.public(),
+                kind: GrantKind::Ci,
+                scope: KeyScope {
+                    caps: CapSet::of(&[Cap::Spec]),
+                    places: KeyPlaces::Cluster,
+                },
+                volumes: Vec::new(),
+                issued_at: Timestamp::from_millis(1).unwrap(),
+            },
+            approved_by: PasskeyApprover::Server,
+        }],
+    )
+}
+
+/// `by`'s edit of `parent`, signed at `at`.
+fn child(
+    by: &Signer,
+    spec: &RequestedServiceSpec,
+    parent: &ServiceVersion,
+    at: u64,
+) -> ServiceVersion {
+    ServiceVersion {
+        parent: Some(parent.digest),
+        signed_at: Timestamp::from_millis(at).unwrap(),
+        ..body(by, spec)
+    }
+}
+
+fn parent_refused() -> Result<VersionAdmitted, AuthorityRefusal> {
+    Err(AuthorityRefusal::Mismatch {
+        field: MismatchField::Parent,
+    })
+}
+
+#[test]
+fn a_ci_key_admits_its_edit_of_a_version_a_person_signed_from_the_older_time() {
+    let (person, ci) = (signer(1), signer(2));
+    let root = body(&person, &requested("a"));
+    let spec = requested("b");
+
+    let admitted = check(
+        &[
+            signed(&ci, &child(&ci, &spec, &root, 300_000)),
+            signed(&person, &root),
+        ],
+        &trusting_ci(&person, &ci),
+        &resolved(&spec),
+    )
+    .unwrap();
+
+    let [approved] = admitted.by.as_slice() else {
+        panic!("{admitted:?}");
+    };
+    assert_eq!(approved.by, Approver::Signing(ci.public()));
+    assert_eq!(approved.signed_at, Timestamp::from_millis(300_000).unwrap());
+    assert_eq!(approved.floor_at, root.signed_at);
+}
+
+#[test]
+fn a_ci_key_signs_no_first_version() {
+    let (person, ci) = (signer(1), signer(2));
+    let spec = requested("b");
+
+    assert_eq!(
+        check(
+            &[signed(&ci, &body(&ci, &spec))],
+            &trusting_ci(&person, &ci),
+            &resolved(&spec)
+        ),
+        parent_refused(),
+    );
+}
+
+#[test]
+fn a_parent_must_be_a_parentless_version_of_the_same_service_a_trusted_person_signed() {
+    let (person, ci, stranger) = (signer(1), signer(2), signer(3));
+    let trusted = trusting_ci(&person, &ci);
+    let spec = requested("b");
+    let root = body(&person, &requested("a"));
+    let untrusted = body(&stranger, &requested("a"));
+    let by_ci = body(&ci, &requested("a"));
+    let edited = ServiceVersion {
+        parent: Some(PayloadDigest::of(&requested("z"), &namespace()).unwrap()),
+        ..root.clone()
+    };
+    let other_service = ServiceVersion {
+        service: ServiceName::parse("api").unwrap(),
+        ..root.clone()
+    };
+    let other_namespace = ServiceVersion {
+        namespace: Namespace::parse("other").unwrap(),
+        ..root.clone()
+    };
+    let cases = [
+        ("untrusted", signed(&stranger, &untrusted)),
+        ("signed by a CI key", signed(&ci, &by_ci)),
+        ("itself an edit", signed(&person, &edited)),
+        ("another Service", signed(&person, &other_service)),
+        ("another Namespace", signed(&person, &other_namespace)),
+    ];
+
+    for (case, parent) in cases {
+        let edit = child(&ci, &spec, &parent.open().unwrap(), 300_000);
+        assert_eq!(
+            check(&[signed(&ci, &edit), parent], &trusted, &resolved(&spec)),
+            parent_refused(),
+            "{case}"
+        );
+    }
+    assert!(
+        check(
+            &[
+                signed(&ci, &child(&ci, &spec, &root, 300_000)),
+                signed(&person, &root)
+            ],
+            &trusted,
+            &resolved(&spec)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_forget_presented_only_as_a_parent_does_not_refuse_its_honest_child() {
+    let (person, ci) = (signer(1), signer(2));
+    let root = ServiceVersion {
+        forget_older: true,
+        ..body(&person, &requested("a"))
+    };
+    let spec = requested("b");
+
+    let admitted = check(
+        &[
+            signed(&ci, &child(&ci, &spec, &root, 300_000)),
+            signed(&person, &root),
+        ],
+        &trusting_ci(&person, &ci),
+        &resolved(&spec),
+    );
+
+    assert!(admitted.is_ok(), "{admitted:?}");
+}
+
+#[test]
+fn a_version_that_edits_a_parent_never_forgets() {
+    let person = signer(1);
+    let root = body(&person, &requested("a"));
+    let spec = requested("b");
+    let forget = ServiceVersion {
+        forget_older: true,
+        ..child(&person, &spec, &root, 300_000)
+    };
+    let presented = [signed(&person, &forget), signed(&person, &root)];
+    let trusted = trusting(&[&person]);
+
+    assert_eq!(
+        check(&presented, &trusted, &resolved(&spec)),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ForgetParent
+        }),
+    );
+    assert_eq!(
+        verify_forget(
+            &presented[..1],
+            &trusted,
+            Some(SealingPublicKey::from_bytes(CLUSTER))
+        ),
+        vec![Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ForgetParent
+        })],
+    );
+}
+
+#[test]
+fn a_ci_keys_forget_binds_nothing() {
+    let (person, ci) = (signer(1), signer(2));
+    let root = body(&person, &requested("a"));
+    let spec = requested("b");
+    let forget = ServiceVersion {
+        forget_older: true,
+        ..body(&ci, &spec)
+    };
+
+    let admitted = check(
+        &[
+            signed(&ci, &forget),
+            signed(&ci, &child(&ci, &spec, &root, 300_000)),
+            signed(&person, &root),
+        ],
+        &trusting_ci(&person, &ci),
+        &resolved(&spec),
+    );
+
+    assert!(admitted.is_ok(), "{admitted:?}");
 }

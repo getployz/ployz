@@ -49,6 +49,11 @@ pub struct ServerReport {
     pub region: Option<String>,
     /// Every Namespace it runs containers or holds volumes for.
     pub namespaces: Vec<Namespace>,
+    /// The capabilities its daemon advertises. Absent from an older answerer, and for a
+    /// Server seen without them, as through a relay, so absence claims nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capabilities: Option<BTreeSet<String>>,
 }
 
 impl ServerReport {

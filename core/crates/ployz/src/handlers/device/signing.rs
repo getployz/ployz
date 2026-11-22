@@ -1,5 +1,6 @@
-//! The one place this computer's Device key becomes a signature: it loads the key and
-//! signs. The key never leaves this type.
+//! The one place a key this CLI holds becomes a signature: this computer's Device key, or
+//! a CI or agent key from `PLOYZ_KEY`. It loads the key and signs. The key never leaves
+//! this type.
 
 use std::path::Path;
 
@@ -8,7 +9,7 @@ use ployz_core::authority::{Signed, Signer, Statement};
 use super::key::{self, KeyError};
 use crate::handlers::Error;
 
-/// This computer's Device key, ready to sign.
+/// A key this CLI signs with, ready to sign.
 pub(in crate::handlers) struct DeviceSigning {
     signer: Signer,
 }
@@ -25,12 +26,19 @@ impl DeviceSigning {
         }))
     }
 
+    /// The key whose 32-byte seed is `seed`.
+    pub(in crate::handlers) fn from_seed(seed: &[u8; 32]) -> Self {
+        Self {
+            signer: Signer::from_seed(seed),
+        }
+    }
+
     /// The key a body names as its signer.
     pub(in crate::handlers) fn device_key(&self) -> ployz_core::DeviceKey {
         self.signer.public().into()
     }
 
-    /// Sign `body` with this Device's key.
+    /// Sign `body` with this key.
     ///
     /// # Errors
     /// Returns a command error when the body has no canonical form.

@@ -27,14 +27,23 @@ pub(crate) struct Approvals {
     versions: Versions,
 }
 
+/// A signed version a Deploy hands its Servers, by the digest it signs and the one it
+/// names as its parent.
+#[derive(Clone, Debug)]
+struct Kept {
+    digest: PayloadDigest,
+    parent: Option<PayloadDigest>,
+    version: Signed<ServiceVersion>,
+}
+
 /// Where a new creation's signed versions come from.
 #[derive(Clone, Debug, Default)]
 enum Versions {
     #[default]
     None,
     /// A Deploy's: the versions of each Service it creates, by the digest each signs. A
-    /// copy carries those of its own spec's digest.
-    ByService(BTreeMap<ServiceName, Vec<(PayloadDigest, Signed<ServiceVersion>)>>),
+    /// copy carries those of its own spec's digest and the parentless ones they edit.
+    ByService(BTreeMap<ServiceName, Vec<Kept>>),
     /// A drain's: each moved copy runs its own spec, so its versions are read from the
     /// Config Store when the drain reaches it.
     Kept(KeptVersions),
@@ -199,16 +208,18 @@ impl RuleProofs {
 }
 
 impl Approvals {
-    /// Hand each Service's creations the versions signed for their spec, newest last, and
-    /// each change the rule's proof for its Service, in place of a person's signed version.
+    /// Hand each Service's creations the versions signed for their spec, each with the
+    /// parentless versions it names as its parent, in the order given, and each change the
+    /// rule's proof for its Service, in place of a person's signed version.
     pub(crate) fn signed(versions: Vec<Signed<ServiceVersion>>, proofs: RuleProofs) -> Self {
         let mut by_service: BTreeMap<ServiceName, Vec<_>> = BTreeMap::new();
         for version in versions {
             if let Ok(body) = version.open() {
-                by_service
-                    .entry(body.service)
-                    .or_default()
-                    .push((body.digest, version));
+                by_service.entry(body.service).or_default().push(Kept {
+                    digest: body.digest,
+                    parent: body.parent,
+                    version,
+                });
             }
         }
         Self {
@@ -251,15 +262,23 @@ impl Approvals {
             ) => {
                 let digest =
                     PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace).ok();
-                let signed: Vec<_> = by_service
+                let kept = by_service
                     .get(&new.slot.service)
-                    .into_iter()
-                    .flatten()
-                    .filter(|(signs, _)| Some(*signs) == digest)
-                    .map(|(_, version)| version.clone())
+                    .map_or(&[][..], Vec::as_slice);
+                let parents: Vec<PayloadDigest> = kept
+                    .iter()
+                    .filter(|kept| Some(kept.digest) == digest)
+                    .filter_map(|kept| kept.parent)
                     .collect();
-                let skip = signed.len().saturating_sub(MAX_PRESENTED);
-                signed.into_iter().skip(skip).collect()
+                // A Server takes an edit only beside the parentless version it edits.
+                kept.iter()
+                    .filter(|kept| {
+                        Some(kept.digest) == digest
+                            || (kept.parent.is_none() && parents.contains(&kept.digest))
+                    })
+                    .take(MAX_PRESENTED)
+                    .map(|kept| kept.version.clone())
+                    .collect()
             }
             (
                 ContainerWant::Running {

@@ -158,6 +158,8 @@ macro_rules! rpc_catalog {
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
                 /// The daemon trusts CI and agent keys a person granted, each only for the Service versions its scope names, and admits a join approval carrying them.
                 SCOPED_KEYS_CAPABILITY: ("ployz.authority.scoped-keys.v1", Always),
+                /// A signed version may name the parentless version a person or full CLI signed that it edits, and a CI or agent key's version must.
+                PARENT_VERSIONS_CAPABILITY: ("ployz.authority.parent-versions.v1", Always),
             }
         }
     };

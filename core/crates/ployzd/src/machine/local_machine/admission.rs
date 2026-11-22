@@ -468,7 +468,8 @@ impl LocalMachine {
             .into_iter()
             .map(|approved| Signature {
                 key: KeptKey::from(approved.by),
-                at: approved.signed_at,
+                at: approved.floor_at,
+                signed: approved.signed_at,
                 forget: approved.forget_older,
             })
             .collect();

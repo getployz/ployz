@@ -651,6 +651,7 @@ fn stranger_forget(machine: &Enforcing) -> Value {
         signer: DeviceKey::from(stranger.public()).into(),
         proposal: None,
         forget_older: true,
+        parent: None,
     };
     serde_json::to_value(Signed::sign(&version, &stranger).unwrap()).unwrap()
 }

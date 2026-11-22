@@ -5764,6 +5764,7 @@ mod ensure_container {
                     signed_at,
                     signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                     proposal: None,
+                    parent: None,
                 };
                 Signed::sign(&body, &self.signer).unwrap()
             }
