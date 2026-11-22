@@ -74,9 +74,10 @@ class CiTest(unittest.TestCase):
             with self.subTest(paths=paths):
                 self.assertFalse(ci["store_postgres"](paths, pull_request=True))
                 self.assertTrue(ci["store_postgres"](paths))
-        # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it.
+        # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it. Its
+        # dev-dependency on itself turns on test-support.
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
-        path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
+        path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path") and d["name"] != p["name"]} for p in metadata["packages"]}
         self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core", "ployz-decide"})
 
     def test_only_dns_soak_reaches_rust_from_the_verify_harness(self):

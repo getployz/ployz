@@ -19,7 +19,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
+use ployz_store::testing::backend;
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")

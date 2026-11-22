@@ -1,17 +1,16 @@
 //! A Project whose Git Services follow `acme/web`'s `main`, and the pushes and check
 //! suites Cloud observes of it, for the Git automation suites.
-#![allow(dead_code, reason = "each suite uses what it needs")]
 
-use ployz_core::ServiceName;
-use ployz_core::config::ServiceGitAccess;
-use ployz_store::{
+use crate::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
     ProjectId, ProjectName, Publish, ServiceLineageId, SettingPath, SystemEvent, Trusted, Written,
 };
+use ployz_core::ServiceName;
+use ployz_core::config::ServiceGitAccess;
 use serde_json::{Value, json};
 
-use crate::backend;
+use super::backend;
 
 pub const H1: &str = "1111111111111111111111111111111111111111";
 pub const H2: &str = "2222222222222222222222222222222222222222";
@@ -128,8 +127,7 @@ pub fn suite(
         head: backend::sha(head),
         status: serde_json::from_value(json!(status)).unwrap(),
         conclusion: conclusion.map(|conclusion| serde_json::from_value(json!(conclusion)).unwrap()),
-        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z"))
-            .unwrap(),
+        updated: crate::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z")).unwrap(),
     })
 }
 
@@ -155,7 +153,7 @@ pub fn deployed(
             let view = store
                 .read(
                     who,
-                    &ployz_store::DeploymentQuery {
+                    &crate::DeploymentQuery {
                         id: summary.id.clone(),
                     },
                 )
@@ -174,18 +172,18 @@ pub fn deployed(
 }
 
 /// The production Environment's Deployments, newest first.
-pub fn deployments(store: &ConfigStore, who: &Actor) -> Vec<ployz_store::DeploymentSummary> {
+pub fn deployments(store: &ConfigStore, who: &Actor) -> Vec<crate::DeploymentSummary> {
     store
-        .read(who, &ployz_store::DeploymentsQuery::default())
+        .read(who, &crate::DeploymentsQuery::default())
         .unwrap()
         .deployments
 }
 
 /// The production Environment's Deployments waiting for CI, newest first.
-pub fn held(store: &ConfigStore, who: &Actor) -> Vec<ployz_store::DeploymentSummary> {
+pub fn held(store: &ConfigStore, who: &Actor) -> Vec<crate::DeploymentSummary> {
     deployments(store, who)
         .into_iter()
-        .filter(|deployment| deployment.status == ployz_store::DeploymentStatus::WaitingForCi)
+        .filter(|deployment| deployment.status == crate::DeploymentStatus::WaitingForCi)
         .collect()
 }
 

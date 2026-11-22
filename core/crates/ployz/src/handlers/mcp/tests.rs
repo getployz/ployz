@@ -3054,25 +3054,6 @@ mod tool_facts {
         "project_remove",
     ];
 
-    fn diff() -> Asked {
-        serde_json::from_value(json!({
-            "approval_id": "a1", "approval": "d1", "effects": [],
-            "diff": {
-                "environment": { "id": "00000000-0000-4000-8000-000000000002", "project": "shop", "name": "production", "revision": 3 },
-                "version": "3:2:0.1", "saved": 2, "holds_staged": false, "changes": [], "total_count": 3,
-            },
-        }))
-        .unwrap()
-    }
-
-    fn operation() -> Asked {
-        serde_json::from_value(json!({
-            "approval_id": "a1", "approval": "d1", "effects": [],
-            "operation": { "verb": "drain", "name": "box" },
-        }))
-        .unwrap()
-    }
-
     fn status_of(tool: &str) -> &'static str {
         let family = [
             (SERVER, "server_show"),
@@ -3109,51 +3090,6 @@ mod tool_facts {
                     def.name,
                     status_of(def.name),
                 ),
-                "{}",
-                def.name
-            );
-        }
-    }
-
-    #[test]
-    fn an_approval_of_a_diff_is_worded_by_its_tool() {
-        let diff = diff();
-        for def in tools::catalog() {
-            let expected = match def.name {
-                "environment_remove" | "project_remove" => Verb::Operation(OperationVerb::Remove),
-                "deployment_retry" => Verb::Retry,
-                _ => Verb::Deploy,
-            };
-            for input in [json!({}), json!({ "skip_deploy": false })] {
-                assert_eq!(verb(def.name, &input, &diff), expected, "{}", def.name);
-            }
-        }
-    }
-
-    #[test]
-    fn a_deploy_that_skips_the_deploy_is_a_save() {
-        let diff = diff();
-        assert_eq!(
-            verb("deploy", &json!({ "skip_deploy": true }), &diff),
-            Verb::Publish
-        );
-        assert_eq!(
-            verb("deploy", &json!({ "skip_deploy": "true" }), &diff),
-            Verb::Deploy
-        );
-        for def in tools::catalog().iter().filter(|def| def.name != "deploy") {
-            let input = json!({ "skip_deploy": true });
-            assert_ne!(verb(def.name, &input, &diff), Verb::Publish, "{}", def.name);
-        }
-    }
-
-    #[test]
-    fn an_approval_of_an_operation_is_worded_by_its_operation() {
-        let operation = operation();
-        for def in tools::catalog() {
-            assert_eq!(
-                verb(def.name, &json!({ "skip_deploy": true }), &operation),
-                Verb::Operation(OperationVerb::Drain),
                 "{}",
                 def.name
             );

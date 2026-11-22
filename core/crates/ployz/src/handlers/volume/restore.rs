@@ -26,22 +26,9 @@ use crate::connect::TARGET_RPC_TIMEOUT;
 
 /// How long a Restore waits out a Machine that answers `busy`, as Cloud's does.
 const BUSY_PATIENCE: Duration = Duration::from_secs(60);
+/// How long between two sends to a Machine that answered `busy`.
+const BUSY_POLL: Duration = Duration::from_secs(5);
 const INSPECTS_AT_ONCE: usize = 8;
-
-/// How a Restore waits out a busy Machine. `Default` is production's.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Pacing {
-    /// How long between two sends to a Machine that answered `busy`.
-    pub(super) busy_poll: Duration,
-}
-
-impl Default for Pacing {
-    fn default() -> Self {
-        Self {
-            busy_poll: Duration::from_secs(5),
-        }
-    }
-}
 
 /// What one member Server reported for the Volume, or why it didn't. A Machine the entry
 /// lists only by ID goes by that ID.
@@ -338,7 +325,7 @@ pub(super) fn standalone(
             machine, request, ..
         } = &planned
         {
-            set(client, machine, request.clone(), from, Pacing::default()).await?;
+            set(client, machine, request.clone(), from).await?;
         }
         Ok::<_, Error>(planned)
     })?;
@@ -385,7 +372,6 @@ async fn set(
     machine: &MachineId,
     mut request: SetVolumeCopyRequest,
     from: &MachineName,
-    pacing: Pacing,
 ) -> Result<(), Error> {
     let until = Instant::now() + BUSY_PATIENCE;
     let mut at_floor = false;
@@ -408,7 +394,7 @@ async fn set(
             Some(SetVolumeCopyRefused {
                 reason: CopyRefusal::Busy,
                 ..
-            }) if Instant::now() < until => tokio::time::sleep(pacing.busy_poll).await,
+            }) if Instant::now() < until => tokio::time::sleep(BUSY_POLL).await,
             Some(SetVolumeCopyRefused {
                 reason: CopyRefusal::Stale,
                 floor: Some(floor),

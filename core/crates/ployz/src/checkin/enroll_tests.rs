@@ -633,8 +633,8 @@ fn a_cloud_name_taken_from_an_invalid_hostname_is_normalised() {
     assert_eq!(add_name("Web-1", "box-1"), "Web-1");
 }
 
-fn plan(instruction: &EnrollInstruction) -> Result<crate::handlers::server::EnrollPlan, String> {
-    crate::handlers::server::EnrollPlan::from_instruction(
+fn plan(instruction: &EnrollInstruction) -> Result<crate::enrollment::EnrollPlan, String> {
+    crate::enrollment::EnrollPlan::from_instruction(
         instruction,
         std::path::PathBuf::from(ROOT_CONFIG),
     )
@@ -650,7 +650,7 @@ fn enrolls(instruction: &EnrollInstruction) -> String {
         Err(error) => return format!("refused: {error}"),
     };
     let shaping = plan.shaping();
-    let read = || -> Result<String, crate::handlers::Error> {
+    let read = || -> Result<String, crate::failure::Failure> {
         let asked = shaping.policy()?;
         let name = shaping.name()?;
         let cluster = shaping.cluster_name()?;
@@ -873,7 +873,7 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
 #[test]
 fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
     let error =
-        crate::handlers::Error::coded(ployz_core::RpcErrorCode::Unavailable, "Store not ready")
+        crate::failure::Failure::coded(ployz_core::RpcErrorCode::Unavailable, "Store not ready")
             .context("the first Server did not become ready");
 
     assert_eq!(
@@ -1555,8 +1555,7 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         panic!("enroll");
     };
     let plan =
-        crate::handlers::server::EnrollPlan::from_instruction(&instruction, this_host_config())
-            .unwrap();
+        crate::enrollment::EnrollPlan::from_instruction(&instruction, this_host_config()).unwrap();
     let reach = plan.reach();
     // Without HOME, as systemd runs the loop, enrolling keeps root's config.
     let config = match std::env::var_os("HOME") {

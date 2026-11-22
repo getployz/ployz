@@ -628,29 +628,25 @@ impl LocalMachine {
         .await
     }
 
-    /// Whether this Machine sends a Volume to the mesh address `peer`: only to the
-    /// management address of a Machine this one accepts.
+    /// The Machine this one accepts whose management address is `address`. Volume sends
+    /// and pulls go only to and from one, so a Mirror holds only data another Machine of
+    /// this Cluster sent.
     ///
     /// # Errors
     /// Returns a store error when the Machines cannot be read.
-    pub(crate) async fn sends_volume(
+    pub(crate) async fn machine_at(
         &self,
-        peer: std::net::IpAddr,
-    ) -> Result<crate::volume_send::Sends, Error> {
-        use crate::volume_send::Sends;
-        let std::net::IpAddr::V6(address) = peer.to_canonical() else {
-            return Ok(Sends::Refused);
-        };
+        address: &ployz_core::ManagementAddress,
+    ) -> Result<Option<ployz_core::MachineId>, Error> {
         let machines = self.replicated()?.machines().await?;
         Ok(machines
             .observations
             .into_iter()
-            .find(|machine| machine.management_address().0 == address)
-            .map_or(Sends::Refused, |machine| Sends::Member(machine.id)))
+            .find(|machine| machine.management_address() == *address)
+            .map(|machine| machine.id))
     }
 
-    /// Refuse a pull whose source is not the management address of a Machine this one
-    /// accepts, so a Mirror holds only data another Machine of this Cluster sent.
+    /// Refuse a pull whose source is not [`Self::machine_at`] a Machine this one accepts.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] for any other address, and a store error when the
@@ -659,12 +655,7 @@ impl LocalMachine {
         &self,
         from: &ployz_core::ManagementAddress,
     ) -> Result<(), Error> {
-        let machines = self.replicated()?.machines().await?;
-        if machines
-            .observations
-            .iter()
-            .any(|machine| machine.management_address() == *from)
-        {
+        if self.machine_at(from).await?.is_some() {
             return Ok(());
         }
         tracing::warn!(

@@ -114,22 +114,23 @@ pub(crate) fn rpc_to_napi(error: RpcError) -> Error {
 /// [`rpc_to_napi`], marking with `unanswered` a failure no Machine sent, and with
 /// `targetUnreached` one whose entry Machine could not dial the target.
 pub(crate) fn call_to_napi(failure: sdk::CallError) -> Error {
-    if !failure.unanswered && !failure.target_unreached {
-        return rpc_to_napi(failure.error);
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Failed<'a> {
+        #[serde(flatten)]
+        error: &'a RpcError,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        unanswered: bool,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        target_unreached: bool,
     }
-    match serde_json::to_value(&failure.error) {
-        Ok(serde_json::Value::Object(mut fields)) => {
-            for (field, set) in [
-                ("unanswered", failure.unanswered),
-                ("targetUnreached", failure.target_unreached),
-            ] {
-                if set {
-                    fields.insert(field.into(), serde_json::Value::Bool(true));
-                }
-            }
-            let json = serde_json::Value::Object(fields);
-            Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}"))
-        }
-        _ => Error::from_reason(failure.error.to_string()),
+    let failed = Failed {
+        error: &failure.error,
+        unanswered: failure.unanswered,
+        target_unreached: failure.target_unreached,
+    };
+    match serde_json::to_string(&failed) {
+        Ok(json) => Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}")),
+        Err(_) => Error::from_reason(failure.error.to_string()),
     }
 }

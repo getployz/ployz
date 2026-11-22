@@ -1,9 +1,8 @@
 //! The database each behaviour suite runs on: SQLite, or Postgres when
 //! `PLOYZ_STORE_TEST_POSTGRES` names a server as `postgres://USER:PASSWORD@HOST:PORT`
 //! (each Store gets its own new database).
-#![allow(dead_code, reason = "each suite uses what it needs")]
 
-use ployz_store::{ConfigStore, SealingKey};
+use crate::{ConfigStore, SealingKey};
 
 /// A new, empty Store database, shared by every handle opened on the URL.
 pub fn fresh_url(dir: &tempfile::TempDir) -> String {
@@ -125,62 +124,62 @@ pub fn key() -> SealingKey {
     SealingKey::new(b"test-encryption-secret").unwrap()
 }
 
-pub fn repo_id(n: u64) -> ployz_store::RepositoryId {
-    ployz_store::RepositoryId::parse(n).unwrap()
+pub fn repo_id(n: u64) -> crate::RepositoryId {
+    crate::RepositoryId::parse(n).unwrap()
 }
 
 /// A repository as `owner/name`.
-pub fn repo_name(name: &str) -> ployz_store::RepositoryName {
-    ployz_store::RepositoryName::parse(name).unwrap()
+pub fn repo_name(name: &str) -> crate::RepositoryName {
+    crate::RepositoryName::parse(name).unwrap()
 }
 
-pub fn git_branch(name: &str) -> ployz_store::BranchName {
-    ployz_store::BranchName::parse(name).unwrap()
+pub fn git_branch(name: &str) -> crate::BranchName {
+    crate::BranchName::parse(name).unwrap()
 }
 
 /// Cloud's evidence for the repositories `acme/web` (11) and `acme/docs` (12), each on
 /// `main` with a `dev` branch.
-pub fn acme_repositories() -> ployz_store::Trusted {
-    let repository = |name: &str, n| ployz_store::AuthorizedRepository {
+pub fn acme_repositories() -> crate::Trusted {
+    let repository = |name: &str, n| crate::AuthorizedRepository {
         repository: repo_name(name),
         repository_id: repo_id(n),
         access: ployz_core::config::ServiceGitAccess::Public,
         default_branch: git_branch("main"),
         branches: vec![git_branch("dev")],
     };
-    ployz_store::Trusted {
+    crate::Trusted {
         repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..ployz_store::Trusted::default()
+        ..crate::Trusted::default()
     }
 }
 
 /// The GitHub user `ada`, an org member in [`members`].
-pub fn ada() -> ployz_store::GithubUserId {
-    ployz_store::GithubUserId::parse(7).unwrap()
+pub fn ada() -> crate::GithubUserId {
+    crate::GithubUserId::parse(7).unwrap()
 }
 
 /// Cloud's evidence that `ada` is the org's one member.
-pub fn members() -> ployz_store::Trusted {
-    ployz_store::Trusted {
+pub fn members() -> crate::Trusted {
+    crate::Trusted {
         members: Some(vec![ada()]),
-        ..ployz_store::Trusted::default()
+        ..crate::Trusted::default()
     }
 }
 
 /// A full Git commit.
-pub fn sha(commit: &str) -> ployz_store::CommitSha {
-    ployz_store::CommitSha::parse(commit).unwrap()
+pub fn sha(commit: &str) -> crate::CommitSha {
+    crate::CommitSha::parse(commit).unwrap()
 }
 
-pub fn pr_number(n: u64) -> ployz_store::PullRequestNumber {
-    ployz_store::PullRequestNumber::parse(n).unwrap()
+pub fn pr_number(n: u64) -> crate::PullRequestNumber {
+    crate::PullRequestNumber::parse(n).unwrap()
 }
 
 /// Deploy `environment` in full as Deployment `n` and record every Service applied;
 /// what the runner was handed.
 pub fn deploy(
     store: &ConfigStore,
-    who: &ployz_store::Actor,
+    who: &crate::Actor,
     environment: &str,
     n: u8,
 ) -> serde_json::Value {
@@ -191,20 +190,20 @@ pub fn deploy(
 /// Admit Deployment `n` of `environment`, publishing its Working State; [`run`] runs it.
 pub fn admit(
     store: &ConfigStore,
-    who: &ployz_store::Actor,
+    who: &crate::Actor,
     environment: &str,
     n: u8,
-) -> ployz_store::DeploymentId {
-    let id = ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}"))
-        .unwrap();
+) -> crate::DeploymentId {
+    let id =
+        crate::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
         .write_trusted(
             who,
-            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+            &crate::Admit::Deploy(crate::Deploy {
                 id: id.clone(),
-                environment: ployz_store::EnvironmentRef {
+                environment: crate::EnvironmentRef {
                     project: None,
-                    environment: Some(ployz_store::EnvironmentName::parse(environment).unwrap()),
+                    environment: Some(crate::EnvironmentName::parse(environment).unwrap()),
                 },
                 services: Vec::new(),
                 version: None,
@@ -215,15 +214,15 @@ pub fn admit(
                 no_prune: false,
                 versions: Vec::new(),
             }),
-            &ployz_store::Trusted::default(),
+            &crate::Trusted::default(),
         )
         .unwrap();
     id
 }
 
 /// Run admitted Deployment `id` to success; what the runner was handed.
-pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::Value {
-    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+pub fn run(store: &ConfigStore, id: &crate::DeploymentId) -> serde_json::Value {
+    let runner = crate::RunnerId::parse("runner").unwrap();
     let claimed = store.claim(id, &runner).unwrap();
     finish(store, id, claimed)
 }
@@ -232,8 +231,8 @@ pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::V
 /// what the runner was handed.
 pub fn finish(
     store: &ConfigStore,
-    id: &ployz_store::DeploymentId,
-    claimed: ployz_store::Claimed,
+    id: &crate::DeploymentId,
+    claimed: crate::Claimed,
 ) -> serde_json::Value {
     finish_confirming(store, id, claimed, &[])
 }
@@ -242,13 +241,13 @@ pub fn finish(
 /// `batches` mid-run, in order, as it does when they finish at different times.
 pub fn deploy_in_batches(
     store: &ConfigStore,
-    who: &ployz_store::Actor,
+    who: &crate::Actor,
     environment: &str,
     n: u8,
     batches: &[&[&str]],
 ) -> serde_json::Value {
     let id = admit(store, who, environment, n);
-    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let runner = crate::RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id, &runner).unwrap();
     finish_confirming(store, &id, claimed, batches)
 }
@@ -256,8 +255,8 @@ pub fn deploy_in_batches(
 /// [`finish`], confirming the Services of each of `batches` before the outcome.
 pub fn finish_confirming(
     store: &ConfigStore,
-    id: &ployz_store::DeploymentId,
-    claimed: ployz_store::Claimed,
+    id: &crate::DeploymentId,
+    claimed: crate::Claimed,
     batches: &[&[&str]],
 ) -> serde_json::Value {
     let completed = confirm(store, id, &claimed, batches, batches.len());
@@ -270,8 +269,8 @@ pub fn finish_confirming(
     store
         .record(
             id,
-            &ployz_store::RunnerId::parse("runner").unwrap(),
-            ployz_store::RunEvidence::Executed {
+            &crate::RunnerId::parse("runner").unwrap(),
+            crate::RunEvidence::Executed {
                 progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
@@ -290,13 +289,13 @@ fn operation(index: usize) -> serde_json::Value {
 /// first `confirmed` of `batches`, leaving the run going. Returns the operation count.
 pub fn confirm(
     store: &ConfigStore,
-    id: &ployz_store::DeploymentId,
-    claimed: &ployz_store::Claimed,
+    id: &crate::DeploymentId,
+    claimed: &crate::Claimed,
     batches: &[&[&str]],
     confirmed: usize,
 ) -> usize {
     use serde_json::json;
-    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let runner = crate::RunnerId::parse("runner").unwrap();
     let mut names: Vec<String> = claimed
         .intent
         .target
@@ -320,7 +319,7 @@ pub fn confirm(
     }))
     .unwrap();
     store
-        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .record(id, &runner, crate::RunEvidence::Prepared(preview))
         .unwrap();
     for batch in batches.iter().take(confirmed) {
         let services = batch
@@ -328,7 +327,7 @@ pub fn confirm(
             .map(|name| ployz_core::ServiceName::parse(*name).unwrap())
             .collect();
         store
-            .record(id, &runner, ployz_store::RunEvidence::Confirmed(services))
+            .record(id, &runner, crate::RunEvidence::Confirmed(services))
             .unwrap();
     }
     names.len()

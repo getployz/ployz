@@ -5,26 +5,29 @@
 //! paste on the Server (`--command`).
 //! A hidden `--standalone` founds or joins a Cluster without Cloud.
 
+use std::future::Future;
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{
-    CloudEnrollToken, ClusterName, Hint, MachineId, RpcErrorCode, StoragePreparation,
-};
+use ployz_core::{CloudEnrollToken, ClusterName, Hint, MachineId, RpcErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use super::Shaping;
 use crate::cli::{base, positional, switch, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
+use crate::cloud::enroll::EnrollStage;
 use crate::cloud::login::{CredentialStore, LoginError, Organization};
 use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
+use crate::enrollment::EnrollPlan;
+use crate::enrollment::cloud::Reader;
+use crate::enrollment::plan::Shaping;
 use crate::env;
+use crate::provisioning::Installation;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
@@ -114,7 +117,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("cloud-url")
         .map_or(DEFAULT_CLOUD, String::as_str);
     if let Some(token) = enroll_token(matches)? {
-        return super::super::cloud::enroll(root, token, cloud);
+        return enroll(root, token, cloud);
     }
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
@@ -125,7 +128,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         {
             drop(runtime);
             let remote = matches.get_one::<String>("destination").is_some();
-            return super::super::cloud::enroll(root, prompted_token(remote)?, cloud);
+            return enroll(root, prompted_token(remote)?, cloud);
         }
         credential => credential?,
     };
@@ -149,18 +152,95 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         return runtime.block_on(paste(&acting, &minted, &shape, &key));
     }
     drop(runtime);
-    super::super::cloud::enroll(
+    enroll(
         root,
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
 }
 
+/// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
+fn enroll(root: &ArgMatches, token: CloudEnrollToken, cloud_url: &str) -> Result<(), Error> {
+    let plan = EnrollPlan::from_matches(root);
+    if plan.destination().is_some() {
+        // A remote host is provisioned up front, in the enrollment's first step.
+        return enroll_as_add(&plan, &token, cloud_url, &|_| async { Ok(()) });
+    }
+    if let Some(line) = leaf_matches(root).get_one::<String>("key") {
+        crate::first_key_line::arm(
+            ployz_core::MachineLayout::production().data_dir(),
+            &crate::first_key_line::parse(line)?,
+        )?;
+    }
+    enroll_as_add(&plan, &token, cloud_url, &|installation| async move {
+        match installation {
+            Installation::Host(storage) => {
+                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), &storage).await?;
+            }
+            Installation::Daemon => crate::provisioning::synchronize_local_daemon().await?,
+        }
+        Ok(())
+    })
+}
+
+/// Run token enrollment, installing this CLI's daemon version with `install`.
+///
+/// # Errors
+///
+/// Returns the same CLI failure as `ployz server add` given an enrollment token.
+#[doc(hidden)]
+pub fn enroll_with_installer<Install, InstallFuture>(
+    root: &ArgMatches,
+    install: &Install,
+) -> Result<(), Error>
+where
+    Install: Fn(Installation) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    let matches = leaf_matches(root);
+    let token = enroll_token(matches)?.ok_or_else(|| {
+        Error::usage(
+            "Pass the enrollment token with --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN",
+        )
+    })?;
+    let cloud_url = matches
+        .get_one::<String>("cloud-url")
+        .map_or(DEFAULT_CLOUD, String::as_str);
+    enroll_as_add(&EnrollPlan::from_matches(root), &token, cloud_url, install)
+}
+
+/// Enroll as `server add` does, with the Cloud enrollment's follow-up failure as its own.
+fn enroll_as_add<Install, InstallFuture>(
+    plan: &EnrollPlan,
+    token: &CloudEnrollToken,
+    cloud_url: &str,
+    install: &Install,
+) -> Result<(), Error>
+where
+    Install: Fn(Installation) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    let enrollment = crate::enrollment::cloud::Enrollment {
+        command: cloud::enroll::Command::ServerAdd,
+        plan,
+        token,
+        cloud_url,
+        install,
+        reader: Reader::Person,
+        progress: &|stage| {
+            if stage == EnrollStage::Enrolling && !crate::ui::json() {
+                crate::ui::note("Asking Cloud to enroll this Server…");
+            }
+        },
+    };
+    runtime()?
+        .block_on(enrollment.run())
+        .and_then(|enrolled| enrolled.follow_up.map_or(Ok(()), Err))
+}
+
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
 /// `PLOYZ_ENROLL_TOKEN`. None of them is argv, so the token stays out of `ps`.
-pub(in crate::handlers) fn enroll_token(
-    matches: &ArgMatches,
-) -> Result<Option<CloudEnrollToken>, Error> {
+fn enroll_token(matches: &ArgMatches) -> Result<Option<CloudEnrollToken>, Error> {
     let from_env = std::env::var(env::ENROLL_TOKEN)
         .ok()
         .filter(|token| !token.is_empty());
@@ -415,10 +495,10 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
         .is_some_and(|context| !context.connections.is_empty());
     if joins {
         if founding_cluster_name(leaf_matches(root))?.is_some() {
-            joined_unnamed();
+            crate::enrollment::plan::joined_unnamed();
         }
         if leaf_matches(root).get_flag("ingress-closed") {
-            joined_open();
+            crate::enrollment::plan::joined_open();
         }
         super::add(root)
     } else {
@@ -429,40 +509,18 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
 pub(in crate::handlers) fn founding_cluster_name(
     matches: &ArgMatches,
 ) -> Result<Option<ClusterName>, Error> {
-    parse_cluster_name(
+    crate::enrollment::plan::parse_cluster_name(
         matches
             .get_one::<String>("cluster-name")
             .map(String::as_str),
     )
 }
 
-/// [`founding_cluster_name`] from the `--cluster-name` value given.
-pub(super) fn parse_cluster_name(name: Option<&str>) -> Result<Option<ClusterName>, Error> {
-    name.map(crate::handlers::cluster::parse).transpose()
-}
-
-pub(in crate::handlers) fn joined_open() {
-    crate::ui::warn(
-        "--ingress-closed is ignored when joining a Cluster. The Server opens the Cluster's Doors.",
-    );
-}
-
-pub(in crate::handlers) fn joined_unnamed() {
-    crate::ui::warn(
-        "--cluster-name is ignored when joining a Cluster. Rename it with ployz cluster name.",
-    );
-}
-
-/// Storage the Cloud path asks for, when `--storage` gave none; it never prompts.
-pub(super) fn storage_or_default(given: Option<StoragePreparation>) -> StoragePreparation {
-    given.unwrap_or(StoragePreparation::Zfs { device: None })
-}
-
 /// Every input the enrollment engine reads from `root`, in the order it reads them, as text:
 /// the first refusal, or the parsed values and flags.
 #[cfg(test)]
 fn engine_view(root: &ArgMatches) -> String {
-    let plan = super::EnrollPlan::from_matches(root);
+    let plan = EnrollPlan::from_matches(root);
     let shaping = plan.shaping();
     let parsed = (|| -> Result<_, Error> {
         let policy = shaping.policy()?;

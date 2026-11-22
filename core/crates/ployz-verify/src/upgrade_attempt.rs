@@ -24,7 +24,7 @@
 //! so either can hold the lock while daemon start settles.
 //!
 //! Settling readers repair a receipt and marker that a stopped writer left. `settle`
-//! runs for Inspect (`LocalMachine::inspect`, through `latest`), for a resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`, through
+//! runs for Inspect (`LocalMachine::inspect`, through `latest`), for a resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`, through
 //! `ployzd::installer::upgrade::replay`), for Leave (`LocalMachine::depart`) and at daemon start (`Daemon::start`,
 //! through `reconcile`). `reconcile_locked` runs under the lock for a
 //! new upgrade request and for `ployzd install`
@@ -169,7 +169,7 @@ impl Worker {
 enum Caller {
     /// The Inspect RPC (`LocalMachine::inspect`), through `latest`.
     Inspect,
-    /// A resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`), through `replay`. The
+    /// A resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`), through `replay`. The
     /// CLI's poll (ployz handlers/server/upgrade.rs `poll_upgrade`, called from `run_one`'s poll loop) and Cloud's resend
     /// (dashboard `dashboard/src/modules/server-upgrade/server-upgrade.server.ts::resendUpgradeOnServer`) send it.
     Replay,
@@ -178,7 +178,7 @@ enum Caller {
     /// Daemon start (`Daemon::start`), through `reconcile` and `latest`, before it serves.
     DaemonStart,
     /// A request for another attempt: `replay` returns None for its id (`ployzd::installer::upgrade::replay`), then
-    /// `try_installation` (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`) and `request_locked`'s
+    /// `try_installation` (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`) and `request_locked`'s
     /// `reconcile_locked`.
     NewRequest,
     /// `ployzd install`'s `install_at` (installer/mod.rs), its own process.
@@ -299,7 +299,7 @@ enum Stop {
 /// The branch the last step took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
-    /// `request_upgrade`'s `try_installation` refused (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`).
+    /// `request_machine_upgrade`'s `try_installation` refused (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`).
     RequestBusy,
     /// `clear_active` removed the marker after Failed{Launching} (`ployzd::installer::upgrade::request_locked`).
     ClearsAfterLaunchFailure,
@@ -337,7 +337,7 @@ enum Branch {
     /// `depart` ran `finish_mutation` after Leave's own `settle` removed the marker a
     /// stopped writer left.
     DepartsAfterItsClear,
-    /// The caller's `try_installation` answered Busy (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`,
+    /// The caller's `try_installation` answered Busy (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`,
     /// `install_at` in installer/mod.rs).
     CallerBusy,
     /// A new request refused after reconciling (`ployzd::installer::upgrade::request_locked`).
@@ -353,8 +353,8 @@ enum Branch {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Action {
-    /// `request_upgrade`: `replay` finds no receipt for the id, `try_installation` takes the
-    /// lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`), and `request_locked` finds no receipt and no
+    /// `request_machine_upgrade`: `replay` finds no receipt for the id, `try_installation` takes the
+    /// lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`), and `request_locked` finds no receipt and no
     /// marker, resolves the release and writes Accepted.
     Accept,
     /// `mark_active` (`ployzd::installer::upgrade::request_locked`).
@@ -1423,14 +1423,14 @@ fn enters(caller: Caller) -> &'static str {
     match caller {
         Caller::Inspect => "Inspect (LocalMachine::inspect) calls latest",
         Caller::Replay => {
-            "a resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`) calls replay"
+            "a resend of the same attempt (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`) calls replay"
         }
         Caller::Leave => "Leave's depart (LocalMachine::depart) calls latest",
         Caller::DaemonStart => {
             "daemon start (`Daemon::start`) calls reconcile, then latest, before it serves"
         }
         Caller::NewRequest => {
-            "a request for another attempt: replay returns None for its id (`ployzd::installer::upgrade::replay`), and try_installation (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`)"
+            "a request for another attempt: replay returns None for its id (`ployzd::installer::upgrade::replay`), and try_installation (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`)"
         }
         Caller::Install => "ployzd install's install_at: try_installation (installer::install_at)",
     }
@@ -1444,13 +1444,13 @@ fn enters(caller: Caller) -> &'static str {
 fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &State) -> String {
     match action {
         Action::Accept if after.took == Some(Branch::RequestBusy) => {
-            "Daemon: request_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
+            "Daemon: request_machine_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
         }
         Action::Accept if after.took == Some(Branch::RequestFindsMarker) => {
-            "Daemon: request_upgrade takes the installation lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`); request_locked finds no receipt, finds .upgrade-active and returns Busy, and the lock drops".to_owned()
+            "Daemon: request_machine_upgrade takes the installation lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`); request_locked finds no receipt, finds .upgrade-active and returns Busy, and the lock drops".to_owned()
         }
         Action::Accept => {
-            "Daemon: request_upgrade takes the installation lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`); request_locked finds no receipt and no marker, and writes Accepted".to_owned()
+            "Daemon: request_machine_upgrade takes the installation lock (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`); request_locked finds no receipt and no marker, and writes Accepted".to_owned()
         }
         Action::Mark if before.request == Request::Launched => format!(
             "Daemon: mark_active {} after the launch (under Broken); request_locked returns Accepted and the task drops the lock",
@@ -1704,7 +1704,7 @@ fn started(after: &State, caller: Caller) -> String {
             "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer::install_at, installer::map_admission_error, `Error::Busy`)".to_owned()
         }
         Some(Branch::CallerBusy) => {
-            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (`ployzd::machine::local_machine::upgrade::LocalMachine::request_upgrade`, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
+            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (`ployzd::machine::local_machine::upgrade::LocalMachine::request_machine_upgrade`, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
         }
         took if !caller.settles() => format!(
             "takes the lock; {}",

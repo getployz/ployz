@@ -239,26 +239,26 @@ pub(super) async fn server_add(
         name: add_name(&instruction.name, &system.hostname()),
         ..instruction.clone()
     };
-    let plan =
-        crate::handlers::server::EnrollPlan::from_instruction(instruction, this_host_config())
-            .map_err(|error| error_chain::row(&error))?;
+    let plan = crate::enrollment::EnrollPlan::from_instruction(instruction, this_host_config())
+        .map_err(|error| error_chain::row(&error))?;
     let install = |installation| {
         let ployzd = system.ployzd.clone();
         async move {
             crate::provisioning::install_with(&ployzd, installation)
                 .await
-                .map_err(crate::handlers::Error::from)
+                .map_err(crate::failure::Failure::from)
         }
     };
-    let setup = crate::handlers::cloud::run_enrollment(
-        crate::cloud::enroll::Command::ServerEnroll,
-        &plan,
-        &instruction.token,
-        &system.cloud,
-        &install,
-        crate::handlers::cloud::Reader::Fleet,
+    let setup = crate::enrollment::cloud::Enrollment {
+        command: crate::cloud::enroll::Command::ServerEnroll,
+        plan: &plan,
+        token: &instruction.token,
+        cloud_url: &system.cloud,
+        install: &install,
+        reader: crate::enrollment::cloud::Reader::Fleet,
         progress,
-    )
+    }
+    .run()
     .await;
     match setup {
         Ok(enrolled) => Ok(Committed {
@@ -281,7 +281,7 @@ fn this_host_config() -> PathBuf {
     crate::context::expand_home(&config)
 }
 
-fn failure_message(error: &crate::handlers::Error) -> String {
+fn failure_message(error: &crate::failure::Failure) -> String {
     let mut message = error.to_string();
     for cause in error.causes() {
         message.push_str("; cause: ");

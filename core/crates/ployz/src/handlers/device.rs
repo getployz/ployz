@@ -354,7 +354,7 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
 
 /// Where the join this CLI signs came from, which decides what the signed body may name.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum JoinEntry {
+pub(crate) enum JoinEntry {
     /// Through Cloud, which could name a Cluster or a Device of its own. Only `pin`, the key
     /// this computer pinned for the Organization it is signed in to, vouches for the Cluster.
     Relayed {
@@ -372,7 +372,7 @@ impl JoinEntry {
     /// # Errors
     /// Fails when Cloud can't say which Organization the sign-in acts in, or the pins
     /// can't be read.
-    pub(super) async fn relayed(config: &Path) -> Result<Self, Error> {
+    pub(crate) async fn relayed(config: &Path) -> Result<Self, Error> {
         Ok(Self::Relayed {
             pin: pin::join_pin(config).await?,
         })
@@ -381,7 +381,7 @@ impl JoinEntry {
 
 /// Sign the join waiting for `expected`, narrowed to what the joiner's pin installs, so the
 /// summary shows what the Server will trust.
-pub(super) async fn sign_waiting_join(
+pub(crate) async fn sign_waiting_join(
     client: &mut Client,
     config: &Path,
     expected: &ployz_core::RegisterRequest,

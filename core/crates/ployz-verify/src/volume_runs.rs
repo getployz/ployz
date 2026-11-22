@@ -25,7 +25,7 @@
 //!   landing at any later moment, even after its row ended. Once the row ends, the
 //!   driver's next step stops at `requireOwner`, so it sends nothing new;
 //! - each Machine running `SetVolumeCopy`
-//!   (`ployzd/src/machine_api/local_volume_copy.rs`), with each lock and floor check
+//!   (`ployzd/src/machine/local_machine/volume_copy.rs`), with each lock and floor check
 //!   of the code as its own step, and the transition picked by the real
 //!   [`ployz_core::plan`];
 //! - A's daemon restarting halfway through the cut's flip;

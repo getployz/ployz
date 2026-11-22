@@ -25,8 +25,9 @@ tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 
 [dev-dependencies]
-ployz = { path = "../ployz" }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
 tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
 
 [lints]
 workspace = true

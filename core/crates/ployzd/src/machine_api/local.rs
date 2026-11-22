@@ -271,33 +271,6 @@ impl MachineService {
             .containers()
             .ok_or_else(|| RpcError::unavailable("Docker is not available"))
     }
-
-    fn require_joined(&self) -> Result<(), RpcError> {
-        match self.local_record().phase() {
-            LocalMachinePhase::Joining | LocalMachinePhase::Participating => Ok(()),
-            LocalMachinePhase::Uninitialized
-            | LocalMachinePhase::Resetting
-            | LocalMachinePhase::Unrecognized(_) => {
-                Err(RpcError::unavailable("Machine is not participating"))
-            }
-        }
-    }
-
-    async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
-        &self,
-        verb: &'static str,
-        route: &str,
-        request: &impl serde::Serialize,
-    ) -> Answer {
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply(crate::faults::Point::Verb(verb), None).await;
-        match self.local.plugin().call::<T>(route, request).await {
-            Ok(reply) => respond(reply),
-            Err(error) => respond(error),
-        }
-    }
 }
 
 /// What a unary handler answers.
@@ -313,20 +286,11 @@ macro_rules! catalog_ops {
 }
 ployz_core::rpc_catalog!(catalog_ops);
 
-macro_rules! local_call {
-    ($local:ident, $method:ident => $renamed:ident, $request:ident) => {
-        $local.$renamed($request)
-    };
-    ($local:ident, $method:ident, $request:ident) => {
-        $local.$method($request)
-    };
-}
-
 /// Handlers that decode the request, pass it to the [`LocalMachine`] method of the same
-/// name (or the one after `=>`), and answer its result. Written as `async_trait` expands
+/// name, and answer its result. Written as `async_trait` expands
 /// an `async fn`, because the attribute leaves a macro in the impl unexpanded.
 macro_rules! pass_through {
-    ($($method:ident $(=> $renamed:ident)?,)+) => {
+    ($($method:ident,)+) => {
         $(
             fn $method<'life0, 'async_trait>(
                 &'life0 self,
@@ -339,7 +303,7 @@ macro_rules! pass_through {
                 Box::pin(async move {
                     let local = self.at(&request);
                     let request = expect::<op_of!($method)>(request)?;
-                    finish(local_call!(local, $method $(=> $renamed)?, request).await)
+                    finish(local.$method(request).await)
                 })
             }
         )+
@@ -365,9 +329,9 @@ impl MachineRpc for MachineService {
         set_key,
         forget_versions,
         set_push_target,
-        update_machine => update,
+        update_machine,
         share_sealing_key,
-        request_machine_upgrade => request_upgrade,
+        request_machine_upgrade,
         leave,
         forget,
         prune_images,
@@ -586,65 +550,32 @@ impl MachineRpc for MachineService {
 
     async fn inspect_volume_copy(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::InspectVolumeCopy>(request)?;
-        self.volume_verb::<ployz_core::VolumeCopyView>(
-            "InspectVolumeCopy",
-            crate::volume_copy::VOLUME_INSPECT_ROUTE,
-            &request,
+        finish(
+            self.local
+                .volume_verb::<ployz_core::VolumeCopyView>(
+                    "InspectVolumeCopy",
+                    crate::volume_copy::VOLUME_INSPECT_ROUTE,
+                    &request,
+                )
+                .await,
         )
-        .await
     }
 
     async fn set_volume_copy(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
         let request = expect::<op::SetVolumeCopy>(request)?;
-        let service = Self {
-            local,
-            ..self.clone()
-        };
-        let admitted = match &request.want {
-            ployz_core::WantedCopy::Writer {
-                start: Some(start), ..
-            } => match service.local.admit_volume_start(start).await {
-                Ok(admitted) => admitted,
-                Err(error) => return local_error(error),
-            },
-            ployz_core::WantedCopy::Writer { start: None, .. }
-            | ployz_core::WantedCopy::Mirror { .. }
-            | ployz_core::WantedCopy::Snapshot { .. }
-            | ployz_core::WantedCopy::Forget
-            | ployz_core::WantedCopy::Floor => None,
-        };
-        service.set_copy(request, admitted).await
+        let copy = local.set_volume_copy(request).await;
+        finish(copy.map(|copy| ployz_core::SetVolumeCopyReply { copy }))
     }
 
     async fn seed_volume(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SeedVolume>(request)?;
-        let _guard = self.local.lock_switch().await;
-        // Checked under the switch lock, which a mirror pull of `into` takes too: a check
-        // before it would let a Seed admitted at the old floor run after a later run
-        // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
-        if let Some(r#gen) = request.r#gen
-            && let Err(error) = self.check_gen(&request.into, r#gen).await
-        {
-            return local_error(error);
-        }
-        self.volume_verb::<ployz_core::VolumeCopyView>(
-            "SeedVolume",
-            crate::volume_copy::VOLUME_SEED_ROUTE,
-            &request,
-        )
-        .await
+        finish(self.local.seed_volume(&request).await)
     }
 
     async fn set_volume_size(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SetVolumeSize>(request)?;
-        let _guard = self.local.lock_switch().await;
-        self.volume_verb::<ployz_core::SetVolumeSizeReply>(
-            "SetVolumeSize",
-            crate::volume_copy::VOLUME_SIZE_SET_ROUTE,
-            &request,
-        )
-        .await
+        finish(self.local.set_volume_size(&request).await)
     }
 
     async fn build(
@@ -1536,5 +1467,3 @@ mod rotation_fleet_tests;
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
-#[path = "local_volume_copy.rs"]
-mod volume_copy;

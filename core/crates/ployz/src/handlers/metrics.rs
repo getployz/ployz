@@ -13,12 +13,12 @@ use super::{
     store::scoped,
     with_reader,
 };
+use report::{HISTORY_NOTE, NOT_ENABLED_NOTE, report};
+
+mod report;
+
 use crate::{
-    cli::{
-        base,
-        metrics::{HISTORY_NOTE, NOT_ENABLED_NOTE, report},
-        positional, value,
-    },
+    cli::{base, positional, value},
     operator::input::TIME_FORMATS,
     sdk::{MetricSubject, metrics_live},
     ui::{self, Gaps},

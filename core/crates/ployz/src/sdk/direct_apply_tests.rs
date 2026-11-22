@@ -5,7 +5,7 @@ use crate::sdk::test_support as support;
 #[test]
 fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
     let failure = || crate::failure::Failure::unavailable("down");
-    let cloud = crate::handlers::cloud::ingress_incomplete(
+    let cloud = crate::enrollment::cloud::ingress_incomplete(
         crate::cloud::enroll::Command::ServerAdd,
         failure(),
     );

@@ -3,9 +3,8 @@ use std::collections::BTreeSet;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_agent_tools as tools;
-use ployz_agent_tools::{Act, Answer, CloudQuery, Place};
+use ployz_agent_tools::{Answer, CloudQuery, Place};
 use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
-use serde::{Deserialize, Serialize};
 
 use crate::Client;
 use crate::boundary::{from_js, invalid_argument, rpc_to_napi, to_json, whole_numbers};
@@ -63,14 +62,6 @@ pub fn agent_resume(
     turn(&step, &state)
 }
 
-/// What `ployz mcp` hands Cloud: an ask's query or an Act.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum CloudCall {
-    Ask(CloudQuery),
-    Act(Act),
-}
-
 /// Decode `{ ask: CloudQuery }` or `{ act: Act }` in full.
 ///
 /// # Errors
@@ -79,7 +70,7 @@ enum CloudCall {
 pub fn agent_cloud_call(
     #[napi(ts_arg_type = "unknown")] call: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let call: CloudCall = from_js(call).map_err(invalid_argument)?;
+    let call: ployz::sdk::agent::CloudCall = from_js(call).map_err(invalid_argument)?;
     to_json(&call)
 }
 

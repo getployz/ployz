@@ -11,7 +11,7 @@ use ployz_store::{
     ServiceLineageId, Trusted, region_key,
 };
 
-mod backend;
+use ployz_store::testing::backend;
 
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();

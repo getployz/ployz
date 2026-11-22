@@ -11,12 +11,11 @@ use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
 use ployz_agent_tools as tools;
 use ployz_agent_tools::{
-    Act, Action, Ask, DiffVerb, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
-    ToolResult, Write,
+    Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt, ToolResult,
+    Write,
 };
 use ployz_core::{RpcError, RpcErrorCode};
-use ployz_store::{Actor, ConfigStore, OperationVerb, OrganizationId};
-use reqwest::Method;
+use ployz_store::{Actor, ConfigStore, OrganizationId};
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Icon, Implementation,
@@ -35,9 +34,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::agent_call::{self, Started};
-use crate::approval::{self, Asked, Subject, Verb};
+use crate::approval::{self, Asked, Verb};
 use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError, StoreClient};
+use crate::cloud::account::{CloudCall, Credential, StoreCallError, StoreClient};
 use crate::cloud::http::{CALL_DEADLINE, Via};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::failure::Failure;
@@ -284,14 +283,8 @@ impl Backend<'_> {
             (_, Ask::Store(query)) => called(self.client().read_json(query).await),
             (Self::Local(..), Ask::Cloud(_)) => Err(cloud_only()),
             (Self::Cloud(cloud), Ask::Cloud(query)) => called(
-                cloud::account::approved_answer(
-                    &cloud.credential,
-                    Method::POST,
-                    "agent/ask",
-                    &json!({ "ask": query }),
-                    None,
-                )
-                .await,
+                cloud::account::agent_call(&cloud.credential, &CloudCall::Ask(query.clone()), None)
+                    .await,
             ),
         }
     }
@@ -303,11 +296,9 @@ impl Backend<'_> {
             }
             (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
             (Self::Cloud(cloud), Write::Act(act)) => written(
-                cloud::account::approved_answer(
+                cloud::account::agent_call(
                     &cloud.credential,
-                    Method::POST,
-                    "agent/act",
-                    &json!({ "act": act }),
+                    &CloudCall::Act(act.clone()),
                     approval,
                 )
                 .await,
@@ -970,7 +961,6 @@ impl Server {
         let until = Instant::now() + self.deadline;
         let call = Call {
             tool,
-            input: &input,
             backend: &backend,
             until,
         };
@@ -997,20 +987,14 @@ fn can_ask(context: &RequestContext<RoleServer>) -> bool {
 
 struct Call<'a> {
     tool: &'a str,
-    input: &'a Value,
     backend: &'a Backend<'a>,
     until: Instant,
 }
 
-fn verb(tool: &str, input: &Value, asked: &Asked) -> Verb {
-    match &asked.required.subject {
-        Subject::Operation(operation) => Verb::Operation(operation.verb),
-        Subject::Diff(_) => match tools::facts(tool).map(|facts| facts.verb(input)) {
-            Some(DiffVerb::Publish) => Verb::Publish,
-            Some(DiffVerb::Retry) => Verb::Retry,
-            Some(DiffVerb::Remove) => Verb::Operation(OperationVerb::Remove),
-            Some(DiffVerb::Deploy) | None => Verb::Deploy,
-        },
+fn stored(write: &Write) -> Option<&ployz_store::Command> {
+    match write {
+        Write::Store(command) => Some(command),
+        Write::Act(_) => None,
     }
 }
 
@@ -1050,7 +1034,7 @@ impl Server {
                 }
                 Step::Write { write } => {
                     if let Some((cloud, asked, answer)) = answered.take() {
-                        let verb = verb(call.tool, call.input, &asked);
+                        let verb = asked.verb(stored(&write));
                         let person = match self
                             .decider(&cloud.credential, &cloud.organization, verb, &asked)
                             .await
@@ -1089,7 +1073,7 @@ impl Server {
                         (step, state) = tools::resume(state, vec![written]);
                         continue;
                     };
-                    let verb = verb(call.tool, call.input, &asked);
+                    let verb = asked.verb(stored(&write));
                     if can_ask(context) {
                         let form = form(verb, &asked, typed(&write).as_deref());
                         let answer = context

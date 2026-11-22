@@ -55,7 +55,7 @@ pub(super) fn attention(
 ) -> ServerCheck {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
-    let named = context.is_some() || leaf.get_one::<String>("connect").is_some();
+    let named = route::names_cluster(leaf);
     let rolling_out = rolling_out(deploying);
     let observed = super::runtime()
         .map_err(Unreached::from)

@@ -13,7 +13,7 @@ use boundary::{
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use ployz::connect::diagnostics::{DialOutcome, DialTimings, should_emit};
+use ployz::connect::diagnostics::{DialOutcome, DialRecord, DialTimings, should_emit};
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
@@ -154,27 +154,15 @@ impl PendingConnection {
         if self.diagnose
             && should_emit(self.sampled, total_ms, outcome)
             && let Ok(timings) = timings.lock()
+            && let Ok(record) = serde_json::to_value(DialRecord::new(
+                timings.clone(),
+                total_ms,
+                outcome,
+                self.correlation.clone(),
+            ))
+            && let Ok(mut slot) = self.timings.lock()
         {
-            let mut recorded = timings.clone();
-            recorded.path_kind = recorded.selected_path();
-            let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(recorded) else {
-                return Ok(Client {
-                    inner: result.map_err(call_to_napi)?,
-                });
-            };
-            fields.insert("totalMs".into(), serde_json::json!(total_ms));
-            fields.insert("outcome".into(), serde_json::json!(outcome));
-            if let Some(correlation) = &self.correlation {
-                fields.insert("correlation".into(), serde_json::json!(correlation));
-            }
-            if outcome == DialOutcome::TimedOut {
-                fields.insert("stoppedBy".into(), serde_json::json!("sdk_deadline"));
-            } else if outcome == DialOutcome::Cancelled {
-                fields.insert("stoppedBy".into(), serde_json::json!("caller"));
-            }
-            if let Ok(mut slot) = self.timings.lock() {
-                *slot = Some(serde_json::Value::Object(fields));
-            }
+            *slot = Some(record);
         }
         Ok(Client {
             inner: result.map_err(call_to_napi)?,

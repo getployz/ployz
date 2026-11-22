@@ -19,7 +19,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
+use ployz_store::testing::backend;
 
 const SECRET: &str = "s3cr3t-pässwörd 🔑";
 
