@@ -900,13 +900,11 @@ mod settled {
     }
 
     async fn eventually(mut ready: impl FnMut() -> bool) {
-        ployz_testkit::poll_until(
-            Duration::from_secs(10),
-            "the daemon's state change",
-            async || ready(),
-        )
-        .await
-        .unwrap();
+        while !ready() {
+            // real-wait: the daemon changes this state over the fake Docker's real TCP
+            // socket, or in work detached from the test, and neither signals it.
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     async fn let_requests_land() {

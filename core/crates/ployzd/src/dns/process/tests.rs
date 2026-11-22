@@ -4,7 +4,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use hickory_server::proto::{
@@ -657,13 +657,15 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    ployz_testkit::poll_until(
-        SETTLE,
-        "the sockets and fake Corrosion settle",
-        async || check().await,
-    )
-    .await
-    .unwrap();
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        let Err(last) = check().await else {
+            return;
+        };
+        assert!(Instant::now() < deadline, "{last}");
+        // real-wait: polls sockets and the fake Corrosion, which emit no event here
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn install(path: &std::path::Path, body: &str) {
