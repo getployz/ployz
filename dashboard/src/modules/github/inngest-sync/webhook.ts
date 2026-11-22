@@ -7,8 +7,8 @@ import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
 } from "#/modules/github/github-installation.server";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
-import { runInngestEffect } from "#/modules/inngest/run.server";
+import type { StoreServices } from "#/modules/config-store/store-deployment.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubInstallationWebhookStepTools = Pick<
   PloyzStepTools,
@@ -24,7 +24,7 @@ export async function executeProcessGithubInstallationReceived(
     step: GithubInstallationWebhookStepTools;
   },
   runEffect: GithubSyncEffectRunner,
-  runStore: StoreEffectRunner = runInngestEffect,
+  runStore: EffectRunner<StoreServices> = runInngestEffect,
 ) {
   const payload = requiredEventData(githubInstallationReceived)(event);
   const result = await step.run("process-installation-event", () =>

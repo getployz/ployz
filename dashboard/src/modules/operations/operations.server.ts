@@ -317,7 +317,6 @@ export const actService = (
     readonly verb: ServiceVerb;
     readonly only: ServerRef | null;
     readonly digest: string;
-    /** The proposal this run is a step of. */
     readonly proposal?: { readonly id: string; readonly step: number };
   },
   call: OperationCall,

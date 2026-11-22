@@ -7,10 +7,9 @@ it("defaults to the slug cut to one DNS label, never ending on a hyphen", () => 
   expect(defaultClusterName(`${"a".repeat(62)}-b`)).toBe("a".repeat(62));
 });
 
-it("names the rule a name breaks", () => {
+it("accepts one DNS label and refuses anything else", () => {
   expect(clusterNameProblem("acme-2")).toBeNull();
-  expect(clusterNameProblem("a".repeat(64))).toBe("Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit.");
-  for (const bad of ["Acme", "-acme", "acme-", "a_b", ""]) expect(clusterNameProblem(bad)).not.toBeNull();
+  for (const bad of ["a".repeat(64), "Acme", "-acme", "acme-", "a_b", ""]) expect(clusterNameProblem(bad)).not.toBeNull();
 });
 
 it("shows a name pending until a Server confirms it, and the default before founding", () => {

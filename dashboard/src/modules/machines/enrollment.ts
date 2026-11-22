@@ -70,6 +70,7 @@ function wireGuardPublicKeyFromDisplay(display: string): number[] | null {
   try {
     binary = atob(display);
   } catch {
+    // Not base64, so not a key.
     return null;
   }
   if (binary.length !== WIREGUARD_PUBLIC_KEY_BYTES) return null;
@@ -77,7 +78,6 @@ function wireGuardPublicKeyFromDisplay(display: string): number[] | null {
   return Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-/** Version 2 is a coordinated break: older CLIs must upgrade before founding. */
 const NonnegativeSafeInteger = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
 );

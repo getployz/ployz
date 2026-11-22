@@ -416,7 +416,6 @@ function restoreStage(
   return { placement: { primary: mirror.id, mirrors: [], deletes: [] }, mirrors: applied };
 }
 
-/** Whether Copies offers a Restore point, and the planner's refusal when the Deploy's seed run would refuse it. */
 export type SeedOffer = { readonly offered: boolean; readonly refused: string | null };
 
 /**
@@ -689,10 +688,9 @@ export function storageStep(deploymentId: string, rows: readonly PlacementRow[],
   return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }
 
-/** Restores a snapshot into the Volume: `at` is the restore point's time in Unix seconds. */
+/** `at` is the restore point's time in Unix seconds. */
 export const StageRestoreInput = Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number });
 
-/** Deletes the Volume's old copy on `server`. */
 export const DeleteCopyInput = Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString });
 
 /** Why several writers on one volume are a warning: said once, wherever it's warned. */

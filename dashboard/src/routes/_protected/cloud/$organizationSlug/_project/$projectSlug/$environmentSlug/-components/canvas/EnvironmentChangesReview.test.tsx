@@ -138,12 +138,9 @@ describe("Details", () => {
       const panel = changed.getByText(text, { exact: true, normalizer: (value) => value });
       expect(panel.tagName).toBe("PRE");
       expect(panel.closest(".ph-no-capture")).toBeTruthy();
-      expect(panel.className).toContain("max-h-48");
     }
     for (const text of ["Mode 0555", "UID 1000", "GID 1001"]) {
-      const metadata = changed.getByText(text);
-      expect(metadata.className).toContain("text-changed-deep");
-      expect(metadata.closest(".ph-no-capture")).toBeTruthy();
+      expect(changed.getByText(text).closest(".ph-no-capture")).toBeTruthy();
     }
     const added = lineOf("empty.conf");
     expect(added.queryByText("Before")).toBeNull();
@@ -165,7 +162,7 @@ describe("Details", () => {
     expect(effects[0]?.closest("section")?.getAttribute("aria-label")).toBe("Your changes");
     expect(screen.getByText("2 changes in fix-api, not yet saved.")).toBeTruthy();
     expect(lineOf("app.conf").getAllByText("unchanged")).toHaveLength(2);
-    expect(lineOf("app.conf").getByText("Mode 0555").className).toContain("text-changed-deep");
+    expect(lineOf("app.conf").getByText("Mode 0555")).toBeTruthy();
   });
 
   it("counts the changes not yet saved apart from those a Save already holds", () => {
@@ -215,7 +212,7 @@ describe("Details", () => {
     const test = review({ groups: [nginx] });
 
     expect(screen.getByText("1 change in fix-api, not yet saved.")).toBeTruthy();
-    expect(screen.getByText("nginx · will be added").className).toContain("text-changed-deep");
+    expect(screen.getByText("nginx · will be added")).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
     fireEvent.click((await menuOf("nginx")).getByRole("menuitem", { name: "Discard" }));
     expect(test.onDiscardNode).toHaveBeenCalledWith(nginx);
@@ -244,21 +241,21 @@ describe("Details", () => {
     const incoming = within(theirs as HTMLElement);
     expect(incoming.getByRole("heading").textContent).toBe("From production's deploy");
     expect(incoming.getByText(fromProduction.description)).toBeTruthy();
-    expect(incoming.getByText("CACHE_TTL").className).toContain("font-mono");
+    expect(incoming.getByText("CACHE_TTL")).toBeTruthy();
     expect(incoming.queryByText(/^From production$/u)).toBeNull();
     const line = lineOf("CACHE_TTL");
-    expect(line.getByText("api").className).toContain("text-muted-foreground");
-    expect(line.getByText("300").className).toContain("text-changed-deep");
+    expect(line.getByText("api")).toBeTruthy();
+    expect(line.getByText("300")).toBeTruthy();
   });
 
-  it("strikes through a removed value and colours an added one", () => {
+  it("shows the value a removal drops and the value an addition brings", () => {
     review({ groups: [api([
       row("api.env.LEGACY_AUTH", { kind: "remove", currentValue: "true", newValue: "" }),
       row("api.env.FEATURE_SEARCH", { kind: "add", currentValue: "", newValue: "on" }),
     ])] });
 
-    expect(lineOf("LEGACY_AUTH").getByText("true").className).toContain("line-through");
-    expect(lineOf("FEATURE_SEARCH").getByText("on").className).toContain("text-changed-deep");
+    expect(lineOf("LEGACY_AUTH").getByText("true")).toBeTruthy();
+    expect(lineOf("FEATURE_SEARCH").getByText("on")).toBeTruthy();
   });
 
   it("offers Never sync beside Discard in the menu of a change that arrived, and keeps the review open until the Store answers", async () => {

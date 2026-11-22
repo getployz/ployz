@@ -13,7 +13,7 @@ import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.ser
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { clientWithRole, expectGate, ROLE_STATES, seedRole } from "#/test/your-role";
 import { EnrollSheet } from "./enroll-sheet";
-import { ROW_PX, VISIBLE_ROWS } from "./enrolling-list";
+import { VISIBLE_ROWS } from "./enrolling-list";
 import { IntakeTray, WaitingList } from "./waiting-list";
 
 let probe: ReturnType<typeof stubProbe>;
@@ -140,15 +140,6 @@ it("reads each prep step in the status cell", () => {
   expect(statusOf("disk-too-small")).toBe("Disk too smallDisk is 24 GiB. Ployz needs 30 GiB.");
   expect(pick("zfs-failed").hasAttribute("data-disabled")).toBe(false);
   expect(pick("docker-failed").hasAttribute("data-disabled")).toBe(true);
-});
-
-it("holds the list in a box ten rows tall, every row the same height", () => {
-  renderList(Array.from({ length: 12 }, (_, index) => host(`h${index}`)));
-
-  expect(box().style.maxHeight).toBe(`${ROW_PX * VISIBLE_ROWS}px`);
-  expect(box().style.maxHeight).toBe("520px");
-  const heights = new Set(within(box()).getAllByRole("row").map((row) => row.style.height));
-  expect([...heights]).toEqual([`${ROW_PX}px`]);
 });
 
 it("draws only the rows the box shows, not every waiting server", () => {

@@ -42,7 +42,6 @@ export type AgentCall = {
 
 export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
 
-/** What a call came to: an outcome, or an approval it waits on. */
 export type AgentResult = { readonly outcome: ToolOutcome } | { readonly asking: Asking };
 
 export type AgentTool = {
@@ -174,7 +173,6 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
 
 const KNOWN_TOOLS = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
-/** The proposal a call stages into, when its input names one. */
 export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });

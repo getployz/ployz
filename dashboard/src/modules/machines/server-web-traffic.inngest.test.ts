@@ -6,16 +6,15 @@ import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 const data = { attemptId: "00000000-0000-4000-8000-0000000000e1", organizationId: "org-1", machineId: "a".repeat(32) };
 
-type Answers = {
-  readonly "bind-run": { readonly kind: "bound" } | { readonly kind: "settled"; readonly state: "finished" };
-  readonly "execute-once"?: { readonly attemptId: string; readonly state: "finished" };
-};
+type Bound = { readonly kind: "bound" } | { readonly kind: "settled"; readonly state: "finished" };
+type Ended = { readonly attemptId: string; readonly state: "finished" };
 
-/** Runs the handler with each Database step answering from `answers`, and records the events it sends. */
-async function apply(answers: Answers) {
+/** Runs the handler with its Database steps answering, in turn, the run's binding and then its end, and records the events it sends. */
+async function apply(...answers: readonly [Bound, Ended?]) {
   const sent: ReturnType<typeof clusterDomainSyncRequested.create>[] = [];
+  const pending: unknown[] = [...answers];
   const step = {
-    run: <A>(name: string, fn: () => A) => (name in answers ? answers[name as keyof Answers] : fn()),
+    run: () => pending.shift(),
     sendEvent: (_id: string, event: ReturnType<typeof clusterDomainSyncRequested.create>) => { sent.push(event); },
   };
   const ended = await applyServerWebTraffic(
@@ -27,13 +26,13 @@ async function apply(answers: Answers) {
 
 describe("applyServerWebTraffic", () => {
   it("asks DNS to catch up once the change ends, since a proxy that kept running changes no container", async () => {
-    const { ended, sent } = await apply({ "bind-run": { kind: "bound" }, "execute-once": { attemptId: data.attemptId, state: "finished" } });
+    const { ended, sent } = await apply({ kind: "bound" }, { attemptId: data.attemptId, state: "finished" });
     expect(ended).toEqual({ attemptId: data.attemptId, state: "finished" });
     expect(sent).toEqual([{ name: "cluster-domain/sync.requested", data: { organizationId: "org-1" } }]);
   });
 
   it("sends nothing for a change another run already settled", async () => {
-    const { sent } = await apply({ "bind-run": { kind: "settled", state: "finished" } });
+    const { sent } = await apply({ kind: "settled", state: "finished" });
     expect(sent).toEqual([]);
   });
 });

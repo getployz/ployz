@@ -283,10 +283,8 @@ export const writePermission = (command: ConfigCommand): Permission => {
   return command.environment == null ? "project:delete" : "environment:delete";
 };
 
-/** How many shown views one write rereads at once. */
 const SHOWN_VIEW_READS = 4;
 
-/** The Environments a query reads: its own, or a Sync's two sides. */
 function queryEnvironments(query: ConfigQuery): StoreEnvironmentRef[] {
   if (query.query === "sync") return query.into ? [query.from, query.into] : [query.from];
   return "environment" in query && query.environment ? [query.environment] : [];

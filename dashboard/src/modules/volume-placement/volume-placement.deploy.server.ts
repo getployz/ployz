@@ -110,6 +110,7 @@ const failStep = Effect.fn("VolumePlacement.failStep")(function* (
 export const releasePlacementClaims = Effect.fn("VolumePlacement.releaseClaims")(function* (organizationId: string, deploymentId: string) {
   const deployment = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(
     Effect.map((found) => ({ inFlight: found.in_flight, failed: found.status === "failed" })),
+    // A Deployment the Store no longer has is not in flight, so its claims go back to staged.
     Effect.catchIf(refusedWith("not_found"), () => Effect.succeed({ inFlight: false, failed: false })),
   );
   if (!deployment.inFlight) yield* release(organizationId, deploymentId, deployment.failed);
@@ -304,7 +305,6 @@ export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
 
 export type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string; readonly born: boolean };
 
-/** The Volumes of the Environment that owns Namespace `owned`. */
 export const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* (organizationId: string, owned: OwnedNamespace) {
   const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });

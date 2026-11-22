@@ -55,8 +55,10 @@ export type ResizePhase = {
   readonly unheld?: Unheld;
 };
 
-/** What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`. */
-/** `looked_at`: Unix seconds when the run read the Deployments, before it looked for copies. */
+/**
+ * What a run that found no copy saw before it asked the Servers, which the Store's record checks: see `VolumeResized`.
+ * `looked_at`: Unix seconds when the run read the Deployments, before it looked for copies.
+ */
 export type Unheld = { readonly latest_deployment: number | null; readonly looked_at: number };
 
 /**
@@ -67,7 +69,6 @@ export type DeploymentsSeen = { readonly latest: number | null; readonly inFligh
 
 const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, message });
 
-/** The direction from the recorded size to the asked one. */
 export const sizeDirection = (from: Bytes, to: Bytes): SizeDirection => (to > from ? "grow" : to < from ? "shrink" : "settle");
 
 /**

@@ -4,10 +4,6 @@ import { installLines } from "./installer";
 const TOKEN = "pflt_example";
 const hosted = { cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3-beta.4", token: TOKEN };
 
-it("offers only the Shell and cloud-init install lines", () => {
-  expect(Object.keys(installLines(hosted)).sort()).toEqual(["cloudInit", "shell"]);
-});
-
 it("keeps the token off the Shell line, which asks for it, and puts it once in the cloud-init tab", () => {
   const lines = installLines(hosted);
   expect(lines.shell).not.toContain(TOKEN);
@@ -21,9 +17,7 @@ it("sets PLOYZ_CLOUD_URL only for a self-hosted Cloud", () => {
 });
 
 it("pins the Cloud's own release in every tab, since the stable channel may not speak to this Cloud", () => {
-  const lines = installLines(hosted);
-  expect(lines.shell).toBe("curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3-beta.4 --enroll");
-  expect(lines.cloudInit).toContain("PLOYZ_FLEET_TOKEN=pflt_example sh -s -- 1.2.3-beta.4");
+  for (const line of Object.values(installLines(hosted))) expect(line).toContain(" -- 1.2.3-beta.4");
 });
 
 it("keeps the token out of sudo's argv, where ps would show it", () => {

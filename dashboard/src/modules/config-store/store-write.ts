@@ -140,7 +140,6 @@ const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Chec
 const FAILED = "Ployz Cloud couldn't save this change, so it was undone. Try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
-/** A write to the Config Store: a Promise of what it wrote. */
 export interface Write<T = unknown> extends Promise<T> {}
 
 /** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
@@ -289,7 +288,6 @@ export function useStoreWriter(organizationSlug: string) {
   return getStoreWriter(organizationSlug, useCollectionScope());
 }
 
-/** GitHub sign-in that returns the user to the page they were on. */
 function signInHere() {
   const callbackURL = window.location.pathname + window.location.search;
   return `/auth/github?${new URLSearchParams({ callbackURL })}`;

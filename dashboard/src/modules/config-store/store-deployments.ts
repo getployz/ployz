@@ -14,7 +14,6 @@ import { configSettingOf, envKeyOf, isConfigMountSetting, isConfigSetting, isEnv
 const reviewFile = Schema.Struct({ content: Schema.optional(Schema.String), mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
 const decodeFile = Schema.decodeUnknownOption(reviewFile);
 
-/** One changed Setting in Details. */
 export type ChangeRow = {
   changeKey: string;
   label: string;
@@ -132,7 +131,6 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
   }));
 }
 
-/** A region as people read it: its name, or `any region` for none. */
 export const regionName = (region: string | null) => region ?? "any region";
 
 const REGION_PATH = "@environment.region";
@@ -264,7 +262,6 @@ export const buildNodeId = (service: string) => `build:${service}`;
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
-/** Each status in the icons' vocabulary. */
 const deploymentStatusIcons = {
   waiting_for_ci: "queued", queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
   unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",

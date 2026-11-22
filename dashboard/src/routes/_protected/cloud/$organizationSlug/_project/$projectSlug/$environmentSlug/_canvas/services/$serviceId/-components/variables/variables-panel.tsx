@@ -47,18 +47,15 @@ export function VariablesPanel({
   onCreateVariable: (input: VariableAddInput) => Write;
   /** Seals a plain variable's value, or sets a sealed one's, in the background. */
   onSealVariable: (variable: PlainVariableRecord) => Write;
-  /** Each row's menu marks it Never sync, or syncs it again. */
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   /** Each row's menu renames it; with `updateReferences`, the variables using it switch too. */
   onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
   /** The variables that reference one, as `SERVICE.KEY`, which its rename switches to the new name. */
   referrersOf: (variable: VariableRecord) => readonly string[];
-  /** Each row's menu marks it exported, or stops exporting it. */
   onSetExported: (variable: VariableRecord, exported: boolean) => void;
   sealing: SealedControls;
   /** Buttons next to "New Variable". */
   headerActions: ReactNode;
-  /** Rendered below the variable rows. */
   renderAfterList: () => ReactNode;
   emptyState: ReactNode;
 }) {

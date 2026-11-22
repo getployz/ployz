@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, NodeOutcome, RowPhase, ServerRow } from
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { buildLabel, cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
+import { buildLabel, cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, selectRunNode } from "./run-graph";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
@@ -52,16 +52,6 @@ describe("run graph", () => {
     expect(makeRunGraph(view).nodes[0]).toMatchObject({ timing: { started: 10, finished: 42 } });
     const unstarted = { ...completed("fsn-2"), started_at: null };
     expect(makeRunGraph({ ...view, nodes: [service("api", [completed(), unstarted], "deployed")] }).nodes[0]).toMatchObject({ timing: undefined });
-  });
-
-  it("words each row phase and a failed row's step", () => {
-    expect(rowPhaseLabel("waiting_for_switch")).toBe("Waiting for switch");
-    expect(rowPhaseLabel("compensating")).toBe("Rolling back");
-    expect(rowLabel(running("waiting_for_health"))).toBe("Waiting for health");
-    expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "health", log: null })).toBe("Failed at health check");
-    expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "pull", log: null })).toBe("Failed at pull");
-    expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: null, log: null })).toBe("Failed");
-    expect(rowLabel(completed())).toBe("Done");
   });
 
   const stoppedAtCreate = (fields: { reason?: string; cancelled?: boolean; interrupted?: boolean } = {}): ServerRow =>

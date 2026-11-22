@@ -62,7 +62,6 @@ import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/upt
 import { MonitoringTab } from "./monitoring/MonitoringTab";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
 
-/** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
   organizationSlug: string;
   environment: EnvironmentRef;
@@ -77,7 +76,6 @@ export type StoreService = {
   path: (name: string) => string;
   /** Edits it at once, saved in the background. */
   edit: (change: Change) => Write;
-  /** Sets Setting `name`, or unsets it (null). */
   set: (name: string, value: JsonValue | null) => Write;
 };
 
@@ -110,11 +108,6 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     taken(service, services, name) ? `A service here is already named ${name}.` : undefined));
 }
-
-/**
- * A Service's drawer over the Config Store: its name, source and scalar Settings, labelled by the catalog. Edits save
- * through the Environment's queue; a rename or removal is staged like any other change.
- */
 
 /**
  * A Service's drawer over the Config Store: its name, source and scalar Settings, labelled by the catalog. Edits save
@@ -328,7 +321,6 @@ function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<t
   return <MonitoringTab {...props} placedOn={new Set(runtime?.containers.map((container) => container.machineId)).size} />;
 }
 
-/** A Deployment Policy value as text; null when unset. */
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
 /** Saves one scalar Setting, and keeps a Store refusal (a rule the panel didn't foresee) to show on its row. */
@@ -338,6 +330,7 @@ function useSettingEdit(state: StoreService, name: ServiceSettingName) {
   const edit = (raw: string) => {
     setRefusal(null);
     const transaction = state.edit(settingChange(state.path(name), setting, raw));
+    // Only a conflict shows on the row; every failure still reaches the caller through the returned transaction.
     transaction.catch((error: Error) => {
       if (error instanceof StoreRefused && error.code === "conflict") setRefusal(error.message);
     });

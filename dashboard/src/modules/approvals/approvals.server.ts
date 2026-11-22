@@ -60,7 +60,6 @@ export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: Di
 const shownReview = ({ apply: _apply, ...review }: ApprovalReview, subject: string): ApprovalReview =>
   "operation" in review ? { ...review, operation: { ...review.operation, subject } } : { ...review, diff: withoutSealedBefore(review.diff) };
 
-/** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
   return {
     id: row.id,
@@ -161,6 +160,7 @@ const recordAndSweep = <A, E, R, R2>(
 const staleEnvironment = (organizationId: string, environment: EnvironmentAsked) =>
   versionById(organizationId, environment).pipe(
     Effect.map((version) => version === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${version}:`})`),
+    // A Store Cloud can't read now sweeps nothing; the approval stays pending and the next read sweeps it.
     Effect.orElseSucceed(() => null),
   );
 
@@ -231,7 +231,6 @@ const notTheirs = (caller: Pick<Caller, "userId" | "credential">, row: ApprovalR
 
 type Carried = { ok: true; row: ApprovalRow } | { ok: false; refusal: StoreRefusal };
 
-/** The approval `approvalId`, when `caller` asked for it from this credential, and for `asked` when named. */
 const carried = Effect.fn("Approvals.carried")(function* (
   caller: Pick<Caller, "userId" | "organization" | "credential">,
   approvalId: string,
@@ -387,7 +386,6 @@ const pending = {
 const askedAgain = (caller: Caller, review: ApprovalReview) =>
   caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), via: caller.via, review };
 
-/** The pending row for `caller`'s ask of `command` on `subject`, new or the one an earlier ask left. */
 const upsertPending = Effect.fn("Approvals.upsertPending")(function* (
   caller: Caller,
   row: { readonly subject: string; readonly command: string; readonly review: ApprovalReview; readonly digest: string },
@@ -464,7 +462,6 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   return { ...refused, details: guarded ? { ...details, protected: true } : details };
 });
 
-/** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
   /** `<kind>:<key>`, a `SubjectKind` and what it names, such as `server:<machine id>` or `service:<environment id>/<name>`. */
   subject: string;

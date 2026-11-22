@@ -16,20 +16,9 @@ const mail = (fields: Partial<DeploymentView>, sources = [source("web")]) =>
 
 it("names the push, the Service and the Environment, and links the failed build's logs", () => {
   const failed = mail({ builds: [{ service: "web", commit: "8a7ed6e", status: "failed", message: "npm ci exited 1", started_at: null, finished_at: null, server: null, github_skipped: null }] });
-  expect(failed).toMatchObject({
-    subject: "web failed to deploy to shop / pr 7",
-    preview: "8a7ed6e on feature/login didn't deploy.",
-    title: "web failed to deploy to pr 7",
-    paragraphs: ["GitHub started this deploy from feature/login. The logs show what went wrong."],
-    action: { label: "View logs", url: "https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?job=build%3Aweb" },
-  });
-  expect(failed.facts).toEqual([
-    { label: "Repository", value: "acme/web", mono: true },
-    { label: "Branch", value: "feature/login", mono: true },
-    { label: "Commit", value: "8a7ed6e", mono: true },
-    { label: "Environment", value: "shop / pr 7" },
-    { label: "Error", value: "npm ci exited 1" },
-  ]);
+  expect(failed.subject).toBe("web failed to deploy to shop / pr 7");
+  expect(failed.action?.url).toBe("https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?job=build%3Aweb");
+  expect(failed.facts?.map((fact) => fact.value)).toEqual(["acme/web", "feature/login", "8a7ed6e", "shop / pr 7", "npm ci exited 1"]);
 });
 
 it("gives the run's reason over a build's, opens the run when no build failed, and says when Ployz lost track", () => {

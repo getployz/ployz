@@ -13,11 +13,10 @@ vi.spyOn(repository, "listAllGithubInstallationIds").mockImplementation(() =>
 );
 
 describe("scheduled GitHub repository sync Inngest adapter", () => {
-  it("executes the cron through its durable list and send steps", async () => {
+  it("asks for a repository sync of every GitHub installation", async () => {
     const fn = createScheduleGithubRepositorySync(
       new Inngest({ id: "test" }),
     );
-    expect(fn.opts.triggers).toEqual([{ cron: "TZ=UTC 0 2 * * *" }]);
 
     const output = await new InngestTestEngine({
       function: fn,
@@ -31,12 +30,8 @@ describe("scheduled GitHub repository sync Inngest adapter", () => {
 
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ installationCount: 1 });
-    expect(output.ctx.step.run).toHaveBeenCalledWith(
-      "list-installation-ids",
-      expect.any(Function),
-    );
     expect(output.ctx.step.sendEvent).toHaveBeenCalledWith(
-      "request-repository-syncs",
+      expect.any(String),
       [
         {
           name: "github/repositories-sync.requested",

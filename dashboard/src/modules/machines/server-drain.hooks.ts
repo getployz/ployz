@@ -13,7 +13,6 @@ import { usePendingAttempt } from "./use-pending-attempt";
 
 export type ServerDrain = {
   readonly view: DrainView;
-  /** Open the confirm dialog. */
   readonly ask: () => void;
   readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: (stops: readonly string[]) => void };
 };

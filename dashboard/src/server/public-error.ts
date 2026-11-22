@@ -115,6 +115,7 @@ function isTanStackValidationError(message: string | undefined) {
     const issues = decodeValidationIssues(JSON.parse(message));
     return Option.isSome(issues) && issues.value.length > 0;
   } catch {
+    // A message that isn't JSON isn't TanStack's list of validation issues.
     return false;
   }
 }
@@ -266,7 +267,6 @@ export function machineErrorResponse(
   );
 }
 
-/** Each Store refusal code's HTTP status. Any other code is a 500. */
 const REFUSAL_STATUS: ReadonlyMap<string, number> = new Map([
   ["invalid_argument", 422],
   ["not_found", 404],

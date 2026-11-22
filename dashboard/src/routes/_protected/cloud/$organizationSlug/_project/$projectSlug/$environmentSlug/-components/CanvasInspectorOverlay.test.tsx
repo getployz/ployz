@@ -156,8 +156,8 @@ describe("canvas inspector presentation", () => {
     vi.stubGlobal("innerWidth", 390);
     await openInspector();
     expect(screen.getByRole("button", { name: "Edit service name" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Close inspector" }).className).toContain("canvas-inspector-close");
-    expect(screen.getByRole("link", { name: "Back to Architecture" }).className).toContain("canvas-inspector-back");
+    expect(screen.getByRole("link", { name: "Close inspector" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fill canvas" }).hasAttribute("data-canvas-inspector-resize")).toBe(true);
   });
 

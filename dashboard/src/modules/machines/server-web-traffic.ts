@@ -24,7 +24,6 @@ export type LatestWebTraffic =
   | { readonly attemptId: string; readonly want: WebTrafficWant; readonly state: "finished"; readonly endedAt: string }
   | { readonly attemptId: string; readonly want: WebTrafficWant; readonly state: "failed"; readonly endedAt: string; readonly failure: string };
 
-/** The change a request admitted. */
 export type RequestedServerWebTraffic = { readonly change: LatestWebTraffic };
 
 /** Every Server's latest web traffic change, by Machine ID; a Server never switched from Cloud has none. */

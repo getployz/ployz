@@ -327,7 +327,6 @@ export const findGithubRepositoryByNameForOrganization = Effect.fn("Github.findR
   },
 );
 
-/** The first `limit` repositories, by name, that the Organization's linked installations grant. */
 export const listGithubRepositoryNamesForOrganization = Effect.fn("Github.listRepositoryNamesForOrganization")(
   function* (input: { organizationId: string; limit: number }) {
     const database = yield* Database;
@@ -340,7 +339,6 @@ export const listGithubRepositoryNamesForOrganization = Effect.fn("Github.listRe
   },
 );
 
-/** How many of `repositories` an installation grants. */
 export const repositoryCountOf = (repositories: ReadonlyArray<{ readonly installationId: number }>, installationId: number) =>
   repositories.filter((repository) => repository.installationId === installationId).length;
 

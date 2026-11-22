@@ -201,7 +201,6 @@ const getBillingUser = Effect.fn("Billing.getUser")(function* (userId: string) {
   return profile;
 });
 
-/** Opens with one unit per Server, at least the product's minimum of two. */
 export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();

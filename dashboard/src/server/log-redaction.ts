@@ -34,7 +34,6 @@ export function typedFailureSummary(cause: unknown, untagged = ""): string {
   return code === undefined ? kind : `${kind} (${code})`;
 }
 
-/** `cause`, then each `cause` it wraps, a few deep. */
 function* causeChain(cause: unknown) {
   for (let at: unknown = cause, depth = 0; at !== undefined && depth < 8; depth += 1) {
     yield at;
@@ -55,7 +54,6 @@ const UNREADABLE = /['\\`]|\$(?!\d)|\/\*|--|""/u;
 const NAME = String.raw`(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)`;
 const STATEMENT = new RegExp(String.raw`\b(?:insert\s+into|delete\s+from|update|from)\s+(${NAME}(?:\.${NAME})?)`, "iu");
 const VERB = /^\s*(?:with\b[\s\S]*?\)\s*)?(select|insert|update|delete)\b/iu;
-/** How many values and Causes [`causeValues`] reads before it treats a cause as unreadable. */
 const READABLE_VALUES = 64;
 
 /**
@@ -124,7 +122,6 @@ export function safeSummary(cause: unknown): string {
   }
 }
 
-/** How many values [`holdsQuery`] reads before it treats a value as holding a query. */
 const READABLE_FIELDS = 1024;
 
 function isObject(cause: unknown): cause is object {
@@ -184,7 +181,6 @@ export function loggableCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown>
 }
 
 
-/** How deep into a logged record or array [`redact`] reads before it redacts what is left. */
 const FIELD_DEPTH = 3;
 
 function isPlainRecord(cause: unknown): cause is object {
@@ -216,7 +212,6 @@ function redact(cause: unknown, depth: number): unknown {
   }
 }
 
-/** Each own string-keyed field of `record` by [`redact`], without calling a getter. */
 // A logged record is whatever its caller passed, so its fields are too.
 // oxlint-disable-next-line anti-slop/no-object-parameters, anti-slop/no-unsafe-dictionary-type
 function redactFields(record: object, depth: number): Record<string, unknown> {
@@ -226,23 +221,23 @@ function redactFields(record: object, depth: number): Record<string, unknown> {
   }));
 }
 
-/** `cause`, or a defect naming its reasons when a failed query may be somewhere in it. */
 function redactedCause(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
   try {
     const loggable = loggableCause(cause);
     return Cause.isCause(loggable) ? loggable : Cause.die(loggable);
   } catch {
+    // Reading the cause threw, so nothing in it can be shown as safe.
     return Cause.die("[redacted]");
   }
 }
 
-/** `annotations` by [`redactFields`], or one `[redacted]` field when they cannot be read. */
 // Log annotations are whatever their callers set, so their fields are too.
 // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type
 function redactedAnnotations(annotations: Readonly<Record<string, unknown>>): ReturnType<typeof redactFields> {
   try {
     return redactFields(annotations, 0);
   } catch {
+    // Reading the annotations threw, so nothing in them can be shown as safe.
     return { annotations: "[redacted]" };
   }
 }
@@ -284,14 +279,12 @@ export function redactingLogger(loggers: Iterable<Logger.Logger<unknown, unknown
   });
 }
 
-/** Effect's default loggers, console and span, behind [`redactingLogger`]. */
 export const redactedLoggers: ReadonlySet<Logger.Logger<unknown, unknown>> = new Set([
   redactingLogger([Logger.defaultLogger, Logger.tracerLogger]),
 ]);
 
 export const RedactedLogsLive = Layer.succeed(Logger.CurrentLoggers, redactedLoggers);
 
-/** Run a log outside the app runtime through [`redactedLoggers`]. */
 export function runRedactedLog(log: Effect.Effect<void>) {
   return Effect.runFork(log.pipe(Effect.provideService(Logger.CurrentLoggers, redactedLoggers)));
 }
@@ -312,7 +305,6 @@ export function redactingTracer(tracer: Tracer.Tracer): Tracer.Tracer {
   });
 }
 
-/** `tracing` with its tracer behind [`redactingTracer`]. */
 export function redactSpanExits<Provided, E, R>(tracing: Layer.Layer<Provided, E, R>): Layer.Layer<Provided, E, R> {
   return Layer.effect(Tracer.Tracer, Effect.map(Effect.service(Tracer.Tracer), redactingTracer)).pipe(Layer.provideMerge(tracing));
 }

@@ -672,6 +672,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           ...sized,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
+      // Any other failure to ask reads as silence, so nothing plans from a copy it never heard about.
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
@@ -687,6 +688,7 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   const line = releaseLine(server.daemonVersion);
   const release = line === null ? null : yield* organizationReleaseChannel(organizationId).pipe(
     Effect.flatMap((channel) => channelRelease(channel, line).pipe(Effect.timeout(OBSERVE_TIMEOUT))),
+    // An unread release channel only drops the upgrade hint; the sentence still says what the Server lacks.
     Effect.orElseSucceed(() => null),
   );
   // A newer Ployz is claimed only on proof the Server's release is behind; otherwise the sentence says only what it lacks.

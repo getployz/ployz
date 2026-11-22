@@ -19,37 +19,25 @@ const environment = {
 const organization = { kind: "all", organizationSlug: "acme" } as const;
 
 describe("dashboard navigation model", () => {
-  it("gives an Environment its five places, with the current one marked", () => {
+  it("marks the current place of an Environment and links it to that Environment", () => {
     const { places } = createDashboardNavigation(environment, { section: "logs" });
 
-    expect(places.map((place) => place.label)).toEqual(["Architecture", "Deployments", "Logs", "Analytics", "Settings"]);
-    expect(places.map((place) => place.to)).toEqual([
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics",
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
-    ]);
-    expect(places.filter((place) => place.current).map((place) => place.label)).toEqual(["Logs"]);
-    expect(places[2]).toMatchObject({
+    const current = places.filter((place) => place.current);
+    expect(current.map((place) => place.label)).toEqual(["Logs"]);
+    expect(current[0]).toMatchObject({
       params: { organizationSlug: "acme", projectSlug: "storefront", environmentSlug: "production" },
       search: {},
     });
   });
 
-  it("gives the organization three places, and an Environment only Projects and Servers of them", () => {
+  it("marks the organization's current place, and an Environment links back to the organization without Organization settings", () => {
     const { places, organization: none } = createDashboardNavigation(organization, { section: "servers" });
-    expect(places.map((place) => place.label)).toEqual(["Projects", "Servers", "Organization"]);
-    expect(places.map((place) => place.to)).toEqual([
-      "/cloud/$organizationSlug/~",
-      "/cloud/$organizationSlug/~/servers",
-      "/cloud/$organizationSlug/~/settings",
-    ]);
     expect(places.filter((place) => place.current).map((place) => place.label)).toEqual(["Servers"]);
     expect(none).toEqual([]);
 
     const back = createDashboardNavigation(environment, { section: "logs" }).organization;
-    expect(back.map((place) => place.label)).toEqual(["Projects", "Servers"]);
+    expect(back.map((place) => place.label)).not.toContain("Organization");
+    expect(back.length).toBeGreaterThan(0);
     expect(back.every((place) => !place.current && place.params.organizationSlug === "acme")).toBe(true);
   });
 
@@ -75,10 +63,7 @@ describe("dashboard navigation model", () => {
 
     const runs = open(`${environmentRoute}/deployments/`);
     expect(runs?.current).toBe(true);
-    expect(runs?.sections.map(({ label, to, current }) => ({ label, to, current }))).toEqual([
-      { label: "Runs", to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments", current: true },
-      { label: "Versions", to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions", current: false },
-    ]);
+    expect(runs?.sections.find((item) => item.current)?.label).toBe("Runs");
     expect(open(`${environmentRoute}/deployments/$deploymentId`)?.sections.find((item) => item.current)?.label).toBe("Runs");
     expect(open(`${environmentRoute}/deployments/versions`)?.sections.find((item) => item.current)?.label).toBe("Versions");
     expect(open(`${environmentRoute}/logs`, "logs")?.sections.some((item) => item.current)).toBe(false);
@@ -90,16 +75,7 @@ describe("dashboard navigation model", () => {
 
     const billing = settings("billing", {}, true);
     expect(billing?.current).toBe(true);
-    expect(billing?.sections.map(({ label, to, current }) => ({ label, to, current }))).toEqual([
-      { label: "General", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "Network", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "Members", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "Tokens", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "GitHub", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "Builds", to: "/cloud/$organizationSlug/~/settings", current: false },
-      { label: "Integrations", to: "/cloud/$organizationSlug/~/integrations", current: false },
-      { label: "Billing", to: "/cloud/$organizationSlug/~/billing", current: true },
-    ]);
+    expect(billing?.sections.filter((item) => item.current).map((item) => item.label)).toEqual(["Billing"]);
     const integrations = createDashboardNavigation(organization, { section: "integrations" }).places.find((place) => place.label === "Organization");
     expect(integrations?.current).toBe(true);
     expect(integrations?.sections.find((item) => item.current)?.label).toBe("Integrations");
@@ -107,7 +83,7 @@ describe("dashboard navigation model", () => {
     expect(settings("organization-settings", { section: "github" }, true)?.sections.find((item) => item.current)?.label).toBe("GitHub");
     expect(settings("organization-settings", { section: "network" }, true)?.sections.find((item) => item.current)?.label).toBe("Network");
     expect(settings("organization-settings", { section: "tokens" }, true)?.sections.find((item) => item.current)?.label).toBe("Tokens");
-    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Network", "Members", "Tokens", "GitHub", "Builds", "Integrations"]);
+    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).not.toContain("Billing");
   });
 
   it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {

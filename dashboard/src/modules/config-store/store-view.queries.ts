@@ -92,6 +92,7 @@ export function refetchStoreViews(organizationSlug: string, scope: CollectionSco
     const reading = query.promise;
     if (reading === undefined || rereads.has(query)) continue;
     rereads.add(query);
+    // The reread follows a failed read too; the failure shows on the query itself.
     void reading.catch(() => undefined).finally(() => {
       rereads.delete(query);
       void scope.queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false });
@@ -224,12 +225,10 @@ export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & Rule
   return { query: "rule", environment };
 }
 
-/** An Environment's public domains with their status: the Networking section of every Service drawer. */
 export function domainsQuery(environment: EnvironmentRef): { query: "domains" } & DomainsQuery {
   return { query: "domains", environment, service: null };
 }
 
-/** An Environment's Volumes with where Services mount them: the canvas's Volumes and their links. */
 export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } & VolumesQuery {
   return { query: "volumes", environment };
 }
@@ -239,7 +238,6 @@ export function configsQuery(environment: EnvironmentRef): { query: "configs" } 
   return { query: "configs", environment };
 }
 
-/** One Config with every file's text, references by Service name: its drawer. */
 export function configQuery(environment: EnvironmentRef, config: string): { query: "config" } & ConfigItemQuery {
   return { query: "config", environment, config };
 }
@@ -249,7 +247,6 @@ export function buildOrderQuery() {
   return { query: "build_order" } as const;
 }
 
-/** An Environment's Saved versions, newest first: all of them, or the latest `limit`. */
 export function historyQuery(environment: EnvironmentRef, limit: number | null = null): Extract<ConfigQuery, { query: "history" }> {
   return limit === null ? { query: "history", environment } : { query: "history", environment, limit };
 }
@@ -259,7 +256,6 @@ export function historyPreviewQuery(environment: EnvironmentRef, revision: numbe
   return { query: "history_preview", environment, revision, action, change };
 }
 
-/** The Organization's Projects, each with its Default Environment and its Environments' names. */
 export function projectsQuery(): { query: "projects" } & ProjectsQuery {
   return { query: "projects" };
 }
@@ -274,12 +270,10 @@ export function removalsQuery(environment: EnvironmentRef): { query: "removals" 
   return { query: "removals", environment, remove: true };
 }
 
-/** One Deployment: its Node Outcomes, builds, recorded Deploy Preview and outcome. */
 export function deploymentQuery(id: string): { query: "deployment" } & DeploymentQuery {
   return { query: "deployment", id };
 }
 
-/** One Service's build log in a Deployment, by its name when admitted. */
 export function buildLogQuery(deployment: string, service: string): { query: "build_log" } & BuildLogQuery {
   return { query: "build_log", deployment, service };
 }
@@ -309,7 +303,6 @@ export function useBranchPlan(organizationSlug: string, query: ReturnType<typeof
   return useQuery({ ...options, staleTime: Infinity, queryFn: query ? options.queryFn : skipToken, placeholderData: keepPreviousData }).data;
 }
 
-/** The first page of a paged Store view has no cursor. */
 const FIRST_PAGE: string | null = null;
 
 const deploymentsPage = (environment: EnvironmentRef, cursor: string | null): { query: "deployments" } & DeploymentsQuery =>
@@ -332,7 +325,6 @@ export function storeDeploymentsOptions(organizationSlug: string, scope: Collect
   });
 }
 
-/** An Environment's Deployments, prefetched by the page's loader (`prefetchStoreDeployments`). */
 export function useStoreDeployments(organizationSlug: string, environment: EnvironmentRef) {
   return useSuspenseInfiniteQuery(storeDeploymentsOptions(organizationSlug, useCollectionScope(), environment));
 }
@@ -379,7 +371,6 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
   }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
 }
 
-/** Reads one Store view; see `useStoreViews`. */
 export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
   return useStoreViews(organizationSlug, [query] as const)[0];
 }
@@ -392,7 +383,6 @@ export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: stri
   return useCachedQuery(organizationSlug, query)?.data;
 }
 
-/** A Store view as last read, if ever, and whether its latest read failed. */
 export type CachedStoreRead<T> = { result: StoreResult<T> | undefined; failed: boolean };
 
 /**
