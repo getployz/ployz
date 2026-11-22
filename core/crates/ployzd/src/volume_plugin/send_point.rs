@@ -4,9 +4,9 @@
 //! the dataset and reading the snapshot. The send checks the stream's own BEGIN record
 //! against the GUID, which covers a replacement after this answer.
 
+use crate::volume_copy::{SendPoint, SendPointRequest};
 use axum::{Json, extract::State};
 use ployz_core::{RpcError, RpcErrorCode, SwitchError};
-use ployzd::volume_copy::{SendPoint, SendPointRequest};
 
 use super::{VolumeStorage, inspect::internal, marks::Mark, slot};
 

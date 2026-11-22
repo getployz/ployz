@@ -798,13 +798,6 @@ RestrictNamespaces=true
     }
 
     #[test]
-    fn daemon_unit_does_not_restart_after_a_network_conflict_refusal() {
-        let unit = machine_daemon_service_unit(Path::new("/usr/local/bin"));
-        assert!(unit.contains("\nRestartPreventExitStatus=78\n"));
-        assert_eq!(NETWORK_CONFLICT_EXIT_STATUS, 78);
-    }
-
-    #[test]
     fn running_machine_api_version_must_match_the_target() {
         let target = MachineVersion::parse("1.2.3-beta.4").unwrap();
         assert!(require_running_version("1.2.3-beta.4", &target).is_ok());

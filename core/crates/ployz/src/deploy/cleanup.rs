@@ -144,6 +144,38 @@ pub(crate) enum RotationFailure {
     Cancelled,
 }
 
+impl RotationFailure {
+    /// Why the copy this rotation didn't finish was left, as a left copy's warning says
+    /// it, naming each Machine by `name`.
+    pub(crate) fn left_reason(self, name: impl Fn(&MachineId) -> String) -> String {
+        match self {
+            Self::Refused(refusal) => refusal.message,
+            Self::NotConfirmed(unconfirmed) => unconfirmed.left_reason(name),
+            Self::Cancelled => "interrupted".into(),
+        }
+    }
+}
+
+impl Unconfirmed {
+    /// Why a copy these proxies didn't confirm was left, naming each Machine by `name`.
+    pub(crate) fn left_reason(&self, name: impl Fn(&MachineId) -> String) -> String {
+        // Every proxy in the read confirmed, but the read did not name every live Machine.
+        if self.machines.is_empty() {
+            return "the route set did not name every live Machine".into();
+        }
+        let names: Vec<String> = self.machines.iter().map(name).collect();
+        format!("proxy on {} did not confirm", names.join(", "))
+    }
+}
+
+/// Why a copy was left when a call to its Machine, named `machine`, failed with `error`
+/// unanswered or unavailable, which says the Machine may be away. None when the error
+/// says something else, whose own message is the reason.
+pub(crate) fn did_not_answer(machine: &str, error: &RpcError) -> Option<String> {
+    (error.code == RpcErrorCode::Unavailable || error.target_unanswered())
+        .then(|| format!("{machine} did not answer"))
+}
+
 impl Waited {
     /// A wait that ended at its gap Servers is as unconfirmed as one that timed out; a
     /// site that treats the gap differently matches on the wait itself.

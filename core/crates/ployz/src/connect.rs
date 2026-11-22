@@ -79,6 +79,12 @@ const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// what keeps a starting daemon from hanging the CLI.
 pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a Management dial or tunnel open through the relay may take.
+const MANAGEMENT_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The SSH setup budget when the caller sets none, and `--ssh-timeout`'s default.
+pub(crate) const DEFAULT_SSH_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
 /// Machine: a Machine stops its containers one at a time, each taking up to its grace.
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -> Option<Duration> {
@@ -135,7 +141,7 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
-            ssh_timeout: Duration::from_secs(20),
+            ssh_timeout: DEFAULT_SSH_TIMEOUT,
             relay: ManagementRelay::default(),
         }
     }
@@ -163,7 +169,7 @@ impl SystemConnector {
     ) -> Result<Channel, ConnectError> {
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
-                Duration::from_secs(15),
+                MANAGEMENT_DIAL_TIMEOUT,
                 connect_management(capability, &self.relay),
             )
             .await
@@ -221,7 +227,7 @@ impl Connector for SystemConnector {
         }
         match connection.transport() {
             Transport::Management(capability) => tokio::time::timeout(
-                Duration::from_secs(15),
+                MANAGEMENT_DIAL_TIMEOUT,
                 dial_tunnel(capability, &self.relay, address),
             )
             .await
@@ -852,7 +858,7 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 
 /// How long a dial over `transport` may go unconfirmed before the next connection
 /// is dialled beside it. A down Server holds its dial for the whole connect bound,
-/// 15 s through Cloud and the SSH timeout over SSH. A daemon that answers confirms
+/// [`MANAGEMENT_DIAL_TIMEOUT`] through Cloud and the SSH timeout over SSH. A daemon that answers confirms
 /// well inside 1 s, but a cold SSH dial may take seconds while healthy, and racing
 /// it costs a second login.
 fn entry_stagger(transport: &Transport) -> Duration {

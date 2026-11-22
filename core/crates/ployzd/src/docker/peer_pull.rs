@@ -60,7 +60,7 @@ async fn pull_and_tag(
 ) -> Result<(), Error> {
     let result = async {
         docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
-        if let Some((_, digest)) = image.split_once('@')
+        if let Some(digest) = ployz_core::ImageRef::new(image).digest
             && descriptor_digest(docker, pulled).await?.as_deref() != Some(digest)
         {
             return Err(Error::PeerPull(format!(

@@ -158,6 +158,12 @@ impl Region {
     /// The Machine Label a region is read from.
     pub const LABEL: &'static str = "region";
 
+    /// Where a Server starts when it joins with no region.
+    pub const DEFAULT: &'static str = "default";
+
+    /// What a region key is, as a refusal says it.
+    pub const KEY_RULE: &'static str = "A region is the value of a Server's region label: up to 63 letters, digits, hyphens, underscores and dots, for example fsn.";
+
     /// The longest a region can be: a DNS label's length.
     pub const MAX_LEN: usize = 63;
 
@@ -254,6 +260,11 @@ impl Region {
     }
 }
 
+impl Default for Region {
+    fn default() -> Self {
+        Self(Self::DEFAULT.to_owned())
+    }
+}
 impl TryFrom<String> for Region {
     type Error = crate::ValueError;
     fn try_from(value: String) -> Result<Self, Self::Error> {

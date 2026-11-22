@@ -3,9 +3,9 @@
 //!
 //! A run's `kill`, `stop` and `oom` events can come before or after the `die`
 //! of the run they belong to, so the ledger keeps each run's evidence until
-//! the inspect that follows its exit settles it. An exit then lands in
-//! the metric segment, the crash `Outbox` (which the crash sender posts to the
-//! Collector) and the [`Settlements`] record through [`Settler::settle`].
+//! the inspect that follows its exit settles it. A crash then lands in the
+//! crash `Outbox` (which the crash sender posts to the Collector), and every
+//! exit in the [`Settlements`] record, through [`Settler::settle`].
 
 use std::{
     collections::{HashMap, HashSet},
@@ -15,23 +15,18 @@ use std::{
 };
 
 use bollard::models::ContainerState;
-use memchr::memmem::Finder;
 use ployz_core::{
     ContainerId,
-    metrics::{MarkerKind, MetricMarker, MetricRange},
+    metrics::{MarkerKind, MetricMarker},
 };
 
 use super::{
     clock::rfc3339_nanos,
     layout::StoreRoot,
-    metrics::segment::{self, Prefilter, Row},
     settled::{Key, Settlement, Settlements, Unfinished},
     ship::Outbox,
     signal::{Signal, is_stop_signal},
 };
-
-/// The raw segments one maintenance tick may read to resume settlements.
-const SETTLEMENT_SCANS_PER_TICK: usize = 8;
 
 /// An event that can arrive after the run it belongs to has exited.
 pub(super) enum Late {
@@ -217,11 +212,8 @@ impl ExitLedger {
         self.exits.entry(id).or_default().push(exit);
     }
 
-    /// Starts a run, and says whether the one before it had exited.
-    pub(super) fn started(&mut self, id: ContainerId) -> bool {
-        self.runs
-            .insert(id, Run::default())
-            .is_some_and(|run| run.exited)
+    pub(super) fn started(&mut self, id: ContainerId) {
+        self.runs.insert(id, Run::default());
     }
 
     /// Settles the exits waiting on `id` with what Docker says now, from
@@ -246,21 +238,15 @@ impl ExitLedger {
 /// Records each exit and OOM kill once, whatever order a failed write, a
 /// stopped harvester or a resumed stream delivers them in.
 pub(super) struct Settler {
-    store: StoreRoot,
     settlements: Settlements,
     crashes: Arc<Outbox>,
-    /// Whether this process knows a settlement's marker is in the raw
-    /// segment, so a resume reads the segment at most once.
-    marker_stored: HashMap<Key, bool>,
 }
 
 impl Settler {
     fn open(store: &StoreRoot, crashes: Arc<Outbox>) -> Self {
         Self {
-            store: store.clone(),
             settlements: Settlements::open(store),
             crashes,
-            marker_stored: HashMap::new(),
         }
     }
 
@@ -276,38 +262,28 @@ impl Settler {
     /// `oom` can come again in a resumed stream, and its exit settled again
     /// from less evidence.
     ///
-    /// One settlement runs these steps in this order: append the marker to
-    /// the raw segment, save that it was appended, reserve the crash's outbox
-    /// seq, save the seq, push the crash under it, finish the settlement.
-    /// Each step is saved before the next begins, so an attempt a failed
-    /// write or a stop cuts short resumes from what [`Unfinished`] says it
-    /// reached: the marker is appended once, and the crash is pushed under
-    /// the one seq it reserved, so pushing again rewrites the same entry and
-    /// never queues a second. Finishing comes last because only a finished
-    /// settlement stops an event delivered again from settling again. A
-    /// restart has no settlement: it is recorded only after an exit the open
-    /// stream saw, which a resumed stream cannot repeat.
+    /// One settlement runs these steps in this order: reserve the crash's
+    /// outbox seq, save the seq, push the crash under it, finish the
+    /// settlement. Each step is saved before the next begins, so an attempt a
+    /// failed write or a stop cuts short resumes from what [`Unfinished`]
+    /// says it reached: the crash is pushed under the one seq it reserved, so
+    /// pushing again rewrites the same entry and never queues a second.
+    /// Finishing comes last because only a finished settlement stops an event
+    /// delivered again from settling again.
     pub(super) fn settle(&mut self, marker: MetricMarker) {
         let Some(key) = Key::of(&marker) else {
-            if let Err(error) = segment::append(&self.store, &[Row::Marker(marker.clone())]) {
-                tracing::warn!(container = %marker.container_id, %error, "cannot append a metric marker");
-            }
             return;
         };
         match self.settlements.get(&key) {
             Ok(Settlement::New) => {
-                let unfinished = Unfinished {
-                    marker,
-                    appended: false,
-                    seq: None,
-                };
+                let unfinished = Unfinished { marker, seq: None };
                 if let Err(error) = self.settlements.save(&key, &unfinished) {
                     tracing::warn!(container = %key.container(), %error, "cannot record an exit before settling it");
                     return;
                 }
-                self.advance(&key, unfinished, false);
+                self.advance(&key, unfinished);
             }
-            Ok(Settlement::Unfinished(unfinished)) => self.advance(&key, *unfinished, true),
+            Ok(Settlement::Unfinished(unfinished)) => self.advance(&key, *unfinished),
             Ok(Settlement::Finished) => {}
             Err(error) => {
                 tracing::warn!(container = %key.container(), %error, "cannot read whether an exit was settled");
@@ -316,55 +292,13 @@ impl Settler {
     }
 
     /// Runs the steps of [`Settler::settle`] a settlement has not reached.
-    /// One `resumed` from an earlier attempt may have stored its marker
-    /// before it could say so.
-    fn advance(&mut self, key: &Key, mut unfinished: Unfinished, resumed: bool) {
-        if !unfinished.appended && self.append_marker(key, &mut unfinished, resumed).is_break() {
-            return;
-        }
+    fn advance(&mut self, key: &Key, unfinished: Unfinished) {
         if unfinished.marker.is_crash() && self.queue_crash(key, unfinished).is_break() {
             return;
         }
         if let Err(error) = self.settlements.finish(key) {
             tracing::warn!(container = %key.container(), %error, "cannot record that an exit was settled");
-            return;
         }
-        self.marker_stored.remove(key);
-    }
-
-    fn append_marker(
-        &mut self,
-        key: &Key,
-        unfinished: &mut Unfinished,
-        resumed: bool,
-    ) -> ControlFlow<()> {
-        let id = key.container();
-        let stored = match self.marker_stored.get(key) {
-            Some(stored) => *stored,
-            None if resumed => match marker_stored(&self.store, &unfinished.marker) {
-                Ok(stored) => stored,
-                Err(error) => {
-                    tracing::warn!(container = %id, %error, "cannot read whether a metric marker was appended");
-                    return ControlFlow::Break(());
-                }
-            },
-            None => false,
-        };
-        self.marker_stored.insert(*key, stored);
-        if !stored {
-            if let Err(error) =
-                segment::append(&self.store, &[Row::Marker(unfinished.marker.clone())])
-            {
-                tracing::warn!(container = %id, %error, "cannot append a metric marker");
-                return ControlFlow::Break(());
-            }
-            self.marker_stored.insert(*key, true);
-        }
-        unfinished.appended = true;
-        if let Err(error) = self.settlements.save(key, unfinished) {
-            tracing::warn!(container = %id, %error, "cannot record that a metric marker was appended");
-        }
-        ControlFlow::Continue(())
     }
 
     fn queue_crash(&mut self, key: &Key, mut unfinished: Unfinished) -> ControlFlow<()> {
@@ -395,7 +329,7 @@ impl Settler {
     }
 
     /// Finishes the settlements a failed write or a stopped harvester left
-    /// unfinished, reading at most a few raw segments, and gives up those of
+    /// unfinished, and gives up those of
     /// events older than `give_up_before` that no stream can repeat. A crash
     /// the outbox has not queued is never given up: only a real crash can
     /// leave one, and it waits for the outbox to take it.
@@ -414,28 +348,16 @@ impl Settler {
                 continue;
             }
             tracing::warn!(container = %key.container(), "giving up an exit that could not be settled for a day");
-            match self.settlements.forget(&key) {
-                Ok(()) => {
-                    self.marker_stored.remove(&key);
-                }
-                Err(error) => {
-                    tracing::warn!(container = %key.container(), %error, "cannot give up an exit settlement");
-                }
+            if let Err(error) = self.settlements.forget(&key) {
+                tracing::warn!(container = %key.container(), %error, "cannot give up an exit settlement");
             }
         }
         let reserved: Vec<u64> = kept.iter().filter_map(|(_, entry)| entry.seq).collect();
         if let Err(error) = self.crashes.release_reserved(&reserved) {
             tracing::warn!(%error, "cannot release crash seqs nothing will queue");
         }
-        let mut scans = SETTLEMENT_SCANS_PER_TICK;
         for (key, entry) in kept {
-            if !entry.appended && !self.marker_stored.contains_key(&key) {
-                if scans == 0 {
-                    continue;
-                }
-                scans -= 1;
-            }
-            self.advance(&key, entry, true);
+            self.advance(&key, entry);
         }
     }
 
@@ -454,17 +376,4 @@ fn ends_run(state: &ContainerState, died: i64) -> bool {
     at(&state.started_at)
         .zip(at(&state.finished_at))
         .is_some_and(|(started, finished)| started <= finished && finished <= died)
-}
-
-/// Whether a raw segment holds `marker`.
-fn marker_stored(store: &StoreRoot, marker: &MetricMarker) -> io::Result<bool> {
-    segment::find(
-        &store.raw_metrics(),
-        MetricRange {
-            since_nanos: marker.ts,
-            until_nanos: marker.ts.saturating_add(1),
-        },
-        &Prefilter::Contains(Finder::new(marker.container_id.to_string().as_bytes()).into_owned()),
-        |row: &Row| matches!(row, Row::Marker(found) if found == marker),
-    )
 }

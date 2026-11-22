@@ -149,10 +149,6 @@ pub enum ExpectedCopy {
 /// The copy the sender wants this Machine to hold.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a Writer start carries the whole resolved spec; one request holds one"
-)]
 pub enum WantedCopy {
     /// A writable root whose newest snapshot is `at`, numbered `epoch`, with its
     /// Container running when `start` is given.
@@ -185,10 +181,6 @@ pub enum WantedCopy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(rename = "CopyStart")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a Create carries the whole resolved spec; one request holds one"
-)]
 pub enum Start {
     Kept {
         container_id: ContainerId,

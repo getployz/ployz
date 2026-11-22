@@ -637,7 +637,10 @@ impl Lifecycle {
             return Err(Error::UnsignedImage(UnsignedImage::Moved));
         }
         // A daemon killed here leaves a Container no spec describes.
-        crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
+        crate::faults::kill_inside(
+            crate::faults::Point::Verb("CreateContainer.BeforeSpec"),
+            None,
+        );
         let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
         if let Err(error) = config_operation
             .put(

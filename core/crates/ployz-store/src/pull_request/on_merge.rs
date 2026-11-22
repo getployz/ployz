@@ -17,13 +17,13 @@ use super::*;
 use crate::SecretValue;
 use crate::automation;
 use crate::branch::{
-    Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
-    share, shown,
+    Carried, Move, NamedRow, RowRef, config, end_included, named, resolve_one, row_id, share, shown,
 };
 use crate::id::ServiceLineageId;
 use crate::scope::RemovedServices;
 use crate::settings::SecretCell;
 use crate::storage;
+use crate::storage::json_text;
 use crate::trusted::Evidence;
 use crate::variables::{self, VariableKey};
 
@@ -565,7 +565,7 @@ pub(crate) fn set_merge_value(
                 who.organization.as_str().into(),
                 lineage,
                 at,
-                json_of(&cell).as_str().into(),
+                json_text(&cell).as_str().into(),
             ],
         )?;
     }
@@ -769,10 +769,7 @@ pub(crate) fn record_unlanded(
             who.organization.as_str().into(),
             pull_request.repository_id.into(),
             pull_request.number.into(),
-            serde_json::to_string(unlanded)
-                .expect("unlanded is JSON")
-                .as_str()
-                .into(),
+            json_text(unlanded).as_str().into(),
         ],
     )?;
     Ok(())
@@ -912,10 +909,7 @@ pub(crate) fn land(
          WHERE environment_id = ?1 AND merge_landing IS NULL",
         &[
             from.summary.id.as_str().into(),
-            serde_json::to_string(&receipt)
-                .expect("a receipt is JSON")
-                .as_str()
-                .into(),
+            json_text(&receipt).as_str().into(),
         ],
     )?;
     Ok(Merged { all })

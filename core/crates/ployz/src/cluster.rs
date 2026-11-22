@@ -43,8 +43,6 @@ use crate::{
 };
 
 mod call;
-#[cfg(test)]
-mod call_audit;
 mod capacity;
 mod container_health;
 mod deploy_context;
@@ -132,9 +130,12 @@ impl Client {
     pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
         self.routes.reach(
             machine,
-            device,
             self.session.entry.as_ref(),
             self.session.connection(),
+            |transport| {
+                transport.says_who_answers()
+                    || device && matches!(transport, crate::context::Transport::Management(_))
+            },
         )
     }
 
@@ -142,12 +143,13 @@ impl Client {
     /// socket, on a route the person chose and a session Cloud didn't pick. Cloud's Server
     /// Access can hand over an SSH endpoint of its own, so its routes never do.
     pub(crate) fn answers_for_itself(&self, machine: &MachineId) -> bool {
-        !matches!(self.connection_source(), ConnectionSource::Cloud)
-            && self.routes.answers_for_itself(
-                machine,
-                self.session.entry.as_ref(),
-                self.session.connection(),
-            )
+        let source = self.connection_source();
+        self.routes.answers_for_itself(
+            machine,
+            self.session.entry.as_ref(),
+            self.session.connection(),
+            |transport| source.own_full_access(transport),
+        )
     }
 
     /// How a copied image may be named on `dest`. Only a person's own Full access names
@@ -156,11 +158,9 @@ impl Client {
     /// and a Management connection may be an Operator slot, so both get retention names only.
     pub(crate) fn image_naming(&self, dest: &MachineId) -> crate::image::Naming {
         let full = self.session.entry == Some(*dest)
-            && !matches!(self.connection_source(), ConnectionSource::Cloud)
-            && matches!(
-                self.session.connection().transport(),
-                crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_)
-            );
+            && self
+                .connection_source()
+                .own_full_access(self.session.connection().transport());
         if full {
             crate::image::Naming::UserTags
         } else {
@@ -499,9 +499,7 @@ impl Client {
                 client
                     .call::<op::InspectStorage>(
                         InspectStorageRequest {},
-                        Call::read()
-                            .to(&MachineTarget::from(&machine.machine.id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&MachineTarget::from(&machine.machine.id)),
                     )
                     .await
                     .map(Some)
@@ -833,9 +831,7 @@ impl Client {
         match client
             .call::<op::InspectStorage>(
                 InspectStorageRequest {},
-                Call::read()
-                    .to(&MachineTarget::from(&machine.machine.id))
-                    .budget(crate::connect::target_read_timeout()),
+                Call::target_read(&MachineTarget::from(&machine.machine.id)),
             )
             .await
         {
@@ -878,9 +874,7 @@ impl Client {
                             reference,
                             last_tagged: false,
                         },
-                        Call::read()
-                            .to(&MachineTarget::from(&machine.id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&MachineTarget::from(&machine.id)),
                     )
                     .await
                     .map_err(crate::connect::rpc_error)?;
@@ -1996,9 +1990,7 @@ async fn list_volumes_on_machine(
     client
         .call::<op::ListVolumes>(
             ListVolumesRequest {},
-            Call::read()
-                .to(&MachineTarget::from(&machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(&machine_id)),
         )
         .await
         .map_err(crate::connect::rpc_error)
@@ -2040,9 +2032,7 @@ async fn list_on_machine(
     client
         .call::<op::ListContainers>(
             ListContainersRequest { environment },
-            Call::read()
-                .to(&MachineTarget::from(&machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(&machine_id)),
         )
         .await
         .map(|list| MachineSuccess {

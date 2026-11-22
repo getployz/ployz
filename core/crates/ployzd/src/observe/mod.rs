@@ -4,7 +4,6 @@
 //! It only observes this Machine: it never places, moves, restarts or removes a
 //! container, and no Deploy waits on it.
 
-pub mod cleanup;
 mod clock;
 pub(crate) mod collector;
 mod exit_ledger;

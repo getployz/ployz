@@ -39,9 +39,7 @@ pub(crate) async fn participating(
                 include_storage,
                 ..Default::default()
             },
-            Call::read()
-                .to(&MachineTarget::from(machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(machine_id)),
         )
         .await
         .map_err(crate::connect::rpc_error)?;

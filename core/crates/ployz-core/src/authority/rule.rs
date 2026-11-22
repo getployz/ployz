@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
-    deploy::{Creation, PayloadDigest, content_addressed, placement_signed},
+    deploy::{Creation, PayloadDigest, placement_signed},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
@@ -63,8 +63,17 @@ hex_newtype!(
 );
 hex_newtype!(
     /// The content digest of a built image, `sha256:<64 hex>`.
-    ImageDigest, "image digest", 32, "sha256:"
+    BuiltImageDigest, "image digest", 32, "sha256:"
 );
+impl BuiltImageDigest {
+    /// The content `image` names, as [`ImageRef::content`](crate::ImageRef::content) reads it.
+    #[must_use]
+    pub fn named_by(image: &str) -> Option<Self> {
+        crate::ImageRef::new(image)
+            .content()
+            .and_then(|digest| Self::parse(digest.as_str()).ok())
+    }
+}
 hex_newtype!(
     /// The X25519 key a builder makes for one build, which its build secrets are sealed to.
     RecipientKey, "recipient key", 32, ""
@@ -518,7 +527,7 @@ pub enum BuildStage {
     },
     /// `image` was built, with its secrets sealed from `attest`.
     Built {
-        image: ImageDigest,
+        image: BuiltImageDigest,
         attest: AttestKey,
     },
 }
@@ -663,7 +672,7 @@ impl AutoDeployRule {
         claim: &BuildClaim,
         facts: &RuleFacts<'_>,
         creation: Creation<'_>,
-    ) -> Result<ImageDigest, AuthorityRefusal> {
+    ) -> Result<BuiltImageDigest, AuthorityRefusal> {
         let mismatch = |field| AuthorityRefusal::Mismatch { field };
         if creation.service != facts.service || &creation.spec.name != facts.service {
             return Err(mismatch("a Service"));
@@ -710,11 +719,7 @@ impl AutoDeployRule {
         if attest != facts.attest {
             return Err(mismatch("the attest key"));
         }
-        let running = &creation.spec.container.image;
-        let digest = running
-            .rsplit_once('@')
-            .map_or(running.as_str(), |(_, digest)| digest);
-        if !content_addressed(running) || ImageDigest::parse(digest) != Ok(image) {
+        if BuiltImageDigest::named_by(&creation.spec.container.image) != Some(image) {
             return Err(mismatch("an image"));
         }
         if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {

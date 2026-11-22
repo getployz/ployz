@@ -2,7 +2,7 @@
 //! the order its refusals come in, and whether the request shrinks, grows, only raises a
 //! copy behind, or changes nothing.
 
-use ployz_core::{ProvisionedVolumeMaximumBytes, SizeRefusal, shrink_floor};
+use ployz_core::{ProvisionedVolumeMaximumBytes, shrink_floor};
 
 /// What the Machine read about the Volume and what the request asks for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,17 +31,6 @@ pub enum Refused {
     BelowFloor {
         floor: ProvisionedVolumeMaximumBytes,
     },
-}
-
-impl Refused {
-    #[must_use]
-    pub const fn reason(self) -> SizeRefusal {
-        match self {
-            Self::Shrink => SizeRefusal::Shrink,
-            Self::Switching => SizeRefusal::Switching,
-            Self::BelowFloor { .. } => SizeRefusal::BelowFloor,
-        }
-    }
 }
 
 /// What to do with the request.
@@ -220,16 +209,6 @@ mod tests {
                 ..facts(2, 4)
             }),
             SizePlan::Grow { raise_copy: true },
-        );
-    }
-
-    #[test]
-    fn a_refusal_reads_as_its_size_refusal() {
-        assert_eq!(Refused::Shrink.reason(), SizeRefusal::Shrink);
-        assert_eq!(Refused::Switching.reason(), SizeRefusal::Switching);
-        assert_eq!(
-            Refused::BelowFloor { floor: bytes(1) }.reason(),
-            SizeRefusal::BelowFloor
         );
     }
 }

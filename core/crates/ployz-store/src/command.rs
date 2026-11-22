@@ -39,6 +39,7 @@ use crate::error;
 use crate::followup::FollowUp;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
+use crate::storage::json_text;
 use crate::tools::ToolId;
 use crate::{Actor, Permission, SealingKey, Trusted};
 
@@ -898,7 +899,7 @@ fn replayable<C: Tell + ?Sized>(
         }
     }
     let written = create(at)?;
-    let written_json = serde_json::to_string(&written).expect("results are JSON");
+    let written_json = json_text(&written);
     for id in ids {
         at.tx.execute(
             "INSERT INTO config_create (id, organization_id, command, written) \

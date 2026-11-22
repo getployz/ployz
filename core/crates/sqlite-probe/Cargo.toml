@@ -7,7 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+rusqlite.workspace = true
 thiserror = "2.0.20"
 
 [lints]

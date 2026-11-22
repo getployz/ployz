@@ -774,7 +774,7 @@ async fn an_old_copy_that_does_not_retire_says_why_it_still_runs() {
         refused.unwrap(),
         OldCopyEnd::Running {
             unconfirmed: Unconfirmed::Failed {
-                detail: "the copy moved since it was read".into(),
+                detail: "the copy is held by other-run, not in as expected".into(),
             },
         }
     );

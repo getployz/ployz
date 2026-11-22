@@ -1,11 +1,11 @@
 //! Fresh capacity and bounded batch preparation on the plugin's existing mutation lock.
 
+use crate::dataset_layout::{DatasetLayout, Place, SlotAt};
 use axum::{Json, extract::State};
 use ployz_core::{
     CopyPlace, ProvisionedCopy, ProvisionedVolumeMaximumBytes, StorageCapacity,
     StorageCapacityError,
 };
-use ployzd::dataset_layout::{DatasetLayout, Place, SlotAt};
 use std::collections::BTreeMap;
 
 use super::{VolumeName, VolumeStorage};

@@ -292,7 +292,7 @@ impl MachineService {
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
-        crate::faults::apply(verb, None).await;
+        crate::faults::apply(crate::faults::Point::Verb(verb), None).await;
         match self.local.plugin().call::<T>(route, request).await {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),
@@ -1006,7 +1006,7 @@ impl MachineRpc for MachineService {
         let provenance = Provenance::of(&request);
         let operator = provenance.operator();
         let request = expect::<op::MintBuildGrant>(request)?;
-        // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
+        // Refused before `Mint::check_admitted`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
         let admitted = match &request.rule {
             None => {
@@ -1035,11 +1035,10 @@ impl MachineRpc for MachineService {
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
-        let scope = provenance.scope();
         let mint = match crate::management::build_grant::Mint::check_admitted(
             request, key_dir, admitted,
         ) {
-            Ok(mint) => mint.minted_by(scope),
+            Ok(mint) => mint,
             Err(refused) => return respond(refused),
         };
         match crate::management::build_grant::mint_for(
@@ -1338,7 +1337,7 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 /// the copy checks against the content before writing. Image Cleanup alone reads those
 /// names, so an Operator may write them; any other name a Full creation may run.
 fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
-    let Some((_, digest)) = pull.image().split_once('@') else {
+    let Some(digest) = ployz_core::ImageRef::new(pull.image()).digest else {
         return false;
     };
     pull.tag().is_none_or(|tag| {

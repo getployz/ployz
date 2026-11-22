@@ -12,7 +12,7 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, Timestamp, hex_bytes, write_hex},
+    canonical::{self, Timestamp},
     keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
     open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -36,7 +36,7 @@ impl AuthKeyDigest {
     /// # Errors
     /// Returns a [`crate::ValueError`] unless `value` is 64 lowercase hex digits.
     pub fn parse(value: &str) -> Result<Self, crate::ValueError> {
-        hex_bytes(value).map(Self).ok_or_else(|| {
+        crate::hex::decode(value).map(Self).ok_or_else(|| {
             crate::ValueError::new("auth key digest", value, "64 lowercase hex digits")
         })
     }
@@ -44,7 +44,7 @@ impl AuthKeyDigest {
 
 impl fmt::Display for AuthKeyDigest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_hex(&self.0, formatter)
+        crate::hex::write(&self.0, formatter)
     }
 }
 

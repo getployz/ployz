@@ -194,6 +194,13 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 impl ContainerRuntimeObservation {
+    /// True when Docker reports the container as running, whatever its health. A paused or
+    /// restarting container is not running here.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
     /// True when the container's process isn't running and can serve nothing.
     #[must_use]
     pub fn at_rest(&self) -> bool {

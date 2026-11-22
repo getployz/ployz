@@ -3,7 +3,7 @@
 use ployz_core::{
     DeviceKey, GithubToken, Namespace, ServiceName,
     authority::{
-        AttestKey, AuthorityRefusal, Budget, BuildClaim, BuildStage, CommitSha, ImageDigest,
+        AttestKey, AuthorityRefusal, Budget, BuildClaim, BuildStage, BuiltImageDigest, CommitSha,
         RuleEvidence, RuleProof, Signed, Timestamp, VerifiedBuild, rule::Builder,
     },
 };
@@ -76,7 +76,7 @@ impl Fixture {
     fn built(&self, rule: &ployz_core::authority::AutoDeployRule, attest: AttestKey) -> BuildClaim {
         BuildClaim {
             stage: BuildStage::Built {
-                image: ImageDigest::parse(&format!("sha256:{IMAGE}")).unwrap(),
+                image: BuiltImageDigest::parse(&format!("sha256:{IMAGE}")).unwrap(),
                 attest,
             },
             ..claim_for(self.cluster, rule)
@@ -197,7 +197,7 @@ async fn a_claim_the_token_does_not_name_is_refused_as_the_audience() {
     let claim = fixture.built(&rule, fixture.attest());
     let other = BuildClaim {
         stage: BuildStage::Built {
-            image: ImageDigest::from_bytes([0x66; 32]),
+            image: BuiltImageDigest::from_bytes([0x66; 32]),
             attest: fixture.attest(),
         },
         ..claim.clone()
@@ -299,7 +299,7 @@ async fn a_verified_build_stands_only_for_its_own_build_service_and_generation()
     other_spec["container"]["image"] = json!(format!("ployz-build/web@sha256:{other_image}"));
     let other = BuildClaim {
         stage: BuildStage::Built {
-            image: ImageDigest::parse(&format!("sha256:{other_image}")).unwrap(),
+            image: BuiltImageDigest::parse(&format!("sha256:{other_image}")).unwrap(),
             attest: fixture.attest(),
         },
         ..claim.clone()

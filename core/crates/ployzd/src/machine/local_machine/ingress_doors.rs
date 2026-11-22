@@ -226,7 +226,9 @@ impl Joined<'_> {
         .filter(|_| !fresh);
         let kept_id = kept.map(|entry| entry.facts.id);
         let step = match (reserved::step(kept, entries.iter().copied()), kept) {
-            (Step::Keep(id), Some(entry)) if entry.facts.running() && self.stale(entry) => {
+            (Step::Keep(id), Some(entry))
+                if entry.facts.runtime.is_running() && self.stale(entry) =>
+            {
                 JoinedStep::Rejoin(id)
             }
             (Step::Keep(id), _) => JoinedStep::Keep(id),
@@ -795,13 +797,7 @@ impl LocalMachine {
     /// The Machine may place a reserved Container now. `gate` names the role it needs.
     pub(super) fn reserved_effect(&self, gate: Gate) -> Result<(), Error> {
         let record = self.record();
-        if !matches!(
-            record.phase(),
-            ployz_core::LocalMachinePhase::Joining | ployz_core::LocalMachinePhase::Participating
-        ) {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         if gate == Gate::Ingress && !machine.accepts_ingress {
             return Err(crate::docker::Error::WorkNotAccepted.into());
         }
@@ -835,7 +831,7 @@ impl LocalMachine {
                 .await?
                 .runtime
                 .clone();
-            if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+            if runtime.is_running() {
                 return Ok(());
             }
             if runtime.at_rest() || tokio::time::Instant::now() >= deadline {

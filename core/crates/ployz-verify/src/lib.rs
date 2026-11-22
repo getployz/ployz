@@ -1,12 +1,16 @@
 //! Model checks of Ployz protocols that tests rarely reach. Each module models one
 //! protocol and its tests explore every interleaving within the bounds the module states.
 //!
-//! A module calls the `ployz-core` code its protocol runs where that code is pure:
-//! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
-//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt`,
-//! `plan` in `volume_runs`, the `ployz_decide::service_floor` decisions in `service_floor`, and the Deploy planner itself (`ployz::deploy::preview_deploy`) in
-//! `region_placement` and `first_placement`. The other modules re-state their protocol's decisions by hand,
-//! and a decision that moves into `ployz-decide` is called, never re-stated.
+//! A module calls the `ployz-core` and `ployz-decide` code its protocol runs where that code is
+//! pure: `ployz_decide::issuance` and `issuance_gate` in `acme_issuance`,
+//! `ployz_decide::bridge` and `RestartPolicy` in `bridge_notes`, `ployz_decide::github_build` in
+//! `build_handoff`, `ployz_decide::caddy_load` in `caddy_load`, `ployz_decide::fate` in
+//! `mcp_login`, `ployz_decide::standing` in `runner_standing`, `plan` and
+//! `ployz_decide::volume_size` in `volume_runs`, `MachineUpgradeOutcome::is_terminal` in
+//! `upgrade_attempt`, the `ployz_decide::service_floor` decisions in `service_floor`, and the
+//! Deploy planner itself (`ployz::deploy::preview_deploy`) in `region_placement` and
+//! `first_placement`. The other modules re-state their protocol's decisions by hand, and a
+//! decision that moves into `ployz-decide` is called, never re-stated.
 
 #[cfg(test)]
 mod acme_issuance;

@@ -441,10 +441,6 @@ pub struct ServiceDependency {
 /// `services` holds where each deployed Service ended, in plan order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Failed must own the named op and unexecuted operations; boxing would not change the states"
-)]
 #[derive(TS)]
 pub enum DeployOutcome<E> {
     /// Every planned operation completed.
@@ -1507,10 +1503,6 @@ impl ExecutionError {
 /// Live evidence of one in-flight Deploy. Not a Watch frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Outcome owns the completed operations, failed op, and unexecuted operations"
-)]
 #[derive(TS)]
 pub enum DeployEvent {
     /// Full snapshot of every planned row.

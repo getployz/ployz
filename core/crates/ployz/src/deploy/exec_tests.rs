@@ -13,6 +13,7 @@ use ployz_core::{
 
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
+use ployz_decide::rotation::{Checked, RotationWant, in_rotation, in_rotation_refusal};
 
 use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
 use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
@@ -793,29 +794,18 @@ impl Scripted {
         if !copy.present {
             return Decision::Refused(refusal(ContainerRefusalReason::NotFound, "no such copy"));
         }
-        let met = match (&copy.rotation, target) {
-            (CopyRotation::In, RotationTarget::In { .. })
-            | (CopyRotation::Out, RotationTarget::Out) => true,
-            (CopyRotation::Held(held), RotationTarget::Held(run)) => held == run,
-            _ => false,
+        let want = match target {
+            RotationTarget::In { run } => RotationWant::In { run: run.clone() },
+            RotationTarget::Held(run) => RotationWant::Held(run.clone()),
+            RotationTarget::Out => RotationWant::Out { allow_empty },
+            RotationTarget::Stopped | RotationTarget::Gone => {
+                panic!("no rotation ask reaches {target:?}")
+            }
         };
-        if met {
-            return Decision::Met;
-        }
-        if expect.is_some_and(|expect| *expect != copy.rotation) {
-            return Decision::Refused(refusal(
-                ContainerRefusalReason::RotationMismatch,
-                "the copy moved since it was read",
-            ));
-        }
-        let to = match copy.rotation.edge(target) {
-            ployz_core::RotationEdge::Write(to) => to,
-            ployz_core::RotationEdge::Refused(refused) => {
-                return Decision::Refused(edge_refusal(refused));
-            }
-            edge @ (ployz_core::RotationEdge::Keep | ployz_core::RotationEdge::Remove) => {
-                panic!("no rotation ask reaches {edge:?}")
-            }
+        let to = match ployz_decide::rotation::decide(&copy.rotation, &want, expect) {
+            Checked::Met => return Decision::Met,
+            Checked::Refused(refusal) => return Decision::Refused(refusal),
+            Checked::Allowed(to) => to,
         };
         let copies = self.copies.lock().unwrap();
         let siblings = || {
@@ -1013,15 +1003,13 @@ impl Scripted {
                         refusal: refusal(ContainerRefusalReason::NotFound, "no such copy"),
                     });
                 }
-                Some(copy) => {
-                    if let ployz_core::RotationEdge::Refused(refused) = copy.rotation.edge(target) {
-                        return Ok(EnsuredContainer::Refused {
-                            now: self.now(machine_id, id),
-                            refusal: edge_refusal(refused),
-                        });
-                    }
+                Some(copy) if in_rotation(&copy.rotation, target) => {
+                    return Ok(EnsuredContainer::Refused {
+                        now: self.now(machine_id, id),
+                        refusal: in_rotation_refusal(id, &copy.rotation),
+                    });
                 }
-                None => {}
+                Some(_) | None => {}
             }
         }
         let mut settled = false;
@@ -1198,24 +1186,6 @@ fn refusal(reason: ContainerRefusalReason, message: &str) -> ContainerRefusal {
         reason,
         message: message.into(),
         capability: None,
-    }
-}
-
-fn edge_refusal(refused: ployz_core::RotationRefusal) -> ContainerRefusal {
-    use ployz_core::RotationRefusal;
-    match refused {
-        RotationRefusal::HeldByOtherRun => refusal(
-            ContainerRefusalReason::HeldByOtherRun,
-            "another run holds the copy",
-        ),
-        RotationRefusal::InRotation => refusal(
-            ContainerRefusalReason::InRotation,
-            "take the copy out of routing first",
-        ),
-        RotationRefusal::OutIsFinal | RotationRefusal::NoEdge => refusal(
-            ContainerRefusalReason::RotationMismatch,
-            "no move leads there",
-        ),
     }
 }
 

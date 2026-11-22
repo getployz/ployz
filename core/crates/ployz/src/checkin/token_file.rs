@@ -1,13 +1,7 @@
 //! The Fleet Token and the file it lives in: reading, writing, keeping private, locking, and what
 //! the loop does when the file changes or goes.
 
-use std::{
-    fs,
-    io::{self, Write},
-    os::unix::fs::PermissionsExt,
-    path::Path,
-    time::Duration,
-};
+use std::{fs, io, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
 use ployz_core::RpcErrorCode;
 
@@ -55,14 +49,7 @@ impl FleetToken {
 
     /// Writes this token to `path` in one step, readable by root only.
     pub(crate) fn write(&self, path: &Path) -> io::Result<()> {
-        let directory = path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(directory)?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(TOKEN_MODE))?;
-        writeln!(file, "{}", self.0)?;
-        file.as_file().sync_all()?;
-        file.persist(path).map_err(|error| error.error)?;
+        crate::atomic_file::replace(path, format!("{}\n", self.0).as_bytes(), TOKEN_MODE)?;
         Ok(())
     }
 }

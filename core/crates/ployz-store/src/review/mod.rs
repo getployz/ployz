@@ -29,15 +29,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use approval::{DestructiveEffect, DestructiveKind, LostAfter};
+pub use approval::{DestructiveEffect, DestructiveKind};
 pub(crate) use approval::{
     Gate, Moving, Pruning, TakingOff, approve, approve_move, approve_retry, move_asks,
 };
-pub use required::{
-    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, OperationVerb,
-};
+pub use required::{ApprovalOperation, ApprovalRequired, ApprovalSubject, OperationVerb};
 pub(crate) use saved::{Saved, latest_saved};
-pub use version::{MalformedReviewVersion, ReviewVersion};
+pub use version::ReviewVersion;
 
 use crate::Actor;
 use crate::error;
@@ -949,10 +947,7 @@ fn restarts(
                 .any(|mount| mount.config_resource_id == node.id)
                 && deployed.services.iter().any(|old| old.id == service.id)
         })
-        .map(|service| {
-            ployz_core::ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))
-        })
+        .map(crate::scope::service_name)
         .collect()
 }
 

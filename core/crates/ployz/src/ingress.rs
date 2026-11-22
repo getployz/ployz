@@ -101,7 +101,7 @@ pub(crate) fn machine_doors(services: &[ServiceObservation]) -> BTreeMap<Machine
         .flat_map(|service| &service.containers)
         .map(|copy| copy.as_observation())
     {
-        if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+        if !copy.runtime.is_running() {
             continue;
         }
         let door = match copy.door() {

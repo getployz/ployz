@@ -1,6 +1,7 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
-use crate::deploy::{Replica, service_row, starts, updates};
+pub(crate) mod rows;
+
 use crate::failure::Failure;
 use crate::ui::progress::{
     Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
@@ -16,6 +17,7 @@ use ployz_store::{
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
     ServerRow,
 };
+use rows::{Replica, service_row, starts, updates};
 use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 

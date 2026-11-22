@@ -7,8 +7,8 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Actor, ConfigStore, CreateEnvironment, CreateProject, CreateService, DiffQuery, EnvironmentId,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, NameRegion, NewRegionQuery, OrganizationId,
-    Permission, PlanQuery, ProjectId, ProjectName, Publish, Region, RegionKey, RegionName,
-    RegionsQuery, ServiceLineageId, Trusted,
+    Permission, PlanQuery, ProjectId, ProjectName, Publish, Region, RegionName, RegionsQuery,
+    ServiceLineageId, Trusted, region_key,
 };
 
 mod backend;
@@ -58,7 +58,7 @@ fn shop() -> (ConfigStore, Actor) {
 /// Naming the region `key`, which a Server's label holds.
 fn rename(key: &str, name: &str) -> NameRegion {
     NameRegion {
-        key: RegionKey::parse(key).unwrap(),
+        key: region_key(key).unwrap(),
         name: RegionName::parse(name).unwrap(),
         labels: vec![key.to_owned()],
         creates: false,
@@ -133,7 +133,7 @@ fn renaming_a_region_changes_nothing_a_deploy_reads() {
     assert_eq!(
         named,
         Region {
-            key: RegionKey::default_region(),
+            key: ployz_core::Region::default(),
             name: "Falkenstein".into()
         }
     );
@@ -272,14 +272,11 @@ const KEY_RULE: &str = "A region is the value of a Server's region label: up to 
 #[test]
 fn a_key_is_what_placement_reads_in_a_region_label() {
     for key in ["fsn", "us-east-1", "eu_west.1", "FSN_1"] {
-        assert_eq!(
-            RegionKey::parse(key).unwrap().as_str(),
-            key.to_ascii_lowercase()
-        );
+        assert_eq!(region_key(key).unwrap().as_str(), key.to_ascii_lowercase());
     }
-    assert!(RegionKey::parse("a".repeat(63)).is_ok());
+    assert!(region_key("a".repeat(63)).is_ok());
     for key in ["", "a b", "fsn/1", "é", "🦀", &"a".repeat(64)] {
-        assert_eq!(RegionKey::parse(key).unwrap_err().message, KEY_RULE);
+        assert_eq!(region_key(key).unwrap_err().message, KEY_RULE);
     }
 }
 

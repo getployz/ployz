@@ -88,7 +88,7 @@ async fn image_ingest_runs_the_pinned_helper_when_its_tag_names_other_content() 
     let ingest = ImageIngest::new(None, Some(docker.clone()));
     ingest.shutdown().await.unwrap();
     // What a peer pull's `docker tag -- <pulled> <tag>` leaves when its tag is the helper's.
-    let helper_tag = super::unregistry::IMAGE.as_str().split_once('@').unwrap().0;
+    let helper_tag = ployz_core::ImageRef::new(super::unregistry::IMAGE.as_str()).name;
     let (repo, tag) = helper_tag.rsplit_once(':').unwrap();
     docker
         .client

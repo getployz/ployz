@@ -24,7 +24,7 @@ use super::step::{
 use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::followup::FollowUp;
-use crate::{NamespacesQuery, NamespacesView, OwnedNamespace, RegionKey};
+use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
 
 const BUILDS: &str = "^(auto|[0-9]+)$";
 const SETTABLE: [&str; 4] = [
@@ -94,9 +94,9 @@ fn failed_drain(page: &OperationsAnswer) -> Option<Value> {
 tool_input! {
     pub(crate) struct ServerAdd {
         /// The region it joins, e.g. `syd`. Omit for the default.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::region::deserialize_optional_key")]
         #[schemars(with = "Option<String>", example = &"syd")]
-        region: Option<RegionKey>,
+        region: Option<ployz_core::Region>,
     }
 }
 
@@ -113,10 +113,7 @@ impl Tool for ServerAdd {
     }
 
     fn plan(self, _cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let region = self
-            .region
-            .clone()
-            .unwrap_or_else(RegionKey::default_region);
+        let region = self.region.clone().unwrap_or_default();
         let command = FollowUp::ServerAdd {
             region: self.region,
         }

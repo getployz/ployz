@@ -11,7 +11,7 @@ async fn device_pool_recovery_preserves_volumes_through_every_admission_route() 
         "/Storage.Prepare",
         "/VolumeDriver.Create",
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let storage = fake_first_pool(&test.0, 4096);
         let script = test.0.join("fake-storage");
         let body = fs::read_to_string(&script)
@@ -77,7 +77,7 @@ async fn storage_admission_recovers_unimported_pool_without_recreating_data() {
             json!({"name":"data","maximum_bytes":1073741824u64}),
         ),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
         fs::write(test.0.join("allocated"), "2147483648").unwrap();
         fs::write(test.0.join("importable"), "").unwrap();
@@ -112,7 +112,7 @@ async fn storage_admission_recovers_unimported_pool_without_recreating_data() {
 #[tokio::test]
 async fn storage_inspection_preserves_unrecoverable_backing() {
     for marker in ["unlabeled", "foreign", "destroyed", "fail-import"] {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join(POOL_BACKING_FILE), "preserve me").unwrap();
         fs::write(test.0.join(marker), "").unwrap();
         if marker == "fail-import" {
@@ -142,7 +142,7 @@ async fn storage_inspection_preserves_unrecoverable_backing() {
 
 #[tokio::test]
 async fn batch_preparation_rejects_an_existing_read_only_volume_before_dataset_creation() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "readonly-volume"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -177,7 +177,7 @@ async fn batch_preparation_rejects_an_existing_read_only_volume_before_dataset_c
 
 #[tokio::test]
 async fn batch_preparation_reserves_capacity_before_docker_creates_volumes() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(
         UnixListener::bind(&socket).unwrap(),
@@ -253,7 +253,7 @@ fn snapshotted(test: &TestDir, dataset: &str) {
 
 #[tokio::test]
 async fn a_root_reports_the_bytes_it_references_not_what_its_snapshots_hold() {
-    let test = TestDir::new();
+    let test = test_dir();
     snapshotted(&test, "tank/ployz/data");
     let (socket, server) = super::inspect_tests::start(&test, USABLE_POOL, &["root", "volume"]);
 
@@ -274,7 +274,7 @@ async fn a_root_reports_the_bytes_it_references_not_what_its_snapshots_hold() {
 
 #[tokio::test]
 async fn a_slot_reports_the_bytes_its_copy_references() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = super::inspect_tests::start(&test, USABLE_POOL, &["root", "mirror"]);
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
     assert_eq!(
@@ -301,7 +301,7 @@ async fn a_slot_reports_the_bytes_its_copy_references() {
 
 #[tokio::test]
 async fn a_cut_root_answers_get_with_the_bytes_its_slot_references() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("mirror-fs"), "").unwrap();
     snapshotted(&test, "tank/ployz-mirror/data/fs");
     super::inspect_tests::set_property(&test, "tank/ployz-mirror/data/fs", "ployz:cut", "on");
@@ -399,7 +399,7 @@ async fn grow_data_by(test: &TestDir, fixed: bool, bytes: u64) -> Value {
 }
 
 async fn committable(fixed: bool) -> u64 {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = committed_pool(&test, fixed);
     let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
     server.abort();
@@ -419,7 +419,7 @@ async fn committable_bytes_is_exactly_what_volume_creation_admits() {
     ] {
         let committable = committable(fixed).await;
 
-        let over = TestDir::new();
+        let over = test_dir();
         let refused = create_other(&over, fixed, committable + 1).await;
         let message = refused.get("Err").and_then(Value::as_str).unwrap();
         assert!(message.contains(refusal), "fixed={fixed}: {refused}");
@@ -430,7 +430,7 @@ async fn committable_bytes_is_exactly_what_volume_creation_admits() {
             "fixed={fixed}: a refused Volume creates no dataset"
         );
 
-        let edge = TestDir::new();
+        let edge = test_dir();
         assert_eq!(
             create_other(&edge, fixed, committable).await,
             json!({"Err":""}),
@@ -444,7 +444,7 @@ async fn committable_bytes_is_exactly_what_a_grow_admits() {
     for fixed in [true, false] {
         let committable = committable(fixed).await;
 
-        let over = TestDir::new();
+        let over = test_dir();
         let refused = grow_data_by(&over, fixed, committable + 1).await;
         assert_eq!(
             refused
@@ -460,7 +460,7 @@ async fn committable_bytes_is_exactly_what_a_grow_admits() {
             "fixed={fixed}: a refused grow sets no bound"
         );
 
-        let edge = TestDir::new();
+        let edge = test_dir();
         let grown = grow_data_by(&edge, fixed, committable).await;
         assert_eq!(
             grown,
@@ -472,7 +472,7 @@ async fn committable_bytes_is_exactly_what_a_grow_admits() {
 
 #[tokio::test]
 async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = committed_pool_with_slot(&test, true, "data");
     let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
     server.abort();
@@ -482,7 +482,7 @@ async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes(
     assert_eq!(capacity.slot_bound_bytes, SLOT_BOUND, "{inspected}");
     let committable = capacity.committable_bytes().unwrap();
 
-    let over = TestDir::new();
+    let over = test_dir();
     let (socket, server) = committed_pool_with_slot(&over, true, "data");
     let refused = post(
         &socket,
@@ -499,7 +499,7 @@ async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes(
         "{refused}"
     );
 
-    let edge = TestDir::new();
+    let edge = test_dir();
     let (socket, server) = committed_pool_with_slot(&edge, true, "data");
     let created = post(
         &socket,
@@ -514,7 +514,7 @@ async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes(
 #[tokio::test]
 async fn a_request_that_overflows_the_commitment_is_refused_by_name_before_any_write() {
     for fixed in [true, false] {
-        let create = TestDir::new();
+        let create = test_dir();
         assert_eq!(
             create_other(&create, fixed, u64::MAX).await,
             json!({"Err": "Provisioned Volume commitments overflowed u64"}),
@@ -527,7 +527,7 @@ async fn a_request_that_overflows_the_commitment_is_refused_by_name_before_any_w
             "fixed={fixed}: a refused Volume creates no dataset"
         );
 
-        let grow = TestDir::new();
+        let grow = test_dir();
         assert_eq!(
             grow_data_by(&grow, fixed, u64::MAX - ROOT_BOUND).await,
             json!({"Err": {

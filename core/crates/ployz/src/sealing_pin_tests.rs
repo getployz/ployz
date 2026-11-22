@@ -2,6 +2,7 @@ use ployz_core::MachineName;
 use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
 
 use super::*;
+use crate::context::ConnectionSource;
 
 fn key(byte: u8) -> SealingPublicKey {
     SealingPublicKey::from_bytes([byte; 32])
@@ -201,7 +202,11 @@ fn only_ssh_or_the_local_socket_the_person_chose_reports_its_own_key() {
             "Server Access is Cloud's choice",
         ),
     ] {
-        assert_eq!(trusts(&source, connection.transport()), trusted, "{why}");
+        assert_eq!(
+            source.own_full_access(connection.transport()),
+            trusted,
+            "{why}"
+        );
     }
 }
 

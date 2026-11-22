@@ -6,7 +6,7 @@ use chrono::DateTime;
 use clap::{ArgMatches, Command};
 use globset::GlobMatcher;
 use ployz_core::{Hint, RpcErrorCode, StorageChoice};
-use ployz_store::RegionKey;
+use ployz_store::region_key;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -286,7 +286,7 @@ fn request(matches: &ArgMatches, selected: &[&Waiting]) -> Result<Value, Error> 
     };
     let regions = match matches.get_one::<String>("region") {
         Some(region) => {
-            let region = RegionKey::parse(region)?;
+            let region = region_key(region)?;
             let each: serde_json::Map<_, _> = selected
                 .iter()
                 .map(|host| (host.row.id.clone(), json!(region)))

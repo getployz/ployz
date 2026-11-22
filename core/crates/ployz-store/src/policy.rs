@@ -13,6 +13,7 @@ use crate::Actor;
 use crate::id::EnvironmentId;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// The most watch paths a Service keeps.
 const WATCH_PATHS: usize = 50;
@@ -322,10 +323,7 @@ pub(crate) fn store(
             environment.as_str().into(),
             service.into(),
             who.organization.as_str().into(),
-            serde_json::to_string(policy)
-                .expect("a policy is JSON")
-                .as_str()
-                .into(),
+            json_text(policy).as_str().into(),
         ],
     )?;
     Ok(())
