@@ -206,24 +206,8 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// A Node change as `deploy` and `history --preview` list it: its name, its Setting
-/// changes, and the Services it restarts.
-pub(super) fn say_change(change: &ployz_store::NodeChange) {
-    crate::ui::stream(format_args!(
-        "{} ({})",
-        change.name,
-        super::store::word(&change.lifecycle)
-    ));
-    for row in &change.settings {
-        for line in super::store::changed(row, &change.settings) {
-            crate::ui::stream(format_args!("  {line}"));
-        }
-    }
-    restarts(change);
-}
-
 /// The Services a Config change restarts, under its rows.
-fn restarts(change: &ployz_store::NodeChange) {
+pub(super) fn restarts(change: &ployz_store::NodeChange) {
     if !change.restarts.is_empty() {
         let services: Vec<&str> = change.restarts.iter().map(ServiceName::as_str).collect();
         crate::ui::stream(format_args!("  restarts {}", services.join(", ")));
@@ -557,7 +541,22 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
     })?;
     if matches.get_flag("preview") {
         return crate::ui::finish(&preview, || {
-            preview.changes.iter().for_each(say_change);
+            let labels = ployz_store::NodeChange::labels(&preview.changes);
+            for change in &preview.changes {
+                crate::ui::stream(format_args!(
+                    "{} ({})",
+                    change.name,
+                    super::store::word(&change.lifecycle)
+                ));
+                for row in &change.settings {
+                    crate::ui::stream(format_args!(
+                        "  {}: {} → {}",
+                        crate::ui::escaped(labels.get(&row.path).unwrap_or(&row.path)),
+                        super::store::shown(&row.before),
+                        super::store::shown(&row.after)
+                    ));
+                }
+            }
             for path in ployz_store::NodeChange::shown_paths(&preview.changes, &preview.overwritten)
             {
                 crate::ui::stream(format_args!(
