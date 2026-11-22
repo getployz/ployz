@@ -54,11 +54,8 @@ pub struct Definition {
     /// Completed Service contexts, bound to immutable content and serving endpoints.
     #[serde(default)]
     pub image_contexts: std::collections::BTreeMap<String, crate::ImageContext>,
-    /// Targets in this admitted attempt.
     pub targets: Vec<Target>,
-    /// Requested disposition of completed output.
     pub output: Output,
-    /// Disable cache reuse for this attempt.
     pub no_cache: bool,
     /// Request upstream base-image refresh.
     pub pull: bool,
