@@ -1,6 +1,6 @@
 import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
 import { CopyButton } from "#/components/copy-button";
-import { AlertTriangleIcon, EyeIcon, EyeOffIcon, LockIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, LockIcon } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
@@ -16,7 +16,6 @@ export function VariableRowValue({
   isSealed,
   notSet,
   plainValue,
-  unresolvedReferences = [],
   revealed,
   valueTargets,
   onCancelEdit,
@@ -32,7 +31,6 @@ export function VariableRowValue({
   /** A secret still without a value: it says so, and its edit sets one. */
   notSet: boolean;
   plainValue: string;
-  unresolvedReferences?: readonly string[];
   revealed: boolean;
   valueTargets?: ReferenceTarget[];
   onCancelEdit: () => void;
@@ -81,14 +79,6 @@ export function VariableRowValue({
           {isSealed || !revealed ? MASK : plainValue}
         </span>
       )}
-      {!isSealed && unresolvedReferences.length > 0 ? (
-        <Popover>
-          <PopoverTrigger openOnHover render={<Button type="button" variant="ghost" size="icon-sm" aria-label="Unresolved variable reference" />}>
-            <AlertTriangleIcon className="text-warning" />
-          </PopoverTrigger>
-          <PopoverContent>Unknown reference: {unresolvedReferences.join(", ")}</PopoverContent>
-        </Popover>
-      ) : null}
       {!isSealed ? (
         <Button
           type="button"
