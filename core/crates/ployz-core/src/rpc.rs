@@ -43,8 +43,6 @@ use serde_json::Value;
 
 use crate::DeviceKey;
 
-pub use crate::UNREGISTRY_PORT;
-
 /// The Machine RPC major. Every `RpcRequest` and `RpcResponse` envelope
 /// carries it, and decoding an envelope refuses another major.
 pub const PROTOCOL_MAJOR: u32 = 1;
