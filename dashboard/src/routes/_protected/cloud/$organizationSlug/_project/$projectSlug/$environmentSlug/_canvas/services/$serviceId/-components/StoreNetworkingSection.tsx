@@ -14,6 +14,7 @@ import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/sett
 import { Skeleton } from "#/components/ui/skeleton";
 import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
+import { envSetting } from "#/modules/config-store/setting-paths";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { isRequested, showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
 import { failureReason } from "#/components/store-write/use-commit-hold";
@@ -159,8 +160,8 @@ function NetworkingDomains({ state }: { state: StoreService }) {
   const none = domains.length === 0 && removed.length === 0 && adding.length === 0;
   // A domain without its own port routes to PORT, which Ployz sets when the user doesn't. Whether the app listens
   // there is unknown, so this is a hint, never a failure.
-  const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
-  const blankPort = blankPortTarget(state.rows.get("env.PORT")?.value);
+  const defaultPort = defaultPortHint(state.rows.get(envSetting("PORT"))?.value, domains);
+  const blankPort = blankPortTarget(state.rows.get(envSetting("PORT"))?.value);
 
   return (
     <>
