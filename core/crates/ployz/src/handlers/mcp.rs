@@ -26,7 +26,6 @@ use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
-use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
@@ -37,7 +36,7 @@ use super::{Error, leaf_matches, store};
 use crate::agent_call::{self, Started};
 use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::account::{Credential, StoreCallError, StoreClient};
 use crate::cloud::http::{CALL_DEADLINE, Via};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::failure::Failure;
@@ -258,6 +257,13 @@ enum Backend<'a> {
 }
 
 impl Backend<'_> {
+    fn client(&self) -> StoreClient<'_> {
+        match self {
+            Self::Local(store, who) => StoreClient::Local(store, who),
+            Self::Cloud(cloud) => StoreClient::Cloud(&cloud.credential, Via::Agent),
+        }
+    }
+
     /// The Store the registry's tools address for this call.
     fn at(&self) -> StoreAt {
         match self {
@@ -274,14 +280,8 @@ impl Backend<'_> {
 
     async fn ask(&self, ask: &Ask) -> Result<Value, RpcError> {
         match (self, ask) {
-            (Self::Local(store, who), Ask::Store(query)) => {
-                store.read(who, query).and_then(|view| value(&view))
-            }
+            (_, Ask::Store(query)) => called(self.client().read_json(query).await),
             (Self::Local(..), Ask::Cloud(_)) => Err(cloud_only()),
-            (Self::Cloud(cloud), Ask::Store(query)) => called(
-                cloud::account::config_store(&cloud.credential, Via::Agent, "read", query, None)
-                    .await,
-            ),
             (Self::Cloud(cloud), Ask::Cloud(query)) => called(
                 cloud::account::approved_answer(
                     &cloud.credential,
@@ -297,20 +297,10 @@ impl Backend<'_> {
 
     async fn write(&self, write: &Write, approval: Option<&str>) -> Result<Value, RpcError> {
         match (self, write) {
-            (Self::Local(store, who), Write::Store(command)) => store
-                .write(who, command)
-                .and_then(|written| value(&written)),
+            (_, Write::Store(command)) => {
+                written(self.client().write_json(command, approval).await)
+            }
             (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
-            (Self::Cloud(cloud), Write::Store(command)) => written(
-                cloud::account::config_store(
-                    &cloud.credential,
-                    Via::Agent,
-                    "write",
-                    command,
-                    approval,
-                )
-                .await,
-            ),
             (Self::Cloud(cloud), Write::Act(act)) => written(
                 cloud::account::approved_answer(
                     &cloud.credential,
@@ -323,10 +313,6 @@ impl Backend<'_> {
             ),
         }
     }
-}
-
-fn value(answer: &impl Serialize) -> Result<Value, RpcError> {
-    serde_json::to_value(answer).map_err(|error| RpcError::caused(RpcErrorCode::Internal, &error))
 }
 
 fn called(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {

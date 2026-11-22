@@ -4,6 +4,7 @@
 mod sealing;
 
 use clap::{Arg, ArgMatches};
+use futures_util::FutureExt as _;
 use ployz_core::{Region, RpcErrorCode};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -16,14 +17,14 @@ use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit, Edited,
     EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
     ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep,
-    SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    SystemEvent, Tell, Trusted, VolumeObservation,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::approval::{self, Asked};
 use crate::cli::value;
 use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::account::{Credential, StoreCallError, StoreClient};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::env;
 use ployz_core::Hint;
@@ -100,6 +101,24 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
+    /// The client for this Store, as this CLI.
+    fn client(&self) -> StoreClient<'_> {
+        match self {
+            Self::Local(store, who) => StoreClient::Local(store, who),
+            Self::Cloud(_, credential) => StoreClient::Cloud(credential, cloud::http::Via::Cli),
+        }
+    }
+
+    /// Run one of [`Self::client`]'s calls to its end.
+    fn call<T>(&self, call: impl std::future::Future<Output = T>) -> T {
+        match self {
+            Self::Local(..) => call
+                .now_or_never()
+                .expect("the in-process Store answers without awaiting"),
+            Self::Cloud(runtime, _) => runtime.block_on(call),
+        }
+    }
+
     /// Answer `query`: a Store query payload, read as its own view.
     pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
         self.read_seen(query, &Trusted::default())
@@ -107,70 +126,30 @@ impl Backend {
 
     /// [`Self::read`] with what this CLI observed; Cloud gathers its own.
     fn read_seen<Q: Ask>(&self, query: &Q, seen: &Trusted) -> Result<Q::View, StoreCallError> {
-        match self {
-            Self::Local(store, who) => store
-                .read_trusted(who, query, seen)
-                .map_err(StoreCallError::Refused),
-            Self::Cloud(runtime, credential) => {
-                let view: View = runtime.block_on(cloud::account::config_store(
-                    credential,
-                    cloud::http::Via::Cli,
-                    "read",
-                    &query.to_query(),
-                    None,
-                ))?;
-                Q::view(view).map_err(StoreCallError::Refused)
-            }
-        }
+        self.call(self.client().read(query, seen))
     }
 
     /// [`Self::read`] once, giving up on Cloud after `limit`: `None` when it doesn't answer.
     pub(crate) fn read_within<Q: Ask>(&self, query: &Q, limit: Duration) -> Option<Q::View> {
         match self {
             Self::Local(..) => self.read(query).ok(),
-            Self::Cloud(runtime, credential) => {
-                let view: View = runtime
-                    .block_on(async {
-                        tokio::time::timeout(
-                            limit,
-                            cloud::account::config_store(
-                                credential,
-                                cloud::http::Via::Cli,
-                                "read",
-                                &query.to_query(),
-                                None,
-                            ),
-                        )
+            Self::Cloud(runtime, _) => runtime
+                .block_on(async {
+                    tokio::time::timeout(limit, self.client().read(query, &Trusted::default()))
                         .await
-                    })
-                    .ok()?
-                    .ok()?;
-                Q::view(view).ok()
-            }
+                })
+                .ok()?
+                .ok(),
         }
     }
 
     fn write<C: Tell>(
         &self,
         command: &C,
-        trusted: Trusted,
+        trusted: &Trusted,
         approval: Option<&str>,
     ) -> Result<C::Written, StoreCallError> {
-        match self {
-            Self::Local(store, who) => store
-                .write_trusted(who, command, &trusted)
-                .map_err(StoreCallError::Refused),
-            Self::Cloud(runtime, credential) => {
-                let written: Written = runtime.block_on(cloud::account::config_store(
-                    credential,
-                    cloud::http::Via::Cli,
-                    "write",
-                    &command.to_command(),
-                    approval,
-                ))?;
-                C::written(written).map_err(StoreCallError::Refused)
-            }
-        }
+        self.call(self.client().write(command, trusted, approval))
     }
 }
 
@@ -286,10 +265,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         loop {
-            let refused = match self
-                .backend
-                .write(command, trusted.clone(), approval.as_deref())
-            {
+            let refused = match self.backend.write(command, trusted, approval.as_deref()) {
                 Err(StoreCallError::Refused(refused)) => refused,
                 Err(StoreCallError::Cloud(error @ LoginError::Unanswered { .. })) => {
                     let check = check.map(|check| Hint::Inspect(next(self.matches, check)));
@@ -416,6 +392,17 @@ impl<'m> Store<'m> {
             .map(String::as_str)
     }
 
+    /// Reach this Store's Cluster: the in-process Store's through `--connect` or the
+    /// context, never Cloud's Server Access, whose Cluster isn't this Store's; Cloud's
+    /// through this credential's Server Access.
+    async fn cluster(&self) -> Result<crate::connect::Client, Error> {
+        let context = self.context();
+        match &self.backend {
+            Backend::Local(..) => super::connect_context(self.matches, context).await,
+            Backend::Cloud(..) => super::route::connect(self.matches, context).await,
+        }
+    }
+
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
     /// Deploy, removal or rollback. A Cluster this can't reach is a failed
     /// observation that says why, so the Store refuses with it.
@@ -436,10 +423,7 @@ impl<'m> Store<'m> {
         if sought.is_empty() {
             return Ok(None);
         }
-        let context = self.context();
-        let Ok(runtime) = runtime() else {
-            return Ok(None);
-        };
+        let runtime = runtime().map_err(StoreCallError::Stopped)?;
         // The endpoint names the refusal only while no Server is known.
         let endpoint = self
             .matches
@@ -448,7 +432,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         runtime.block_on(async {
-            let mut client = match super::route::connect(self.matches, context).await {
+            let mut client = match self.cluster().await {
                 Ok(client) => client,
                 Err(error)
                     if matches!(
@@ -480,16 +464,10 @@ impl<'m> Store<'m> {
         })
     }
 
+    /// One Runtime Watch frame of this Store's Cluster; none when it isn't reached in time.
     fn observe_frame(&self) -> Option<ployz_core::RuntimeWatchFrame> {
         let runtime = runtime().ok()?;
-        let context = self.context();
-        let observe = async {
-            let client = match &self.backend {
-                Backend::Local(..) => super::connect_context(self.matches, context).await,
-                Backend::Cloud(..) => super::route::connect(self.matches, context).await,
-            };
-            client.ok()?.runtime_frame().await.ok()
-        };
+        let observe = async { self.cluster().await.ok()?.runtime_frame().await.ok() };
         runtime
             .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await })
             .ok()?
@@ -515,27 +493,12 @@ impl<'m> Store<'m> {
         Region::of_first_server(ployz_core::JoinedServer::all(&frame))
     }
 
-    /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the
-    /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
-    /// this can't reach leave the certificates unobserved. DNS failures reach a status
+    /// The in-process Store's Servers' certificates, ingress Servers and their addresses.
+    /// Servers this can't reach leave the certificates unobserved. DNS failures reach a status
     /// through the certificate attempts that met them.
     fn observe_domains(&self) -> DomainEvidence {
         let mut evidence = DomainEvidence::default();
-        let Ok(runtime) = runtime() else {
-            return evidence;
-        };
-        let context = self.context();
-        let observe = async {
-            super::connect_context(self.matches, context)
-                .await
-                .ok()?
-                .runtime_frame()
-                .await
-                .ok()
-        };
-        let frame = runtime
-            .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await });
-        if let Ok(Some(frame)) = frame {
+        if let Some(frame) = self.observe_frame() {
             let ingress = frame
                 .machines
                 .iter()
