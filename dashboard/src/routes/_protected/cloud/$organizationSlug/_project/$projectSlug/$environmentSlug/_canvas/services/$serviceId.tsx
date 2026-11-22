@@ -8,7 +8,7 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { serviceSearchSchema } from "./$serviceId/-components/service-pages";
 import { StoreServiceDrawer } from "./$serviceId/-components/StoreServiceDrawer";
-import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
+import { DEFAULT_RANGE } from "#/lib/time-range";
 import { serviceUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 
 export const Route = createFileRoute(

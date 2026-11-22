@@ -57,7 +57,7 @@ import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/DeploymentsList";
 import { originFrom } from "#/modules/config-store/deployments/run-search";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
-import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
+import { DEFAULT_RANGE } from "#/lib/time-range";
 import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
 import { MonitoringTab } from "./monitoring/MonitoringTab";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";

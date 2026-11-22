@@ -2,7 +2,7 @@ import { STATUS_CODES } from "node:http";
 import { cloudLink, unescaped } from "#/modules/mail/cloud-link";
 import type { MailContent } from "#/modules/mail/layout";
 import { failureClass, incidentRange } from "./uptime";
-import { instantEdge } from "./uptime-range";
+import { instantEdge } from "#/lib/time-range";
 import type { FailureClass, IncidentObservation } from "./uptime-status";
 
 /** What an uptime email tells, for an incident that opened or one that closed. */

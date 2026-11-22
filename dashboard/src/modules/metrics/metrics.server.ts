@@ -5,7 +5,7 @@ import { findService, serviceVolumes } from "#/modules/config-store/store-lookup
 import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
-import { resolveRange } from "#/modules/uptime/uptime-range";
+import { resolveRange } from "#/lib/time-range";
 import { hostHistory, markersOnlyHistory, serviceHistory, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
 import { silentSince, stepFor } from "./metrics-series";
 import { latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows, type StoreRange } from "./metrics-store.server";

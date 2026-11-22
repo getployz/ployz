@@ -23,27 +23,10 @@ import { useServerList } from "#/modules/machines/use-servers";
 import { bytesIn, bytesText, cpuIn, cpuText, onGrid, rateIn, rateText } from "#/modules/metrics/metric-chart-data";
 import { serviceMetrics, type Marker, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
 import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
-import {
-  causeText,
-  chartWindow,
-  checkState,
-  checkSteps,
-  formatMs,
-  formatSpan,
-  historyBars,
-  incidentRange,
-  incidentSpan,
-  observationText,
-  openIncident,
-  regionLabel,
-  steps,
-  uptimePercent,
-  wrongPathIncident,
-  type CheckState,
-  type HistoryBar,
-  type TimeWindow,
-} from "#/modules/uptime/uptime";
-import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
+import { causeText, chartWindow, checkState, checkSteps, formatMs, formatSpan, historyBars, incidentRange, incidentSpan, observationText, openIncident, regionLabel, uptimePercent, wrongPathIncident, type CheckState, type HistoryBar } from "#/modules/uptime/uptime";
+import { steps, type TimeWindow } from "#/lib/time-range";
+import { checkWindow } from "#/modules/uptime/uptime-range";
+import { instantEdge, resolveRange, type TimeRange } from "#/lib/time-range";
 import type { RegionNames, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { useTimeZone } from "#/utils/time-zone";
@@ -56,8 +39,8 @@ type MonitoringProps = {
   organizationSlug: string;
   checksUptime: boolean;
   service: ServiceListing;
-  range: UptimeRange;
-  onRange: (range: UptimeRange) => void;
+  range: TimeRange;
+  onRange: (range: TimeRange) => void;
   /** Edited in place while the check's path answers with a 4xx. */
   healthcheck: HealthcheckSetting;
   vcpuLimit: number | null;
@@ -146,9 +129,9 @@ const STATUS_TONES = { no_domain: "quiet", pending: "quiet", up: "ok", unreachab
 
 type Picked = { readonly incident: UptimeIncidentEntry; readonly x: number; readonly y: number };
 /** An incident the charts zoomed onto, and the range they read for it, fixed when zoomed so each poll reads the same key. */
-type Zoom = { readonly incident: UptimeIncidentEntry; readonly range: UptimeRange };
+type Zoom = { readonly incident: UptimeIncidentEntry; readonly range: TimeRange };
 
-type ViewProps = MonitoringProps & { scope: UptimeScope; toggle: ReactNode; shown: UptimeRange };
+type ViewProps = MonitoringProps & { scope: UptimeScope; toggle: ReactNode; shown: TimeRange };
 
 function Monitoring(props: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const shown = useDeferredValue(props.range);
@@ -305,13 +288,13 @@ const MARKER_WORDS = {
 
 const latestOf = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;
 
-const sameRange = (left: UptimeRange, right: UptimeRange) => left.from === right.from && left.to === right.to;
+const sameRange = (left: TimeRange, right: TimeRange) => left.from === right.from && left.to === right.to;
 
 function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptimeAt, deployments, vcpuLimit, volume, placedOn, onPick }: {
   organizationSlug: string;
   scope: UptimeScope;
   service: ServiceListing;
-  range: UptimeRange;
+  range: TimeRange;
   dimmed: boolean;
   uptime: ServiceUptime | null;
   uptimeAt: number | null;
@@ -432,7 +415,7 @@ function valueText(chartLines: readonly ChartLine[], metrics: ServiceMetrics, wi
 function ResponseTime({ scope, serviceId, range, window, pending, frame }: {
   scope: UptimeScope;
   serviceId: string;
-  range: UptimeRange;
+  range: TimeRange;
   window: TimeWindow;
   /** The value while the check has no result yet. */
   pending: string | null;

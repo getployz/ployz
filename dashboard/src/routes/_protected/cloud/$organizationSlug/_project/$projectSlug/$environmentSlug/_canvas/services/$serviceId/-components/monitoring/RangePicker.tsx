@@ -4,21 +4,21 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
-import { edgeText, parseEdge, QUICK_RANGES, rangeLabel, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
+import { edgeText, parseEdge, QUICK_RANGES, rangeLabel, resolveRange, type TimeRange } from "#/lib/time-range";
 import { useTimeZone } from "#/utils/time-zone";
 
 type RangePickerProps = {
-  range: UptimeRange;
-  onRange: (range: UptimeRange) => void;
+  range: TimeRange;
+  onRange: (range: TimeRange) => void;
   /** A range the pointer is on, to read before it is picked. */
-  onHover: (range: UptimeRange) => void;
+  onHover: (range: TimeRange) => void;
 };
 
 /** The tab's time range: a quick range, or From and Until typed as "15m ago", "2026-10-11 14:00" or "now". */
 export function RangePicker({ range, onRange, onHover }: RangePickerProps) {
   const timeZone = useTimeZone();
   const [open, setOpen] = useState(false);
-  const pick = (next: UptimeRange) => {
+  const pick = (next: TimeRange) => {
     setOpen(false);
     onRange(next);
   };

@@ -5,7 +5,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { isNeedsProduction, type NeedsProduction } from "#/modules/billing/billing";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { unreachableHost } from "./uptime";
-import type { UptimeRange } from "./uptime-range";
+import type { TimeRange } from "#/lib/time-range";
 import type { ServiceUptime } from "./uptime-status";
 import { readEnvironmentUptimeServerFn, readServiceUptimeServerFn, requestUptimeProbeServerFn } from "./uptime-status.functions";
 
@@ -29,7 +29,7 @@ export function environmentUptimeQueryOptions(scope: UptimeScope) {
 }
 
 /** One Service's status, uptime, response time and incidents over `range`, null without a check, or that the Organization needs Production to see it. */
-export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: UptimeRange) {
+export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: TimeRange) {
   return queryOptions({
     queryKey: ["uptime", scope.environmentId, serviceId, range.from, range.to] as const,
     queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, from: range.from, to: range.to } }),
@@ -79,7 +79,7 @@ export function useUnreachableHost(scope: UptimeScope, serviceId: string) {
   return enabled ? host ?? null : null;
 }
 
-export function useServiceUptime(scope: UptimeScope, serviceId: string, range: UptimeRange) {
+export function useServiceUptime(scope: UptimeScope, serviceId: string, range: TimeRange) {
   return useSuspenseQuery(serviceUptimeQueryOptions(scope, serviceId, range));
 }
 
@@ -87,5 +87,5 @@ export function useServiceUptime(scope: UptimeScope, serviceId: string, range: U
 export function usePrefetchServiceUptime(scope: UptimeScope, serviceId: string) {
   const queryClient = useQueryClient();
   const enabled = useUptimeEnabled(scope.organizationSlug);
-  return (range: UptimeRange) => { if (enabled) void queryClient.prefetchQuery(serviceUptimeQueryOptions(scope, serviceId, range)); };
+  return (range: TimeRange) => { if (enabled) void queryClient.prefetchQuery(serviceUptimeQueryOptions(scope, serviceId, range)); };
 }

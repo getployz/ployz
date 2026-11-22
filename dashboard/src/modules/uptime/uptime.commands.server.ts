@@ -5,7 +5,7 @@ import { defineCommand, refused } from "#/modules/commands/command.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
 import { causeText, observationText, uptimePercent } from "./uptime";
-import { DEFAULT_RANGE, isRangeEdge } from "./uptime-range";
+import { DEFAULT_RANGE, isRangeEdge } from "#/lib/time-range";
 import { type RegionNames, type ServiceUptime, type UptimeCheckResult, IncidentObservation } from "./uptime-status";
 import { readServiceUptime, requestUptimeProbe } from "./uptime-status.server";
 

@@ -1,5 +1,5 @@
 import { Effect, Option, Schema, SchemaGetter } from "effect";
-import { RangeEdge } from "#/modules/uptime/uptime-range";
+import { RangeEdge } from "#/lib/time-range";
 
 export const SERVICE_PAGES = [
   { id: "deployments", label: "Deployments" },
