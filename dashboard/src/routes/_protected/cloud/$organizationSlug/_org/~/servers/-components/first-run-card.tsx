@@ -2,7 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/com
 import { type ClusterNameControl, useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
-import { useMintFleetToken } from "./use-waiting";
+import { useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 /**
  * First run: mint a token in place, show the line once, and wait for a server to check in. Once one arrives the card

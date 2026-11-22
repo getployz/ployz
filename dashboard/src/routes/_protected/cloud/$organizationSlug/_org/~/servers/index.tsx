@@ -22,7 +22,7 @@ import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unr
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
 import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
 import { RenameRegionDialog } from "./-components/rename-region-dialog";
-import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
+import { useEnrollmentStatus, useWaitingServers } from "#/modules/machines/waiting/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
 export const Route = createFileRoute(

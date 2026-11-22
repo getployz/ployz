@@ -13,7 +13,7 @@ import type { WaitingServerView } from "#/modules/machines/waiting/waiting-serve
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { EnrollSheet } from "./enroll-sheet";
 import { EnrollingList, enrollingRows } from "./enrolling-list";
-import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
+import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "#/modules/machines/waiting/use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   hostnameOrIpMatcher,

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -15,8 +15,8 @@ import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { nameNotSaved, useNameRegion, useNewRegions, useRegions } from "#/modules/machines/server-regions.hooks";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
-import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { useStartEnrollment } from "#/modules/machines/waiting/use-waiting";
+import { enrollmentPlanQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
 const NEW_REGION = "new region";
 
@@ -70,24 +70,12 @@ export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst,
   } satisfies EnrollInput;
   const input: EnrollInput = hasFirst ? choices : { ...choices, first };
   const plan = useQuery(enrollmentPlanQueryOptions(organizationSlug, input));
-  const queryClient = useQueryClient();
-  const start = useMutation({
-    mutationFn: (joining: readonly Join[]) => startServerEnrollmentServerFn({
-      data: { organizationSlug, ...input, regions: Object.fromEntries(joining.map(({ id, key }) => [id, key])) },
-    }),
-    onSuccess: (result, joining) => {
-      const enrolled = new Set(result.attempts.map(({ waitingServerId }) => waitingServerId));
-      const created = new Map(joining.flatMap(({ id, key, name }) => name !== undefined && enrolled.has(id) ? [[key, { key, name }] as const] : []));
-      for (const region of created.values()) nameRegion(region, regionLabels, true).catch((error) => nameNotSaved(region, error));
-      toast.success(`Enrolling ${result.attempts.length} ${result.attempts.length === 1 ? "server" : "servers"}${result.skipped.length ? ` · ${result.skipped.length} skipped` : ""}`);
-      onClose();
-    },
-    onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't enroll servers.")),
-    onSettled: () => Promise.all([
-      queryClient.invalidateQueries({ queryKey: waitingServersQueryOptions(organizationSlug).queryKey }),
-      queryClient.invalidateQueries({ queryKey: serverEnrollmentsQueryOptions(organizationSlug).queryKey }),
-      queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
-    ]),
+  const start = useStartEnrollment<readonly Join[]>(organizationSlug, (result, joining) => {
+    const enrolled = new Set(result.attempts.map(({ waitingServerId }) => waitingServerId));
+    const created = new Map(joining.flatMap(({ id, key, name }) => name !== undefined && enrolled.has(id) ? [[key, { key, name }] as const] : []));
+    for (const region of created.values()) nameRegion(region, regionLabels, true).catch((error) => nameNotSaved(region, error));
+    toast.success(`Enrolling ${result.attempts.length} ${result.attempts.length === 1 ? "server" : "servers"}${result.skipped.length ? ` · ${result.skipped.length} skipped` : ""}`);
+    onClose();
   });
   const preview = plan.data;
   const count = preview?.rows.length ?? 0;
@@ -163,7 +151,7 @@ export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst,
       </div>
       <SheetFooter>
         <p className="text-xs text-muted-foreground">{hasFirst ? "Joins 8 at a time." : "First one, then 8 at a time."}</p>
-        <Button disabled={start.isPending || plan.isPending || plan.isPlaceholderData || plan.isError || (names === "pattern" && pattern !== settledPattern) || !joinsKnown || count === 0} onClick={() => start.mutate(joins)}>Enroll {count}</Button>
+        <Button disabled={start.isPending || plan.isPending || plan.isPlaceholderData || plan.isError || (names === "pattern" && pattern !== settledPattern) || !joinsKnown || count === 0} onClick={() => start.mutate({ start: { ...input, regions: Object.fromEntries(joins.map(({ id, key }) => [id, key])) }, context: joins })}>Enroll {count}</Button>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
       </SheetFooter>
     </SheetContent>

@@ -1,7 +1,17 @@
 /** @data-source remote: an Organization's members and pending invites, prefetched by Organization Settings and refetched after this tab's member writes; the change stream refetches it when a member or invite row changes. An invite link's Organization and state, prefetched by its page, which joining leaves */
-import { queryOptions, useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
-import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
+import { queryOptions, useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
+import { optimisticCache } from "#/lib/optimistic";
+import {
+  leaveOrganizationServerFn,
+  listMembersServerFn,
+  readInviteServerFn,
+  removeMemberServerFn,
+  revokeInviteServerFn,
+  setMemberRoleServerFn,
+} from "#/modules/organization/members.functions";
 import { can, type Permission } from "#/modules/organization/permissions";
 import { defineChange } from "#/collections/change-log/declare";
 
@@ -20,6 +30,54 @@ export function organizationMembersQueryOptions(organizationSlug: string) {
     queryFn: () => listMembersServerFn({ data: { organizationSlug } }),
     staleTime: 30_000,
   });
+}
+
+type Role = "owner" | "admin" | "member";
+
+/** The member writes of Organization Settings. Each shows at once and rolls back with a toast when the save fails. */
+export function useMemberWrites(organizationSlug: string) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const queryKey = membersKey(organizationSlug);
+  const refresh = () => queryClient.invalidateQueries({ queryKey });
+  const optimistic = <Input,>(fallback: string, apply: (current: Members, input: Input) => Members) => {
+    const { onMutate, rollback } = optimisticCache(queryClient, queryKey, apply);
+    return {
+      onMutate,
+      onError: (cause: unknown, _input: Input, context: Parameters<typeof rollback>[0]) => {
+        rollback(context);
+        toast.error(toErrorMessage(cause, fallback));
+      },
+      onSettled: refresh,
+    };
+  };
+  const setRole = useMutation({
+    mutationFn: (input: { member: string; role: Role }) => setMemberRoleServerFn({ data: { organizationSlug, ...input } }),
+    ...optimistic<{ member: string; role: Role }>("Couldn't change the role.", (current, input) => ({
+      ...current,
+      members: current.members.map((row) => row.email === input.member ? { ...row, role: input.role } : row),
+    })),
+  });
+  const remove = useMutation({
+    mutationFn: (member: string) => removeMemberServerFn({ data: { organizationSlug, member } }),
+    ...optimistic<string>("Couldn't remove the member.", (current, member) => ({
+      ...current,
+      members: current.members.filter((row) => row.email !== member),
+    })),
+  });
+  const revokeInvite = useMutation({
+    mutationFn: (invite: string) => revokeInviteServerFn({ data: { organizationSlug, invite } }),
+    ...optimistic<string>("Couldn't revoke the invite.", (current, invite) => ({
+      ...current,
+      invites: current.invites.filter((row) => row.id !== invite),
+    })),
+  });
+  const leave = useMutation({
+    mutationFn: () => leaveOrganizationServerFn({ data: { organizationSlug } }),
+    // The session acts in another Organization now, or none.
+    onSuccess: () => navigate({ to: "/cloud", replace: true, reloadDocument: true }),
+  });
+  return { setRole, remove, revokeInvite, leave, refresh };
 }
 
 /**

@@ -8,7 +8,7 @@ import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire
 import type { WaitingServerStatus, WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
-import { ENROLL_REFUSED, PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
+import { ENROLL_REFUSED, PROBE_RETRY_MS, PROBE_SETTLE_MS } from "#/modules/machines/waiting/use-waiting";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { clientWithRole, expectGate, ROLE_STATES, seedRole } from "#/test/your-role";

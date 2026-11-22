@@ -4,6 +4,8 @@ import { listFleetTokensServerFn } from "#/modules/machines/waiting/fleet-token.
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { planServerEnrollmentServerFn, serverEnrollmentStatusServerFn, listWaitingServersServerFn, showWaitingServerServerFn } from "#/modules/machines/waiting/waiting.functions";
 
+export type WaitingServer = Awaited<ReturnType<typeof listWaitingServersServerFn>>[number];
+
 export const WAITING_POLL_MS = 5_000;
 
 function nextPoll(offset: number) {

@@ -16,7 +16,7 @@ import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
-import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;

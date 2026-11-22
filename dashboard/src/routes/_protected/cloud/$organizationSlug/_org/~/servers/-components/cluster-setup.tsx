@@ -18,7 +18,7 @@ import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
 import { holdCloudflare } from "./first-cloudflare";
 import { abandonCloudflare, type CardCloudflare, installGate } from "./servers-page-state";
-import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const STEPS = ["Run the command", "Review", "Enroll"] as const;
 
