@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
-import { rotateCliSealingRecovery } from "#/modules/machines/sealing-key.server";
+import { CliRotateSealingRecoveryInput } from "#/modules/sealing/sealing-key";
+import { rotateCliSealingRecovery } from "#/modules/sealing/sealing-key.server";
 import { handleCliRequest, serveCli } from "#/routes/api/cli/-handlers";
 import { methodNotAllowed } from "#/server/public-error";
 

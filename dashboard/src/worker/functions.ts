@@ -16,8 +16,8 @@ import { createServerEnrollmentFunctions } from "#/modules/machines/waiting/serv
 import { createIngressDoorsFunctions } from "#/modules/ingress/doors.inngest";
 import { createServerWebTrafficFunctions } from "#/modules/machines/server-web-traffic.inngest";
 import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
-import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfill.inngest";
-import { createResealVariables } from "#/modules/variables/reseal.inngest";
+import { createEnsureClusterSealingKey } from "#/modules/sealing/sealing-backfill.inngest";
+import { createResealVariables } from "#/modules/sealing/reseal.inngest";
 import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,

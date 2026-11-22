@@ -8,7 +8,7 @@ import { callStore } from "#/modules/config-store/config-store.server";
 import { member, user } from "#/modules/identity/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
-import { sealValue } from "#/modules/variables/seal-value";
+import { sealValue } from "#/modules/sealing/seal-value";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 

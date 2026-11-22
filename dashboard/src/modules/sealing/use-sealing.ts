@@ -1,8 +1,7 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { ClientSealedValue, SecretValue } from "@ployz/sdk";
-import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
+import { freshSealing, sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { SealError } from "#/modules/sealing/seal-error";
-import { isUnauthorized } from "#/lib/error-message";
 import { sealValue } from "./seal-value";
 
 /** A Sealed value to send: its plaintext, and the variable it goes to. */
@@ -42,8 +41,7 @@ export type Sealer = ((item: SealItem) => Promise<ClientSealedValue>) & { readon
 
 /** One fresh read: a `Sealer` bound to the key it returned. */
 async function sealer(queryClient: QueryClient, organizationSlug: string): Promise<Sealer> {
-  const fresh = await queryClient.fetchQuery({ ...sealingQueryOptions(organizationSlug), staleTime: 0 })
-    .catch((error) => { throw isUnauthorized(error) ? error : new SealError(UNREAD); });
+  const fresh = await freshSealing(queryClient, organizationSlug, () => new SealError(UNREAD));
   const { sealing, organizationId } = fresh;
   if (sealing.state === "no_server") throw new SealError(NO_SERVER);
   const recipient = { organizationId, publicKey: sealing.publicKey };

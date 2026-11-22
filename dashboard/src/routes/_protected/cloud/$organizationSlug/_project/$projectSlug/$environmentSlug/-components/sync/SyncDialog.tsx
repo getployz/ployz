@@ -16,7 +16,7 @@ import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSection
 import { fetchStoreView, servicesQuery, syncQuery, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useSealing } from "#/modules/variables/sealing";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/modules/config-store/store.contract";

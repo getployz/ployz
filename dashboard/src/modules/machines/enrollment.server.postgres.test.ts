@@ -44,7 +44,7 @@ import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { asTestDouble } from "#/lib/test-double";
-import { recoveryDigest } from "#/modules/machines/sealing-key.server";
+import { recoveryDigest } from "#/modules/sealing/sealing-key.server";
 import { readCollection } from "#/collections/read.server";
 import { firstRuntimeFrame, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
 import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";

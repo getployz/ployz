@@ -3,8 +3,8 @@ import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createSealingKeyEnsureRequestedEvent } from "#/modules/inngest/events";
-import { sealingHolders } from "#/modules/machines/sealing-holders";
-import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
+import { sealingHolders } from "#/modules/sealing/sealing-holders";
+import { readSealingPublicKey } from "#/modules/sealing/sealing-key-read.server";
 
 /**
  * Asks the ensure job to record the key the Servers of `generation` report, or to share it with one that lacks it.

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { connect, ConnectionState, type WorkerConnection } from "inngest/connect";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { createWorkerFunctions } from "#/worker/functions";
-import { requestResealAtStart } from "#/modules/variables/reseal.inngest";
+import { requestResealAtStart } from "#/modules/sealing/reseal.inngest";
 import { AppConfig, type PolarConfiguration } from "#/server/config.server";
 import { AppRuntime } from "#/server/runtime.server";
 

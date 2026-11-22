@@ -5,7 +5,7 @@ import {
   backfillClusterSealingKey,
   handleSealingBackfillReport,
   loadSealingBackfillTarget,
-} from "#/modules/machines/sealing-backfill.server";
+} from "#/modules/sealing/sealing-backfill.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const EnsureRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });

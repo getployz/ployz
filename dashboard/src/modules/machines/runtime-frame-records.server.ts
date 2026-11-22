@@ -5,7 +5,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { runtimeMembershipDigest } from "#/modules/machines/departed-servers";
 import { recordDepartedServers } from "#/modules/machines/departed-servers.server";
 import { recordMachineNames } from "#/modules/machines/machine-names.server";
-import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
+import { requestSealingKeyEnsure } from "#/modules/sealing/sealing-ensure.server";
 import { type FrameRecord, makeOrganizationRuntimeLive, runtimeNamesDigest } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";

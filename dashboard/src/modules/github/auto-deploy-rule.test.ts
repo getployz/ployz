@@ -1,6 +1,6 @@
 import type { RuleView } from "@ployz/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hex } from "#/modules/approval-session/passkey-statement";
+import { hex } from "#/lib/bytes";
 import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 /** `rule_draft_tests::GOLDEN`: the CLI and the Servers draft these bytes from the same view and terms. */

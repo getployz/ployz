@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { Effect, Schema } from "effect";
 import { viewOf } from "#/modules/config-store/store.contract";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
-import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { recordSealingPublicKey } from "#/modules/sealing/sealing-key.server";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { sealedSecret } from "#/test/sealed-secret";

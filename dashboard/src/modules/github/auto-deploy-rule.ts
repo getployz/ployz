@@ -7,7 +7,8 @@
  */
 import type { AutoDeployRule, RuleDraft, RuleTerms, RuleView, Signed } from "@ployz/sdk";
 import { autoDeployRuleBody, autoDeployRuleEndBody } from "@ployz/sdk/authority";
-import { hex, PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
+import { hex } from "#/lib/bytes";
+import { PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
 
 /** Where a rule stands: the Cluster, by its Sealing public key as Servers report it, and every Server in it. */
 export type RuleScope = { readonly cluster: string; readonly machines: readonly string[] };
