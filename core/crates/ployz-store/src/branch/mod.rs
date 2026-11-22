@@ -21,6 +21,7 @@ pub(crate) use follow::{follow, hints, incoming, lock_below, stopped};
 pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
+pub use pair::carries_plan_version;
 pub(crate) use pair::*;
 pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};

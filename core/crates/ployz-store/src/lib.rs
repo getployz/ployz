@@ -67,7 +67,7 @@ pub use branch::{
 };
 pub use branch::{
     FollowHint, HintSource, Included, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced,
-    ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange,
+    ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange, carries_plan_version,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -112,17 +112,17 @@ pub use region::{
     deserialize_key, deserialize_optional_key, region_key, region_servers,
 };
 pub use removal::{
-    CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
-    RemovalCancelled, Remove, RemovedQuery, RemovedView, Waiting,
+    CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, GoesFirst, Left, LeftStatus,
+    Removal, RemovalCancelled, Remove, RemovedQuery, RemovedView, Waiting,
 };
 pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
     ApprovalOperation, ApprovalRequired, ApprovalSubject, DataEffect, DestructiveEffect,
-    DestructiveKind, DiffView, NodeChange, OperationVerb, ReviewVersion, introduced_source,
+    DestructiveKind, DiffView, NodeChange, OperationVerb, ReviewVersion, Stale, introduced_source,
 };
 pub use rules::{BrokenReference, Missing, ReferenceAt};
-pub use scope::{EnvironmentRef, EnvironmentSummary};
+pub use scope::{EnvironmentRef, EnvironmentSummary, lists_projects};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath, refuse_unknown_region};
 pub use storage::Converted;

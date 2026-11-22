@@ -38,7 +38,7 @@ pub(crate) use saved::{Saved, latest_saved};
 pub use version::ReviewVersion;
 
 use crate::Actor;
-use crate::error;
+use crate::error::{self, Confirmation};
 use crate::git::GitSetting;
 use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary};
@@ -675,6 +675,51 @@ pub(crate) fn destructive(
     )
 }
 
+const DIFF: &str = "diff";
+const VOLUME_LOSS: &str = "volume_loss";
+
+/// What a conflict over a stale review version hands back: the fresh review's
+/// version (`details.diff`), and from [`with_loss`] what it deletes
+/// (`details.volume_loss`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stale {
+    pub version: Option<String>,
+    /// Empty when the fresh review deletes nothing, or the conflict didn't say.
+    pub loss: Confirmation,
+}
+
+impl Stale {
+    /// The conflict saying `message`, handing back `fresh`.
+    pub(crate) fn refuse(message: &str, fresh: &DiffView) -> RpcError {
+        error::conflict(message, json!({ DIFF: fresh }))
+    }
+
+    /// What `details` carry of a stale review.
+    #[must_use]
+    pub fn of(details: &serde_json::Value) -> Self {
+        Self {
+            version: details
+                .get(DIFF)
+                .and_then(|diff| diff.get("version"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            loss: details
+                .get(VOLUME_LOSS)
+                .map(Confirmation::of)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// `details` with the fresh review cut to its version: a retry needs only that.
+    pub fn keep_version(details: &mut serde_json::Value) {
+        if let Some(diff) = details.get_mut(DIFF)
+            && let Some(version) = diff.get("version").cloned()
+        {
+            *diff = json!({ "version": version });
+        }
+    }
+}
+
 /// Add to `stale`, the conflict for a stale version, what the fresh review deletes:
 /// `probe` is [`destructive`] run at no version and with nothing accepted. When it
 /// asks to confirm a loss, its version, Volumes and names to accept go in
@@ -689,7 +734,7 @@ pub(crate) fn with_loss(
         && let Some(details) = stale.details.as_object_mut()
     {
         details.insert(
-            "volume_loss".to_owned(),
+            VOLUME_LOSS.to_owned(),
             json!({
                 "version": asked.details.get("version"),
                 "volumes": asked.details.get("volumes"),
@@ -957,9 +1002,9 @@ fn restarts(
 /// draft includes a pull request: whether it merged must have been reviewed.
 pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcError> {
     match version {
-        Some(given) if !version::names(&review.view.version, given) => Err(error::conflict(
+        Some(given) if !version::names(&review.view.version, given) => Err(Stale::refuse(
             "The Environment changed after this review. Review the latest changes and try again",
-            json!({ "diff": review.view }),
+            &review.view,
         )),
         Some(_) | None => Ok(()),
     }

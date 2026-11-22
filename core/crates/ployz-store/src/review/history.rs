@@ -273,9 +273,9 @@ pub(crate) fn stage(
     let environment = scope::lock(tx, who, &command.environment)?;
     let reviewed = review::review(tx, &environment)?;
     if command.version != reviewed.view.version {
-        return Err(error::conflict(
+        return Err(review::Stale::refuse(
             "The Environment changed after this History review. Review it again",
-            json!({ "diff": reviewed.view }),
+            &reviewed.view,
         ));
     }
     let prepared = prepare(
