@@ -7,9 +7,8 @@ import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-ru
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/lib/schema";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import {
-  type AnsweredMember, heardFrom, type Member, needsFloor, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,
-} from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, heardFrom, type Member, needsFloor, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf } from "#/modules/volume-run/volume-run";
+import { parseDockerVolumeName } from "#/modules/runtime/naming";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };

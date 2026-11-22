@@ -3,7 +3,7 @@ import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, Wan
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
-import { originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";

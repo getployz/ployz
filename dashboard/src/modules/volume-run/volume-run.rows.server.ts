@@ -17,8 +17,9 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { newestGuid, type Planned, planForwardRelease, type Refusal, type RefusalCode, type ReleaseFrom } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { originBlockers, originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, dockerVolumeName, type Member, parseDockerVolumeName, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";

@@ -14,7 +14,8 @@ import { failedRestore, volumePlacement } from "#/modules/volume-placement/table
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
-import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { admitRun, ClusterNotConnected, heldStorage, nameRefusal, resolveVolume, storeRefusal, unreachable } from "#/modules/volume-run/volume-run.rows.server";
 import { inspectVolumeCopies, planVolumeRun } from "#/modules/volume-run/volume-run.cluster.server";

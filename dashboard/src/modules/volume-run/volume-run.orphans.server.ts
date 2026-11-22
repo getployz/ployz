@@ -7,7 +7,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { observeVolumeCopies } from "#/modules/runtime/ployz.server";
 import { type PlanInput, planFromCopies } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { dockerVolumeName, parseDockerVolumeName } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { observeVolumeMembers } from "#/modules/volume-run/volume-run.cluster.server";

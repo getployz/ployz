@@ -24,7 +24,7 @@ import {
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
-import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
+import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/runtime/daemon-release";
 import {
   appliedMirrors, editPlacement, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,

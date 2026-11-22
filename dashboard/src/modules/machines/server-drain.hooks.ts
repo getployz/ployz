@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { moveServers, placementBlockers, unroutedServers } from "#/modules/volume-placement/daemon-release";
+import { moveServers, placementBlockers, unroutedServers } from "#/modules/runtime/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { drainView, type DrainView, stuckMessage } from "./server-drain-view";

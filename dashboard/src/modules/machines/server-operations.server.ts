@@ -19,7 +19,7 @@ import {
   RUNTIME_FRAME_TIMEOUT_MS,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
-import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
 import type { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 
