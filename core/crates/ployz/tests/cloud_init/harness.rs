@@ -16,9 +16,9 @@ use ployz_core::{
     HealthObservation, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
     MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineToken,
     MembershipObservation, NewContainer, OpaquePayload, PROTOCOL_MAJOR, RecoverySeed, Registered,
-    RoutesRead, RpcError, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
-    SET_CLUSTER_NAME_CAPABILITY, SealingKeyBackup, SealingKeyWrapped, SealingPublicKey,
-    SetManagementClientResponse, VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
+    RoutesRead, RpcError, RpcRequestBody, RunRotation, RunTarget, SET_CLUSTER_NAME_CAPABILITY,
+    SealingKeyBackup, SealingKeyWrapped, SealingPublicKey, SetManagementClientResponse,
+    VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
 
 pub fn fake_wrapped() -> SealingKeyWrapped {
@@ -35,7 +35,7 @@ pub fn fixture_capability() -> ployz_core::ManagementCapability {
         [0xb2; 32],
     )
 }
-use ployz_testkit::fake_machine::FakeMachine;
+use ployz_testkit::fake_machine::{FakeMachine, reply, unused};
 use tonic::{Request, Response, Status};
 
 #[path = "enroll_http.rs"]
@@ -459,7 +459,7 @@ impl JoinDaemon {
                 return Err(Status::unavailable("transient ensure failure"));
             }
             if self.inner.fail_ensure.load(Ordering::SeqCst) {
-                return rpc_ok(RpcError::unavailable("ensure failed"));
+                return reply(RpcError::unavailable("ensure failed"));
             }
             self.inner.ensure_requests.lock().unwrap().push(new.clone());
             let machine = self.inner.current_machine.lock().unwrap().clone();
@@ -469,7 +469,7 @@ impl JoinDaemon {
                 None,
             );
             if eligibility != ployz_core::ServicePlacementEligibility::Eligible {
-                return rpc_ok(RpcError::conflict(
+                return reply(RpcError::conflict(
                     "target Global slot is ineligible or unknown",
                 ));
             }
@@ -567,27 +567,11 @@ impl JoinDaemon {
     reason = "MachineRpc uses tonic::Status as the error type"
 )]
 fn ensured(now: ContainerNow) -> Result<Response<OpaquePayload>, Status> {
-    rpc_ok(EnsuredContainer::Ensured {
+    reply(EnsuredContainer::Ensured {
         now,
         health: None,
         verified: None,
     })
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "MachineRpc uses tonic::Status as the error type"
-)]
-fn rpc_ok(payload: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, Status> {
-    Ok(Response::new(payload.into().encode().unwrap()))
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "MachineRpc uses tonic::Status as the error type"
-)]
-fn unused<T>() -> Result<T, Status> {
-    Err(Status::unimplemented("unused"))
 }
 
 #[tonic::async_trait]
@@ -600,7 +584,7 @@ impl FakeMachine for JoinDaemon {
         if self.inner.recovery_rpcs.load(Ordering::SeqCst) {
             capabilities.extend([ENROLL_FOR_RECOVERY_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY]);
         }
-        rpc_ok(ContractDescription {
+        reply(ContractDescription {
             attest: None,
             machine_id: self.id(),
             protocol_major: PROTOCOL_MAJOR,
@@ -662,7 +646,7 @@ impl FakeMachine for JoinDaemon {
         };
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
-        rpc_ok(MachineDetails {
+        reply(MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
             id: self.id(),
@@ -750,10 +734,10 @@ impl FakeMachine for JoinDaemon {
             }
             ployz_core::SetManagementClientRequest::Clear { .. } => {
                 self.inner.cloud_managed.store(false, Ordering::SeqCst);
-                return rpc_ok(SetManagementClientResponse { capability: None });
+                return reply(SetManagementClientResponse { capability: None });
             }
         }
-        rpc_ok(SetManagementClientResponse {
+        reply(SetManagementClientResponse {
             capability: Some(fixture_capability()),
         })
     }
@@ -827,7 +811,7 @@ impl FakeMachine for JoinDaemon {
         };
         self.record("wrap_sealing_key");
         self.inner.wrap_calls.fetch_add(1, Ordering::SeqCst);
-        rpc_ok(fake_wrapped())
+        reply(fake_wrapped())
     }
 
     async fn update_machine(
@@ -850,7 +834,7 @@ impl FakeMachine for JoinDaemon {
         )
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
         *current = machine.clone();
-        rpc_ok(ployz_core::MachineUpdated { machine })
+        reply(ployz_core::MachineUpdated { machine })
     }
     async fn register(
         &self,
@@ -875,7 +859,7 @@ impl FakeMachine for JoinDaemon {
         )
         .map_err(|error| Status::invalid_argument(error.to_string()))?;
         *self.inner.register_request.lock().unwrap() = Some(request);
-        rpc_ok(Registered {
+        reply(Registered {
             assigned_machine: assignment.machine,
             ..self.inner.registration.clone()
         })
@@ -898,7 +882,7 @@ impl FakeMachine for JoinDaemon {
                 .map(up_machine),
         );
         machines.extend(self.inner.listed.lock().unwrap().iter().cloned());
-        rpc_ok(MachineList {
+        reply(MachineList {
             enrollment: Some(ployz_core::EnrollmentSnapshot {
                 network: "10.210.0.0/16".parse().unwrap(),
                 machines: self.inner.registration.visible_peers.clone(),
@@ -924,9 +908,9 @@ impl FakeMachine for JoinDaemon {
             .as_ref()
             .is_some_and(|machine_id| target == Some(machine_id.as_str()))
         {
-            return rpc_ok(RpcError::unavailable("unreachable"));
+            return reply(RpcError::unavailable("unreachable"));
         }
-        rpc_ok(ContainerList {
+        reply(ContainerList {
             containers: self.inner.containers.lock().unwrap().clone(),
         })
     }
@@ -950,7 +934,7 @@ impl FakeMachine for JoinDaemon {
             .find(|container| container.container_id == inspect.container_id)
             .cloned()
             .ok_or_else(|| Status::not_found("container not found"))?;
-        rpc_ok(ContainerDetails {
+        reply(ContainerDetails {
             container,
             environment: None,
             image_id: None,
@@ -965,7 +949,7 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(VolumeInventory::default())
+        reply(VolumeInventory::default())
     }
 
     async fn ensure_container(
@@ -1036,7 +1020,7 @@ impl FakeMachine for JoinDaemon {
             return Err(Status::unavailable("transient ensure failure"));
         }
         if self.inner.fail_ensure.load(Ordering::SeqCst) {
-            return rpc_ok(RpcError::unavailable("ensure failed"));
+            return reply(RpcError::unavailable("ensure failed"));
         }
         let proxy = doors.proxy_service;
         let mut changed = false;
@@ -1125,13 +1109,13 @@ impl FakeMachine for JoinDaemon {
         if consume_transient_failure(&self.inner.transient_create_failures) {
             return Err(Status::unavailable("lost Ingress container creation reply"));
         }
-        rpc_ok(set)
+        reply(set)
     }
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(MachineImages {
+        reply(MachineImages {
             containerd_store: false,
             images: Vec::new(),
             docker_root: None,
@@ -1148,7 +1132,7 @@ impl FakeMachine for JoinDaemon {
         let RpcRequestBody::ReadRoutes(_) = request.body else {
             return Err(Status::invalid_argument("expected ReadRoutes"));
         };
-        rpc_ok(RoutesRead::default())
+        reply(RoutesRead::default())
     }
     async fn read_routed_addresses(
         &self,
@@ -1160,7 +1144,7 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(ployz_core::ImagePulled::default())
+        reply(ployz_core::ImagePulled::default())
     }
     async fn set_device(
         &self,
@@ -1175,7 +1159,7 @@ impl FakeMachine for JoinDaemon {
             return Err(Status::invalid_argument("expected a SetDevice approval"));
         };
         self.record("set_device");
-        rpc_ok(ployz_core::DeviceSet::Approved { code: key.code() })
+        reply(ployz_core::DeviceSet::Approved { code: key.code() })
     }
 
     async fn set_cluster_name(
@@ -1189,7 +1173,7 @@ impl FakeMachine for JoinDaemon {
         let RpcRequestBody::SetClusterName(set) = decoded.body else {
             return Err(Status::invalid_argument("expected SetClusterName"));
         };
-        rpc_ok(ClusterNamed {
+        reply(ClusterNamed {
             name: Some(set.name),
         })
     }
@@ -1201,7 +1185,7 @@ impl FakeMachine for JoinDaemon {
         if !self.inner.joined.load(Ordering::SeqCst)
             && self.inner.enrolled.lock().unwrap().is_none()
         {
-            return rpc_ok(Left::Left {
+            return reply(Left::Left {
                 phase: LeftPhase::Uninitialized,
                 reset_warning: None,
             });
@@ -1219,7 +1203,7 @@ impl FakeMachine for JoinDaemon {
         {
             return Err(Status::unavailable("lost lifecycle reply"));
         }
-        rpc_ok(Left::Left {
+        reply(Left::Left {
             phase: LeftPhase::Resetting,
             reset_warning: None,
         })
@@ -1364,13 +1348,13 @@ impl JoinDaemon {
         let stored = self.inner.enrolled.lock().unwrap().clone();
         if self.inner.joined.load(Ordering::SeqCst) {
             if stored == Some((enroll.clone(), self.public_key())) {
-                return rpc_ok(Enrolled::Enrolled {
+                return reply(Enrolled::Enrolled {
                     machine: self.inner.current_machine.lock().unwrap().clone(),
                     join_confirmation: self.confirmation(&enroll),
                 });
             }
             let current = self.inner.current_machine.lock().unwrap().clone();
-            return rpc_ok(Enrolled::Refused {
+            return reply(Enrolled::Refused {
                 now: MachineNow {
                     id: current.id,
                     phase: LocalMachinePhase::Participating,
@@ -1383,7 +1367,7 @@ impl JoinDaemon {
             EnrollAs::Member { registration, pin } => {
                 *self.inner.founding.lock().unwrap() = ployz_core::Founding::Joined;
                 if registration.assigned_machine.public_key != self.public_key() {
-                    return rpc_ok(RpcError::invalid_argument(
+                    return reply(RpcError::invalid_argument(
                         "assigned public key does not match this Machine",
                     ));
                 }
@@ -1473,7 +1457,7 @@ impl JoinDaemon {
             }
         }
         let join_confirmation = self.confirmation(&enroll);
-        rpc_ok(Enrolled::Enrolled {
+        reply(Enrolled::Enrolled {
             machine,
             join_confirmation,
         })

@@ -51,7 +51,7 @@ async fn set_web_traffic_on(
     typed: &str,
     name: Option<&str>,
 ) -> (Result<(), crate::failure::Failure>, bool) {
-    let (mut client, server) = support::connected_in_memory(service.lists_created()).await;
+    let (mut client, server, _) = support::connected_in_memory(service.lists_created()).await;
     let id = support::machine('a', "one").machine.id;
     let mut args = vec!["ployz", "server", "set", typed, "--accepts-ingress=true"];
     args.extend(name.iter().flat_map(|name| ["--name", name]));

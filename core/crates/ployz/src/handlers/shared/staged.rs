@@ -150,10 +150,6 @@ impl<'a, V: Serialize> StagedReport<'a, V> {
     }
 
     /// The sentence, then `details` for a person, whether or not anything changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization or stdout write error.
     pub(in crate::handlers) fn print(self, details: impl FnOnce()) -> Result<Next<'a, V>, Error> {
         let next = self
             .waiting
@@ -175,10 +171,6 @@ impl<'a, V: Serialize> StagedReport<'a, V> {
     }
 
     /// The sentence, then `details` for a person when something changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization or stdout write error.
     pub(in crate::handlers) fn print_changes(
         self,
         details: impl FnOnce(),

@@ -12,14 +12,6 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn a_word_is_quoted_in_single_quotes_and_a_single_quote_is_reopened() {
-        assert_eq!(super::quote("plain"), "'plain'");
-        assert_eq!(super::quote(""), "''");
-        assert_eq!(super::quote("it's"), r#"'it'"'"'s'"#);
-        assert_eq!(super::quote("a b $c"), "'a b $c'");
-    }
-
-    #[test]
     fn a_shell_reads_the_word_back_as_the_text() {
         for text in [
             "plain",

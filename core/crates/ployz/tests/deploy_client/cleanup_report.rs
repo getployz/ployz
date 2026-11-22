@@ -31,7 +31,7 @@ async fn replace_with_a_sticky_proxy(
         .never_unroute_on(two.machine.id);
     service.listed_containers().lock().unwrap().push(old);
     let unrouted = service.unrouted();
-    let (mut client, server) = connected_in_memory(service).await;
+    let (mut client, server, _) = connected_in_memory(service).await;
     let cancel = CancellationToken::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let run = client.run(

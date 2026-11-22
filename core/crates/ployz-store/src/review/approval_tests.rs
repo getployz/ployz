@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use ployz_core::MachineName;
 use serde_json::json;
 
-use super::{Gate, Pruning};
+use super::{Gate, Protection, Pruning};
 use crate::id::ApprovalDigest;
 use crate::review::{DestructiveEffect, DestructiveKind, DiffView};
 use crate::{Approval, Trusted};
@@ -42,9 +42,11 @@ fn asked(protected: bool, pruning: &Pruning) -> ployz_core::RpcError {
     };
     let gate = Gate {
         trusted: &trusted,
-        protected,
-        exempt: false,
-        spares_harmless: false,
+        protection: if protected {
+            Protection::Asks
+        } else {
+            Protection::Unasked
+        },
     };
     let effects = effects();
     gate.ask(

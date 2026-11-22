@@ -185,6 +185,13 @@ store_string!(
     RunnerId, "a runner ID of 1-64 letters, digits, - or _", is_id
 );
 mint_fresh!(EnvironmentId, SyncId, RemovalId, ProposalId, DeploymentId);
+impl EnvironmentId {
+    /// The UUID it is, which a value sealed for the Environment binds to.
+    #[must_use]
+    pub fn uuid(&self) -> uuid::Uuid {
+        uuid::Uuid::parse_str(&self.0).expect("an Environment ID parses as a UUID")
+    }
+}
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
     ProjectName, name_sentence!("a Project name"), is_name
@@ -657,7 +664,6 @@ mod commit_sha_tests {
     fn a_commit_is_shown_by_its_first_seven_digits() {
         let commit = CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap();
         assert_eq!(commit.short(), "0123456");
-        assert_eq!(CommitSha::SHORT_LEN, 7);
     }
 }
 

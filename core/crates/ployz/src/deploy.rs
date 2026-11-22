@@ -400,14 +400,12 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
-    /// The observation of the Machine `id`, if this snapshot read it.
     pub(crate) fn machine(&self, id: MachineId) -> Option<&MachineObservation> {
         self.machines
             .iter()
             .find(|machine| machine.machine.id == id)
     }
 
-    /// The observation of the Machine called `name`, if this snapshot read it.
     pub(crate) fn machine_named(&self, name: &MachineName) -> Option<&MachineObservation> {
         self.machines
             .iter()
@@ -634,7 +632,6 @@ impl EliminatingConstraints {
         })
     }
 
-    /// Constraints in display order.
     #[must_use]
     pub fn as_slice(&self) -> &[EliminatingConstraint] {
         &self.0
@@ -894,27 +891,20 @@ fn servers_away(region: &Region, servers: &[(MachineName, ServerAway)]) -> Strin
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
-    /// Complete provisioned storage demand cannot be admitted on this Machine.
     #[error("Storage on Machine {machine} cannot admit this Deploy.")]
     Storage {
-        /// Durable identity of the Machine whose budget failed.
         machine_id: MachineId,
-        /// Human-facing Machine name from the plan observation.
         machine: MachineName,
         /// Typed capacity failure and recovery details.
         #[source]
         source: ployz_core::StorageCapacityError,
     },
-    /// The Service declares overlapping exclusive host publications.
     #[error("Service {service} declares conflicting host socket publications")]
     ConflictingHostPublications { service: ServiceName },
-    /// Observed or earlier planned Containers occupy a required host socket.
     #[error("Service {service} cannot fit because of known host socket conflicts")]
     HostPortConflict { service: ServiceName },
-    /// At least one relevant Machine did not return a fresh capacity observation.
     #[error("capacity unknown: an eligible Machine did not return fresh bridge telemetry")]
     CapacityUnknown,
-    /// Fresh observations confirm the requested operations cannot fit.
     #[error("insufficient capacity on observed eligible Machines")]
     InsufficientCapacity,
     #[error("no machines available that satisfy all constraints: {constraints}")]
@@ -1106,13 +1096,10 @@ pub enum PlanError {
         owner: QualifiedService,
         refusal: HostnameRefusal,
     },
-    /// A Deploy would both run and retire the same Service.
     #[error("Service {service} can't be deployed and removed in one Deploy")]
     RemovalInTarget { service: ServiceName },
-    /// A Deploy named a Service to retire without selecting it.
     #[error("Service {service} is removed but not selected")]
     RemovalNotSelected { service: ServiceName },
-    /// Services of a reserved Namespace are never retired by name.
     #[error("Services in Namespace {namespace} can't be removed by a Deploy")]
     RemovalInReservedNamespace { namespace: Namespace },
 }
@@ -1329,7 +1316,6 @@ impl PlanError {
         }
     }
 
-    /// Readable SDK failure with structured storage details preserved through service context.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
         match self {

@@ -54,9 +54,9 @@ fn initialize(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
         result.get("serverInfo"),
         Some(&json!({
             "name": "ployz",
-            "title": ployz_store::tools::TITLE,
+            "title": ployz_agent_tools::TITLE,
             "version": env!("CARGO_PKG_VERSION"),
-            "description": ployz_store::tools::DESCRIPTION,
+            "description": ployz_agent_tools::DESCRIPTION,
             "icons": [{
                 "src": "https://ployz.dev/assets/logo-mark.svg",
                 "mimeType": "image/svg+xml",

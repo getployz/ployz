@@ -26,7 +26,7 @@ class CiTest(unittest.TestCase):
             (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud"}),
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
-            (["core/crates/ployz-store/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
+            (["core/crates/ployz-agent-tools/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
             (["minter/src/routes.ts"], {"contracts", "minter"}),
             (["minter/pnpm-lock.yaml"], {"contracts", "minter"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
@@ -87,15 +87,15 @@ class CiTest(unittest.TestCase):
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
             ci["sdk_and_config_wasm_crates"](),
-            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-decide", "ployz-store", "ployz-build"},
+            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-decide", "ployz-store", "ployz-agent-tools", "ployz-build"},
         )
 
     def test_agent_tool_changes_run_the_tool_tests(self):
         # Cloud's `pnpm test` drives the sidebar's tools against the Store; rust-tests drives them through `ployz mcp`.
-        for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs", "dashboard/src/modules/agent/agent-tools.ts"]:
+        for path in ["core/crates/ployz-agent-tools/src/lib.rs", "core/crates/ployz/src/handlers/mcp.rs", "dashboard/src/modules/agent/agent-tools.ts"]:
             with self.subTest(path=path):
                 self.assertIn("cloud", ci["select"]([path]))
-        for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs"]:
+        for path in ["core/crates/ployz-agent-tools/src/lib.rs", "core/crates/ployz/src/handlers/mcp.rs"]:
             with self.subTest(path=path):
                 self.assertIn("rust-tests", ci["select"]([path]))
 

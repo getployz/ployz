@@ -5,13 +5,11 @@
 use std::{io, path::Path};
 
 use crate::{
-    runtime_unit::{self, UNIT_DIR, process_identity::InstalledExe, systemctl},
+    runtime_unit::{ServingUnit, UNIT_DIR, process_identity::InstalledExe},
     units::Unit,
 };
 
-/// Write the runtime unit and start the Observe Store, restarting it when
-/// systemd reloaded the unit or it runs other software. A legacy unit in `/etc` shadows the runtime one until
-/// the next install removes it; both run the same binary path.
+/// Converge the Observe Store's runtime unit onto this daemon's binary.
 ///
 /// # Errors
 ///
@@ -20,7 +18,7 @@ use crate::{
 pub(crate) async fn converge(data_dir: &Path, socket: &Path) -> io::Result<()> {
     converge_in(
         Path::new(UNIT_DIR),
-        &InstalledExe::current()?,
+        InstalledExe::current()?,
         data_dir,
         socket,
     )
@@ -29,28 +27,15 @@ pub(crate) async fn converge(data_dir: &Path, socket: &Path) -> io::Result<()> {
 
 async fn converge_in(
     unit_dir: &Path,
-    exe: &InstalledExe,
+    exe: InstalledExe,
     data_dir: &Path,
     socket: &Path,
 ) -> io::Result<()> {
-    let unit = Unit::Observe.name();
-    let reloaded = runtime_unit::install(
-        &unit_dir.join(unit),
-        &unit_text(exe.path(), data_dir, socket),
-    )
-    .await?;
-    // A crash loop, here or under a release that rolled back, can leave the
-    // unit at its start limit; a daemon start is a fresh attempt.
-    systemctl(&["reset-failed", unit]).await;
-    let verb = if reloaded || runtime_unit::runs_other_software(unit, exe).await {
-        "restart"
-    } else {
-        "start"
-    };
-    match systemctl(&[verb, "--no-block", unit]).await {
-        Some(_) => Ok(()),
-        None => Err(io::Error::other(format!("systemctl {verb} {unit} failed"))),
-    }
+    let text = unit_text(exe.path(), data_dir, socket);
+    ServingUnit::new(unit_dir, Unit::Observe, text, exe)
+        .converge()
+        .await
+        .map_err(io::Error::other)
 }
 
 /// ployz-observe runs as root to reach Docker, so its cgroup limits keep a
@@ -185,7 +170,6 @@ esac"#;
     fn converge_writes_starts_and_moves_the_observe_unit() {
         if let Ok(case) = env::var(CASE) {
             let root = PathBuf::from(env::var_os(ROOT).unwrap());
-            let exe = InstalledExe::current().unwrap();
             let converge = || {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -193,7 +177,7 @@ esac"#;
                     .unwrap()
                     .block_on(converge_in(
                         &root.join("units"),
-                        &exe,
+                        InstalledExe::current().unwrap(),
                         Path::new("/var/lib/ployz"),
                         Path::new("/run/ployz/ployz.sock"),
                     ))

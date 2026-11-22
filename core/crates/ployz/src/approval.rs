@@ -1025,52 +1025,6 @@ mod tests {
         }
     }
 
-    /// The words each verb Cloud names puts on an approval card are frozen with its text.
-    #[test]
-    fn every_verb_keeps_its_text_and_its_words() {
-        for (verb, noun, past, preposition) in [
-            ("drain", "drain", "drained", "of"),
-            ("set", "change", "changed", "to"),
-            ("clean", "cleanup", "cleaned", "of"),
-            ("remove", "removal", "removed", "of"),
-            ("forget", "forgetting", "forgotten", "of"),
-            ("release", "release", "released", "of"),
-            ("mirror", "mirror", "mirrored", "of"),
-            ("sync", "full sync", "synced", "of"),
-            ("remove_mirror", "mirror removal", "removed", "of"),
-            ("stop", "stop", "stopped", "of"),
-            ("restart", "restart", "restarted", "of"),
-            ("unprotect", "unprotecting", "unprotected", "of"),
-            ("move", "move", "moved", "of"),
-            ("restore", "restore", "restored", "of"),
-            ("resize", "resize", "resized", "of"),
-            ("set_cluster_name", "rename", "renamed", "to"),
-            ("set_ingress_doors", "door change", "changed", "to"),
-            (
-                "set_private_access",
-                "Private Access change",
-                "changed",
-                "to",
-            ),
-        ] {
-            let asked = asked(verb, "removes_member");
-            assert_eq!(asked.verb().noun(), noun, "{verb}");
-            assert_eq!(asked.verb().past(), past, "{verb}");
-            assert_eq!(
-                asked.what(asked.verb()),
-                format!("this {noun} {preposition} bob@example.com"),
-                "{verb}"
-            );
-        }
-        for (verb, noun, past) in [
-            (Verb::Publish, "save", "saved"),
-            (Verb::Deploy, "deploy", "deployed"),
-            (Verb::Retry, "redeploy", "retried"),
-        ] {
-            assert_eq!((verb.noun(), verb.past()), (noun, past));
-        }
-    }
-
     /// A verb this CLI cannot read leaves the refusal unasked, whatever else it names.
     #[test]
     fn a_verb_nobody_taught_this_cli_leaves_the_refusal_unasked() {

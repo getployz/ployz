@@ -408,6 +408,7 @@ fn lower_snapshot(
     let pre_deploy = lower_hook(config.pre_deploy_command, snapshot.setup_commands)?;
     let (entrypoint, command) =
         lower_start_command(config.start_command.as_deref(), snapshot.built_with)?;
+    let (placement, regions) = lower_placement(&limits.replicas, sources.region);
     let mut spec = RequestedServiceSpec {
         name: config.private_dns,
         mode: ServiceMode::Replicated {
@@ -454,21 +455,8 @@ fn lower_snapshot(
             sysctls: BTreeMap::new(),
             network: None,
         },
-        placement: Placement {
-            constraints: match limits.replicas.per_region() {
-                Some(_) => None,
-                None => sources.region.map(Region::constraint),
-            }
-            .into_iter()
-            .collect(),
-        },
-        regions: limits
-            .replicas
-            .per_region()
-            .into_iter()
-            .flatten()
-            .map(|(region, count)| (region.clone(), (*count).into()))
-            .collect(),
+        placement,
+        regions,
         ports,
         mount_graph: Default::default(),
         pre_deploy,
@@ -488,6 +476,31 @@ fn lower_snapshot(
         volume_names,
         deployed_volumes,
     }))
+}
+
+/// Where a Service with `replicas` runs, as lowering writes it: counts by region set
+/// the per-region counts and no constraint; one count runs in the Environment's
+/// `region`, when it has one.
+#[must_use]
+pub fn lower_placement(
+    replicas: &super::Replicas,
+    region: Option<&Region>,
+) -> (Placement, BTreeMap<Region, std::num::NonZeroU32>) {
+    let placement = Placement {
+        constraints: match replicas.per_region() {
+            Some(_) => None,
+            None => region.map(Region::constraint),
+        }
+        .into_iter()
+        .collect(),
+    };
+    let regions = replicas
+        .per_region()
+        .into_iter()
+        .flatten()
+        .map(|(region, count)| (region.clone(), (*count).into()))
+        .collect();
+    (placement, regions)
 }
 
 /// The authored variables with the PORT default, and who a Sealed value opens for when any is.

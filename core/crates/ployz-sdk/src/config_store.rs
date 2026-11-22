@@ -32,7 +32,7 @@ pub struct ConfigStore {
 #[napi]
 pub async fn open_config_store(url: String, sealing_secret: String) -> Result<ConfigStore> {
     // Cloud's container log keeps stderr; its own logger never sees the Store's (#3786).
-    ployz_store::stderr_log::install();
+    ployz::sdk::stderr_log::install();
     let sealing = ployz_store::SealingKey::new(sealing_secret.as_bytes()).map_err(rpc_to_napi)?;
     let store = tokio::task::spawn_blocking(move || ployz_store::ConfigStore::open(&url, sealing))
         .await

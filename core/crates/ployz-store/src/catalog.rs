@@ -16,10 +16,10 @@ pub const CATALOG_VERSION: u32 = 1;
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// A node name: a lowercase DNS label.
-pub(crate) const NODE_NAME: &str = ServiceName::PATTERN;
+pub const NODE_NAME: &str = ServiceName::PATTERN;
 
 /// A variable name, as stored.
-pub(crate) const VARIABLE_KEY: &str = VariableKey::PATTERN;
+pub const VARIABLE_KEY: &str = VariableKey::PATTERN;
 
 /// The whole catalog, or the part at `SERVICE` or `SERVICE.SETTING`.
 ///
@@ -97,7 +97,8 @@ fn versioned(mut schema: Value) -> Value {
 }
 
 /// A Service's Settings, with the defaults that follow its name when `named` is given.
-pub(crate) fn service(named: Option<&ServiceName>) -> Value {
+#[must_use]
+pub fn service(named: Option<&ServiceName>) -> Value {
     let mut properties = ServiceSetting::ALL
         .into_iter()
         .map(|one| (one.name().to_owned(), setting(one, named)))

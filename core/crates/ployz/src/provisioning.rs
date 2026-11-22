@@ -27,16 +27,13 @@ use bootstrap::Bootstrap;
 /// A failure while preparing a Machine through the shared daemon installer.
 #[derive(Debug, Error)]
 pub enum ProvisionError {
-    /// The remote setup command did not include a destination.
     #[error("remote machine destination is required")]
     MissingDestination,
-    /// The requested connection is not an SSH connection.
     #[error("Machine provisioning requires an SSH destination, not {0}")]
     RemoteTransport(String),
     /// The SSH destination is malformed or uses a removed transport spelling.
     #[error(transparent)]
     Connection(#[from] ConnectionError),
-    /// The local OpenSSH client is unavailable.
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
     /// The initial remote identity command could not be run.
@@ -45,10 +42,8 @@ pub enum ProvisionError {
     /// The initial remote identity command exited unsuccessfully.
     #[error("ssh whoami failed: {0}")]
     WhoamiFailed(String),
-    /// The remote identity was not valid UTF-8.
     #[error("ssh whoami returned non-UTF-8 output")]
     WhoamiUtf8,
-    /// The remote identity command returned no user.
     #[error("ssh whoami returned an empty user")]
     EmptyUser,
     /// The remote sudo preflight could not be run.
@@ -63,13 +58,10 @@ pub enum ProvisionError {
     /// The remote platform inspection command exited unsuccessfully.
     #[error("remote Machine platform inspection failed: {0}")]
     PlatformFailed(String),
-    /// The remote platform response was not valid UTF-8.
     #[error("remote Machine platform inspection returned non-UTF-8 output")]
     PlatformUtf8,
-    /// The target host cannot run the Linux Machine daemon.
     #[error("Ployz Machine must be Linux")]
     UnsupportedOs,
-    /// No daemon release archive exists for the target architecture.
     #[error("unsupported Machine architecture: {0}")]
     UnsupportedArchitecture(String),
     /// A bootstrap filesystem or process operation failed.
@@ -134,7 +126,6 @@ pub enum ProvisionError {
         /// The command that removes what was left behind.
         remove: String,
     },
-    /// Local Machine installation requires root privileges.
     #[error("run this command with sudo")]
     NotRoot,
     /// ZFS was selected while installation was explicitly disabled.
@@ -215,10 +206,7 @@ pub(crate) fn resolve_storage(
                     crate::failure::Failure::usage(
                         "Choosing storage needs a terminal; pass --storage zfs or --storage none.",
                     )
-                    .hint(Hint::Retry(crate::handlers::typed_with(&[
-                        "--storage",
-                        "zfs",
-                    ])))
+                    .hint(Hint::Retry(crate::cli::typed_with(&["--storage", "zfs"])))
                 },
                 "Cancelled. Nothing was installed.",
             )?;

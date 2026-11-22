@@ -9,13 +9,9 @@ pub(crate) enum Unit {
     Ployz,
     /// The Machine API socket that starts [`Unit::Ployz`] on connect.
     PloyzSocket,
-    /// The Docker Volume plugin's socket.
     VolumePluginSocket,
-    /// The Docker Volume plugin.
     VolumePluginService,
-    /// The Observe Store.
     Observe,
-    /// Internal DNS.
     Dns,
 }
 

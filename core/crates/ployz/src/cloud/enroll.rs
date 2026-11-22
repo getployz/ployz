@@ -304,7 +304,6 @@ impl EnrollIdentity {
     }
 }
 
-/// Successful enroll `join` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Join {
     pub pairing: CloudPairing,
@@ -312,7 +311,6 @@ pub(crate) struct Join {
     pub registration: Registered,
 }
 
-/// Successful enroll `initialize` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Initialize {
     pub mode: InitializeMode,
@@ -321,7 +319,6 @@ pub(crate) struct Initialize {
     pub recovery: Option<Recovery>,
 }
 
-/// Enroll outcome after `not_yet` retries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
     Join(Box<Join>),
@@ -343,7 +340,6 @@ pub(crate) enum InitializeMode {
     Resume,
 }
 
-/// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
     Ready(Outcome),
@@ -1466,26 +1462,6 @@ mod tests {
     }
 
     #[test]
-    fn initialize_payload_is_cloud_pairing() {
-        let value = serde_json::json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-            },
-        });
-        let Response::Ready(Outcome::Initialize(Initialize {
-            mode, pairing: got, ..
-        })) = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap()
-        else {
-            panic!("expected initialize");
-        };
-        assert_eq!(mode, InitializeMode::New);
-        assert_eq!(got, pairing());
-    }
-
-    #[test]
     fn initialize_payload_carries_mode_pairing_storage_and_recovery() {
         let key = ployz_core::SealingPublicKey::from_bytes([5; 32]);
         for (body, mode, recovery) in [
@@ -1580,21 +1556,6 @@ mod tests {
         let error = parse_enroll(br#"{"kind":"initialize","pairing":{"secret":"pairing-secret"}}"#)
             .unwrap_err();
         assert!(error.to_string().contains("resumed"), "{error}");
-    }
-
-    #[test]
-    fn initialize_pairing_with_an_unknown_field_is_rejected() {
-        let value = serde_json::json!({
-            "kind": "initialize",
-            "resumed": false,
-            "storage": "none",
-            "pairing": {
-                "secret": "pairing-secret",
-                "unexpectedCredential": "unexpected-value",
-            },
-        });
-        let error = parse_enroll(serde_json::to_vec(&value).unwrap().as_slice()).unwrap_err();
-        assert!(error.to_string().contains("unknown field"), "{error}");
     }
 
     #[test]

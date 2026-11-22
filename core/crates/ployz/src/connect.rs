@@ -1184,18 +1184,17 @@ pub fn resolve_connections(
         .map_err(ConnectError::Context)
 }
 
+/// Select a management connection under [`DEFAULT_SSH_TIMEOUT`].
+///
+/// # Errors
+///
+/// Returns configuration or connection errors when no selected entry is reachable.
 pub async fn connect(
     config_path: &Path,
     direct: Option<&str>,
     context_override: Option<&str>,
 ) -> Result<Client, ConnectError> {
-    connect_with_ssh_timeout(
-        config_path,
-        direct,
-        context_override,
-        Duration::from_secs(5),
-    )
-    .await
+    connect_with_ssh_timeout(config_path, direct, context_override, DEFAULT_SSH_TIMEOUT).await
 }
 
 /// Select a management connection with the supplied SSH setup budget.

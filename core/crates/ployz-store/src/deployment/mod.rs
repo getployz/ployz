@@ -1223,26 +1223,17 @@ fn insert(tx: &mut dyn Tx, columns: &[(&str, crate::storage::Param<'_>)]) -> Res
 }
 
 /// What a Deployment row reads as, from an unaliased `config_deployment`. The
-/// second-last column is the [`CiVerdict`] of one waiting for CI: failed once a
-/// check suite of its commit completed without passing, by the rule that lets it go.
-/// The last is where it lists among its Environment's Deployments.
+/// second-last column is the [`CiVerdict`] of one waiting for CI
+/// ([`crate::automation::CI_FAILED`]). The last is where it lists among its
+/// Environment's Deployments.
 static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let passing = crate::automation::CheckConclusion::PASSING
-        .iter()
-        .map(|conclusion| format!("'{}'", name_of(conclusion)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let completed = name_of(crate::automation::CheckStatus::Completed);
+    let failed = &*crate::automation::CI_FAILED;
     format!(
         "id, environment_id, number, status, saved_revision, services, nodes, namespace, run, \
          upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended, message, \
          push_repository_id, push_branch, push_head, \
          CASE WHEN status = 'waiting_for_ci' THEN \
-           CASE WHEN EXISTS (SELECT 1 FROM config_check_suite s \
-             WHERE s.organization_id = config_deployment.organization_id \
-             AND s.repository_id = config_deployment.push_repository_id \
-             AND s.head = config_deployment.push_head AND s.status = '{completed}' \
-             AND COALESCE(s.conclusion, '') NOT IN ({passing})) \
+           CASE WHEN {failed} \
            THEN 'failed' ELSE 'pending' END \
          END, listed, service_uploads"
     )
@@ -1464,7 +1455,6 @@ impl Standing {
         ended: Option<i64>,
     ) -> Self {
         use DeploymentStatus as S;
-        // A claim needs its runner and its start; none needs neither.
         let claim = match (&runner, started) {
             (Some(runner), Some(started)) => Some(Some(Claim {
                 runner: runner.clone(),

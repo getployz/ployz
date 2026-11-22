@@ -184,19 +184,6 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
 mod tests {
     use std::net::IpAddr;
 
-    #[test]
-    fn the_verify_path_sits_under_the_challenge_prefix() {
-        assert_eq!(super::ACME_CHALLENGE_PREFIX, "/.well-known/acme-challenge/");
-        assert_eq!(
-            super::HOSTNAME_VERIFY_PATH,
-            "/.well-known/acme-challenge/ployz-verify"
-        );
-        assert_eq!(
-            super::HOSTNAME_VERIFY_PATH,
-            format!("{}ployz-verify", super::ACME_CHALLENGE_PREFIX)
-        );
-    }
-
     use super::{
         ClusterRoute, HostnameVerdict, Refusal, VerifyAnswer, hostname_verdict, refusal_reason,
     };

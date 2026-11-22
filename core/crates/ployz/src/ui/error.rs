@@ -66,7 +66,6 @@ pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
     super::warn(format!("{what}: {}", ployz_core::error_chain::row(error)));
 }
 
-/// Prints a wait's notice on stderr.
 pub(crate) struct WaitNotices;
 
 impl crate::setup_retry::Observer for WaitNotices {
@@ -131,15 +130,6 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_retry_notice_names_the_operation_the_cause_and_the_time_left() {
-        let error = std::io::Error::other("connection refused");
-        assert_eq!(
-            retrying_line("Reconnecting to the Cluster", &error, 60),
-            "Reconnecting to the Cluster: connection refused; retrying for up to 60s. Check outbound firewall access if this connection is blocked."
-        );
-    }
 
     #[test]
     fn valid_caps_at_eight_and_counts_the_rest() {

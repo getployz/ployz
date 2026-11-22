@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
-use crate::cli::{base, positional, switch};
+use crate::cli::{base, choice, positional, switch};
 use crate::ingress::{Doors, MachineDoors, checked_doors, use_doors};
 use crate::ui::{self, Cell, Gaps, Table};
 
@@ -51,7 +51,10 @@ pub(crate) fn use_command(command: Command) -> Command {
     ))
     .arg(
         positional("door", true)
-            .value_parser(["public", "tunnel"])
+            .value_parser(choice(&[
+                ("public", IngressDoors::public as fn() -> IngressDoors),
+                ("tunnel", IngressDoors::tunnel),
+            ]))
             .help("public or tunnel"),
     )
     .arg(
@@ -95,15 +98,9 @@ pub(crate) fn show(root: &ArgMatches) -> Result<(), Error> {
 
 pub(crate) fn use_doors_on(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let door = leaf
-        .get_one::<String>("door")
-        .map(String::as_str)
-        .unwrap_or_default();
-    let doors = if door == "tunnel" {
-        IngressDoors::tunnel()
-    } else {
-        IngressDoors::public()
-    };
+    let doors = leaf
+        .get_one::<fn() -> IngressDoors>("door")
+        .map_or_else(IngressDoors::public, |door| door());
     let token = if leaf.get_flag("token-stdin") {
         Some(read_token(std::io::stdin())?)
     } else {

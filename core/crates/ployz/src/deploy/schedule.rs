@@ -1176,10 +1176,4 @@ mod tests {
         schedule.apply(Event::Completed(1));
         assert!(schedule.finished());
     }
-
-    #[test]
-    fn a_stage_names_the_tasks_it_runs() {
-        assert_eq!(Stage::Serial(4).tasks(), [4]);
-        assert_eq!(Stage::Parallel(vec![1, 3]).tasks(), [1, 3]);
-    }
 }

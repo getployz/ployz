@@ -426,7 +426,7 @@ impl Published {
     }
 
     fn from_wire(manifest: wire::Manifest) -> Self {
-        let compiled: BTreeSet<&str> = ployz_store::tools::catalog()
+        let compiled: BTreeSet<&str> = ployz_agent_tools::catalog()
             .iter()
             .map(|def| def.name)
             .collect();

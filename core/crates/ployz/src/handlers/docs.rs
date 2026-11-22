@@ -1,7 +1,7 @@
 //! `ployz docs`: search the user docs built into this binary, or print a page.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_store::docs::{self, Lookup};
+use ployz_agent_tools::docs::{self, Lookup};
 
 use super::{Error, leaf_matches};
 use crate::ui;

@@ -358,7 +358,6 @@ pub(crate) async fn push_namespace_images(
         if targets.is_empty() {
             continue;
         }
-        // The Build Machine already holds its image; only the others receive it.
         let receivers = machines
             .iter()
             .filter(|machine| machine.machine.id != service.machine_id)

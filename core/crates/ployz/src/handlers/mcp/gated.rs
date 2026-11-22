@@ -4,7 +4,7 @@
 
 use std::future::Future;
 
-use ployz_store::tools::Writes;
+use ployz_agent_tools::Writes;
 use rmcp::model::{CallToolResult, JsonObject};
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer};

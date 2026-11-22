@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
-use ployz_core::{RpcError, RpcErrorCode};
-use ployz_store::tools::{
-    self, Act, Action, Ask, DiffVerb, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
+use ployz_agent_tools as tools;
+use ployz_agent_tools::{
+    Act, Action, Ask, DiffVerb, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
     ToolResult, Write,
 };
+use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{Actor, ConfigStore, OperationVerb, OrganizationId};
 use reqwest::Method;
 use rmcp::model::{

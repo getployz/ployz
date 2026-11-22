@@ -2,7 +2,12 @@
 //! on its own binary, so a release's processes never depend on what an older
 //! installer left in `/etc`.
 
-use std::{fs, io, path::Path, process::Stdio, time::Duration};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use tokio::process::Command;
 
@@ -48,6 +53,92 @@ fn runs_as_host_unit(cgroup: &str) -> bool {
         .any(|unit| unit.trim_end() == Unit::Ployz.name())
 }
 
+/// A unit the daemon writes and keeps running on its own binary: Internal DNS and the
+/// Observe Store.
+pub(crate) struct ServingUnit {
+    unit: Unit,
+    file: PathBuf,
+    text: String,
+    exe: InstalledExe,
+}
+
+/// Why [`ServingUnit::converge`] left its unit unconverged.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ConvergeError {
+    /// The unit file was not written or systemd did not reload it.
+    #[error(transparent)]
+    Install(#[from] io::Error),
+    #[error("systemctl {verb} {unit} failed")]
+    Refused {
+        verb: &'static str,
+        unit: &'static str,
+    },
+}
+
+impl ServingUnit {
+    /// `unit`, defined by `text`, in `unit_dir`, kept on the binary `exe`.
+    pub(crate) fn new(unit_dir: &Path, unit: Unit, text: String, exe: InstalledExe) -> Self {
+        Self {
+            unit,
+            file: unit_dir.join(unit.name()),
+            text,
+            exe,
+        }
+    }
+
+    pub(crate) fn exe(&self) -> &InstalledExe {
+        &self.exe
+    }
+
+    /// Write the unit and start it, restarting it when systemd reloaded the unit or
+    /// it runs other software. A legacy unit in `/etc` shadows the runtime one until
+    /// the next install removes it; both run the same binary path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConvergeError::Install`] when the unit cannot be installed and
+    /// [`ConvergeError::Refused`] when systemd refuses to start it.
+    pub(crate) async fn converge(&self) -> Result<(), ConvergeError> {
+        let unit = self.unit.name();
+        let reloaded = install(&self.file, &self.text).await?;
+        // A crash loop, here or under a release that rolled back, can leave the
+        // unit at its start limit; a daemon start is a fresh attempt.
+        systemctl(&["reset-failed", unit]).await;
+        let verb = if reloaded || runs_other_software(unit, &self.exe).await {
+            "restart"
+        } else {
+            "start"
+        };
+        match systemctl(&[verb, "--no-block", unit]).await {
+            Some(_) => Ok(()),
+            None => Err(ConvergeError::Refused { verb, unit }),
+        }
+    }
+
+    /// Stop the unit, then remove its file and reload. The file stays while the
+    /// stop is unfinished: systemd 255, as Ubuntu 24.04 ships it, closes a unit's
+    /// stored fds twice when a reload lowers its `FileDescriptorStoreMax`, as a
+    /// missing file does, and PID 1 aborts (systemd/systemd#35288, fixed in 257).
+    /// A stopped unit has released its store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stopped unit's file cannot be removed.
+    pub(crate) async fn retire(&self) -> io::Result<()> {
+        if systemctl(&["stop", self.unit.name()]).await.is_none() {
+            return Ok(());
+        }
+        match fs::remove_file(&self.file) {
+            Ok(()) => {
+                systemctl(&["daemon-reload"]).await;
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// Write `text` to `file` and reload systemd when its loaded copy of the unit
 /// is missing or older than the file. Answers whether it reloaded, so the
 /// caller can restart a process still running the old definition.
@@ -59,7 +150,7 @@ fn runs_as_host_unit(cgroup: &str) -> bool {
 ///
 /// Returns an error when the unit cannot be written or systemd does not
 /// reload.
-pub(crate) async fn install(file: &Path, text: &str) -> io::Result<bool> {
+async fn install(file: &Path, text: &str) -> io::Result<bool> {
     if fs::read_to_string(file).ok().as_deref() != Some(text) {
         atomic_write(file, text.as_bytes(), 0o644)?;
     }
@@ -95,7 +186,7 @@ async fn loaded_copy_is_stale(unit: &str) -> bool {
 ///
 /// Only proof of other software counts: a failed `systemctl`, no process and an
 /// unreadable process all leave the unit as it is.
-pub(crate) async fn runs_other_software(unit: &str, own: &InstalledExe) -> bool {
+async fn runs_other_software(unit: &str, own: &InstalledExe) -> bool {
     other_software_runs(UnitProcess::of(unit).await, own.identity())
 }
 

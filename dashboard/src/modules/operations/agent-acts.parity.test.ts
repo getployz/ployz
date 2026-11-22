@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { ACTS, LEGACY_TAPE_TOOLS, STORE_WRITES, TAPE_WRITES } from "../../../evals/agent/acted";
 
-const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
+const AGENT_TOOLS = new URL("../../../../core/crates/ployz-agent-tools/tests/snapshots/agent_tools.json", import.meta.url);
 
 const AgentTools = Schema.fromJsonString(Schema.Struct({
   tools: Schema.Array(Schema.Struct({ name: Schema.String, read_only: Schema.Boolean })),

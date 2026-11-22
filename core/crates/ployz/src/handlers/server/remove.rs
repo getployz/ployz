@@ -1018,16 +1018,6 @@ fn qualified_labels(owners: &[VolumeOwner]) -> VolumeLabels {
         .collect()
 }
 
-pub(super) fn select_machine(
-    machines: &[ployz_core::MachineObservation],
-    selector: &str,
-) -> Result<Machine, Error> {
-    let selector = MachineTarget::parse(selector)?;
-    Ok(crate::cluster::visible_machine(&selector, machines)?
-        .machine
-        .clone())
-}
-
 fn machine_removal_refusal(error: RpcError, name: &str) -> Error {
     if error.code == RpcErrorCode::Unavailable {
         Error::from(error)

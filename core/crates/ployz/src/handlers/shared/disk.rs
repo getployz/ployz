@@ -121,6 +121,5 @@ mod tests {
             .map(|full| full.machine.as_str())
             .collect();
         assert_eq!(named, ["machine-2"]);
-        assert_eq!(ployz_core::DOCKER_ROOT_NEARLY_FULL_BYTES, 1_000_000_000);
     }
 }

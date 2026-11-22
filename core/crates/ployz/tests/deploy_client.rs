@@ -402,7 +402,7 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
 #[tokio::test(start_paused = true)]
 async fn created_but_unverified_volume_fails_the_container_operation() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected_in_memory(
+    let (mut client, server, _) = connected_in_memory(
         DeployService::new(machine)
             .fail_create_volume_verification("Docker inspect response was malformed"),
     )
@@ -1351,7 +1351,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
             let RowState::Failed { log, .. } = &row.state else {
                 return None;
             };
-            let Some(ployz_store::tools::LogText::Shown(excerpt)) = log else {
+            let Some(ployz_agent_tools::LogText::Shown(excerpt)) = log else {
                 return Some(Err(log.clone()));
             };
             Some(Ok(excerpt.lines().to_vec()))

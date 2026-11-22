@@ -1,5 +1,5 @@
 use ployz_core::Hint;
-use std::{future::Future, path::Path, pin::Pin};
+use std::{future::Future, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
 use clap::{ArgMatches, Command};
@@ -44,8 +44,8 @@ mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
+use crate::cli::{command_path, config_path, leaf_matches, typed_with};
 pub(super) use shared::rerun::config_flag;
-pub(crate) use shared::rerun::typed_with;
 use shared::rerun::{recovery_command, rerun};
 mod status;
 mod status_servers;
@@ -110,7 +110,9 @@ pub fn run() -> Result<(), Error> {
         .map_or("", String::as_str);
     crate::ui::init(matches.get_flag("json"), crate::ui::Color::named(color));
     // An agent or a script says why it runs a command, and the run is reported once.
-    let run = crate::agent_call::cli::Run::begin(&matches, &command);
+    let internal = verbs::find(&command_path(&matches))
+        .is_some_and(|verb| verb.surface == verbs::Surface::Internal);
+    let run = crate::agent_call::cli::Run::begin(&matches, &command, internal);
     let result = match run.refusal(&args) {
         Some(refusal) => Err(refusal),
         None => dispatch(&matches, &mut command),
@@ -285,7 +287,6 @@ fn close(long: &str, suggested: &str) -> bool {
     if suggested.starts_with(long) || long.starts_with(suggested) {
         return true;
     }
-    // Levenshtein distance, one row at a time.
     let mut previous = (0..=suggested.chars().count()).collect::<Vec<_>>();
     for (i, a) in long.chars().enumerate() {
         let mut row = vec![i + 1];
@@ -441,15 +442,6 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn command_path(mut matches: &ArgMatches) -> String {
-    let mut parts = Vec::new();
-    while let Some((name, child)) = matches.subcommand() {
-        parts.push(name);
-        matches = child;
-    }
-    parts.join(" ")
-}
-
 /// Items as one line of text: `a, b, c`.
 pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
     items
@@ -457,13 +449,6 @@ pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-pub(crate) fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
-    while let Some((_, child)) = matches.subcommand() {
-        matches = child;
-    }
-    matches
 }
 
 fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
@@ -492,14 +477,6 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
-}
-
-pub(crate) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
-    matches
-        .get_one::<String>("ployz-config")
-        .map(Path::new)
-        .map(crate::context::expand_home)
-        .ok_or_else(|| Error::usage("Ployz config path is required"))
 }
 
 /// The explicit connection, the selected context, or the local daemon; never Cloud.

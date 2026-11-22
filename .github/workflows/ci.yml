@@ -156,13 +156,13 @@ jobs:
         include:
           # Every crate the other groups leave out, so a new crate's tests run here.
           - group: cli
-            packages: --workspace --exclude ployzd --exclude ployz-store
+            packages: --workspace --exclude ployzd --exclude ployz-store --exclude ployz-agent-tools
             node: true
           - group: daemon
             packages: -p ployzd
-          # The Store suites on SQLite, then on Postgres.
+          # The Store suites, and the agent tools' that drive a Store, on SQLite, then on Postgres.
           - group: store
-            packages: -p ployz-store
+            packages: -p ployz-store -p ployz-agent-tools
             postgres: true
     services:
       postgres:
@@ -236,7 +236,7 @@ jobs:
           -c 'ALTER SYSTEM SET synchronous_commit = off'
           -c 'ALTER SYSTEM SET full_page_writes = off'
           -c 'SELECT pg_reload_conf()'
-      - name: ployz-store tests on Postgres
+      - name: Store tests on Postgres
         if: matrix.postgres && needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432

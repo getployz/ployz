@@ -126,13 +126,11 @@ pub(crate) fn approved_request(
     Ok(request)
 }
 
-/// What Cloud answered: its status and the whole body.
 pub(crate) struct Reply {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
 }
 
-/// Send `request` to `cloud`.
 pub(crate) async fn dispatch(
     cloud: &str,
     request: reqwest::RequestBuilder,

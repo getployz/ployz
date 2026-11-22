@@ -253,7 +253,6 @@ impl MachineNames {
             .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
     }
 
-    /// The Servers in the order they were listed.
     pub fn iter(&self) -> impl Iterator<Item = (MachineId, &MachineName)> {
         self.0.iter().map(|(id, name)| (*id, name))
     }

@@ -492,7 +492,6 @@ fn freeze(
                     Ok(json!({"type": "git", "repository": repository_id, "commit": commit}))
                 })
                 .transpose()?,
-            // An Empty Service without an upload has nothing to deploy.
             (None, None) => continue,
         };
         if let Some(source) = source {

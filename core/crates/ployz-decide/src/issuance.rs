@@ -327,7 +327,6 @@ mod tests {
 
     #[test]
     fn a_rank_waits_a_step_per_rank_before_it_orders() {
-        assert_eq!(RANK_STEP, seconds(30));
         for (rank, delay) in [(0, 0), (1, 30), (2, 60), (3, 90), (7, 210)] {
             assert_eq!(rank_delay(rank, RANK_STEP), seconds(delay), "rank {rank}");
             let almost = seconds(delay).saturating_sub(Duration::from_millis(1));

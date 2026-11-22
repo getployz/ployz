@@ -40,7 +40,6 @@ use crate::followup::FollowUp;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
 use crate::storage::json_text;
-use crate::tools::ToolId;
 use crate::{Actor, Permission, SealingKey, Trusted};
 
 /// What a command or query runs with: one open transaction, its caller, and the
@@ -78,13 +77,14 @@ pub trait Tell: Serialize {
 /// The agent tools that send a command, or why none does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Claim {
-    Tools(&'static [ToolId]),
+    /// Each tool by the name a model calls it by.
+    Tools(&'static [&'static str]),
     None(&'static str),
 }
 
 macro_rules! claim {
     ([$($tool:ident),+]) => {
-        Claim::Tools(&[$(ToolId::$tool),+])
+        Claim::Tools(&[$(stringify!($tool)),+])
     };
     (none $reason:literal) => {
         Claim::None($reason)
@@ -167,9 +167,9 @@ in_environment!(
 /// where `keyed` lists the caller-minted IDs a create replays by (an optional one when
 /// the caller may send none), `SAME` (see [`crate::replay`]) refuses a replay its first
 /// answer no longer fits, `PERMISSION` is the [`Permission`] the caller must hold,
-/// checked before the row replays or runs, `CLAIM` is `[Tool, ...]`, the [`ToolId`]s
-/// that send it, or `none "why"`, and `CALL` runs it with the names bound in the
-/// table's header.
+/// checked before the row replays or runs, `CLAIM` is `[tool, ...]`, the agent tools
+/// that send it by the names a model calls them, or `none "why"`, and `CALL` runs it
+/// with the names bound in the table's header.
 macro_rules! commands {
     (
         |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
@@ -285,7 +285,7 @@ macro_rules! commands {
              [keyed [IDS] if SAME] needs PERMISSION agent CLAIM => CALL;`: a keyed row \
              states its replay rule with `if SAME`, a fn from `crate::replay`, every row \
              names the `Permission` the caller must hold, `needs ChangesStage`, and the \
-             agent tools that send it, `agent [Tool, ...]`, or why none does, \
+             agent tools that send it, `agent [tool, ...]`, or why none does, \
              `agent none \"why\"`"
         );
     };
@@ -297,12 +297,12 @@ commands! {
     CreateProject(CreateProject) -> Project(ProjectCreated)
         keyed [c.id.as_str(), c.default_environment.as_str()] if crate::replay::any
         needs ProjectCreate
-        agent [ProjectCreate]
+        agent [project_create]
         => crate::project::create_project(tx, who, c, trusted);
     /// Rename a Project; its Namespaces stay.
     RenameProject(RenameProject) -> ProjectRenamed(ProjectSummary)
         needs ProjectEdit
-        agent [ProjectRename]
+        agent [project_rename]
         => crate::project::rename_project(tx, who, c);
     /// Create an empty Environment.
     CreateEnvironment(CreateEnvironment) -> Environment(EnvironmentCreated)
@@ -314,81 +314,81 @@ commands! {
     CreateService(CreateService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
-        agent [ServiceAdd]
+        agent [service_add]
         => crate::service::create_service(tx, who, c, trusted);
     /// Create a Service that builds a GitHub repository.
     CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
-        agent [ServiceAdd]
+        agent [service_add]
         => crate::git::create_git_service(tx, who, c, trusted);
     /// Rename a Service, keeping its Private DNS name.
     RenameService(RenameService) -> ServiceRenamed(ServiceStaged)
         needs ChangesStage
-        agent [ServiceRename]
+        agent [service_rename]
         => crate::service::rename_service(tx, who, c, trusted);
     /// Remove a Service from Working State; a Deploy removes it.
     RemoveService(RemoveService) -> ServiceRemoved(ServiceStaged)
         needs ChangesStage
-        agent [ServiceRemove]
+        agent [service_remove]
         => crate::service::remove_service(tx, who, c, trusted);
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume) -> Volume(VolumeStaged)
         keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
-        agent [VolumeAdd]
+        agent [volume_add]
         => crate::volume::create_volume(tx, who, c, trusted);
     /// Change a draft Volume's storage; a deployed Managed Volume resizes through
     /// `ployz volume set --size` instead.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         needs ChangesStage
-        agent [VolumeUpdate]
+        agent [volume_update]
         => crate::volume::set_storage(tx, who, c, trusted);
     /// Allow or refuse more than one writer of a Volume; applies at once.
     SetVolumeSharedWrites(SetVolumeSharedWrites) -> Volume(VolumeStaged)
         needs ChangesStage
-        agent [VolumeUpdate]
+        agent [volume_update]
         => crate::volume::set_shared_writes(tx, who, c, trusted);
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume) -> VolumeRemoved(VolumeStaged)
         needs ChangesStage
-        agent [VolumeRemove]
+        agent [volume_remove]
         => crate::volume::remove_volume(tx, who, c, trusted);
     /// Rename a Volume; mounts follow it.
     RenameVolume(RenameVolume) -> VolumeRenamed(VolumeStaged)
         needs ChangesStage
-        agent [VolumeUpdate]
+        agent [volume_update]
         => crate::volume::rename_volume(tx, who, c, trusted);
     /// Create a Config, optionally mounted into Services.
     CreateConfig(CreateConfig) -> Config(ConfigStaged)
         keyed [c.id.as_str()] if crate::replay::same_environment
         needs ChangesStage
-        agent [ConfigWrite]
+        agent [config_write]
         => crate::config_item::create_config(tx, who, c, trusted);
     /// Put a file into a Config, replacing one of that name.
     PutConfigFile(PutConfigFile) -> Config(ConfigStaged)
         needs ChangesStage
-        agent [ConfigWrite]
+        agent [config_write]
         => crate::config_item::put_file(tx, who, c, trusted);
     /// Remove a file from a Config.
     RemoveConfigFile(RemoveConfigFile) -> Config(ConfigStaged)
         needs ChangesStage
-        agent [ConfigRemove]
+        agent [config_remove]
         => crate::config_item::remove_file(tx, who, c, trusted);
     /// Rename a Config; mounts follow it.
     RenameConfig(RenameConfig) -> ConfigRenamed(ConfigStaged)
         needs ChangesStage
-        agent [ConfigRename]
+        agent [config_rename]
         => crate::config_item::rename_config(tx, who, c, trusted);
     /// Delete a Config from Working State, unmounting it everywhere.
     DeleteConfig(DeleteConfig) -> ConfigRemoved(ConfigStaged)
         needs ChangesStage
-        agent [ConfigRemove]
+        agent [config_remove]
         => crate::config_item::delete_config(tx, who, c, trusted);
     /// Mount a Config into a Service at a directory.
     AttachConfig(AttachConfig) -> Config(ConfigStaged)
         needs ChangesStage
-        agent [ConfigWrite]
+        agent [config_write]
         => crate::config_item::attach_config(tx, who, c, trusted);
     /// Unmount a Config from a Service.
     DetachConfig(DetachConfig) -> Config(ConfigStaged)
@@ -398,55 +398,55 @@ commands! {
     /// Set and unset Settings in one Environment.
     Edit(Edit) -> Edited(Edited)
         needs ChangesStage
-        agent [ServiceUpdate, EnvironmentRegion]
+        agent [service_update, environment_region]
         => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
         keyed [c.id.as_deref()] if crate::replay::same_environment
         needs ChangesStage
-        agent [DeployInput]
+        agent [deploy]
         => crate::review::publish::publish(tx, who, c, trusted);
     /// Stage a guarded Restore or Undo of an immutable Saved revision.
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
         needs ChangesStage
-        agent [History]
+        agent [history]
         => crate::review::history::stage(tx, who, c, trusted);
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard) -> Discarded(Discarded)
         needs ChangesStage
-        agent [DiscardInput]
+        agent [discard]
         => crate::review::publish::discard(tx, who, c, trusted);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
     /// or queue again what an ended Deployment froze.
     Admit(Admit) -> Deployment(crate::DeploymentSummary)
         keyed [c.id().as_str()] if crate::replay::admit
         needs ChangesDeploy
-        agent [DeployInput, DeploymentRetry]
+        agent [deploy, deployment_retry]
         => crate::deployment::admit::admit(tx, who, c, trusted);
     /// Hand a queued Deployment to a runner now.
     Start(Start) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
-        agent [DeploymentStart]
+        agent [deployment_start]
         => crate::deployment::start(tx, who, &c.deployment, trusted);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
-        agent [DeploymentCancel]
+        agent [deployment_cancel]
         => crate::removal::cancel(tx, who, &c.deployment, trusted);
     /// Give a Service a generated or custom public domain.
     AddDomain(crate::AddDomain) -> DomainAdded(crate::DomainAdded)
         needs ChangesStage
-        agent [DomainAdd, DomainUpdate]
+        agent [domain_add, domain_update]
         => crate::domain::add_domain(tx, who, c, trusted);
     /// Change the prefix of a Service's generated domain.
     SetGeneratedDomain(crate::SetGeneratedDomain) -> Domain(crate::DomainStaged)
         needs ChangesStage
-        agent [DomainUpdate]
+        agent [domain_update]
         => crate::domain::set_generated_domain(tx, who, c, trusted);
     /// Take a public domain off its Service.
     RemoveDomain(crate::RemoveDomain) -> Domain(crate::DomainStaged)
         needs ChangesStage
-        agent [DomainRemove]
+        agent [domain_remove]
         => crate::domain::remove_domain(tx, who, c, trusted);
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
@@ -504,7 +504,7 @@ commands! {
     /// Give a region a name. Nothing that places reads it, so nothing restarts.
     NameRegion(crate::NameRegion) -> RegionNamed(crate::Region)
         needs ServersOperate
-        agent [RegionRename]
+        agent [region_rename]
         => crate::region::name(tx, who, c);
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment)
@@ -520,12 +520,12 @@ commands! {
     /// Protect a Project's own Environment from removal, or unprotect it.
     SetEnvironmentProtected(crate::SetEnvironmentProtected) -> Protected(crate::ProtectedView)
         needs EnvironmentsProtect
-        agent [EnvironmentProtect]
+        agent [environment_protect]
         => crate::teardown::set_protected(tx, who, c);
     /// Remove an Environment or a Project: off the Servers, then out of the Store.
     Remove(crate::Remove) -> Removal(crate::Removal)
         needs EnvironmentDelete
-        agent [EnvironmentRemove, ProjectRemove]
+        agent [environment_remove, project_remove]
         => {
             if c.environment.is_none() {
                 trusted.admit(Permission::ProjectDelete)?;
@@ -540,7 +540,7 @@ commands! {
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         needs ProjectEdit
-        agent [EnvironmentPr]
+        agent [environment_pr]
         => crate::pull_request::set_plan(tx, who, c);
     /// Keep the automatic deploy rule a Device signed for an Environment.
     ApproveRule(crate::ApproveRule) -> Rule(crate::RuleView) as *
@@ -555,7 +555,7 @@ commands! {
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched)
         needs ChangesStage
-        agent [ServiceAdd, VolumeAdd, ConfigWrite, ConfigRename, ConfigRemove, DiscardInput]
+        agent [service_add, volume_add, config_write, config_rename, config_remove, discard]
         => {
             crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
             let mut at = Call { tx, who, sealing, trusted };

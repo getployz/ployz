@@ -7,10 +7,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use ployz_agent_tools::{LogText, Withheld};
 use ployz_core::{
     ContainerId, DeployWarning, InPlaceChange, MachineId, ObservationKind, QualifiedService,
 };
-use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

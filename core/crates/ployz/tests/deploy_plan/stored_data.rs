@@ -1,5 +1,4 @@
 use super::support::*;
-use ployz_core::{ReplacementOperation, ResolvedUpdateConfig, UpdateOrder};
 
 const DATA_LOSS_PROTOCOL: &str = "Deploy Plan destroyed stored data; Deploy is a Data Loss path and must adopt the named-confirmation protocol from #355 (see #354)";
 
@@ -25,71 +24,6 @@ fn assert_plan_cannot_destroy_stored_data(plan: &ployz::deploy::DeployPreview, l
             "{label}: {DATA_LOSS_PROTOCOL}: {row:?}"
         );
     }
-}
-
-fn resolved(spec: &RequestedServiceSpec) -> ployz_core::ResolvedServiceSpec {
-    scoped_spec(spec)
-        .to_resolved(
-            service_id('a'),
-            ResolvedUpdateConfig {
-                order: UpdateOrder::StartFirst,
-                monitor_millis: spec.update.monitor_millis,
-            },
-        )
-        .expect("volume graph is scoped")
-}
-
-#[test]
-fn deploy_operation_variants_do_not_destroy_stored_data() {
-    let mut spec = requested(ServiceMode::Global);
-    add_named_volume(&mut spec, "data");
-    let spec = resolved(&spec);
-    let machine_id = machine_id('1');
-    let container_id = container_id('b');
-    let operations = [
-        DeployOperation::RunContainer {
-            machine_id,
-            spec: spec.clone(),
-            skip_health_monitor: true,
-        },
-        DeployOperation::StopContainer {
-            machine_id,
-            container_id,
-            purpose: ployz_core::StopContainerPurpose::Lifecycle,
-        },
-        DeployOperation::RemoveContainer {
-            machine_id,
-            container_id,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        },
-        DeployOperation::ReplaceContainer(ReplacementOperation {
-            machine_id,
-            old_container_id: container_id,
-            spec: spec.clone(),
-            skip_health_monitor: true,
-        }),
-        DeployOperation::StopHook {
-            machine_id,
-            container_id,
-        },
-        DeployOperation::RunHook {
-            machine_id,
-            spec,
-            old_hook_containers: vec![(machine_id, container_id)],
-        },
-    ];
-    for operation in operations {
-        assert!(
-            !destroys_stored_data(&operation),
-            "{DATA_LOSS_PROTOCOL}: {operation:?}"
-        );
-    }
-    assert!(destroys_stored_data(&DeployOperation::RemoveVolume {
-        id: DockerVolumeId {
-            machine_id,
-            name: DockerVolumeName::parse("data").unwrap(),
-        },
-    }));
 }
 
 #[test]

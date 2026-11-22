@@ -793,14 +793,7 @@ fn run_here(
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
 /// the scope, so an unlinked directory never founds a new Project.
 fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
-    shell_words::join([
-        "ployz",
-        "up",
-        "--project",
-        environment.project.as_str(),
-        "--env",
-        environment.name.as_str(),
-    ])
+    super::store::next_in(&environment.project, &environment.name, &["up"])
 }
 
 struct OwnedRunner<'store, 'matches> {
