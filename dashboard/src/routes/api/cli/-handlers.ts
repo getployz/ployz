@@ -10,16 +10,16 @@ import { cliRefusalResponse, Forbidden, Validation } from "#/server/public-error
  * One CLI call in an Organization, named by its ID, which a slug rename never moves: the Caller (a signed-in device or
  * an Organization Token) acts, the JSON body is the input. A token acts only in its own Organization.
  */
-export function handleCliRequest<I extends { readonly organizationId: string }, A, E, R>(
+export function handleOrganizationCliRequest<I extends { readonly organizationId: string }, A, E, R>(
   request: Request,
   input: Schema.Decoder<I>,
   operation: (caller: Caller, input: I) => Effect.Effect<A, E, R>,
 ) {
-  return Effect.flatMap(resolveCaller(request.headers), (caller) => handleCliRequestAs(caller, request, input, operation));
+  return Effect.flatMap(resolveCaller(request.headers), (caller) => handleOrganizationCliRequestAs(caller, request, input, operation));
 }
 
-/** {@link handleCliRequest} for a Caller already resolved from this request. */
-export function handleCliRequestAs<I extends { readonly organizationId: string }, A, E, R>(
+/** {@link handleOrganizationCliRequest} for a Caller already resolved from this request. */
+function handleOrganizationCliRequestAs<I extends { readonly organizationId: string }, A, E, R>(
   caller: Caller,
   request: Request,
   input: Schema.Decoder<I>,
