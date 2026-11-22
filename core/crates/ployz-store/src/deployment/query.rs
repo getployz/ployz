@@ -103,6 +103,36 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(optional, as = "Option<PlannedVolumes>")]
     pub volumes: PlannedVolumes,
+    /// When the query asked for `target`: each Service this Deploy ships that reaches data
+    /// and that no kept signed version covers as its claim would run it, with what it
+    /// needs. A person signs the ones that need a version. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Unsigned>>")]
+    pub unsigned: Vec<Unsigned>,
+}
+
+/// A Service a Deploy ships that its Servers run only signed, and nothing signed covers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Unsigned {
+    pub service: ServiceName,
+    pub needs: Needs,
+}
+
+/// What a Service in [`PlanView::unsigned`] needs before a person's Deploy can run it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Needs {
+    /// A version the person signs.
+    Version,
+    /// Its automatic deploy rule approved again: it builds from source, and the rule
+    /// doesn't approve its spec as it stands.
+    Rule,
+    /// A build under its rule, which a push to its branch makes: the rule approves its
+    /// spec, but a Deploy a person admits carries no evidence of a build under it.
+    Rebuild,
+    /// Its image written by digest: it pulls a tag with a login, which no public lookup
+    /// can pin for a person to sign.
+    Digest,
 }
 
 /// Where an Environment runs on the Servers.
@@ -333,17 +363,26 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
-    let (lowered, volumes) = match query.target {
-        true => (
+    let (lowered, volumes, unsigned) = match query.target {
+        true => {
             // The specs of the Services it ships, for a Device to approve before it
             // admits the Deploy.
-            Some({
-                trusted.writes(&environment.summary.name)?;
-                saved_target(tx, who, trusted, (&environment, &target), &query.services)?
-            }),
-            crate::volume::birth::planned(tx, &environment.summary.id, &target)?,
-        ),
-        false => (None, PlannedVolumes::new()),
+            trusted.writes(&environment.summary.name)?;
+            let lowered = saved_target(tx, who, trusted, (&environment, &target), &query.services)?;
+            let unsigned = deployment::versions::unsigned(
+                tx,
+                (
+                    &environment.summary.id,
+                    who.organization.as_str(),
+                    &namespace,
+                ),
+                &target,
+                (&frozen.nodes, &lowered),
+            )?;
+            let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &target)?;
+            (Some(lowered), volumes, unsigned)
+        }
+        false => (None, PlannedVolumes::new(), Vec::new()),
     };
     let regions = target
         .services
@@ -382,6 +421,7 @@ pub(crate) fn plan(
         regions,
         replicas,
         volumes,
+        unsigned,
     })
 }
 
@@ -431,6 +471,7 @@ fn redeploy_plan(
         regions: BTreeMap::new(),
         replicas: BTreeMap::new(),
         volumes,
+        unsigned: Vec::new(),
     })
 }
 

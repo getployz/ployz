@@ -25,9 +25,22 @@ export type {
   SignerKey,
   StepDigest,
   StepKind,
+  VersionsDraft,
+  VersionStep,
 } from "./generated/payloads";
 
-import type { JoinApproval, Passkey, PasskeyJoinDraft, PrivateAccessTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type {
+  JoinApproval,
+  Passkey,
+  PasskeyJoinDraft,
+  PlanView,
+  PrivateAccessTerms,
+  RequestedServiceSpec,
+  RuleDraft,
+  RuleTerms,
+  RuleView,
+  VersionsDraft,
+} from "./generated/payloads";
 
 /**
  * The automatic deploy rule a person approves for `view`, the Store's rule view, under `terms`: the canonical body to
@@ -53,6 +66,25 @@ export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
  * form, as the Servers check them. Throws an Error for a malformed join.
  */
 export function passkeyJoinStep(join: JoinApproval, operation: string, issuedAt: number, expiresAt: number): PasskeyJoinDraft;
+
+/**
+ * One version of each of `asked.services` a person's passkey signs in one prompt: the bundle to answer, each step body
+ * with the births and image the Store records beside it, and the lines the person reads, each by the ployz-core code the
+ * Servers run. `pins` maps each tag image to the `tag@sha256:…` it runs as, which `pinImages` looks up. `seed` is 16
+ * random bytes from this browser. Throws an Error, before any bundle, for a tag with no pin, a pin that isn't the tag
+ * itself by digest, or a Volume from another environment.
+ */
+export function versionSteps(asked: {
+  cluster: string;
+  namespace: string;
+  volumes?: PlanView["volumes"];
+  services: readonly RequestedServiceSpec[];
+  pins?: Readonly<Record<string, string>>;
+  operation: string;
+  issued_at: number;
+  expires_at: number;
+  seed: readonly number[];
+}): VersionsDraft;
 
 /**
  * The key an install line carries for `passkey` (`pk1_…`), as the installer and `ployz key add` read it: a fresh Server

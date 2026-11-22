@@ -2119,6 +2119,56 @@ fn approve_rule(
     )
 }
 
+/// What the plan says a person's Deploy needs for each built Service that reaches data.
+fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
+    let plan: ployz_store::PlanView = store
+        .read(
+            who,
+            &ployz_store::PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    plan.unsigned
+        .into_iter()
+        .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
+        .collect()
+}
+
+#[test]
+fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
+    use ployz_store::Needs;
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    // The rule approves web as it stands, but a person's Deploy builds nothing under it.
+    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
+}
+
 #[test]
 fn a_push_under_a_rule_deploys_when_only_the_commit_changed() {
     let (store, who) = shop();

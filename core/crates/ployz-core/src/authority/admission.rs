@@ -7,7 +7,7 @@
 use std::fmt;
 
 use super::deploy::{Creation, host_reach};
-use crate::{EnvValue, RawVolumeSource};
+use crate::{EnvValue, RawVolumeSource, RequestedServiceSpec};
 
 /// What a spec reaches that makes a Machine run it only signed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,12 +35,19 @@ impl fmt::Display for DataReach {
 
 /// What `creation` reaches that needs a signature, or `None` when it reaches no data.
 /// `image_login` says the request carries a registry login for its image.
+#[must_use]
+pub fn needs_signature(creation: Creation<'_>, image_login: bool) -> Option<DataReach> {
+    reach(&creation.spec.to_requested(), image_login)
+}
+
+/// What `spec` reaches that needs a signature, or `None` when it reaches no data: the one
+/// rule a Server admits by and the Config Store asks a person to sign by. `image_login`
+/// says its image is pulled with a registry login.
 ///
 /// A hook's Sealed values count for the Service's own Container too, and a Volume counts
 /// whether or not the Container mounts it: the spec is signed whole.
 #[must_use]
-pub fn needs_signature(creation: Creation<'_>, image_login: bool) -> Option<DataReach> {
-    let spec = creation.spec;
+pub fn reach(spec: &RequestedServiceSpec, image_login: bool) -> Option<DataReach> {
     let hook = spec.pre_deploy.as_ref();
     let sealed = spec
         .container
@@ -51,8 +58,7 @@ pub fn needs_signature(creation: Creation<'_>, image_login: bool) -> Option<Data
     if sealed {
         return Some(DataReach::Sealed);
     }
-    let requested = spec.to_requested();
-    let volume = requested
+    let volume = spec
         .volume_graph()
         .volumes()
         .iter()
@@ -60,7 +66,7 @@ pub fn needs_signature(creation: Creation<'_>, image_login: bool) -> Option<Data
     if volume {
         return Some(DataReach::Volume);
     }
-    if !host_reach(&requested).is_empty() {
+    if !host_reach(spec).is_empty() {
         return Some(DataReach::Host);
     }
     image_login.then_some(DataReach::ImageLogin)

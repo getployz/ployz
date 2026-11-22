@@ -9863,6 +9863,56 @@ fn signed_web(store: &ConfigStore, who: &Actor) -> ployz_store::PostedVersion {
     }
 }
 
+/// Each Service the plan says a person's Deploy must sign, and why.
+fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
+    plan_at(store, who, EnvironmentRef::default())
+        .unsigned
+        .into_iter()
+        .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
+        .collect()
+}
+
+#[test]
+fn a_plan_asks_to_sign_a_service_that_reaches_data_until_a_kept_version_covers_its_run() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    // api reaches nothing a Server keeps from Cloud.
+    assert_eq!(
+        unsigned(&store, &who),
+        [("web".to_owned(), ployz_store::Needs::Version)]
+    );
+    admit_signed(&store, &who, 1, vec![signed_web(&store, &who)]);
+    apply(&store, 1);
+    // web runs its tag as #1 pinned it, which its kept version covers.
+    set_replicas(&store, &who, "api", 2);
+    assert_eq!(unsigned(&store, &who), []);
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    assert_eq!(
+        unsigned(&store, &who),
+        [("web".to_owned(), ployz_store::Needs::Version)]
+    );
+}
+
+#[test]
+fn a_plan_asks_for_a_digest_for_a_tag_pulled_with_a_login() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "web.registryCredential",
+        json!({ "username": "bot", "secret": "pull-token" }),
+    );
+    assert_eq!(
+        unsigned(&store, &who),
+        [("web".to_owned(), ployz_store::Needs::Digest)]
+    );
+    set(&store, &who, "web.image", json!(P1));
+    assert_eq!(
+        unsigned(&store, &who),
+        [("web".to_owned(), ployz_store::Needs::Version)]
+    );
+}
+
 /// The approval that first mounts a Volume makes its birth. The Store records the one a
 /// signed version posts, the runner's spec carries it so the signature covers it, and it
 /// stays through a Volume and a Service rename, which each take one ordinary approval.
