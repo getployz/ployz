@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestoreAttempt,
     StopAttempt,
-    schedule::{Action, Event, Schedule, Stage, Task, TaskKind, creates_container},
+    schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind, creates_container},
 };
 
 use super::cleanup::{self, ACK_WAIT, RotationFailure};
@@ -332,15 +332,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     };
                     Done::Task(index, result)
                 })),
-                Action::Publish(group) => {
-                    let service = QualifiedService::new(
-                        plan.namespace.clone(),
-                        schedule
-                            .group(group)
-                            .service
-                            .clone()
-                            .expect("only Service groups publish"),
-                    );
+                Action::Publish(group, service) => {
+                    let service = QualifiedService::new(plan.namespace.clone(), service);
                     let new = records
                         .get(&group)
                         .map(|record| record.started.clone())
@@ -355,7 +348,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         let published =
                             publish_group(client, operations, progress, rows, copies, cancellation)
                                 .await;
-                        Done::Publish(group, published)
+                        Done::Publish(group, service.name, published)
                     })
                 }
             };
@@ -395,9 +388,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         if let Some(old) = ran.held_old {
                             record.stopped.push(*old);
                         }
-                        if let (true, Some(container_id)) =
-                            (schedule.group(group).publish, ran.started)
-                        {
+                        let publishing = schedule.group(group).publishing_service();
+                        if let (Some(_), Some(container_id)) = (publishing, ran.started) {
                             progress.set_running(
                                 index,
                                 OperationPhase::WaitingForSwitch { container_id },
@@ -407,7 +399,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             completed.insert(index);
                             progress.set_completed(index);
                         }
-                        let service = schedule.group(group).publishing_service().map(|service| {
+                        let service = publishing.map(|service| {
                             QualifiedService::new(plan.namespace.clone(), service.clone())
                         });
                         if let Some((service, new)) = service
@@ -427,7 +419,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 .await
                                 {
                                     Ok(_) => Done::Admitted(index),
-                                    Err(published) => Done::Publish(group, published),
+                                    Err(published) => Done::Publish(group, service.name, published),
                                 }
                             })));
                         } else {
@@ -447,12 +439,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 }
             }
             Some(Done::Admitted(index)) => schedule.apply(Event::Completed(index)),
-            Some(Done::Publish(group, published)) => {
-                let service = schedule
-                    .group(group)
-                    .service
-                    .clone()
-                    .expect("only Service groups publish");
+            Some(Done::Publish(group, service, published)) => {
                 let last = schedule.publish_failure_task(group);
                 let record = records.entry(group).or_default();
                 let mut ledger = Ledger::new(progress, &mut stop, &mut schedule);
@@ -544,9 +531,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 .await;
             let service = schedule
                 .group(group)
-                .service
-                .clone()
-                .map(|name| QualifiedService::new(plan.namespace.clone(), name));
+                .service()
+                .map(|name| QualifiedService::new(plan.namespace.clone(), name.clone()));
             let record = records.remove(&group).unwrap_or_default();
             restore_group(client, progress, service.as_ref(), record, rows).await;
         }
@@ -881,14 +867,12 @@ impl<'a> Rows<'a> {
             })
             .collect();
         let names = plan.machine_names().clone();
-        // A rollout's removals run in a group of their own that depends on just
-        // the Service they roll out.
         let services = plan
             .groups()
             .iter()
-            .filter_map(|group| match group.dependencies.as_slice() {
-                [service] if group.service.is_none() => Some((service, &group.steps)),
-                _ => None,
+            .filter_map(|group| match &group.role {
+                GroupRole::Removals(service) => Some((service, &group.steps)),
+                GroupRole::Prelude | GroupRole::Service { .. } | GroupRole::Tail(_) => None,
             })
             .flat_map(|(service, steps)| {
                 steps

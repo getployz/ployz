@@ -164,9 +164,9 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
     let Some(tail) = planned.groups().last() else {
         panic!("expected a removal group");
     };
-    assert_eq!(tail.service, None);
+    assert_eq!(tail.service(), None);
     assert_eq!(
-        tail.dependencies
+        tail.dependencies()
             .iter()
             .collect::<std::collections::BTreeSet<_>>(),
         [&db.name, &web.name].into_iter().collect()

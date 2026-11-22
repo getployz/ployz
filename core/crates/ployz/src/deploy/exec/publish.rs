@@ -9,7 +9,7 @@ use crate::deploy::schedule::{ServiceGroup, Stage};
 use futures_util::future::join_all;
 use ployz_core::{
     AnonymousVolumes, ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId,
-    QualifiedService, RpcError, RpcErrorCode, UpdateOrder,
+    QualifiedService, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
 };
 use std::collections::BTreeSet;
 use tokio::time::Instant;
@@ -30,7 +30,8 @@ pub(super) enum Done {
     Task(usize, Result<Ran, OperationFailure>),
     /// A Rolling step's new copy is In and listed, so the next step may begin.
     Admitted(usize),
-    Publish(usize, Published),
+    /// The group's publish of its Service ended.
+    Publish(usize, ServiceName, Published),
 }
 
 pub(super) enum Published {

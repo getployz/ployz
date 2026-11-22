@@ -1,6 +1,6 @@
 //! How a Deploy graph's Service rows read, by depth.
 use super::*;
-use crate::deploy::{ServiceGroup, depths};
+use crate::deploy::{GroupRole, ServiceGroup, depths};
 use crate::ui::progress::{Frame, Run};
 use ployz_core::{MachineId, Namespace};
 use ployz_store::RowPhase;
@@ -37,13 +37,15 @@ fn a_rollback_does_not_count_new_copies_that_are_going_away() {
 
 fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
     ServiceGroup {
-        service: Some(ServiceName::parse(service).unwrap()),
-        dependencies: dependencies
-            .iter()
-            .map(|dependency| ServiceName::parse(*dependency).unwrap())
-            .collect(),
+        role: GroupRole::Service {
+            service: ServiceName::parse(service).unwrap(),
+            dependencies: dependencies
+                .iter()
+                .map(|dependency| ServiceName::parse(*dependency).unwrap())
+                .collect(),
+            publish: true,
+        },
         steps: Vec::new(),
-        publish: true,
     }
 }
 
