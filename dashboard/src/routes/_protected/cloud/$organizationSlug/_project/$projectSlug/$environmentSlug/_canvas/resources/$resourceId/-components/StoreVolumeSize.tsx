@@ -11,7 +11,7 @@ import { gigabytes, volumeStorage } from "#/modules/config-store/store-volumes";
 import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { type Bytes, gb } from "#/modules/volume-run/resize";
-import { checkResize, type CopyHolder, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, type CopyHolder, type ResizeVerdict } from "#/modules/volume-placement/resize-check";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { runWords } from "#/modules/volume-run/run-words";
 import { resizeVolumeServerFn } from "#/modules/volume-run/volume-run.functions";

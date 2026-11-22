@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { runVolume } from "#/modules/operations/operations.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
+import { ResizeVolumeInput } from "#/modules/volume-run/resize";
 import { getVolumeRun, isVolumeOwed, listActiveVolumeRuns } from "#/modules/volume-run/volume-run.rows.server";
 import { inspectVolumeCopies } from "#/modules/volume-run/volume-run.cluster.server";
 import { Conflict } from "#/server/public-error";

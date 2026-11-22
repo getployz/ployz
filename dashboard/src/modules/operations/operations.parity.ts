@@ -11,7 +11,7 @@ import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
-import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
+import { ResizeVolumeInput } from "#/modules/volume-run/resize";
 import { VolumeInput } from "#/modules/volume-run/volume-run";
 
 /** How one surface carries an option: the field (or fields, together) that holds it, or why it has none. */
