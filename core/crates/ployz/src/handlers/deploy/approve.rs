@@ -97,7 +97,8 @@ pub(in crate::handlers) fn sign(
         return silent::sign(matches, store, (environment, plan), edits, &key).map(Some);
     }
     let silent = silent::silent(matches);
-    // A silent deploy that goes out unsigned still ships only image edits.
+    // A silent deploy that goes unsigned only because its Servers didn't answer still
+    // ships only image edits. Servers that don't enforce approval sign nothing.
     let unsigned = |plan: Result<PlanView, Error>| -> Result<Option<DeviceApproval>, Error> {
         if silent {
             let plan = plan?;
@@ -108,10 +109,7 @@ pub(in crate::handlers) fn sign(
     };
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(signing)) = DeviceSigning::load(&key) else {
-        return match silent {
-            true => unsigned(store.read(&plan_query)),
-            false => Ok(None),
-        };
+        return Ok(None);
     };
     if silent {
         silent::refuse_forget(matches)?;
@@ -126,7 +124,7 @@ pub(in crate::handlers) fn sign(
         (probe.join().unwrap_or(Probe::Unknown), plan)
     });
     let enforcing = match probe {
-        Probe::Off => return unsigned(plan),
+        Probe::Off => return Ok(None),
         Probe::Unknown if flag(matches, "forget-older") => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
