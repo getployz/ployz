@@ -23,8 +23,8 @@
 //!
 //! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
-//! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:280-293) and
-//! `FloorTurn::check` (docker/spec_store.rs:603-618). The check refuses a gen below the
+//! `seed_volume` runs, through `ployzd::machine_api::local_volume_copy::MachineService::check_gen` and
+//! `ployzd::docker::spec_store::FloorTurn::check`. The check refuses a gen below the
 //! floor and leaves the floor where it is. Gens come from one identity column, so a later
 //! run's `SetVolumeCopy` on A raises `into`'s floor above the seed run's gen.
 //!
@@ -636,9 +636,9 @@ impl VolumeMarks {
         };
     }
 
-    /// `FloorTurn::admit` (docker/spec_store.rs:577-601) through `admit_gen`
-    /// (machine_api/local_volume_copy.rs:268-278), which `set_copy` runs before the switch
-    /// lock (:49) and `set_copy_planned` again under it (:91).
+    /// `ployzd::docker::spec_store::FloorTurn::admit` through `admit_gen`
+    /// (`ployzd::machine_api::local_volume_copy::MachineService::admit_gen`), which `set_copy` runs before the switch
+    /// lock (`ployzd::machine_api::local_volume_copy::MachineService::set_copy`) and `set_copy_planned` again under it.
     fn admit(state: &mut State, generation: u8) -> bool {
         if generation < state.floor {
             return false;
@@ -647,8 +647,8 @@ impl VolumeMarks {
         true
     }
 
-    /// `FloorTurn::check` (docker/spec_store.rs:603-618) through `check_gen`
-    /// (machine_api/local_volume_copy.rs:280-293): refuses a gen below the floor, so an
+    /// `ployzd::docker::spec_store::FloorTurn::check` through `check_gen`
+    /// (`ployzd::machine_api::local_volume_copy::MachineService::check_gen`): refuses a gen below the floor, so an
     /// equal one passes, and leaves the floor where it is.
     fn check(&self, state: &mut State, generation: u8) -> bool {
         if self.broken.seed_raises_floor {

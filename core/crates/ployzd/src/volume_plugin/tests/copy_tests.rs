@@ -1698,19 +1698,10 @@ async fn a_demote_that_cannot_destroy_a_mirror_reports_no_failure_for_its_stoppe
     server.abort();
 }
 
-pub(super) async fn poll<T>(mut probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        match tokio::time::timeout_at(deadline, probe()).await {
-            Ok(Some(value)) => return Some(value),
-            Err(_) => return None,
-            Ok(None) if tokio::time::Instant::now() >= deadline => return None,
-            Ok(None) => {}
-        }
-        // real-wait: fake ZFS runs as real child processes behind the plugin's unix socket,
-        // and neither signals when the state a test waits on lands.
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+pub(super) async fn poll<T>(probe: impl AsyncFnMut() -> Option<T>) -> Option<T> {
+    ployz_testkit::poll_until(Duration::from_secs(10), "the state a test waits on", probe)
+        .await
+        .ok()
 }
 
 pub(super) async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
