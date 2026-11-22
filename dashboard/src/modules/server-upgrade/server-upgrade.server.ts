@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { INSTALL_ORIGIN } from "#/modules/machines/installer";
 import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
@@ -35,8 +36,6 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
-/** The daemon reads its Release Channel pointers here by default (core `RELEASE_CHANNEL_URL`). */
-const CHANNEL_URL = "https://ployz.sh";
 const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
 const pointers = new Map<string, { readonly release: string | null; readonly readAt: number }>();
@@ -69,7 +68,7 @@ export const channelRelease = Effect.fn("ServerUpgrade.channelRelease")(function
   if (cached !== undefined && Date.now() - cached.readAt < POINTER_CACHE_MS) return cached.release;
   const release = yield* Effect.tryPromise({
     try: async (signal) => {
-      const response = await fetch(`${CHANNEL_URL}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+      const response = await fetch(`${INSTALL_ORIGIN}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return releaseFromPointer(await response.text());
