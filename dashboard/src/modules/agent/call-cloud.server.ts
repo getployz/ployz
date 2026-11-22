@@ -142,24 +142,33 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
 });
 
 /**
- * Read `query` from the runtime as `caller` may with `permission`. A read of one Namespace lands in its Environment,
- * so a token held to Environments reads only theirs. Such a token may not make a read of no Namespace that is
- * `organizationWide`; any other read of no Namespace describes only the Services in its Environments.
+ * The Namespaces `caller` may read with `permission`: null for a caller held to no Environments, who reads all. A read
+ * of one Namespace lands in its Environment, so a token held to Environments reads only theirs. Such a token may not
+ * make a read of no Namespace that is `organizationWide`; any other read of no Namespace describes only the Services
+ * in its Environments.
  */
+const readableNamespaces = Effect.fn("CallCloud.readableNamespaces")(function* (
+  caller: Caller, permission: Permission, namespace: string | null, organizationWide: boolean,
+) {
+  if (callerEnvironments(caller) === undefined) return { readable: null } as const;
+  const owned = yield* owners(caller.organization.id);
+  if (namespace !== null || organizationWide) {
+    const refused = unheld(caller, permission, owned.find((row) => row.namespace === namespace)?.environment ?? null);
+    if (refused !== null) return { refused } as const;
+  }
+  return { readable: owned.filter((row) => unheld(caller, permission, row.environment) === null).map((row) => row.namespace) } as const;
+});
+
+/** Read `query` from the runtime as `caller` may with `permission`, among `readableNamespaces`. */
 const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
   caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null,
   { organizationWide = false, sealed = null }: { readonly organizationWide?: boolean; readonly sealed?: ReadonlyArray<string> | null } = {},
 ) {
   const lacking = unpermitted(caller, permission);
   if (lacking !== null) return lacking;
-  if (callerEnvironments(caller) === undefined) return yield* runtimeAsk(caller.organization.id, query, null, sealed);
-  const owned = yield* owners(caller.organization.id);
-  if (namespace !== null || organizationWide) {
-    const refused = unheld(caller, permission, owned.find((row) => row.namespace === namespace)?.environment ?? null);
-    if (refused !== null) return refused;
-  }
-  const readable = owned.filter((row) => unheld(caller, permission, row.environment) === null).map((row) => row.namespace);
-  return yield* runtimeAsk(caller.organization.id, query, readable, sealed);
+  const scope = yield* readableNamespaces(caller, permission, namespace, organizationWide);
+  if (scope.refused !== undefined) return scope.refused;
+  return yield* runtimeAsk(caller.organization.id, query, scope.readable, sealed);
 });
 
 /**
@@ -170,17 +179,9 @@ const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
 const metricsRead = Effect.fn("CallCloud.metricsRead")(function* (caller: Caller, query: Extract<CloudQuery, { query: "metrics" }>) {
   const lacking = unpermitted(caller, "metrics:read");
   if (lacking !== null) return lacking;
-  let readable: string[] | null = null;
-  if (callerEnvironments(caller) !== undefined) {
-    const owned = yield* owners(caller.organization.id);
-    if (query.subject.kind === "service") {
-      const { namespace } = query.subject;
-      const refused = unheld(caller, "metrics:read", owned.find((row) => row.namespace === namespace)?.environment ?? null);
-      if (refused !== null) return refused;
-    }
-    readable = owned.filter((row) => unheld(caller, "metrics:read", row.environment) === null).map((row) => row.namespace);
-  }
-  const read = yield* answerMetrics(caller.organization.id, query, yield* Clock.currentTimeMillis, readable);
+  const scope = yield* readableNamespaces(caller, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null, false);
+  if (scope.refused !== undefined) return scope.refused;
+  const read = yield* answerMetrics(caller.organization.id, query, yield* Clock.currentTimeMillis, scope.readable);
   if (read.type === "not_configured") return refusal("conflict", "Metrics aren’t enabled on this Cloud.");
   return answer(read.answer);
 });
