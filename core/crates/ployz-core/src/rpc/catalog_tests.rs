@@ -492,7 +492,6 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.container.signed-version.proposal.v1", "Always"),
     ("ployz.container.deploy-rule.v1", "Always"),
     ("ployz.rule.passkey.v1", "Always"),
-    ("ployz.authority.scoped-keys.v1", "Always"),
 ];
 
 #[test]

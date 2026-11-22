@@ -1459,6 +1459,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::PasskeyIsDevice(_)
         | LocalMachineError::DeviceIsPasskey(_)
         | LocalMachineError::KeyHeld { .. }
+        | LocalMachineError::KeyIsClient(_)
         | LocalMachineError::CredentialHeld { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }

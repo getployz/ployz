@@ -120,8 +120,9 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::KeyRefused`] for a step this Machine does not accept,
-    /// [`Error::PasskeyIsDevice`], [`Error::DeviceIsPasskey`], [`Error::KeyHeld`] and
-    /// [`Error::CredentialHeld`] for a key that collides with one held, [`Error::NotParticipating`], admission
+    /// [`Error::PasskeyIsDevice`], [`Error::DeviceIsPasskey`], [`Error::KeyHeld`],
+    /// [`Error::KeyIsClient`] and [`Error::CredentialHeld`] for a key that collides with one
+    /// held, [`Error::NotParticipating`], admission
     /// failures, [`Error::ApprovalRecord`] when the clock floor cannot be kept,
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
@@ -282,14 +283,17 @@ fn trust(
         NewKey::Ci { key: signing, .. } | NewKey::Agent { key: signing, .. } => {
             // A Device slot the grant would shadow still counts: `devices()` already hides
             // it, so look at the slot itself.
-            let slot = record
-                .accepted_client(&code.label())
-                .is_some_and(|accepted| accepted == ClientKey::from(DeviceKey::from(signing)));
-            if slot {
+            let client = ClientKey::from(DeviceKey::from(signing));
+            if record.accepted_client(&code.label()) == Some(client) {
                 return Err(Error::KeyHeld {
                     code,
                     held: KeyKind::FullCli,
                 });
+            }
+            // A key any other slot holds keeps its connection, so it never becomes a grant
+            // that removing it later would leave connected.
+            if record.admits_management_client(&client) {
+                return Err(Error::KeyIsClient(code));
             }
             if record
                 .passkeys()
@@ -903,6 +907,33 @@ mod tests {
             None,
             "a CI key holds no slot"
         );
+    }
+
+    #[tokio::test]
+    async fn a_key_waiting_in_a_management_client_slot_never_becomes_a_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let capability = local
+            .set_management_client(set())
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let operator = Signer::from_seed(capability.client_secret()).public();
+        assert!(
+            local
+                .record()
+                .pending_label(&ClientKey::from(DeviceKey::from(operator)))
+                .is_some()
+        );
+
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, ci_key(operator, &["app"])))
+                .await,
+            Err(Error::KeyIsClient(_))
+        ));
+        assert!(local.record().grants().is_empty());
     }
 
     #[tokio::test]

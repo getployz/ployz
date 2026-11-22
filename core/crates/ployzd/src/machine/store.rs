@@ -1006,8 +1006,8 @@ impl LocalMachineStore {
     }
 
     /// Trust `trusted` as a CI or agent key, or edit the grant it holds as the same kind
-    /// when `trusted` was issued after it: its scope and Volumes become the new ones, so a
-    /// narrowing lands the same way. An older or equal issue time changes nothing, so an
+    /// when `trusted` was issued after it: its scope, Volumes and approver become the new
+    /// ones, so a narrowing lands the same way. An older or equal issue time changes nothing, so an
     /// older and wider step can't be replayed. Returns whether the record changed.
     ///
     /// # Errors
@@ -1039,9 +1039,7 @@ impl LocalMachineStore {
                 .find(|held| held.grant.key == trusted.grant.key)
             {
                 Some(held) if held.grant.issued_at < trusted.grant.issued_at => {
-                    held.grant.scope = trusted.grant.scope;
-                    held.grant.volumes = trusted.grant.volumes;
-                    held.grant.issued_at = trusted.grant.issued_at;
+                    *held = trusted;
                     Ok(true)
                 }
                 Some(_) => Ok(false),

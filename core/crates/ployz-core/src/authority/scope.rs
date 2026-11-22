@@ -202,6 +202,10 @@ pub enum Ask<'a> {
         service: &'a ServiceName,
         /// The version asks every Member to forget older ones.
         forgets: bool,
+        /// The spec it admits reaches its Server's host, as [`super::deploy::host_reach`]
+        /// says. A signed body names only a digest, so only the verifier holding the
+        /// spec sets this.
+        reaches_host: bool,
     },
     Rule,
     Key,
@@ -215,6 +219,9 @@ impl Ask<'_> {
     pub const fn what(self) -> &'static str {
         match self {
             Self::Version { forgets: true, .. } => "a forget",
+            Self::Version {
+                reaches_host: true, ..
+            } => "a version that reaches its Server's host",
             Self::Version { .. } => "a version of this Service",
             Self::Rule => "an automatic deploy rule",
             Self::Key => "a key change",
@@ -223,12 +230,15 @@ impl Ask<'_> {
         }
     }
 
-    const fn cap(self) -> Cap {
-        match self {
-            Self::Version { .. } | Self::Rule => Cap::Spec,
-            Self::Key => Cap::Key,
-            Self::Join | Self::PrivateAccess => Cap::Join,
-        }
+    const fn caps(self) -> CapSet {
+        CapSet(match self {
+            Self::Version {
+                reaches_host: true, ..
+            } => CapSet::bit(Cap::Spec) | CapSet::bit(Cap::HostReach),
+            Self::Version { .. } | Self::Rule => CapSet::bit(Cap::Spec),
+            Self::Key => CapSet::bit(Cap::Key),
+            Self::Join | Self::PrivateAccess => CapSet::bit(Cap::Join),
+        })
     }
 
     /// Whether a CI or agent key may sign it at all.
@@ -267,8 +277,8 @@ pub(super) fn allows(kind: KeyKind, scope: Option<&KeyScope>, ask: Ask<'_>) -> b
         None => (CapSet::ALL, &KeyPlaces::Cluster),
     };
     (kind.whole_cluster() || ask.scoped())
-        && caps.holds(ask.cap())
-        && kind.ceiling().holds(ask.cap())
+        && ask.caps().within(caps)
+        && ask.caps().within(kind.ceiling())
         && !(kind == KeyKind::Agent && *places == KeyPlaces::Cluster)
         && places.hold(ask)
 }

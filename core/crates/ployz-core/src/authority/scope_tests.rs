@@ -112,17 +112,35 @@ fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
     .unwrap()
 }
 
+fn privileged(name: &str) -> RequestedServiceSpec {
+    serde_json::from_value(json!({
+        "name": name,
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": IMAGE, "pull_policy": "missing", "privileged": true},
+    }))
+    .unwrap()
+}
+
 fn version_of(
     by: &Signer,
     namespace_name: &str,
     service_name: &str,
     forget_older: bool,
 ) -> Signed<ServiceVersion> {
+    version_for(by, namespace_name, &requested(service_name), forget_older)
+}
+
+fn version_for(
+    by: &Signer,
+    namespace_name: &str,
+    spec: &RequestedServiceSpec,
+    forget_older: bool,
+) -> Signed<ServiceVersion> {
     let body = ServiceVersion {
         cluster: cluster(),
         namespace: namespace(namespace_name),
-        service: service(service_name),
-        digest: PayloadDigest::of(&requested(service_name), &namespace(namespace_name)).unwrap(),
+        service: spec.name.clone(),
+        digest: PayloadDigest::of(spec, &namespace(namespace_name)).unwrap(),
         signed_at: at(NOW),
         signer: SignerKey::Device(by.public().into()),
         proposal: None,
@@ -138,7 +156,16 @@ fn admit(
     namespace_name: &str,
     service_name: &str,
 ) -> Result<version::VersionAdmitted, AuthorityRefusal> {
-    let spec = resolved(&requested(service_name));
+    admit_spec(versions, trusted, namespace_name, &requested(service_name))
+}
+
+fn admit_spec(
+    versions: &[Signed<ServiceVersion>],
+    trusted: &TrustedKeys,
+    namespace_name: &str,
+    requested: &RequestedServiceSpec,
+) -> Result<version::VersionAdmitted, AuthorityRefusal> {
+    let spec = resolved(requested);
     version::verify(
         versions,
         &VersionFacts {
@@ -146,7 +173,7 @@ fn admit(
             trusted,
             namespace: &namespace(namespace_name),
             creation: Creation {
-                service: &service(service_name),
+                service: &requested.name,
                 kind: ContainerKind::ServiceContainer,
                 spec: &spec,
             },
@@ -184,6 +211,35 @@ fn a_ci_key_admits_a_version_only_in_a_namespace_its_scope_names() {
             "web"
         ),
         Err(out_of_scope(KeyKind::Ci, "a version of this Service")),
+    );
+}
+
+#[test]
+fn a_ci_key_admits_no_version_that_reaches_its_servers_host() {
+    let trusted = ci_in_app();
+    let spec = privileged("web");
+
+    assert_eq!(
+        admit_spec(
+            &[version_for(&ci(), "app", &spec, false)],
+            &trusted,
+            "app",
+            &spec
+        ),
+        Err(out_of_scope(
+            KeyKind::Ci,
+            "a version that reaches its Server's host"
+        )),
+    );
+    assert!(
+        admit_spec(
+            &[version_for(&device(), "app", &spec, false)],
+            &trusted,
+            "app",
+            &spec
+        )
+        .is_ok(),
+        "a Device still approves it"
     );
 }
 

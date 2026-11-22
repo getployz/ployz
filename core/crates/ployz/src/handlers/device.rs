@@ -453,8 +453,8 @@ pub(super) async fn sign_waiting_join(
 }
 
 /// Narrow a pinned join's `body` to what its joiner installs, answering the Devices left out.
-/// The joiner trusts no passkey, and only the pinned Devices the body names. A relayed body
-/// is signed only for a Cluster this computer pinned.
+/// The joiner trusts no passkey or grant, and only the pinned Devices the body names. A
+/// relayed body is signed only for a Cluster this computer pinned.
 fn narrow_pinned_join(
     body: &mut ployz_core::authority::JoinApproval,
     own: DeviceKey,
@@ -462,6 +462,7 @@ fn narrow_pinned_join(
     pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
 ) -> Result<Vec<DeviceKey>, Error> {
     body.passkeys.clear();
+    body.grants.clear();
     if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
         return Err(Error::conflict(format!(
             "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
@@ -756,11 +757,24 @@ async fn keys_on(
         .map(|trusted| KeyRef::Passkey {
             key: trusted.passkey.public_key,
         });
+    let grants = details
+        .grants
+        .into_iter()
+        .filter(|trusted| trusted.grant.key.code() == code)
+        .map(|trusted| KeyRef::Signing {
+            key: trusted.grant.key.into(),
+        });
     let removed = details
         .removed_keys
         .into_iter()
         .filter(|key| key.code() == code);
-    Ok(Some(devices.chain(passkeys).chain(removed).collect()))
+    Ok(Some(
+        devices
+            .chain(passkeys)
+            .chain(grants)
+            .chain(removed)
+            .collect(),
+    ))
 }
 
 /// Remove the key `code` names on one Server, Device or passkey, for good. A Server with

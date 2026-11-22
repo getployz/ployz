@@ -203,6 +203,10 @@ pub enum Error {
         code: DeviceCode,
         held: ployz_core::authority::KeyKind,
     },
+    /// A key a Management Client slot holds keeps its connection, so it is never trusted as
+    /// a CI or agent key.
+    #[error("key {0} already holds a management client slot here")]
+    KeyIsClient(DeviceCode),
     #[error("This Server refused the key change: {0}")]
     KeyRefused(ployz_core::authority::AuthorityRefusal),
     /// No version of a forget opened here. The refusal names
