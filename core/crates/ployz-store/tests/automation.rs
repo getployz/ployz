@@ -2165,6 +2165,16 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     approve_rule(&store, &who, 1).unwrap();
     // The rule approves web as it stands, but a person's Deploy builds nothing under it.
     assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    // Once a push built and deployed it, a person's Deploy of the same settings reuses
+    // that build, and its Servers take the build's proof.
+    let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
+        .deployment
+        .id
+        .clone();
+    let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    built_on_github(&store, &build_id(&pushed, "web"), 41, "token-1", &image);
+    backend::run(&store, &pushed);
+    assert_eq!(unsigned(&store, &who), []);
     set(&store, &who, "web.env.GREETING", json!("hello"));
     assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
 }

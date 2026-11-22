@@ -124,11 +124,11 @@ pub struct Unsigned {
 pub enum Needs {
     /// A version the person signs.
     Version,
-    /// Its automatic deploy rule approved again: it builds from source, and the rule
-    /// doesn't approve its spec as it stands.
+    /// Its automatic deploy rule approved again: it builds from source, and no live rule
+    /// that tracks its branch approves its spec as it stands.
     Rule,
-    /// A build under its rule, which a push to its branch makes: the rule approves its
-    /// spec, but a Deploy a person admits carries no evidence of a build under it.
+    /// Its first Deploy under its rule, which a push to its branch makes: the rule
+    /// approves its spec, but no build under the rule has deployed it yet.
     Rebuild,
     /// Its image written by digest: it pulls a tag with a login, which no public lookup
     /// can pin for a person to sign.

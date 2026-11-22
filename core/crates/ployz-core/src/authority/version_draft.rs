@@ -1,7 +1,7 @@
 //! The versions a person's passkey signs in one prompt: one step of one bundle per
 //! Service, drafted where the person signs, from specs and tag pins Cloud relays.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -62,6 +62,8 @@ pub struct VersionStep {
 pub enum DraftError {
     #[error("No service to sign. Nothing signed.")]
     Empty,
+    #[error("{0} is listed twice. Nothing signed.")]
+    Twice(ServiceName),
     #[error("{0} has no digest pinned for its image. Nothing signed.")]
     Unpinned(ServiceName),
     #[error("The digest pinned for {0} names another image. Nothing signed.")]
@@ -77,7 +79,7 @@ impl VersionsAsked {
     /// one step of a bundle a passkey answers, in the order the lines show them.
     ///
     /// # Errors
-    /// Refuses before any bundle: no Service, a tag with no pin, a pin that isn't the tag
+    /// Refuses before any bundle: no Service, one listed twice, a tag with no pin, a pin that isn't the tag
     /// itself `@sha256:` and 64 hex digits, a Volume from another Environment, or a body
     /// with no canonical form.
     pub fn draft(mut self) -> Result<VersionsDraft, DraftError> {
@@ -85,7 +87,11 @@ impl VersionsAsked {
             return Err(DraftError::Empty);
         }
         let mut pins = BTreeMap::new();
+        let mut seen = BTreeSet::new();
         for spec in &self.services {
+            if !seen.insert(&spec.name) {
+                return Err(DraftError::Twice(spec.name.clone()));
+            }
             let image = &spec.container.image;
             if content_addressed(image) {
                 continue;

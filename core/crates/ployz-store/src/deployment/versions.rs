@@ -842,9 +842,10 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 /// Each Service of `target` that reaches data and that no signed version kept for what a
 /// claim would run covers, with what it needs before a person's Deploy can run it.
 ///
-/// A built Service whose spec its automatic deploy rule approves still needs a rebuild,
-/// which a push to its branch makes: GitHub builds under the rule only for a push, and an
-/// image a Deploy of its own Saved revision reuses carries no token.
+/// A built Service is left to its automatic deploy rule while the rule is live, tracks
+/// the Service's branch and approves its spec. Its first Deploy still needs a build under
+/// the rule, which a push to its branch makes; once one ran, a Deploy reuses that image
+/// while only run fields change, and carries its proof.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a row that doesn't read.
@@ -855,22 +856,39 @@ pub(crate) fn unsigned(
     (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
 ) -> Result<Vec<crate::Unsigned>, RpcError> {
     use crate::Needs;
-    let rule = crate::auto_rule::stored(tx, environment)?;
-    let approved: Vec<ServiceName> = match rule.as_ref().and_then(crate::auto_rule::opened) {
+    use ployz_core::config::ServiceSource;
+    let rule = crate::auto_rule::stored(tx, environment)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened)
+        .filter(|rule| !rule.ended);
+    let approved: Vec<ServiceName> = match rule {
         Some(rule) => {
+            let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
+                saved
+                    .services
+                    .iter()
+                    .filter(|service| crate::git::tracks(service, repository, &branch))
+                    .map(|service| service.config.private_dns.clone())
+                    .collect::<Vec<_>>()
+            });
             let sources = crate::auto_rule::sources(saved);
             let changed = crate::auto_rule::changed(&rule, namespace, target, &sources, &[]);
             rule.services
                 .into_iter()
                 .map(|service| service.name)
-                .filter(|service| !changed.contains(service))
+                .filter(|service| {
+                    !changed.contains(service)
+                        && tracking
+                            .as_ref()
+                            .is_some_and(|names| names.contains(service))
+                })
                 .collect()
         }
         None => Vec::new(),
     };
     let mut unsigned = Vec::new();
     for spec in target {
-        let login = nodes
+        let service = nodes
             .iter()
             .find_map(|node| match node {
                 TargetNode::Service { id, runtime, .. } if *runtime == spec.name => Some(id),
@@ -884,25 +902,25 @@ pub(crate) fn unsigned(
                     .services
                     .iter()
                     .find(|service| service.id == id.as_str())
-            })
-            .is_some_and(crate::registry::uses_login);
+            });
+        let login = service.is_some_and(crate::registry::uses_login);
         if ployz_core::authority::reach(spec, login).is_none() {
             continue;
         }
-        if let Some(ran) = would_run(tx, environment.as_str(), (nodes, spec), namespace)?
+        let reused = reused(tx, environment.as_str(), (nodes, spec), namespace)?;
+        if let Some(ran) = reused.clone().or_else(|| written(spec, namespace))
             && !versions_for(tx, organization, (namespace, &spec.name), ran.digest)?.is_empty()
         {
             continue;
         }
-        let image = &spec.container.image;
-        let needs = if ployz_core::is_built_image(image) && approved.contains(&spec.name) {
-            Needs::Rebuild
-        } else if ployz_core::is_built_image(image) {
-            Needs::Rule
-        } else if login && !content_addressed(image) {
-            Needs::Digest
-        } else {
-            Needs::Version
+        let built = service
+            .is_some_and(|service| !matches!(service.config.source, ServiceSource::Image { .. }));
+        let needs = match (built, approved.contains(&spec.name)) {
+            (true, true) if reused.is_some() => continue,
+            (true, true) => Needs::Rebuild,
+            (true, false) => Needs::Rule,
+            (false, _) if login && !content_addressed(&spec.container.image) => Needs::Digest,
+            (false, _) => Needs::Version,
         };
         unsigned.push(crate::Unsigned {
             service: spec.name.clone(),

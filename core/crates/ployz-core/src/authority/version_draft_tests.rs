@@ -140,3 +140,15 @@ fn a_pin_that_is_not_the_tag_itself_refuses_before_any_bundle() {
         Err(DraftError::Unpinned(_))
     ));
 }
+
+#[test]
+fn a_service_listed_twice_refuses_before_any_bundle() {
+    let mut twice = asked(pinned(&format!("postgres:17@{DIGEST}")));
+    twice
+        .services
+        .push(spec("postgres", &format!("postgres:16@{DIGEST}")));
+    assert!(matches!(
+        twice.draft(),
+        Err(DraftError::Twice(service)) if service.as_str() == "postgres"
+    ));
+}

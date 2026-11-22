@@ -661,7 +661,7 @@ impl Run {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
                     receipts.extend(built);
-                    rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
+                    rules = rule_proofs(session, &claimed, &receipts, self).await;
                     self.prepare(session, claimed, targets, (receipts, pins))
                         .await
                 }
@@ -1550,7 +1550,7 @@ async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
     receipts: &BTreeMap<ServiceName, BuildReceipt>,
-    reader: Option<&ployz_core::GithubToken>,
+    run: &Run,
 ) -> crate::deploy::RuleProofs {
     use ployz_core::authority::{
         BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
@@ -1573,6 +1573,32 @@ async fn rule_proofs(
                     reader: None,
                 },
             );
+        }
+    }
+    // An image this Deployment reuses without its own evidence carries what a Server
+    // issued for it before, as a drain's copy does, and needs no token or branch head.
+    for (service, receipt) in receipts {
+        let Ok(image) = BuiltImageDigest::parse(&receipt.image.reference) else {
+            continue;
+        };
+        if proofs.contains(service) {
+            continue;
+        }
+        let (deployment, namespace, name) = (
+            run.deployment.clone(),
+            claimed.intent.namespace.clone(),
+            service.clone(),
+        );
+        match super::store_call(&run.store, move |store| {
+            store.verified_proof(&deployment, (&namespace, &name), image)
+        })
+        .await
+        {
+            Ok(Some(proof)) => proofs.insert(service.clone(), proof),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, %service, "could not read a reused image's verified build")
+            }
         }
     }
     if claimed.image_tokens.is_empty() {
@@ -1633,7 +1659,7 @@ async fn rule_proofs(
                 rule: signed.clone(),
                 evidence: RuleEvidence::Online(token),
                 claim,
-                reader: reader.cloned(),
+                reader: run.reader.clone(),
             },
         );
     }

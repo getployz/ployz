@@ -388,6 +388,25 @@ impl ConfigStore {
             .read(|tx| deployment::versions::versions(tx, organization.as_str(), query))
     }
 
+    /// The newest verified build kept for `image` of Service `service` in `namespace`,
+    /// under the rule its Environment keeps now: what Deployment `deployment`'s runner
+    /// carries for a rule-built image it reuses, as a drain does for a copy. In-process
+    /// only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn verified_proof(
+        &self,
+        deployment: &DeploymentId,
+        service: (&ployz_core::Namespace, &ployz_core::ServiceName),
+        image: ployz_core::authority::BuiltImageDigest,
+    ) -> Result<Option<ployz_core::authority::RuleProof>, RpcError> {
+        self.storage.read(|tx| {
+            let organization = deployment::organization(tx, deployment)?;
+            build::verified_proof(tx, organization.as_str(), service, image)
+        })
+    }
+
     /// Keep what the Servers issued for the images Deployment `deployment` ran, by
     /// runtime Service, for a later Deployment or drain of the same image. In-process
     /// only.
