@@ -58,10 +58,10 @@ pub(crate) async fn inspect_id(
 
 /// A failed [`inspect`] as the module's [`Error`].
 pub(crate) fn failed(error: DockerError) -> Error {
-    match error {
-        DockerError::JsonSerdeError { err } => Error::Json(err),
-        error => Error::Docker(error),
-    }
+    let DockerError::JsonSerdeError { err } = error else {
+        return Error::Docker(error);
+    };
+    Error::Json(err)
 }
 
 /// A time Docker stamped in `State`, such as `StartedAt`.
