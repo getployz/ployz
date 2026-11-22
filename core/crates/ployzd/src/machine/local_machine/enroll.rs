@@ -33,16 +33,13 @@ impl LocalMachine {
         let now = self
             .approvals
             .observed_now(ployz_core::authority::Timestamp::now())?;
-        let (plan, installation) = self
+        let plan = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery, now))
             .await??;
         let machine = match plan {
-            EnrollPlan::Fresh => {
-                let machine = installation
-                    .machine()
-                    .cloned()
-                    .expect("an enrollment owns its Machine");
+            EnrollPlan::Fresh(installation) => {
+                let machine = installation.machine().clone();
                 let docker = self.containers.as_ref().map(ContainerRuntime::local_docker);
                 let leftovers = NetworkPlane::leftovers(
                     docker.as_ref().map(LocalDocker::client),

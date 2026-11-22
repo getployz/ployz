@@ -85,7 +85,7 @@ fn a_pinned_join_refuses_a_forged_approval() {
     // and Device opens, and joins the forger's Cluster, not this one.
     assert_eq!(
         store.enroll(member(forged, None)).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert_eq!(
         store.record().devices().collect::<Vec<_>>(),
@@ -111,7 +111,7 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
         store
             .enroll(member(registration, Some(cluster.pin())))
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
 
     drop(store);
@@ -145,7 +145,7 @@ fn a_pinned_join_trusts_no_device_the_pin_leaves_out_even_when_the_approval_name
 
     assert_eq!(
         store.enroll(member(registration, Some(pin))).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
 
     drop(store);
@@ -197,7 +197,7 @@ fn only_an_unpinned_joiner_trusts_the_passkeys_its_approval_carries() {
     let relayed = approved(&clouds_cluster, &pinned.record().clone(), vec![passkey(8)]);
     assert_eq!(
         pinned.enroll(member(relayed, Some(cluster.pin()))).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert_eq!(
         pinned.record().membership_cluster,
@@ -213,7 +213,7 @@ fn only_an_unpinned_joiner_trusts_the_passkeys_its_approval_carries() {
     );
     assert_eq!(
         unpinned.enroll(member(genuine, None)).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     let device = cluster.device().code();
     assert_eq!(
@@ -232,7 +232,7 @@ fn a_replayed_join_keeps_the_devices_it_enrolled_with() {
     let registration = cluster.registration(store.record());
     assert_eq!(
         store.enroll(member(registration.clone(), None)).unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
 
     let other_issuer = Registered {
