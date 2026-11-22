@@ -9404,6 +9404,7 @@ fn admit_services(
             prune: false,
             no_prune: false,
             versions,
+            recreate: false,
         }),
         &Trusted::default(),
     )
@@ -9416,6 +9417,70 @@ fn a_deploy_of_one_service_keeps_the_pin_of_an_unchanged_service_it_references()
     let web = posted(&store, &who, "web", P1);
     admit_services(&store, &who, (2, &["web"]), vec![web]).unwrap();
     assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+}
+
+/// The digest Deployment `n` runs `service` at, and the digest each signed version it
+/// sends for it names.
+fn admitted_by(
+    store: &ConfigStore,
+    n: u8,
+    service: &str,
+) -> (
+    ployz_core::authority::PayloadDigest,
+    Vec<ployz_core::authority::PayloadDigest>,
+) {
+    let claimed = store.claim(&id(n), &runner("runner-a")).unwrap();
+    let ran = &claimed.ran[&ServiceName::parse(service).unwrap()];
+    let signed = ran
+        .versions
+        .iter()
+        .map(|version| version.open().unwrap().digest)
+        .collect();
+    (ran.ran.digest, signed)
+}
+
+#[test]
+fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_under_what_a_person_signed()
+ {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let api = signed_spec(&store, &who, "api", P1);
+    let root = signed_spec(&store, &who, "web", P1);
+    let child = |n: u8, recreate: bool| {
+        let version = ployz_store::PostedVersion {
+            statement: edit("web", signed_spec(&store, &who, "web", P2), root),
+            pin: Some(ployz_store::TagPin {
+                tag: "nginx:1".to_owned(),
+                image: P2.to_owned(),
+            }),
+            births: Default::default(),
+        };
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: vec![version],
+                    recreate,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    // A silent `deploy web --image`, then a key rotation's redeploy of what it signed.
+    for (n, recreate) in [(2, false), (3, true)] {
+        child(n, recreate);
+        assert_eq!(admitted_by(&store, n, "api"), (api, vec![api]), "#{n}");
+        apply(&store, n);
+    }
 }
 
 #[test]
