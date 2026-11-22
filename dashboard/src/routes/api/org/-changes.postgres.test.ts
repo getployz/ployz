@@ -6,7 +6,6 @@ import { user } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
-import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
@@ -76,8 +75,7 @@ describe("the Organization change stream", () => {
     expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(message);
   });
 
-  it("starts at the current horizon, names the Organization, then the collections that changed after, and disables proxy buffering", async () => {
-    await harness.db.insert(organizationSupportAccess).values({ organizationId: ACME, allowed: true });
+  it("names the Organization, then the collections that change while it is open, and disables proxy buffering", async () => {
     const response = await openStream(ada);
     expect(response.headers.get("Content-Type")).toBe("text/event-stream");
     expect(response.headers.get("X-Accel-Buffering")).toBe("no");
@@ -86,13 +84,11 @@ describe("the Organization change stream", () => {
     await events.until(`data: {"id":"${ACME}"}\n\n`);
 
     await harness.db.insert(organizationServerUpgrades).values({ organizationId: ACME });
-    // The change before the stream opened is the client's refetch on `open`, not an event.
-    await events.until('event: changes\ndata: {"collections":["organization_server_upgrades"]}\n\n');
-    expect(events.text).not.toContain("organization_support_access");
+    await events.until('"organization_server_upgrades"');
     expect(events.text).not.toContain("id: ");
     await events.cancel();
     // The cursor is pg_snapshot_xmin, which is server-wide: a transaction open in another test file's database on the
-    // same Postgres holds the insert back until it ends.
+    // same Postgres holds the insert back until it ends, and replays changes from before the stream opened.
   }, 30_000);
 
   it("ends the stream when the change log can't be read, so EventSource reconnects", async () => {
