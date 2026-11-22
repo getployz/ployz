@@ -128,7 +128,7 @@ pub enum CheckConclusion {
 
 impl CheckConclusion {
     /// The conclusions that let a Deployment waiting for CI go.
-    pub(crate) const PASSING: [Self; 3] = [Self::Success, Self::Neutral, Self::Skipped];
+    const PASSING: [Self; 3] = [Self::Success, Self::Neutral, Self::Skipped];
 
     fn passed(self) -> bool {
         Self::PASSING.contains(&self)
@@ -1114,6 +1114,24 @@ fn consented(
         Ok(_) | Err(_) => Ok(Vec::new()),
     }
 }
+
+/// A SQL condition over an unaliased `config_deployment` row: a check suite of its
+/// pushed commit completed without passing, by the rule [`passed`] lets it go by.
+pub(crate) static CI_FAILED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let passing = CheckConclusion::PASSING
+        .iter()
+        .map(|conclusion| format!("'{}'", name_of(conclusion)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let completed = name_of(CheckStatus::Completed);
+    format!(
+        "EXISTS (SELECT 1 FROM config_check_suite s \
+         WHERE s.organization_id = config_deployment.organization_id \
+         AND s.repository_id = config_deployment.push_repository_id \
+         AND s.head = config_deployment.push_head AND s.status = '{completed}' \
+         AND COALESCE(s.conclusion, '') NOT IN ({passing}))"
+    )
+});
 
 /// Whether every check suite of commit `head` of `repository_id` completed and
 /// passed; false until GitHub reported one.
