@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
-import { currentChangeCursor } from "#/modules/organization/change-log.server";
+import { currentChangeCursor } from "#/collections/change-log/change-log.server";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
-import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
+import { readOrganizationChanges } from "#/collections/change-log/org-changes.server";
 import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 

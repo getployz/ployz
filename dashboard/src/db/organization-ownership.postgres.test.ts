@@ -3,7 +3,7 @@ import { changeNameSources, storeViewSources } from "#/collections/change-source
 import { collectionNames } from "#/collections/read.contract";
 import { Effect } from "effect";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
-import { changeSources } from "#/modules/organization/change-log.sources";
+import { changeSources } from "#/collections/change-log/change-log.sources";
 import {
   type PostgresTestHarness,
   startPostgresTestHarness,

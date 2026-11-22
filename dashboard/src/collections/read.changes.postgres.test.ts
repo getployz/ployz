@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { QueryClient } from "@tanstack/react-query";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { collectionsOf, changeNameSources } from "./change-sources";
-import { pruneChangeLog, readChangeWindow } from "#/modules/organization/change-log.server";
+import { pruneChangeLog, readChangeWindow } from "#/collections/change-log/change-log.server";
 import { readCollection } from "./read.server";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import { orgStoreTableNames } from "#/test/org-store-tables";

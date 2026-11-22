@@ -1,6 +1,6 @@
 import * as EffectRecord from "effect/Record";
 import type { ChangeName, StoreViewName } from "./read.contract";
-import type { ChangeSource } from "#/modules/organization/change-log.sources";
+import type { ChangeSource } from "#/collections/change-log/change-log.sources";
 
 /**
  * The Config Store's table families, shaped like `changeNameSources`: a family's first source is its key table and

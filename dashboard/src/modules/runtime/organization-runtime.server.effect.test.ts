@@ -19,7 +19,7 @@ import {
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { runtimeSealingDigest } from "#/modules/machines/runtime-frame-records.server";
-import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { OrganizationChangeLogFailure } from "#/collections/change-log/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { type ConnectionAborts, connectionAborts } from "#/test/connection-aborts";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";

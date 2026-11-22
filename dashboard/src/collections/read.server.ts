@@ -8,12 +8,12 @@ import type { CollectionRead, CollectionReadInput } from "./read.contract";
 import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
-import { changeSources } from "#/modules/organization/change-log.sources";
+import { changeSources } from "#/collections/change-log/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { ClusterNameRow } from "#/modules/cluster-name/cluster-name";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
 import type { SupportAccessRow } from "#/modules/support-access/support-access";
-import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { readChangeWindow, type OrganizationChangeLogFailure } from "#/collections/change-log/change-log.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 

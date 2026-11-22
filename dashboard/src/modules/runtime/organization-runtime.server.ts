@@ -10,7 +10,7 @@ import {
   loadOrganizationConnections,
   logForeignServers,
 } from "#/modules/runtime/connections.server";
-import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/collections/change-log/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 

@@ -1,4 +1,4 @@
-import { pruneChangeLog } from "#/modules/organization/change-log.server";
+import { pruneChangeLog } from "#/collections/change-log/change-log.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
