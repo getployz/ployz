@@ -17,7 +17,7 @@ use super::*;
 use crate::{
     github::test_support::{CLAIMS, TEST_KID, keys_with_test_signer, signed_by_test_signer},
     machine::{LocalMachineStore, RecordOwner},
-    management::build_grant::Mint,
+    management::build_grant::{Mint, Minter},
     sealed_env::test_support::Cluster,
 };
 
@@ -311,7 +311,7 @@ async fn a_valid_token_mints_and_its_secrets_open_only_for_the_build() {
             rule: Some(grant),
         },
         Some(&fixture.sealing.dir.0),
-        Some(admitted),
+        Minter::Rule(admitted),
     );
     assert!(mint.is_ok(), "{:?}", mint.err());
 }

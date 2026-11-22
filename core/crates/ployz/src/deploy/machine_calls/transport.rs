@@ -12,12 +12,10 @@ use ployz_core::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::machine_ops::{
-    CopyLifecycle, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session,
-};
+use super::{CopyLifecycle, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session};
 
-pub(super) const RESTART_WAIT: Duration = Duration::from_secs(60);
-pub(super) const RESTART_POLL: Duration = Duration::from_millis(250);
+pub(in crate::deploy) const RESTART_WAIT: Duration = Duration::from_secs(60);
+pub(in crate::deploy) const RESTART_POLL: Duration = Duration::from_millis(250);
 
 // Wait out a target daemon restart on the same Machine. A new Container's
 // creation key makes a resent Running find the Container the lost reply made.
@@ -166,7 +164,7 @@ restart_policy! {
     }
 }
 
-pub(super) async fn wait_out_restart<T, Fut, Redial>(
+pub(in crate::deploy) async fn wait_out_restart<T, Fut, Redial>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
     mut redial: impl FnMut() -> Redial,

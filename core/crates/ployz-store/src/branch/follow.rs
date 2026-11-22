@@ -95,7 +95,7 @@ pub(crate) fn follow(
                 match locked
                     .and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages, trusted))
                 {
-                    Err(error) if crate::automation::skippable(&error) => Vec::new(),
+                    Err(error) if crate::error::skippable(&error) => Vec::new(),
                     done => done?,
                 }
             }
@@ -153,7 +153,7 @@ pub(crate) fn follow(
                 });
                 match withdrawn {
                     Ok(false) => refused.push(lineage),
-                    Err(error) if crate::automation::skippable(&error) => refused.push(lineage),
+                    Err(error) if crate::error::skippable(&error) => refused.push(lineage),
                     done => {
                         done?;
                     }
@@ -266,7 +266,7 @@ fn into(
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
-            Err(error) if crate::automation::skippable(&error) => landing.clear(),
+            Err(error) if crate::error::skippable(&error) => landing.clear(),
             landed => {
                 landed?;
             }

@@ -1,4 +1,3 @@
-use clap::ArgMatches;
 use ployz_core::Region;
 use ployz_core::{Hint, InitialMachinePolicy, Machine, MachineLabelKey, MachineLabelValue};
 use ployz_store::region_key;
@@ -50,11 +49,11 @@ impl AskedPolicy {
 
     /// The policy of the Server this enrollment lands on: `existing`, or a new Server when
     /// `None`. Enrollment never edits a Server, so a region asked for one already elsewhere
-    /// is refused.
+    /// is refused, naming the command `rerun` builds to move it.
     pub(crate) fn settle(
         &self,
         existing: Option<&Machine>,
-        reach: &ArgMatches,
+        rerun: impl Fn(&[&str]) -> String,
     ) -> Result<InitialMachinePolicy, Error> {
         let key = region_label()?;
         let region = match existing {
@@ -66,7 +65,7 @@ impl AskedPolicy {
                         region_key(held.as_str()).is_ok_and(|held| held == *asked)
                     })
                 {
-                    return Err(elsewhere(server, held, asked, reach));
+                    return Err(elsewhere(server, held, asked, rerun));
                 }
                 held.cloned()
             }
@@ -85,7 +84,7 @@ fn elsewhere(
     server: &Machine,
     held: Option<&MachineLabelValue>,
     asked: &Region,
-    reach: &ArgMatches,
+    rerun: impl Fn(&[&str]) -> String,
 ) -> Error {
     let name = &server.name;
     let now = held.map_or_else(
@@ -96,8 +95,11 @@ fn elsewhere(
     Error::conflict(format!(
         "Server {name} {now}, not {asked}. Adding it again doesn't move it."
     ))
-    .hint(Hint::Next(crate::handlers::rerun(
-        reach,
-        &["server", "set", name.as_str(), "--label-add", &label],
-    )))
+    .hint(Hint::Next(rerun(&[
+        "server",
+        "set",
+        name.as_str(),
+        "--label-add",
+        &label,
+    ])))
 }

@@ -1,24 +1,31 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Mutex,
+    time::Duration,
 };
 
 use ployz_core::{
-    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerPlacementUpdated, ContainerRefusal,
-    ContainerRefusalReason, ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId,
-    DockerVolumeName, EnsuredContainer, HealthFailure, HealthObservation, HookFailure, ImagePulled,
-    LastHealthCheck, MembershipObservation, Namespace, NewContainer, OutOfMemory, RotationTarget,
-    RoutesRead, RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult, UpdateOrder,
+    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerObservation,
+    ContainerPlacementUpdated, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, CreationKey, DependencyHealthFailure, DockerVolumeId,
+    DockerVolumeName, EnsuredContainer, Gen, HealthFailure, HealthObservation, HookFailure,
+    ImagePulled, LastHealthCheck, MembershipObservation, Namespace, NewContainer, OutOfMemory,
+    RotationTarget, RoutesRead, RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult,
+    UpdateOrder,
 };
 
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
 use ployz_decide::rotation::{Checked, RotationWant, in_rotation, in_rotation_refusal};
 
-use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
-use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
+use super::gens::STORED_GENS_WAIT;
 use super::*;
 use crate::deploy::cleanup::ACK_POLL;
+use crate::deploy::machine_calls::{
+    CopyLifecycle, DeployOperations, Listed, RedialFailure, Session, Unanswered,
+    omission_requires_observation,
+};
+use crate::deploy::machine_calls::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
 
 fn test_namespace() -> Namespace {
     Namespace::parse("app").unwrap()
@@ -1514,24 +1521,6 @@ impl DeployOperations for Scripted {
             },
             Err,
         )
-    }
-}
-
-impl ProxyPlacement for Scripted {
-    async fn set_ingress_doors(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetIngressDoorsRequest,
-    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
-        unreachable!("a Deploy never places the Ingress Proxy")
-    }
-
-    async fn set_private_access(
-        &self,
-        _machine_id: &MachineId,
-        _request: ployz_core::SetPrivateAccessRequest,
-    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
-        unreachable!("a Deploy never places the Private Access router")
     }
 }
 

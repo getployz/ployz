@@ -309,13 +309,12 @@ pub(crate) fn plan(
     )?;
     let (lowered, volumes) = match query.target {
         true => (
-            Some(lowered_target(
-                tx,
-                who,
-                trusted,
-                (&environment, &target),
-                query,
-            )?),
+            // The specs of the Services it ships, for a Device to approve before it
+            // admits the Deploy.
+            Some({
+                trusted.writes(&environment.summary.name)?;
+                saved_target(tx, who, trusted, (&environment, &target), &query.services)?
+            }),
             crate::volume::birth::planned(tx, &environment.summary.id, &target)?,
         ),
         false => (None, PlannedVolumes::new()),
@@ -388,12 +387,8 @@ fn redeploy_plan(
         true => {
             trusted.writes(&environment.summary.name)?;
             let saved = deployment::held_revision(tx, &stored)?;
-            let lowered = deployment::lowered(tx, &stored, &saved)?;
-            let mut target = lowered.intent.target;
-            // A narrowed Deployment creates only what it ships, as a narrowed Deploy does.
-            if !stored.targeting().is_full() {
-                target.retain(|spec| lowered.shipped.contains(&spec.name));
-            }
+            let target =
+                deployment::lowered(tx, &stored, &saved)?.created(!stored.targeting().is_full());
             let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &saved)?;
             (Some(target), volumes)
         }
@@ -413,19 +408,6 @@ fn redeploy_plan(
     })
 }
 
-/// `target` lowered as a claim of a Deploy of it would: the specs of the Services it
-/// ships, for a Device to approve before it admits the Deploy.
-fn lowered_target(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    trusted: &crate::Trusted,
-    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
-    query: &PlanQuery,
-) -> Result<Vec<RequestedServiceSpec>, RpcError> {
-    trusted.writes(&environment.summary.name)?;
-    saved_target(tx, who, trusted, (environment, target), &query.services)
-}
-
 /// `target` lowered as a claim of a Deploy of it would, narrowed to `services` unless
 /// that is empty. An automatic deploy rule approves these specs, less their images.
 pub(crate) fn saved_target(
@@ -438,10 +420,6 @@ pub(crate) fn saved_target(
     let id = &environment.summary.id;
     let mut saved = target.clone();
     crate::volume::size::held(tx, id, &mut saved.volumes)?;
-    let branch = crate::branch::lowering(tx, id, &saved)?;
-    let deployed = deployment::deployed_volumes(tx, id, &saved)?;
-    let born = crate::volume::birth::born(tx, id)?;
-    let first_copies = crate::volume::first_copy::first_copies(tx, id)?;
     let removals = deployment::ServiceRemovals::default();
     let ships = match services.is_empty() {
         true => deployment::Ships::All {
@@ -459,23 +437,15 @@ pub(crate) fn saved_target(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    deployment::lower(
+    deployment::lower_held(
+        tx,
         id,
         &saved,
-        (&deployed, &born, &first_copies),
         &ships,
         (namespace, cluster_domain),
-        &branch,
         &who.organization,
     )
-    .map(|lowered| {
-        let mut target = lowered.intent.target;
-        // A narrowed Deploy creates only what it ships; the rest ride along unchanged.
-        if !services.is_empty() {
-            target.retain(|spec| lowered.shipped.contains(&spec.name));
-        }
-        target
-    })
+    .map(|lowered| lowered.created(!services.is_empty()))
 }
 
 /// Every Namespace `who`'s Environments own.

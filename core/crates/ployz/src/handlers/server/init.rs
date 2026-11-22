@@ -89,7 +89,8 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             &mut target,
             EnrollRequest {
                 role: EnrollAs::Founder {
-                    initial_policy: policy.settle(None, matches)?,
+                    initial_policy: policy
+                        .settle(None, |args| crate::handlers::rerun(matches, args))?,
                     name,
                     cluster_network,
                     public_ip: token.public_ip,

@@ -21,8 +21,8 @@ use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, Place, ReviewComparisonRole,
     ReviewLifecycleKind, ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId,
     SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting,
-    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
+    ServiceSettingChange, ServiceSource, Setting, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use ployz_core::{Region, RpcError};
 use serde::{Deserialize, Serialize};
@@ -752,7 +752,7 @@ pub fn introduced_source(
                 Setting::Source,
                 json!(repository),
             )];
-            if let ServiceGitBranch::Connected { name } = branch {
+            if let Some(name) = crate::git::branch_name(branch) {
                 parts.push((
                     ServiceSetting::Git(GitSetting::Branch),
                     Setting::Branch,
@@ -1078,8 +1078,11 @@ pub(crate) fn touches_source(
         .iter()
         .filter(
             |service| match before.iter().find(|old| old.id == service.id) {
-                Some(old) => git_source(old) != git_source(service),
-                None => git_source(service).is_some(),
+                Some(old) => {
+                    crate::git::built_from(&old.config.source)
+                        != crate::git::built_from(&service.config.source)
+                }
+                None => crate::git::built_from(&service.config.source).is_some(),
             },
         )
         .map(|service| service.slug.as_str())
@@ -1088,18 +1091,6 @@ pub(crate) fn touches_source(
         return Ok(None);
     }
     Ok(Some(json!({ "services": changed })))
-}
-
-/// The repository and deploy branch a GitHub merge ships `service` from, if any.
-fn git_source(service: &SavedServiceIntent) -> Option<(u64, &ServiceGitBranch)> {
-    match &service.config.source {
-        ServiceSource::Git {
-            repository_id,
-            branch,
-            ..
-        } => Some((*repository_id, branch)),
-        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
-    }
 }
 
 /// Replace the consent saved with `revision`, which an unchanged Save renews.
