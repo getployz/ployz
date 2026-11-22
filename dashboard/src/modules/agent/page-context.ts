@@ -32,7 +32,19 @@ export function renderPageContext(context: PageContext): string {
   return `${TAG}${attributes.join(" ")}/>`;
 }
 
-export const isPageContext = (text: string) => text.startsWith(TAG);
+const isPageContext = (text: string) => text.startsWith(TAG);
+
+/**
+ * What the member typed: a message's text without the page block Cloud put before it, so a page named "deploy"
+ * deploys nothing. Takes a model message's `content` or a chat message's `parts`.
+ */
+export function typedText(content: ModelMessage["content"] | ReadonlyArray<{ readonly type: string }>, separator = ""): string {
+  if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+  const parts: ReadonlyArray<{ readonly type: string }> = content;
+  return parts.flatMap((part) =>
+    part.type === "text" && "content" in part && typeof part.content === "string" && !isPageContext(part.content) ? [part.content] : [],
+  ).join(separator);
+}
 
 /** The block a member message opens with, if any. */
 export function pageContextOf(message: ModelMessage): string | undefined {

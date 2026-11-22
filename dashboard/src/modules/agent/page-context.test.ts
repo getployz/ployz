@@ -1,7 +1,7 @@
 import type { ModelMessage } from "@tanstack/ai";
 import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { isPageContext, PageContext, latestPageContext, placeForCall, placeOfPage, renderPageContext, withPageContext } from "./page-context";
+import { PageContext, latestPageContext, placeForCall, placeOfPage, renderPageContext, typedText, withPageContext } from "./page-context";
 
 describe("renderPageContext", () => {
   it("writes every named field in a fixed order, whatever order the object holds them in", () => {
@@ -58,7 +58,13 @@ describe("latestPageContext", () => {
 
   it("is nothing for a thread without one", () => {
     expect(latestPageContext([said("hi")])).toBeUndefined();
-    expect(isPageContext("hi")).toBe(false);
+  });
+});
+
+describe("typedText", () => {
+  it("is what the member typed, without the page block", () => {
+    expect(typedText(said("deploy it", block("servers")).content)).toBe("deploy it");
+    expect(typedText("plain")).toBe("plain");
   });
 });
 
