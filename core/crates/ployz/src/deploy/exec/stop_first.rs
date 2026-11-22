@@ -7,7 +7,7 @@ use super::{
 };
 use super::{
     GroupRecord, OperationFailure, Ran, Shared, health_error, inspect, machine_error, operation_at,
-    remove, stop,
+    remove_by_id, stop,
 };
 use crate::deploy::cleanup::{EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::machine_calls::MachineOperations;
@@ -175,7 +175,7 @@ pub(super) async fn replace_stop_first<C: MachineOperations>(
             let was_running = match old.runtime {
                 ContainerRuntimeObservation::Created
                 | ContainerRuntimeObservation::Exited { .. }
-                | ContainerRuntimeObservation::Dead => old.is_system_ingress(),
+                | ContainerRuntimeObservation::Dead => !shared.plan.routed(&old.identity()),
                 ContainerRuntimeObservation::Removing => false,
                 ContainerRuntimeObservation::Running { .. }
                 | ContainerRuntimeObservation::Paused
@@ -226,7 +226,7 @@ pub(super) async fn withdraw<C: MachineOperations>(
     let mut copy = cleanup::Copy::observed(old);
     let (step, now) = match &copy.rotation {
         CopyRotation::Pending | CopyRotation::Out => return None,
-        _ if old.is_system_ingress() => return None,
+        _ if !shared.plan.routed(&old.identity()) => return None,
         CopyRotation::In => (
             cleanup::hold(client, &copy, shared.plan.run().clone(), cancellation).await,
             CopyRotation::Held(shared.plan.run().clone()),
@@ -529,7 +529,7 @@ pub(super) async fn compensate<C: MachineOperations>(
     row.running(OperationPhase::Compensating);
     let stop_new_container = match new_container {
         Some(container_id) => Some(StopAttempt::from(
-            remove(client, &operation.machine_id, &container_id, Drain::NONE).await,
+            remove_by_id(client, &operation.machine_id, &container_id, Drain::NONE).await,
         )),
         None => None,
     };
@@ -819,7 +819,7 @@ async fn withdraw_step<C: MachineOperations>(
         .values()
         .filter_map(|observed| observed.as_ref().ok()?.as_ref())
         .any(|observed| {
-            !observed.is_system_ingress()
+            shared.plan.routed(&observed.identity())
                 && matches!(
                     observed.rotation(),
                     CopyRotation::In | CopyRotation::Held(_)
@@ -830,7 +830,8 @@ async fn withdraw_step<C: MachineOperations>(
             .filter(|_| withdraws)
             .filter_map(|(task, observed)| Some((*task, observed.as_ref().ok()?.as_ref()?)))
             .filter(|(_, observed)| {
-                *observed.rotation() == CopyRotation::Pending && !observed.is_system_ingress()
+                *observed.rotation() == CopyRotation::Pending
+                    && shared.plan.routed(&observed.identity())
             })
             .map(|(task, observed)| async move {
                 let copy = cleanup::Copy::observed(observed);

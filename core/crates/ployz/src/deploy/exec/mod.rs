@@ -347,7 +347,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             QualifiedService::new(plan.namespace.clone(), service.clone())
                         });
                         if let Some((service, new)) = service
-                            .filter(|service| *service != QualifiedService::system_ingress())
+                            .filter(|service| shared.plan.routed(service))
                             .zip(rolling_step(operation, ran.started))
                         {
                             inflight.push(Either::Left(Either::Right(async move {
@@ -787,6 +787,12 @@ impl<'a> PlanFacts<'a> {
         QualifiedService::new(self.namespace.clone(), name.clone())
     }
 
+    /// Whether proxies route `service`'s copies. The Ingress Proxy's stay Pending for
+    /// life and no route lists them, so none is withdrawn, routed or waited on.
+    fn routed(&self, service: &QualifiedService) -> bool {
+        *service != QualifiedService::system_ingress()
+    }
+
     /// The Service rollout removal `index` retires a copy of.
     fn removed_by(&self, index: usize) -> Option<QualifiedService> {
         self.removals.get(&index).map(|name| self.service(name))
@@ -1074,36 +1080,20 @@ async fn stop<C: MachineOperations>(
     .map_err(|error| machine_error(MachineAction::StopContainer, error))
 }
 
-async fn remove<C: MachineOperations>(
+/// Remove a Container by its id, with its anonymous Volumes.
+async fn remove_by_id<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
     drain: Drain,
 ) -> Result<(), ExecutionError> {
-    gone(
-        client,
-        machine_id,
-        ContainerLocator::Id(*container_id),
-        drain,
-        AnonymousVolumes::Remove,
-    )
-    .await
-}
-
-async fn gone<C: MachineOperations>(
-    client: &C,
-    machine_id: &MachineId,
-    container: ContainerLocator,
-    drain: Drain,
-    anonymous_volumes: AnonymousVolumes,
-) -> Result<(), ExecutionError> {
     client
         .ensure_container(
             machine_id,
             ContainerWant::Gone {
-                container,
+                container: ContainerLocator::Id(*container_id),
                 drain,
-                anonymous_volumes,
+                anonymous_volumes: AnonymousVolumes::Remove,
             },
         )
         .await

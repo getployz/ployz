@@ -111,8 +111,8 @@ pub(super) async fn remove_stray<C: MachineOperations>(
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
-    let removed = tokio::time::timeout(
-        RESTART_WAIT,
+    let removed = within_restart(
+        machine_id,
         cleanup::gone(
             client,
             machine_id,
@@ -123,14 +123,7 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         ),
     );
     let answer = tokio::select! {
-        answer = removed => answer.unwrap_or_else(|_| {
-            Err(crate::cluster::answered_by(
-                machine_id,
-                ConnectError::Rpc(TransportError::budget_expired(
-                    "target Machine RPC timed out",
-                )),
-            ))
-        }),
+        answer = removed => answer,
         () = cancellation.cancelled() => {
             shared.report.name_left(progress, service, *machine_id, container_id, "interrupted".into());
             return;
@@ -467,15 +460,25 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
             anonymous_volumes: AnonymousVolumes::Remove,
         },
     );
-    match tokio::time::timeout(RESTART_WAIT, discarded).await {
-        Ok(result) => result.map(|_| ()),
-        Err(_) => Err(crate::cluster::answered_by(
-            machine_id,
-            ConnectError::Rpc(TransportError::budget_expired(
-                "target Machine RPC timed out",
-            )),
-        )),
-    }
+    within_restart(machine_id, discarded).await.map(|_| ())
+}
+
+/// `removal`'s answer, or, once it has gone unanswered for as long as a restart takes,
+/// the error of a target Machine that timed out.
+async fn within_restart<T>(
+    machine_id: &MachineId,
+    removal: impl std::future::Future<Output = Result<T, RpcError>>,
+) -> Result<T, RpcError> {
+    tokio::time::timeout(RESTART_WAIT, removal)
+        .await
+        .unwrap_or_else(|_| {
+            Err(crate::cluster::answered_by(
+                machine_id,
+                ConnectError::Rpc(TransportError::budget_expired(
+                    "target Machine RPC timed out",
+                )),
+            ))
+        })
 }
 
 pub(super) async fn run_new<C: MachineOperations>(

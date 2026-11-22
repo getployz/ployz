@@ -91,8 +91,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     if new.is_empty() {
         return Published::Listed;
     }
-    let routed = *service != QualifiedService::system_ingress();
-    // System ingress copies stay Pending for life and no route lists them.
+    let routed = shared.plan.routed(service);
     let gapped = if routed {
         match route_new(client, operations, shared, service, &new, cancellation).await {
             Ok(gapped) => gapped,
