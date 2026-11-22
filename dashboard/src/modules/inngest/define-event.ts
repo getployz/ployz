@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import { eventType, staticSchema } from "inngest";
+import { eventType, NonRetriableError, staticSchema } from "inngest";
 
 // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the shape Inngest's `eventType` takes; each event's schema narrows it
 type EventSchema = Schema.ConstraintDecoder<Record<string, unknown>>;
@@ -44,6 +44,15 @@ export function defineEvent(definition: {
     create: (data: EventData) => (id === undefined ? { name, data } : { id: id(data), name, data }),
   };
 }
+
+/** The data a handler runs on; an event that doesn't match fails the run for good, since a retry can't change the event. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- the signature of a decoder built by `defineEvent`
+export const requiredEventData = <Data>(definition: { readonly decode: (input: unknown) => Option.Option<Data> }) =>
+  (event: { readonly data: unknown }): Data => {
+    const decoded = definition.decode(event.data);
+    if (Option.isNone(decoded)) throw new NonRetriableError("Inngest event envelope is invalid.");
+    return decoded.value;
+  };
 
 /** The data a handler runs on, or none for an event that doesn't match, which the handler answers as `skipped`. */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- the signature of a decoder built by `defineEvent`

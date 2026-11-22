@@ -1,16 +1,6 @@
-import {
-  createGithubRepositoriesSyncRequestedEvent,
-  githubInstallationReceivedEvent,
-  githubInstallationReceivedEventType,
-  githubInstallationRepositoriesReceivedEvent,
-  githubInstallationRepositoriesReceivedEventType,
-  inngestEventEnvelopeFields,
-  type GithubInstallationWebhookEventData,
-  type GithubInstallationRepositoriesWebhookEventData,
-} from "#/modules/inngest/events";
+import { githubInstallationReceived, githubInstallationRepositoriesReceived, githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import { Schema } from "effect";
+import { requiredEventData } from "#/modules/inngest/define-event";
 import type { GithubSyncEffectRunner } from "#/modules/github/inngest-sync/sync";
 import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
@@ -18,10 +8,6 @@ import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
 } from "#/modules/github/github.server";
-import {
-  githubInstallationRepositoriesWebhookEventDataSchema,
-  githubInstallationWebhookEventDataSchema,
-} from "#/modules/github/github-webhook-contracts";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubInstallationWebhookStepTools = Pick<
@@ -29,32 +15,18 @@ export type GithubInstallationWebhookStepTools = Pick<
   "run" | "sendEvent"
 >;
 
-const GithubInstallationEventEnvelope = Schema.Struct({
-  ...inngestEventEnvelopeFields,
-  name: Schema.Literal(githubInstallationReceivedEvent),
-  data: githubInstallationWebhookEventDataSchema,
-});
-const GithubInstallationRepositoriesEventEnvelope = Schema.Struct({
-  ...inngestEventEnvelopeFields,
-  name: Schema.Literal(githubInstallationRepositoriesReceivedEvent),
-  data: githubInstallationRepositoriesWebhookEventDataSchema,
-});
-
 export async function executeProcessGithubInstallationReceived(
   {
     event,
     step,
   }: {
-    event: unknown;
+    event: { data: unknown };
     step: GithubInstallationWebhookStepTools;
   },
   runEffect: GithubSyncEffectRunner,
   runStore: StoreEffectRunner = runInngestEffect,
 ) {
-  const payload = await step.run("decode-installation-event", () =>
-    decodeInngestEnvelope(GithubInstallationEventEnvelope)(event)
-      .data satisfies GithubInstallationWebhookEventData,
-  );
+  const payload = requiredEventData(githubInstallationReceived)(event);
   const result = await step.run("process-installation-event", () =>
     runEffect(processGithubInstallationEvent(payload)),
   );
@@ -68,7 +40,7 @@ export async function executeProcessGithubInstallationReceived(
   if (result.shouldSyncRepositories) {
     await step.sendEvent(
       "request-repository-sync",
-      createGithubRepositoriesSyncRequestedEvent({
+      githubRepositoriesSyncRequested.create({
         installationId: result.installationId,
         reason: `installation.${payload.action}`,
       }),
@@ -83,17 +55,12 @@ export async function executeProcessGithubInstallationRepositoriesReceived(
     event,
     step,
   }: {
-    event: unknown;
+    event: { data: unknown };
     step: GithubInstallationWebhookStepTools;
   },
   runEffect: GithubSyncEffectRunner,
 ) {
-  const payload = await step.run(
-    "decode-installation-repositories-event",
-    () =>
-      decodeInngestEnvelope(GithubInstallationRepositoriesEventEnvelope)(event)
-        .data satisfies GithubInstallationRepositoriesWebhookEventData,
-  );
+  const payload = requiredEventData(githubInstallationRepositoriesReceived)(event);
   const result = await step.run(
     "process-installation-repositories-event",
     () => runEffect(processGithubInstallationRepositoriesEvent(payload)),
@@ -102,7 +69,7 @@ export async function executeProcessGithubInstallationRepositoriesReceived(
   if (result.shouldSyncRepositories) {
     await step.sendEvent(
       "request-repository-sync",
-      createGithubRepositoriesSyncRequestedEvent({
+      githubRepositoriesSyncRequested.create({
         installationId: result.installationId,
         reason: `installation_repositories.${payload.action}`,
       }),
@@ -117,7 +84,7 @@ export const createProcessGithubInstallationReceived = (inngest: PloyzInngest) =
   {
     id: "process-github-installation-received",
     retries: 3,
-    triggers: [{ event: githubInstallationReceivedEventType }],
+    triggers: [{ event: githubInstallationReceived.eventType }],
     concurrency: [{ key: "event.data.installation.id", limit: 1 }],
   },
   async ({ event, step }) =>
@@ -132,7 +99,7 @@ export const createProcessGithubInstallationRepositoriesReceived = (inngest: Plo
     {
       id: "process-github-installation-repositories-received",
       retries: 3,
-      triggers: [{ event: githubInstallationRepositoriesReceivedEventType }],
+      triggers: [{ event: githubInstallationRepositoriesReceived.eventType }],
       concurrency: [{ key: "event.data.installation.id", limit: 1 }],
     },
     async ({ event, step }) =>

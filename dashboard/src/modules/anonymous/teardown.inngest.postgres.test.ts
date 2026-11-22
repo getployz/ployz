@@ -13,7 +13,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { claimSecretFor, hashClaimSecret } from "#/modules/identity/claim-required.server";
 import { claimOrganization } from "#/modules/identity/claim.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
-import { createAnonymousTeardownRequestedEvent } from "#/modules/inngest/events";
+import { anonymousTeardownRequested } from "#/modules/anonymous/anonymous.events";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
@@ -116,7 +116,7 @@ const tearDown = (services: Services, organizationId = ORGANIZATION, attempt = 0
   const worker = createTearDownAnonymousOrganization(new Inngest({ id: "anonymous-teardown-test" }), runner);
   return Effect.promise(() => new InngestTestEngine({
     function: worker,
-    events: [createAnonymousTeardownRequestedEvent({ organizationId })],
+    events: [anonymousTeardownRequested.create({ organizationId })],
     steps: [{ id: "request-next-step", handler: () => ({ ids: ["event-1"] }) }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), attempt }),
   }).execute());
@@ -440,7 +440,7 @@ it.live("forgets a Server that stayed unreachable an hour after its Project's re
     yield* backdate(2);
     const forgotten = yield* tearDown(services);
     expect(forgotten.result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_projects" });
-    expect(forgotten.ctx.step.sendEvent).toHaveBeenCalledWith("request-next-step", [createAnonymousTeardownRequestedEvent({ organizationId: ORGANIZATION })]);
+    expect(forgotten.ctx.step.sendEvent).toHaveBeenCalledWith("request-next-step", [anonymousTeardownRequested.create({ organizationId: ORGANIZATION })]);
     expect(yield* projects(store)).toEqual([]);
     expect(yield* pairingRows).toEqual([]);
     expect(yield* drizzle.select().from(organizationMachine)).toEqual([]);

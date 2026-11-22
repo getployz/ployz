@@ -1,8 +1,14 @@
 import "@tanstack/react-start/server-only";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { Inngest, type ClientOptions, type GetStepTools } from "inngest";
-import type { InngestSendableEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
+
+/** An event as a feature's `defineEvent` builds it to send. */
+export type InngestSendableEvent = {
+  readonly id?: string;
+  readonly name: string;
+  readonly data: object;
+};
 
 export type PloyzInngest = Inngest<ClientOptions>;
 export type PloyzStepTools = GetStepTools<PloyzInngest>;

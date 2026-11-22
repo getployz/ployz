@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
-import { createStartupResealEvent, createVariablesResealRequestedEvent, variablesResealRequestedEventType } from "#/modules/inngest/events";
+import { createStartupResealEvent, variablesResealRequested } from "#/modules/sealing/sealing.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
@@ -61,7 +61,7 @@ export async function executeReseal({ event, step }: { event: { data: { organiza
   if (organizationId !== undefined) return executeResealOrganization(organizationId, step, runEffect);
   const organizations = await step.run("organizations", () => runEffect(legacyOrganizations));
   if (organizations.length > 0) {
-    await step.sendEvent("reseal-organizations", organizations.map((id) => createVariablesResealRequestedEvent({ organizationId: id })));
+    await step.sendEvent("reseal-organizations", organizations.map((id) => variablesResealRequested.create({ organizationId: id })));
   }
   return { organizations: organizations.length };
 }
@@ -76,7 +76,7 @@ export const createResealVariables = (inngest: PloyzInngest, runEffect: StoreEff
     {
       id: "reseal-variables",
       retries: 5,
-      triggers: [{ event: variablesResealRequestedEventType }],
+      triggers: [{ event: variablesResealRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step }) => executeReseal({ event, step }, runEffect),

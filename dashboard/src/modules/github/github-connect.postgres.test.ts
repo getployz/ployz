@@ -232,7 +232,7 @@ const hopperCloud = Effect.fn(function* () {
     return yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
   });
   const syncQueued = (installationId: number) => Effect.promise(() => executeSyncGithubRepositories(
-    { event: { data: { installationId } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
+    { event: { data: { installationId, reason: "manual-refresh" } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
     (program) => Effect.runPromise(program.pipe(Effect.provide(services))),
   ));
   const sync = syncQueued(9);

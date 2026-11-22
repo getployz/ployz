@@ -1,14 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { Effect } from "effect";
-import { InngestClient, InngestEventSendError, type PloyzInngest } from "#/modules/inngest/client";
-import type { InngestSendableEvent } from "#/modules/inngest/events";
+import { InngestClient, InngestEventSendError, type InngestSendableEvent, type PloyzInngest } from "#/modules/inngest/client";
 import { operationOutbox } from "#/modules/operations/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 /** An event Inngest dedupes by its id, so sending it twice starts one run. */
-export type OutboxEvent = Extract<InngestSendableEvent, { readonly id: string }>;
+export type OutboxEvent = InngestSendableEvent & { readonly id: string };
 type OutboxRow = typeof operationOutbox.$inferSelect;
 
 const BATCH = 100;

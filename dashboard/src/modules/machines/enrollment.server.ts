@@ -25,7 +25,8 @@ import { supportsSealingRecovery } from "#/modules/sealing/sealing-recovery-comp
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createSealingKeyEnsureRequestedEvent, createObservePushTargetRequestedEvent } from "#/modules/inngest/events";
+import { observePushTargetRequested } from "#/modules/observe-ingest/observe.events";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
 import { createServerEnrollmentCompletedEvent } from "#/modules/machines/waiting/server-enrollment.events";
@@ -1089,7 +1090,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     }), (verify) => verify?.turn === undefined ? Effect.void
       : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" })));
     if (refused) return yield* notFresh();
-    yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
+    yield* sendInngestEvent(observePushTargetRequested.create({})).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
     );
     return { machineId: input.machineId };
@@ -1211,7 +1212,7 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   const annotations = { organizationId, machineId };
   if (sealing.kind === "needs_access") {
     yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
-    return yield* sendInngestEvent(createSealingKeyEnsureRequestedEvent({ organizationId })).pipe(
+    return yield* sendInngestEvent(sealingKeyEnsureRequested.create({ organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );
   }

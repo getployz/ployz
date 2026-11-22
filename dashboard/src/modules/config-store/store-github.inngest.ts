@@ -10,7 +10,7 @@ import {
   type StoreOutcome,
 } from "#/modules/config-store/store-pull-request.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { githubCheckSuiteReceivedEventType, githubPullRequestReceivedEventType, githubPushReceivedEventType } from "#/modules/inngest/events";
+import { githubCheckSuiteReceived, githubPullRequestReceived, githubPushReceived } from "#/modules/github/github.events";
 import { configDeploymentAdmitted, configPrCheckRequested, configSweepRequested } from "#/modules/config-store/config-store.events";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
@@ -30,7 +30,7 @@ export const createStoreGithubPush = (inngest: PloyzInngest, runEffect: StoreEff
     {
       id: "store-github-push",
       retries: 5,
-      triggers: [{ event: githubPushReceivedEventType }],
+      triggers: [{ event: githubPushReceived.eventType }],
       concurrency: [{ key: "event.data.branchKey", limit: 1 }],
     },
     async ({ event, step }) => followUp(step, {
@@ -44,7 +44,7 @@ export const createStoreGithubCheckSuite = (inngest: PloyzInngest, runEffect: St
     {
       id: "store-github-check-suite",
       retries: 5,
-      triggers: [{ event: githubCheckSuiteReceivedEventType }],
+      triggers: [{ event: githubCheckSuiteReceived.eventType }],
       concurrency: [{ key: "event.data.checkSuiteKey", limit: 1 }],
     },
     async ({ event, step }) => followUp(step, {
@@ -61,7 +61,7 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: StoreEf
     {
       id: "store-github-pull-request",
       retries: 5,
-      triggers: [{ event: githubPullRequestReceivedEventType }],
+      triggers: [{ event: githubPullRequestReceived.eventType }],
       concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }],
     },
     async ({ event, step }) => {

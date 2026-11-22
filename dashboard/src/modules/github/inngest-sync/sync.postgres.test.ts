@@ -16,7 +16,6 @@ import { GithubAuthorityLive } from "#/modules/github/github-authority.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import type { PloyzStepTools } from "#/modules/inngest/client";
-import { githubInstallationReceivedEvent } from "#/modules/inngest/events";
 import {
   postgresTestDatabase,
 } from "#/test/postgres";
@@ -90,7 +89,6 @@ it.live(
         executeProcessGithubInstallationReceived(
           {
             event: {
-              name: githubInstallationReceivedEvent,
               data: {
                 deliveryId: "delivery-installation-1",
                 action: "created",

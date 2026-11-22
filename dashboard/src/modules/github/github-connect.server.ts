@@ -16,7 +16,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { createGithubRepositoriesSyncRequestedEvent } from "#/modules/inngest/events";
+import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
 import { Forbidden, Validation } from "#/server/public-error";
@@ -92,7 +92,7 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
     });
   }
   yield* sendInngestEvent(input.installationIds.map((installationId) =>
-    createGithubRepositoriesSyncRequestedEvent({ installationId, reason: "manual-refresh" }))).pipe(
+    githubRepositoriesSyncRequested.create({ installationId, reason: "manual-refresh" }))).pipe(
     Effect.catch((error) => Effect.logWarning("Linked a GitHub installation; its repositories sync on the next refresh.", error)),
   );
 });

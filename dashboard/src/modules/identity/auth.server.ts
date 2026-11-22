@@ -39,11 +39,11 @@ import {
   rateLimit,
 } from "#/modules/identity/oauth-tables";
 import { organization } from "#/modules/organization/tables";
+import { organizationBillingSyncRequested } from "#/modules/billing/billing.events";
 import {
-  createOrganizationBillingSyncEventsFromCustomerStatePayload,
-  createOrganizationBillingSyncEventsFromSubscriptionPayload,
-  type InngestSendableEvent,
-} from "#/modules/inngest/events";
+  billingSyncsFromCustomerStatePayload,
+  billingSyncsFromSubscriptionPayload,
+} from "#/modules/billing/polar-events";
 import {
   InngestClient,
   sendInngestEvent,
@@ -315,12 +315,12 @@ function hostedPolarPlugin(
   sendBillingEvents: {
     readonly subscription: (
       payload: Parameters<
-        typeof createOrganizationBillingSyncEventsFromSubscriptionPayload
+        typeof billingSyncsFromSubscriptionPayload
       >[0],
     ) => Promise<void>;
     readonly customer: (
       payload: Parameters<
-        typeof createOrganizationBillingSyncEventsFromCustomerStatePayload
+        typeof billingSyncsFromCustomerStatePayload
       >[0],
     ) => Promise<void>;
   },
@@ -456,7 +456,7 @@ const makeAuth = Effect.gen(function* () {
   const runHook = Effect.runPromiseWith(
     yield* Effect.context<Database | Polar | InngestClient>(),
   );
-  const publishBillingEvents = (events: readonly InngestSendableEvent[]) =>
+  const publishBillingEvents = (events: ReadonlyArray<ReturnType<typeof organizationBillingSyncRequested.create>>) =>
     events.length === 0
       ? Promise.resolve()
       : runHook(sendInngestEvent(events));
@@ -468,11 +468,11 @@ const makeAuth = Effect.gen(function* () {
   const polarPlugin = hostedPolarPlugin(config, {
     subscription: (payload) =>
       publishBillingEvents(
-        createOrganizationBillingSyncEventsFromSubscriptionPayload(payload),
+        billingSyncsFromSubscriptionPayload(payload),
       ),
     customer: (payload) =>
       publishBillingEvents(
-        createOrganizationBillingSyncEventsFromCustomerStatePayload(payload),
+        billingSyncsFromCustomerStatePayload(payload),
       ),
   });
   // Ployz owns invitations; the plugin's routes for them are closed, so it only needs to know the column it never writes.

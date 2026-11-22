@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createSealingKeyEnsureRequestedEvent } from "#/modules/inngest/events";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import { sealingHolders } from "#/modules/sealing/sealing-holders";
 import { readSealingPublicKey } from "#/modules/sealing/sealing-key-read.server";
 
@@ -19,6 +19,6 @@ export const requestSealingKeyEnsure = Effect.fn("SealingKey.requestEnsure")(fun
   if (held.length === 0) return "settled";
   // Uninterruptible though its caller times it out, since interrupting pooled SQL can cancel a later statement.
   if (lacking.length === 0 && (yield* Effect.uninterruptible(readSealingPublicKey(organizationId, generation))) !== undefined) return "settled";
-  yield* sendInngestEvent(createSealingKeyEnsureRequestedEvent({ organizationId }));
+  yield* sendInngestEvent(sealingKeyEnsureRequested.create({ organizationId }));
   return "asked";
 });

@@ -7,7 +7,8 @@ import { deploymentTrouble } from "#/modules/config-store/store-deployments";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import { githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
+import { githubBuildRunCompleted } from "#/modules/github/github.events";
+import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
 import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
@@ -155,7 +156,7 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     if (!(await step.run(`github-open-${key}-${check}`, () => runEffect(storeGithubBuildOpen(target))))) return null;
     const startLimit = check === 0 && target.hasNext;
     const ended = await step.waitForEvent(`github-wait-${key}-${check}`, {
-      event: githubBuildRunCompletedEvent, if: `async.data.runId == ${started.runId}`,
+      event: githubBuildRunCompleted.name, if: `async.data.runId == ${started.runId}`,
       timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL,
     });
     const seen = { ended: ended !== null, startLimit };

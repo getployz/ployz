@@ -1,6 +1,7 @@
-import { Option, Schema } from "effect";
+import { Option } from "effect";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
-import { sealingKeyEnsureRequestedEventType } from "#/modules/inngest/events";
+import { eventData } from "#/modules/inngest/define-event";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import {
   backfillClusterSealingKey,
   handleSealingBackfillReport,
@@ -8,17 +9,13 @@ import {
 } from "#/modules/sealing/sealing-backfill.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-const EnsureRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
-
 export async function executeEnsureClusterSealingKey(
   { event, step }: { event: { data: unknown }; step: StepTools<"run"> },
   runEffect: EffectRunner,
 ) {
-  const organizationId = await step.run("normalize-organization-id", () => {
-    const decoded = Schema.decodeUnknownOption(EnsureRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value.organizationId : null;
-  });
-  if (organizationId === null) return { organizationId: null, skipped: true };
+  const requested = eventData(sealingKeyEnsureRequested)(event);
+  if (Option.isNone(requested)) return { organizationId: null, skipped: true };
+  const { organizationId } = requested.value;
 
   const target = await step.run("load-cluster", () => runEffect(loadSealingBackfillTarget(organizationId)));
   if (target === null) return { organizationId, skipped: true };
@@ -41,7 +38,7 @@ export const createEnsureClusterSealingKey = (inngest: PloyzInngest, runEffect: 
     {
       id: "ensure-cluster-sealing-key",
       retries: 3,
-      triggers: [{ event: sealingKeyEnsureRequestedEventType }],
+      triggers: [{ event: sealingKeyEnsureRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
       debounce: { key: "event.data.organizationId", period: "5s", timeout: "30s" },
     },

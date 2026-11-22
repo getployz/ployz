@@ -3,10 +3,10 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Minimatch } from "minimatch";
 import {
-  createGithubRepositoriesSyncRequestedEvent,
+  githubRepositoriesSyncRequested,
   type GithubInstallationRepositoriesWebhookEventData,
   type GithubInstallationWebhookEventData,
-} from "#/modules/inngest/events";
+} from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
@@ -143,7 +143,7 @@ export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
     }
     yield* sendInngestEvent(
       installations.map((installation) =>
-        createGithubRepositoriesSyncRequestedEvent({
+        githubRepositoriesSyncRequested.create({
           installationId: installation.installationId,
           reason: "manual-refresh",
         }),

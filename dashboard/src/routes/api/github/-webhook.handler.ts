@@ -11,11 +11,11 @@ import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workfl
 import {
   createGithubBuildRunCompletedEvent,
   createGithubCheckSuiteReceivedEvent,
-  createGithubInstallationReceivedEvent,
-  createGithubInstallationRepositoriesReceivedEvent,
   createGithubPullRequestReceivedEvent,
   createGithubPushReceivedEvent,
-} from "#/modules/inngest/events";
+  githubInstallationReceived,
+  githubInstallationRepositoriesReceived,
+} from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { readCappedBody } from "#/server/capped-body";
 import { AppConfig } from "#/server/config.server";
@@ -157,7 +157,7 @@ export const handleGithubWebhookRequest = Effect.fn(
       });
     }
     yield* sendInngestEvent(
-      createGithubInstallationReceivedEvent({
+      githubInstallationReceived.create({
         deliveryId,
         ...decoded.success,
       }),
@@ -175,7 +175,7 @@ export const handleGithubWebhookRequest = Effect.fn(
       });
     }
     yield* sendInngestEvent(
-      createGithubInstallationRepositoriesReceivedEvent({
+      githubInstallationRepositoriesReceived.create({
         deliveryId,
         ...decoded.success,
       }),

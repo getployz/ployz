@@ -17,7 +17,8 @@ import { type Access, requireAccess } from "#/modules/organization/access.server
 import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createGithubBuildRunCompletedEvent, createVariablesResealRequestedEvent } from "#/modules/inngest/events";
+import { createGithubBuildRunCompletedEvent } from "#/modules/github/github.events";
+import { variablesResealRequested } from "#/modules/sealing/sealing.events";
 import { type ConfigDeploymentAdmittedEventData, type DeploymentTrigger, configDeploymentAdmitted, configSweepRequested, createConfigDeploymentStartedEvent, createConfigPrCheckRequestedEvent } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, statusForRefusal, Unavailable, Validation } from "#/server/public-error";
@@ -334,7 +335,7 @@ export const callStore = <C extends StoreCall>(
     Effect.catchTag("StoreRefused", (error) => Effect.gen(function* () {
       // A Deploy waits for the reseal of a Legacy value: ask for it now rather than at the next worker start.
       if (isResealPending(error.refusal)) {
-        yield* sendInngestEvent(createVariablesResealRequestedEvent({ organizationId })).pipe(
+        yield* sendInngestEvent(variablesResealRequested.create({ organizationId })).pipe(
           Effect.catchCause((cause) => Effect.logWarning("A reseal request for a refused Deploy failed.", cause)),
         );
       }

@@ -1,14 +1,13 @@
-import { type Effect, Option, Schema } from "effect";
+import { type Effect, Option } from "effect";
 import { listLapsedOrganizationIds, tearDownStep } from "#/modules/anonymous/teardown.server";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
-import { anonymousTeardownRequestedEventType, createAnonymousTeardownRequestedEvent } from "#/modules/inngest/events";
+import { anonymousTeardownRequested } from "#/modules/anonymous/anonymous.events";
+import { eventData } from "#/modules/inngest/define-event";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 type TeardownServices = Effect.Services<ReturnType<typeof tearDownStep>> | Effect.Services<ReturnType<typeof listLapsedOrganizationIds>>;
 /** Runs one of the teardown's Effects for an Inngest step. */
 export type TeardownEffectRunner = EffectRunner<TeardownServices>;
-
-const TeardownRequestedData = Schema.Struct({ organizationId: Schema.String.check(Schema.isNonEmpty()) });
 
 /**
  * One step of a lapsed sandbox's teardown, then the next as a fresh event once the Projects are gone. Every run
@@ -19,14 +18,12 @@ export async function executeTearDownAnonymousOrganization(
   { event, step, attempt }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent">; attempt: number },
   runEffect: TeardownEffectRunner,
 ) {
-  const organizationId = await step.run("normalize-organization-id", () => {
-    const decoded = Schema.decodeUnknownOption(TeardownRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value.organizationId : null;
-  });
-  if (organizationId === null) return { organizationId: null, state: null, did: "nothing" as const };
+  const requested = eventData(anonymousTeardownRequested)(event);
+  if (Option.isNone(requested)) return { organizationId: null, state: null, did: "nothing" as const };
+  const { organizationId } = requested.value;
   const result = await step.run("tear-down", () => runEffect(tearDownStep(organizationId, attempt === 0)));
   if (result.did === "removed_projects") {
-    await step.sendEvent("request-next-step", [createAnonymousTeardownRequestedEvent({ organizationId })]);
+    await step.sendEvent("request-next-step", [anonymousTeardownRequested.create({ organizationId })]);
   }
   return result;
 }
@@ -36,7 +33,7 @@ export async function executeScheduleAnonymousSweep({ step }: { step: StepTools<
   if (organizationIds.length > 0) {
     await step.sendEvent(
       "request-teardowns",
-      organizationIds.map((organizationId) => createAnonymousTeardownRequestedEvent({ organizationId })),
+      organizationIds.map((organizationId) => anonymousTeardownRequested.create({ organizationId })),
     );
   }
   return { organizationIds };
@@ -47,7 +44,7 @@ export const createTearDownAnonymousOrganization = (inngest: PloyzInngest, runEf
     {
       id: "tear-down-anonymous-organization",
       retries: 3,
-      triggers: [{ event: anonymousTeardownRequestedEventType }],
+      triggers: [{ event: anonymousTeardownRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step, attempt }) => executeTearDownAnonymousOrganization({ event, step, attempt }, runEffect),

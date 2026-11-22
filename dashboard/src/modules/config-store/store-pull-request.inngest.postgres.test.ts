@@ -8,7 +8,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
-import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
+import { githubPullRequestReceived } from "#/modules/github/github.events";
 import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { fakeGithubApiBy, fakeGithubAuthority } from "#/test/fake-github";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
@@ -40,7 +40,7 @@ const checksInto = (posted: unknown[]) => fakeGithubAuthority({
 });
 
 const delivery = (id: string) => ({
-  name: githubPullRequestReceivedEvent,
+  name: githubPullRequestReceived.name,
   data: {
     kind: "pull_request", action: "opened", installationId: 7, repositoryId: 42, number: 5, headRepositoryId: 42,
     headSha: HEAD, deliveryId: id, pullRequestKey: "7:42:5",

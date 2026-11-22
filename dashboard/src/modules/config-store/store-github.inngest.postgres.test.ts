@@ -11,7 +11,7 @@ import { pinStoreSources } from "#/modules/config-store/store-deployment.server"
 import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { account } from "#/modules/identity/tables";
-import { githubCheckSuiteReceivedEvent, githubPushReceivedEvent } from "#/modules/inngest/events";
+import { githubCheckSuiteReceived, githubPushReceived } from "#/modules/github/github.events";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
@@ -37,7 +37,7 @@ function github(state: { head: string; suite: { status: string; conclusion: stri
 }
 
 const push = (after: string) => ({
-  name: githubPushReceivedEvent,
+  name: githubPushReceived.name,
   data: {
     kind: "push", installationId: 7, repositoryId: 42, ref: "refs/heads/main", branch: "main", beforeSha: H1,
     afterSha: after, created: false, deleted: false, forced: false, deliveryId: `push-${after}`, branchKey: "7:42:refs/heads/main",
@@ -45,7 +45,7 @@ const push = (after: string) => ({
 });
 
 const suite = (updated: number) => ({
-  name: githubCheckSuiteReceivedEvent,
+  name: githubCheckSuiteReceived.name,
   data: {
     kind: "check_suite", action: "completed", installationId: 7, repositoryId: 42, checkSuiteId: 9, headSha: H2,
     status: "completed", conclusion: "success", sourceUpdatedAt: new Date(updated).toISOString(),
@@ -74,7 +74,7 @@ it.live(
       const sent: string[] = [];
       const run = (event: ReturnType<typeof push> | ReturnType<typeof suite>) => Effect.promise(async () =>
         (await new InngestTestEngine({
-          function: event.name === githubPushReceivedEvent ? createStoreGithubPush(inngest, runner) : createStoreGithubCheckSuite(inngest, runner),
+          function: event.name === githubPushReceived.name ? createStoreGithubPush(inngest, runner) : createStoreGithubCheckSuite(inngest, runner),
           events: [event],
           steps: [{ id: "dispatch", handler: () => sent.push(event.name) }],
         }).execute()).result as { admitted: string[] });
@@ -102,7 +102,7 @@ it.live(
       expect(yield* view(passed.admitted[0])).toMatchObject({ builds: [{ commit: H2 }] });
       expect((yield* run(suite(2))).admitted).toEqual([]);
       // Only the two admissions were dispatched.
-      expect(sent).toEqual([githubPushReceivedEvent, githubCheckSuiteReceivedEvent]);
+      expect(sent).toEqual([githubPushReceived.name, githubCheckSuiteReceived.name]);
     }),
   60_000,
 );
@@ -217,7 +217,7 @@ it.live(
         (await new InngestTestEngine({
           function: createStoreGithubPush(inngest, runner),
           events: [{
-            name: githubPushReceivedEvent,
+            name: githubPushReceived.name,
             data: {
               kind: "push", installationId: 7, repositoryId: 42, ref: "refs/heads/search", branch: "search", beforeSha: before,
               afterSha: after, created: false, deleted: false, forced: false, deliveryId: `push-search-${after}`,

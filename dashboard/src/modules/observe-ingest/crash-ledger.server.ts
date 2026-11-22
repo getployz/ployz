@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { Effect } from "effect";
-import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
+import { createObserveCrashReceivedEvent } from "#/modules/observe-ingest/observe.events";
 import { type CrashEventInput, crashEventsOf } from "#/modules/observe-ingest/crash-logs";
 import type { ObservePusher } from "#/modules/observe-ingest/ingest.server";
 import { crashEvent } from "#/modules/observe-ingest/tables";

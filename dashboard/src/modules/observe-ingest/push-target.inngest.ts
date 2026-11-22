@@ -1,5 +1,5 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
-import { observePushTargetRequestedEventType } from "#/modules/inngest/events";
+import { observePushTargetRequested } from "#/modules/observe-ingest/observe.events";
 import { deliverPushTargets } from "#/modules/observe-ingest/push-target.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
@@ -9,7 +9,7 @@ export const createDeliverPushTargets = (inngest: PloyzInngest) =>
     {
       id: "deliver-observe-push-targets",
       retries: 3,
-      triggers: [{ cron: "*/5 * * * *" }, { event: observePushTargetRequestedEventType }],
+      triggers: [{ cron: "*/5 * * * *" }, { event: observePushTargetRequested.eventType }],
       concurrency: [{ limit: 1 }],
     },
     async ({ step }) => step.run("deliver-push-targets", () => runInngestEffect(deliverPushTargets())),

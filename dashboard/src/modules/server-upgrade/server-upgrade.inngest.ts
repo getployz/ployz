@@ -2,7 +2,7 @@ import type { MachineId } from "@ployz/sdk";
 import { Effect, Option } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
-import { createSealingKeyEnsureRequestedEvent } from "#/modules/inngest/events";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import { serverUpgradeRequested } from "#/modules/server-upgrade/server-upgrade.events";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
@@ -74,7 +74,7 @@ export async function executeRollOutServerUpgrade(
     )));
   }
   await step.sendEvent("ensure-cluster-sealing-key",
-    createSealingKeyEnsureRequestedEvent({ organizationId: request.organizationId }));
+    sealingKeyEnsureRequested.create({ organizationId: request.organizationId }));
   return { results };
 }
 

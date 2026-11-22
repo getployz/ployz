@@ -15,7 +15,7 @@ import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
 import { logForeignServers } from "#/modules/runtime/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createGithubBuildRunCompletedEvent } from "#/modules/inngest/events";
+import { createGithubBuildRunCompletedEvent } from "#/modules/github/github.events";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";

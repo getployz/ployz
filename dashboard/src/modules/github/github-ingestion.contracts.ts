@@ -222,6 +222,14 @@ export const githubPullRequestWebhookSchema = Schema.Struct({
   headSha: githubExactShaSchema,
 });
 
+/** The identity a delivery's per-branch, per-check-suite or per-pull-request event is ordered by. */
+export const githubPushBranchKey = (push: { installationId: number; repositoryId: number; ref: string }) =>
+  `${push.installationId}:${push.repositoryId}:${push.ref}`;
+export const githubCheckSuiteKey = (suite: { installationId: number; repositoryId: number; checkSuiteId: number }) =>
+  `${suite.installationId}:${suite.repositoryId}:${suite.checkSuiteId}`;
+export const githubPullRequestKey = (pullRequest: { installationId: number; repositoryId: number; number: number }) =>
+  `${pullRequest.installationId}:${pullRequest.repositoryId}:${pullRequest.number}`;
+
 export const githubPushReceivedEventInputSchema = Schema.Struct({
   ...githubPushWebhookSchema.fields,
   deliveryId: nonEmptyStringSchema,
@@ -232,8 +240,7 @@ export const githubPushReceivedEventDataSchema = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.branchKey ===
-        `${value.installationId}:${value.repositoryId}:${value.ref}` &&
+      value.branchKey === githubPushBranchKey(value) &&
       value.ref === `refs/heads/${value.branch}`,
     {
       message: "GitHub push event authority key does not match its identity.",
@@ -251,8 +258,7 @@ export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.checkSuiteKey ===
-      `${value.installationId}:${value.repositoryId}:${value.checkSuiteId}`,
+      value.checkSuiteKey === githubCheckSuiteKey(value),
     {
       message: "GitHub check-suite authority key does not match its identity.",
     },
@@ -269,8 +275,7 @@ export const githubPullRequestReceivedEventDataSchema = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (value) =>
-      value.pullRequestKey ===
-      `${value.installationId}:${value.repositoryId}:${value.number}`,
+      value.pullRequestKey === githubPullRequestKey(value),
     {
       message: "GitHub pull request authority key does not match its identity.",
     },
