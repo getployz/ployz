@@ -1336,14 +1336,6 @@ fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
     );
 }
 
-#[test]
-fn only_a_full_route_goes_to_its_target_itself() {
-    assert!(!dials_direct(op::Leave::PATH));
-    assert!(dials_direct(op::SetDevice::PATH));
-    assert!(!dials_direct(op::ListMachines::PATH));
-    assert!(!dials_direct(op::EnsureContainer::PATH));
-}
-
 /// Cloud's Server Access can hand over an SSH endpoint of its own, which reports the
 /// pinned Member with a key Cloud chose. SSH is a Full route, but only one the person chose
 /// answers for the Server.

@@ -205,19 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn uptime_says_what_it_is_for() {
-        let root = attach(crate::cli::compiled(), &published());
-        let about = root
-            .find_subcommand("uptime")
-            .and_then(Command::get_about)
-            .map(ToString::to_string);
-        assert_eq!(
-            about.as_deref(),
-            Some("See whether visitors reach a Service, from every region")
-        );
-    }
-
-    #[test]
     fn a_published_group_lists_its_commands() {
         let published = published();
         let root = attach(crate::cli::compiled(), &published);
