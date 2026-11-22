@@ -54,9 +54,9 @@ use ployz_core::config::{
     CompiledNodeConfig, EnvironmentNodeType, LowerDeploymentConfig, LowerDeploymentConfigFile,
     LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
     SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, SealedFor,
-    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
-    parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
+    ServiceConfig, ServiceSource, ValuePartOwner, canonicalize_environment_intent,
+    compile_environment_intent, lower_deployment, parse_runtime_preview, project_runtime_outcome,
+    redacted_runtime_preview,
 };
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,

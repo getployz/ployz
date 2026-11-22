@@ -1017,11 +1017,7 @@ pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
         config.settings.source,
         ServiceSource::Git { .. } | ServiceSource::Empty { .. }
     ) {
-        config.settings.source = ServiceSource::Image {
-            version: 1,
-            image: ployz_core::pending_image(&config.settings.private_dns),
-            credentials: ServiceImageCredentials::None,
-        };
+        config.settings.source = ServiceSource::pending(&config.settings.private_dns);
     }
     config
 }
