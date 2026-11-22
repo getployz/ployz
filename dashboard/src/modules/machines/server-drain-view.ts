@@ -1,6 +1,6 @@
 import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
 import type { LatestDrains } from "#/modules/machines/server-drain";
-import type { DrainEndCode } from "#/modules/machines/server-drain-states";
+import { DRAIN_END_WORDS, type DrainEndCode } from "#/modules/machines/server-drain-states";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { listNames } from "#/lib/plural";
 
@@ -284,16 +284,7 @@ export function stopWords(stopped: DrainReport["stopped"]): string | null {
 
 /** A Drain that ended without a report, in the user's words. A cancelled one says when, so it has its own line. */
 export function endWords(code: Exclude<DrainEndCode, "cancelled">): string {
-  switch (code) {
-    case "refused":
-      return "Drain didn't start";
-    case "not_started":
-      return "Drain didn't start. Try again.";
-    case "interrupted":
-      return "Drain was cancelled. Running here shows what's still on this server.";
-    case "lost":
-      return "Drain didn't finish. Running here shows what's still on this server.";
-  }
+  return DRAIN_END_WORDS[code].ui;
 }
 
 /** A Service running here as the page lists it. */

@@ -22,3 +22,21 @@ export const DRAIN_END_CODES = {
 export type DrainEndCode = keyof typeof DRAIN_END_CODES;
 /** An end Cloud names on its own; only the Engine's refusal carries words. */
 export type DrainEndCodeWithoutMessage = Exclude<DrainEndCode, "refused">;
+
+/**
+ * A Drain that ended without a report, in words: `ui` on the Server page, `cli` for `ployz` and history. A cancelled
+ * Drain says when on the page, so it has no page line; a refusal's CLI words are the Engine's own.
+ */
+export const DRAIN_END_WORDS = {
+  refused: { ui: "Drain didn't start", cli: null },
+  not_started: { ui: "Drain didn't start. Try again.", cli: "The drain never started." },
+  cancelled: { ui: null, cli: "The drain was cancelled before it started." },
+  interrupted: {
+    ui: "Drain was cancelled. Running here shows what's still on this server.",
+    cli: "The drain was cancelled while it ran; some services may have moved.",
+  },
+  lost: {
+    ui: "Drain didn't finish. Running here shows what's still on this server.",
+    cli: "Cloud lost track of the drain; some services may have moved.",
+  },
+} as const satisfies Record<DrainEndCode, { readonly ui: string | null; readonly cli: string | null }>;

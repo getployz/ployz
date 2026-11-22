@@ -25,3 +25,11 @@ export type CleanupEndCode = keyof typeof CLEANUP_END_CODES;
 /** The ends that carry the Engine's words. */
 export const CLEANUP_END_CODES_WITH_MESSAGE = ["refused", "incomplete"] as const satisfies readonly CleanupEndCode[];
 export type CleanupEndCodeWithoutMessage = Exclude<CleanupEndCode, (typeof CLEANUP_END_CODES_WITH_MESSAGE)[number]>;
+
+/** Why Cloud ended a clean without finishing, for `ployz` and history; the Engine's refusals carry their own words. */
+export const CLEANUP_END_WORDS = {
+  not_started: "The clean never started.",
+  cancelled: "The clean was cancelled before it started.",
+  interrupted: "The clean was cancelled while it ran; some Volumes may be gone.",
+  lost: "Cloud lost track of the clean; some Volumes may be gone.",
+} as const satisfies Record<CleanupEndCodeWithoutMessage, string>;

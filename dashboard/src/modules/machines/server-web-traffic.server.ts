@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schedule, Schema } from "effect";
+import { and, desc, eq } from "drizzle-orm";
+import { Data, Effect, Option, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { type ServerWebTrafficRequestedEventData, serverWebTrafficRequested } from "#/modules/machines/machines.events";
 import { type LatestWebTraffic, type RequestedServerWebTraffic, type RequestServerWebTrafficInput, startFailure, WEB_TRAFFIC_PENDING_LIMIT_MS, WEB_TRAFFIC_RUNNING_LIMIT_MS } from "#/modules/machines/server-web-traffic";
 import { type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 import { serverWebTrafficAttempt } from "#/modules/machines/tables";
+import { attemptRows, latestPerMachine, queueWaitedPast, ready, within } from "#/modules/inngest/attempt-row.server";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -23,8 +24,8 @@ type WebTrafficRequest = ServerWebTrafficRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
 export type WebTrafficRunReply = { readonly attemptId: string; readonly state: WebTrafficState };
 
-const ACTIVE_STATES: readonly WebTrafficState[] = ["pending", "running"];
-const MESSAGE_LIMIT = 1024;
+const NOT_FOUND = "The web traffic request was not found.";
+const rows = attemptRows(serverWebTrafficAttempt, NOT_FOUND);
 
 /** A row as the page reads it. The check constraint keeps each state's evidence; a row without it is a defect. */
 export function latestWebTrafficOf(row: WebTrafficAttemptRow): Effect.Effect<LatestWebTraffic> {
@@ -51,8 +52,6 @@ export function latestWebTrafficOf(row: WebTrafficAttemptRow): Effect.Effect<Lat
 const failed = (failure: string) => ({ state: "failed", failure: within(failure), endedAt: new Date() }) as const;
 const finished = () => ({ state: "finished", failure: null, endedAt: new Date() }) as const;
 
-const within = (text: string) => (text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text);
-
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueChange = (row: WebTrafficAttemptRow) =>
   enqueueEvent(serverWebTrafficRequested.create({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
@@ -78,7 +77,7 @@ export const requestServerWebTraffic = Effect.fn("ServerWebTraffic.request")(fun
     const [active] = yield* drizzle.select().from(serverWebTrafficAttempt).where(and(
       eq(serverWebTrafficAttempt.organizationId, organizationId),
       eq(serverWebTrafficAttempt.machineId, input.machineId),
-      inArray(serverWebTrafficAttempt.state, ACTIVE_STATES),
+      rows.active,
     )).orderBy(desc(serverWebTrafficAttempt.requestedAt)).limit(1);
     return active === undefined ? null : { change: yield* latestWebTrafficOf(active) } satisfies RequestedServerWebTraffic;
   });
@@ -109,11 +108,8 @@ export const listLatestServerWebTraffic = Effect.fn("ServerWebTraffic.listLatest
   input: { readonly organizationSlug: string },
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.selectDistinctOn([serverWebTrafficAttempt.machineId]).from(serverWebTrafficAttempt)
-    .where(eq(serverWebTrafficAttempt.organizationId, organization.id))
-    .orderBy(serverWebTrafficAttempt.machineId, desc(serverWebTrafficAttempt.requestedAt), desc(serverWebTrafficAttempt.id));
-  const latest = yield* Effect.forEach(rows, (row) => Effect.map(latestWebTrafficOf(row), (change) => [row.machineId, change] as const));
+  const latestRows = yield* latestPerMachine(serverWebTrafficAttempt, organization.id);
+  const latest = yield* Effect.forEach(latestRows,(row) => Effect.map(latestWebTrafficOf(row), (change) => [row.machineId, change] as const));
   return { servers: Object.fromEntries(latest) };
 });
 
@@ -121,24 +117,11 @@ export const listLatestServerWebTraffic = Effect.fn("ServerWebTraffic.listLatest
  * Bind the run to its pending row, so only it may claim and end the row. The event must name the row's Organization
  * and Server. A row that is no longer pending (bound by another run, or already ended) is settled: the run does nothing.
  */
-export const bindWebTrafficRun = Effect.fn("ServerWebTraffic.bind")(function* (request: WebTrafficRequest, runId: string) {
-  const { drizzle } = yield* Database;
-  const [bound] = yield* drizzle.update(serverWebTrafficAttempt).set({ inngestRunId: runId }).where(and(
-    eq(serverWebTrafficAttempt.id, request.attemptId),
+export const bindWebTrafficRun = (request: WebTrafficRequest, runId: string) =>
+  rows.bind(request.attemptId, runId, [
     eq(serverWebTrafficAttempt.organizationId, request.organizationId),
     eq(serverWebTrafficAttempt.machineId, request.machineId),
-    eq(serverWebTrafficAttempt.state, "pending"),
-    or(isNull(serverWebTrafficAttempt.inngestRunId), eq(serverWebTrafficAttempt.inngestRunId, runId)),
-  )).returning({ id: serverWebTrafficAttempt.id });
-  if (bound !== undefined) return { kind: "bound" } as const;
-  const [row] = yield* drizzle.select({
-    state: serverWebTrafficAttempt.state, organizationId: serverWebTrafficAttempt.organizationId, machineId: serverWebTrafficAttempt.machineId,
-  }).from(serverWebTrafficAttempt).where(eq(serverWebTrafficAttempt.id, request.attemptId));
-  if (row === undefined || row.organizationId !== request.organizationId || row.machineId !== request.machineId) {
-    return yield* new NotFound({ message: "The web traffic request was not found." });
-  }
-  return { kind: "settled", state: row.state } as const;
-});
+  ]);
 
 const openSession = Effect.fn("ServerWebTraffic.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
@@ -193,44 +176,27 @@ const applyWant = Effect.fn("ServerWebTraffic.apply")(function* (session: PloyzS
   return end;
 });
 
-const stateOf = Effect.fn("ServerWebTraffic.stateOf")(function* (attemptId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ state: serverWebTrafficAttempt.state }).from(serverWebTrafficAttempt)
-    .where(eq(serverWebTrafficAttempt.id, attemptId));
-  if (row === undefined) return yield* new NotFound({ message: "The web traffic request was not found." });
-  return { attemptId, state: row.state } satisfies WebTrafficRunReply;
-});
-
 /**
- * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
- * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it failed and
- * never asks again; one that finds it ended returns what's there. The page reads the Server's observed state beside
- * the row (see `webTrafficView`).
+ * Ask the Engine once (see `attemptRows`' `executeOnce`); a retry that finds the row running closes it failed. The page
+ * reads the Server's observed state beside the row (see `webTrafficView`).
  */
 export const executeWebTrafficOnce = Effect.fn("ServerWebTraffic.execute")(function* (request: WebTrafficRequest, runId: string) {
   const { drizzle } = yield* Database;
-  const owned = and(eq(serverWebTrafficAttempt.id, request.attemptId), eq(serverWebTrafficAttempt.inngestRunId, runId));
-  const current = yield* stateOf(request.attemptId);
-  if (current.state === "running") {
-    yield* drizzle.update(serverWebTrafficAttempt)
-      .set(failed("Cloud lost track of the change. Try again."))
-      .where(and(owned, eq(serverWebTrafficAttempt.state, "running")));
-    return yield* stateOf(request.attemptId);
-  }
-  if (current.state !== "pending") return current;
-  const [row] = yield* drizzle.select({ want: serverWebTrafficAttempt.want }).from(serverWebTrafficAttempt)
-    .where(eq(serverWebTrafficAttempt.id, request.attemptId));
-  if (row === undefined) return yield* new NotFound({ message: "The web traffic request was not found." });
-  const session = yield* openSession(request.organizationId);
-  const [claimed] = yield* drizzle.update(serverWebTrafficAttempt).set({ state: "running", startedAt: new Date() })
-    .where(and(owned, eq(serverWebTrafficAttempt.state, "pending"))).returning({ id: serverWebTrafficAttempt.id });
-  if (claimed === undefined) return yield* stateOf(request.attemptId);
-  const end = yield* applyWant(session, request, row.want);
-  // The answer is in hand: the write is retried here rather than by asking the Engine again.
-  const [written] = yield* drizzle.update(serverWebTrafficAttempt).set(end)
-    .where(and(owned, eq(serverWebTrafficAttempt.state, "running"))).returning({ state: serverWebTrafficAttempt.state })
-    .pipe(Effect.retry({ times: 4, schedule: Schedule.exponential("500 millis") }));
-  return written === undefined ? yield* stateOf(request.attemptId) : { attemptId: request.attemptId, state: written.state };
+  const id = request.attemptId;
+  const state = yield* rows.executeOnce({
+    id,
+    runId,
+    lost: failed(RUN_ENDS.failure.running),
+    endsFrom: ["running"],
+    prepare: Effect.gen(function* () {
+      const [row] = yield* drizzle.select({ want: serverWebTrafficAttempt.want }).from(serverWebTrafficAttempt)
+        .where(eq(serverWebTrafficAttempt.id, id));
+      if (row === undefined) return yield* new NotFound({ message: NOT_FOUND });
+      return ready({ want: row.want, session: yield* openSession(request.organizationId) });
+    }),
+    call: ({ want, session }) => applyWant(session, request, want),
+  });
+  return { attemptId: id, state } satisfies WebTrafficRunReply;
 }, Effect.scoped);
 
 /** How a run that ended for good closes its row: by whether the row ever asked the Engine. */
@@ -244,27 +210,10 @@ const RUN_ENDS = {
  * the Engine was ever asked. A run cancelled before it bound its row names the row by `attemptId` from its event. How
  * many rows this call ended.
  */
-export const closeWebTrafficRun = Effect.fn("ServerWebTraffic.closeRun")(function* (
-  runId: string,
-  reason: keyof typeof RUN_ENDS,
-  attemptId?: string,
-) {
-  const { drizzle } = yield* Database;
+export const closeWebTrafficRun = (runId: string, reason: keyof typeof RUN_ENDS, attemptId?: string) => {
   const { pending, running } = RUN_ENDS[reason];
-  const unbound = attemptId === undefined ? undefined : and(
-    eq(serverWebTrafficAttempt.id, attemptId),
-    eq(serverWebTrafficAttempt.state, "pending"),
-    or(isNull(serverWebTrafficAttempt.inngestRunId), eq(serverWebTrafficAttempt.inngestRunId, runId)),
-  );
-  const rows = yield* drizzle.update(serverWebTrafficAttempt).set({
-    state: "failed",
-    failure: sql<string>`case when ${serverWebTrafficAttempt.state} = 'pending' then ${pending} else ${running} end`,
-    endedAt: new Date(),
-  })
-    .where(or(and(eq(serverWebTrafficAttempt.inngestRunId, runId), inArray(serverWebTrafficAttempt.state, ACTIVE_STATES)), unbound))
-    .returning({ id: serverWebTrafficAttempt.id });
-  return rows.length;
-});
+  return rows.closeRun(runId, attemptId, (whenPending) => ({ state: "failed", failure: whenPending(pending, running) }));
+};
 
 /**
  * The hourly sweep: a request no run picked up in time never starts; a change running past the Engine's limit lost
@@ -272,31 +221,12 @@ export const closeWebTrafficRun = Effect.fn("ServerWebTraffic.closeRun")(functio
  * earlier request is ahead of it, and its time runs from when the change before it ended.
  */
 export const closeStaleWebTraffic = Effect.fn("ServerWebTraffic.closeStale")(function* () {
-  const { drizzle } = yield* Database;
-  const now = Date.now();
-  const lost = yield* drizzle.update(serverWebTrafficAttempt)
-    .set(failed(RUN_ENDS.failure.running))
-    .where(and(
-      eq(serverWebTrafficAttempt.state, "running"),
-      lt(serverWebTrafficAttempt.startedAt, new Date(now - 2 * WEB_TRAFFIC_RUNNING_LIMIT_MS)),
-    ))
-    .returning({ id: serverWebTrafficAttempt.id });
-  const unstarted = yield* drizzle.update(serverWebTrafficAttempt)
-    .set(failed(RUN_ENDS.failure.pending))
-    .where(and(
-      eq(serverWebTrafficAttempt.state, "pending"),
-      // Spelled out: an update renders its columns unqualified, which inside a subquery would name the alias's.
-      sql`not exists (
-        select 1 from server_web_traffic_attempt as ahead
-        where ahead.organization_id = server_web_traffic_attempt.organization_id
-          and (ahead.state = 'running' or (ahead.state = 'pending' and ahead.requested_at < server_web_traffic_attempt.requested_at))
-      )`,
-      sql`greatest(server_web_traffic_attempt.requested_at, (
-        select max(before.ended_at) from server_web_traffic_attempt as before
-        where before.organization_id = server_web_traffic_attempt.organization_id
-          and before.requested_at < server_web_traffic_attempt.requested_at
-      )) < ${new Date(now - WEB_TRAFFIC_PENDING_LIMIT_MS)}`,
-    ))
-    .returning({ id: serverWebTrafficAttempt.id });
-  return { unstarted: unstarted.length, lost: lost.length };
+  const { running, pending } = yield* rows.closeStale({
+    running: { limitMs: 2 * WEB_TRAFFIC_RUNNING_LIMIT_MS, end: failed(RUN_ENDS.failure.running) },
+    pending: {
+      end: failed(RUN_ENDS.failure.pending),
+      when: (now) => queueWaitedPast(serverWebTrafficAttempt, new Date(now - WEB_TRAFFIC_PENDING_LIMIT_MS), { earlierOnly: true }),
+    },
+  });
+  return { unstarted: pending, lost: running };
 });
