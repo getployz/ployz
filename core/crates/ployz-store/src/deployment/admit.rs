@@ -701,9 +701,7 @@ fn reapply(
     }
     let services = running
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
+        .map(|service| crate::scope::service_name(service))
         .collect::<Result<Vec<_>, _>>()?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let cluster_domain = trusted

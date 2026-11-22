@@ -80,6 +80,7 @@ use crate::registry;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
+use crate::storage::json_text;
 use crate::storage::{Row, Tx, name_of};
 use crate::variables;
 
@@ -1854,11 +1855,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
-    let service_uploads: Option<uploads::ServiceUploads> = row
-        .optional_text(23)?
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| error::corrupt("Deployment uploads"))?;
+    let service_uploads: Option<uploads::ServiceUploads> =
+        row.optional_json(23, "Deployment uploads")?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -1869,11 +1867,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             services: row.json(5, "Deployment")?,
             ships: shipped(&nodes),
             runner,
-            upload: row
-                .optional_text(9)?
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            upload: row.optional_json(9, "Deployment upload")?,
             chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             preparing: preparing(status, &run),
             all_waiting: all_waiting(status, &nodes, &run),
@@ -2055,10 +2049,6 @@ pub(crate) fn saved_at(
 
 fn parse_stored<T: TryFrom<String, Error = RpcError>>(value: &str) -> Result<T, RpcError> {
     T::try_from(value.to_owned()).map_err(|_| error::corrupt("identity"))
-}
-
-fn json_text(value: &impl Serialize) -> String {
-    serde_json::to_string(value).expect("stored documents are JSON")
 }
 
 fn missing(id: &DeploymentId) -> RpcError {

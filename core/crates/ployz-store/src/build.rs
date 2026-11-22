@@ -4,6 +4,7 @@
 //! Deployment's upload. The runner reports each build's progress and log here.
 
 use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
+use crate::storage::json_text;
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{
@@ -566,10 +567,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let github = row
-            .optional_text(5)?
-            .map(|github| serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build")))
-            .transpose()?;
+        let github = row.optional_json(5, "GitHub build")?;
         Ok(BuildRow {
             service: row.parse::<ServiceName>(0, "build")?,
             commit: row.parse_optional(1, "build commit")?,
@@ -584,20 +582,12 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             started: row.optional_int(7)?,
             finished: row.optional_int(8)?,
             github_skipped: row.optional_text(10)?.map(str::to_owned),
-            receipt: json_column(row.optional_text(12)?, "build receipt")?,
-            image_token: json_column(row.optional_text(13)?, "image token")?,
-            verified: json_column(row.optional_text(14)?, "verified build")?,
+            receipt: row.optional_json(12, "build receipt")?,
+            image_token: row.optional_json(13, "image token")?,
+            verified: row.optional_json(14, "verified build")?,
         })
     })
     .collect()
-}
-
-fn json_column<T: serde::de::DeserializeOwned>(
-    text: Option<&str>,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    text.map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
 }
 
 /// The Services `stored` targets that have no source of their own: they build from
@@ -1026,8 +1016,7 @@ fn save_github(
     github: Option<&GithubHold>,
 ) -> Result<(), RpcError> {
     let status = status.into();
-    let github =
-        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
+    let github = github.map(json_text);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
@@ -1265,7 +1254,7 @@ pub(crate) fn keep_verified(
         ));
     }
     for (service, verified) in kept {
-        let verified = serde_json::to_string(verified).expect("a verified build is JSON");
+        let verified = json_text(verified);
         tx.execute(
             "UPDATE config_build SET verified = ?3 WHERE deployment_id = ?1 AND service = ?2",
             &[
@@ -1599,7 +1588,7 @@ fn keep_built(
     token: Option<&ImageToken>,
 ) -> Result<(), RpcError> {
     let receipt = receipt.to_string();
-    let token = token.map(|token| serde_json::to_string(token).expect("an image token is JSON"));
+    let token = token.map(json_text);
     tx.execute(
         "UPDATE config_build SET receipt = ?3, image_token = ?4 \
          WHERE deployment_id = ?1 AND service = ?2",

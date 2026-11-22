@@ -2,6 +2,7 @@
 //! Node Outcome advances Applied State.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
 /// recording the same evidence again changes nothing.
@@ -115,9 +116,7 @@ pub(crate) fn record(
         } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
-            let executed = crate::digest::short_digest(
-                &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
-            );
+            let executed = crate::digest::short_digest(&json_text(&(&outcome, &removed)));
             if stored.run.outcome.is_some() {
                 if stored.run.executed.as_ref() == Some(&executed) {
                     return Ok(stored.summary);

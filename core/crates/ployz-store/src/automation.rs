@@ -12,6 +12,7 @@
 //! keeps its newest result.
 
 use crate::id::{BranchName, CommitSha, RepositoryId};
+use crate::storage::json_text;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
@@ -398,10 +399,7 @@ fn remember(
             who.organization.as_str().into(),
             repository_id.into(),
             branch.as_str().into(),
-            serde_json::to_string(&heads)
-                .expect("heads are JSON")
-                .as_str()
-                .into(),
+            json_text(&heads).as_str().into(),
         ],
     )?;
     Ok(())
@@ -526,8 +524,8 @@ pub(crate) fn deploy_landed(
         tx,
         who.organization.as_str(),
         landed,
-        &json_of(&pending.updates),
-        &json_of(&pending.removals),
+        &json_text(&pending.updates),
+        &json_text(&pending.removals),
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
@@ -568,10 +566,6 @@ fn merged_services(row: &Row) -> Result<MergedServices, RpcError> {
         updates: row.json(0, "merge deploy")?,
         removals: row.json(1, "merge deploy")?,
     })
-}
-
-fn json_of(ids: &BTreeSet<impl Serialize>) -> String {
-    serde_json::to_string(ids).expect("Service IDs are JSON")
 }
 
 /// What merges into the branch of `push` landed in `environment` that no Deployment
@@ -858,7 +852,7 @@ fn admit(
             None => None,
         },
     };
-    let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let fresh = DeploymentId::fresh();
     let admission = match &held {
         Some(hold) => deployment::Admission::Promote(&hold.id),
         None => deployment::Admission::New {
@@ -929,8 +923,8 @@ pub(crate) fn shipped_landed(
             merge_deploy::replace(
                 tx,
                 landed,
-                &json_of(&pending.updates),
-                &json_of(&pending.removals),
+                &json_text(&pending.updates),
+                &json_text(&pending.removals),
             )?;
         }
     }

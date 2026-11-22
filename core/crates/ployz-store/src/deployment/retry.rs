@@ -1,6 +1,7 @@
 //! Retrying an ended Deployment and rolling back to one: queueing again what it froze.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
 /// targets, Namespace, registry credentials, upload and pinned commits, whatever

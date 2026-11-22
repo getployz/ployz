@@ -3,6 +3,7 @@
 //! in `claim.rs`, recording and ending in `record.rs`.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Which Deployment an admission queues.
 #[derive(Clone, Copy)]
@@ -459,7 +460,7 @@ pub(crate) fn hold(
         ],
     )?;
     let namespace = namespace(tx, who, environment, false)?;
-    let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let deployment = DeploymentId::fresh();
     let listed = next_listed(tx, id)?;
     tx.execute(
         "INSERT INTO config_deployment \

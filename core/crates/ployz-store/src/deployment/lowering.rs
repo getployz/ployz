@@ -118,10 +118,7 @@ fn ran_as(
         .iter()
         .find(|service| service.id == id.as_str())
     {
-        name = Some(
-            ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?,
-        );
+        name = Some(crate::scope::service_name(service)?);
         runtimes.extend([service.config.private_dns.clone()]);
     }
     let rows = tx.query(
@@ -202,8 +199,7 @@ fn renamed(
         if !runtimes.is_empty() {
             retire.push(Retire {
                 id,
-                name: ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
+                name: crate::scope::service_name(service)?,
                 runtimes,
             });
         }
@@ -349,8 +345,7 @@ pub(crate) fn freeze(
     let mut named = services.to_vec();
     if every_saved {
         for service in saved.services.iter().filter(|service| changed(service)) {
-            let name = ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?;
+            let name = crate::scope::service_name(service)?;
             if !named.contains(&name) {
                 named.push(name);
             }
@@ -898,8 +893,7 @@ pub(super) fn lower(
             .map(|file| file.content.len())
             .sum();
         let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
-        let name =
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+        let name = crate::scope::service_name(service)?;
         if let Some(error) = crate::config_item::mounts_too_much(&name, &names, bytes) {
             return Err(error);
         }

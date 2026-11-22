@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::followup::FollowUp;
+use crate::storage::json_text;
 
 /// A repository no plan was saved for: off, removed on close.
 pub(super) fn off() -> Stored {
@@ -114,7 +115,7 @@ pub(crate) fn set_plan(
             (*repository_id).into(),
             who.organization.as_str().into(),
             name.into(),
-            serde_json::to_string(&plan).expect("a plan is JSON").as_str().into(),
+            json_text(&plan).as_str().into(),
         ],
     )?;
     plans(

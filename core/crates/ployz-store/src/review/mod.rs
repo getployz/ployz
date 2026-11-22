@@ -949,10 +949,7 @@ fn restarts(
                 .any(|mount| mount.config_resource_id == node.id)
                 && deployed.services.iter().any(|old| old.id == service.id)
         })
-        .map(|service| {
-            ployz_core::ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))
-        })
+        .map(crate::scope::service_name)
         .collect()
 }
 
