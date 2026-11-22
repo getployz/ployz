@@ -12,7 +12,7 @@ import {
   revokeInviteServerFn,
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
-import { can, type Permission } from "#/modules/organization/permissions";
+import { can, type MemberRole, type Permission } from "#/modules/organization/permissions";
 import { defineChange } from "#/collections/change-log/declare";
 
 export const membersKey = (organizationSlug: string) => ["organization-members", organizationSlug] as const;
@@ -32,8 +32,6 @@ export function organizationMembersQueryOptions(organizationSlug: string) {
   });
 }
 
-type Role = "owner" | "admin" | "member";
-
 /** The member writes of Organization Settings. Each shows at once and rolls back with a toast when the save fails. */
 export function useMemberWrites(organizationSlug: string) {
   const queryClient = useQueryClient();
@@ -52,8 +50,8 @@ export function useMemberWrites(organizationSlug: string) {
     };
   };
   const setRole = useMutation({
-    mutationFn: (input: { member: string; role: Role }) => setMemberRoleServerFn({ data: { organizationSlug, ...input } }),
-    ...optimistic<{ member: string; role: Role }>("Couldn't change the role.", (current, input) => ({
+    mutationFn: (input: { member: string; role: MemberRole }) => setMemberRoleServerFn({ data: { organizationSlug, ...input } }),
+    ...optimistic<{ member: string; role: MemberRole }>("Couldn't change the role.", (current, input) => ({
       ...current,
       members: current.members.map((row) => row.email === input.member ? { ...row, role: input.role } : row),
     })),
