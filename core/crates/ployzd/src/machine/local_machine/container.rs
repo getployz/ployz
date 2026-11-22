@@ -6,6 +6,7 @@
 //! available, and editing Machine Labels evicts nothing.
 
 use crate::machine::has_cluster_identity;
+use ployz_core::authority::MismatchField;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -675,7 +676,7 @@ impl LocalMachine {
         );
         Err(Error::DeployRefused(
             ployz_core::authority::AuthorityRefusal::Mismatch {
-                field: "the source Server",
+                field: MismatchField::SourceServer,
             },
         ))
     }
@@ -1727,7 +1728,7 @@ impl LocalMachine {
                         {
                             return Err(Error::DeployRefused(
                                 ployz_core::authority::AuthorityRefusal::Mismatch {
-                                    field: "a hook run",
+                                    field: MismatchField::HookRun,
                                 },
                             ));
                         }

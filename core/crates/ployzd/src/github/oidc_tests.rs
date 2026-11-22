@@ -374,7 +374,7 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     assert!(matches!(
         keys.check(&moved, token(), issued_at()).await,
         Err(ProofRefusal::Claim(AuthorityRefusal::Mismatch {
-            field: "job_workflow_sha"
+            field: MismatchField::ClaimJobWorkflowSha
         }))
     ));
     assert!(matches!(

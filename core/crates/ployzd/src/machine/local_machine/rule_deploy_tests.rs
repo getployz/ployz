@@ -140,7 +140,7 @@ fn refused(result: Result<(), Error>) -> String {
     match result {
         Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
             field,
-        }))) => field.to_owned(),
+        }))) => field.to_string(),
         Err(Error::RuleDeployRefused(RuleDeployRefusal::Proof(refusal))) => {
             format!("proof: {refusal}")
         }
@@ -557,7 +557,7 @@ async fn what_a_rule_admitted_stops_standing_once_a_newer_generation_arrives() {
     assert_eq!(
         standing.admits(&by, std::convert::identity).unwrap(),
         Err(AuthorityRefusal::Mismatch {
-            field: "a generation"
+            field: MismatchField::Generation
         }),
         "a Container made under generation 3 neither starts nor is created once 4 arrived"
     );

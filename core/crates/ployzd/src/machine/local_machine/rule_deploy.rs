@@ -18,8 +18,9 @@ use hkdf::hmac::Mac as _;
 use ployz_core::{
     ContainerKind, ContainerWant, QualifiedService, RunTarget, Sealing, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, RuleEvidence, RuleFacts, RuleProof,
-        Signed, Timestamp, VerifiedBuild, deploy::Creation, refusal::field, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, MismatchField, RuleEvidence,
+        RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild, deploy::Creation,
+        rule::verify_signature,
     },
 };
 
@@ -44,7 +45,12 @@ impl RuleDeployRefusal {
         match self {
             Self::Rule(
                 AuthorityRefusal::Mismatch {
-                    field: "a payload" | "a Service" | "a Machine" | "an Environment" | "a Cluster",
+                    field:
+                        MismatchField::Payload
+                        | MismatchField::Service
+                        | MismatchField::Machine
+                        | MismatchField::Environment
+                        | MismatchField::Cluster,
                 }
                 | AuthorityRefusal::UnknownKey { .. }
                 | AuthorityRefusal::UnknownPasskey
@@ -132,8 +138,8 @@ impl LocalMachine {
         };
         let (rule, signer) =
             verify_signature(&proof.rule, &trusted, Some(cluster)).map_err(refused)?;
-        let held = |field| {
-            tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
+        let held = |field: MismatchField| {
+            tracing::warn!(rule = %rule.rule, field = field.text(), "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
         };
         let attest = key.attest().attest();
@@ -165,11 +171,11 @@ impl LocalMachine {
                         Error::RuleDeployRefused(RuleDeployRefusal::Proof(refusal))
                     })?;
                 if claim.audience().ok().as_deref() != Some(claims.aud.as_str()) {
-                    return Err(held("an audience"));
+                    return Err(held(MismatchField::Audience));
                 }
                 // GitHub's `sha` is the commit the push built.
                 if claims.sha != claim.commit {
-                    return Err(held("a commit"));
+                    return Err(held(MismatchField::Commit));
                 }
                 let head = github
                     .head(
@@ -204,7 +210,7 @@ impl LocalMachine {
         let verified = match &proof.evidence {
             RuleEvidence::Verified(verified) => {
                 if !holds(&proof.rule, claim, verified, &key) {
-                    return Err(held("a verified build"));
+                    return Err(held(MismatchField::VerifiedBuild));
                 }
                 None
             }
@@ -263,7 +269,7 @@ impl LocalMachine {
         let (floor, now) =
             self.approvals
                 .floor(cluster, service, now, |_| AuthorityRefusal::Mismatch {
-                    field: "the approval record",
+                    field: MismatchField::ApprovalRecord,
                 })?;
         ployz_decide::service_floor::admits(rule.issued_at, floor, now)
             .map_err(super::admission::floor_refusal)
@@ -283,7 +289,7 @@ impl LocalMachine {
     ) -> Result<RuleAdmitted, Error> {
         let github = super::rule_grant::GithubOnline::shared().ok_or(Error::RuleDeployRefused(
             RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
-                field: "a GitHub client",
+                field: MismatchField::GitHubClient,
             }),
         ))?;
         self.admit_rule_deploy(want, proof, github, Timestamp::now(), budget)
@@ -303,67 +309,23 @@ fn logged(rule: &AutoDeployRule, service: &ServiceName, refusal: AuthorityRefusa
 /// What a refused rule deploy says to the person who reads the Deployment.
 fn refusal_text(refusal: &AuthorityRefusal) -> String {
     let text = match refusal {
-        AuthorityRefusal::Mismatch { field: "a payload" } => {
-            "This service's settings differ from what the automatic deploy rule approves. Approve the rule again."
-        }
-        AuthorityRefusal::Mismatch { field: "an image" } => {
-            "This server runs only the image GitHub built for this commit under the rule."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "an audience",
-        } => "This push was built under another approval of the automatic deploy rule. Push again.",
-        AuthorityRefusal::Mismatch { field: "a commit" } => {
-            "This commit is no longer the head of its branch."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "a verified build",
-        } => "No server of this cluster checked this build with GitHub. Push again.",
+        AuthorityRefusal::Mismatch { field } => match field.rule_deploy_refusal() {
+            Some(text) => text,
+            None => return format!("This server refused the automatic deploy rule: {refusal}."),
+        },
         AuthorityRefusal::RetiredBuilder { .. } => {
             "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
         }
-        AuthorityRefusal::Mismatch {
-            field: "a generation",
-        } => "A newer approval of the automatic deploy rule replaced this one.",
-        AuthorityRefusal::Mismatch {
-            field: "the attest key",
-        } => "This image wasn't built with this cluster's build secrets.",
-        AuthorityRefusal::Mismatch {
-            field: "an ended rule",
-        } => "Automatic deploys for this environment are off.",
-        AuthorityRefusal::Mismatch { field: "a Service" } => {
-            "The automatic deploy rule doesn't cover this service."
-        }
-        AuthorityRefusal::Mismatch { field: "a Machine" } => {
-            "The automatic deploy rule was approved before this server joined. Approve it again."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "an Environment",
-        } => "The automatic deploy rule is for another environment.",
-        AuthorityRefusal::Mismatch { field: "a Cluster" } => {
-            "The automatic deploy rule is for another cluster."
-        }
-        AuthorityRefusal::Mismatch {
-            field: "a hook run",
-        } => "This push already ran its pre-deploy command here.",
-        AuthorityRefusal::Mismatch {
-            field: "the signer" | "a passkey",
-        } => "An automatic deploy rule needs your passkey or an approved device. Approve it again.",
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved the automatic deploy rule."
         }
         AuthorityRefusal::Forgotten { .. } => {
             "This service's older versions were forgotten after the automatic deploy rule was approved. Approve the rule again. Until then it doesn't deploy this service, and Cloud can't move or drain what it built."
         }
-        AuthorityRefusal::Mismatch {
-            field: field::AHEAD,
-        } => {
-            "The automatic deploy rule was approved more than 10 minutes ahead of this server's clock. Check the clock of the device that approved it, and this server's."
-        }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }
         | AuthorityRefusal::OutOfScope { .. }
         | AuthorityRefusal::VolumeNotGranted { .. }
-        | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::Unsigned { .. }
         | AuthorityRefusal::NeedsSignature { .. }
         | AuthorityRefusal::NoClusterIdentity

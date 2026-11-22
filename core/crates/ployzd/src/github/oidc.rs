@@ -5,6 +5,7 @@
 //! verifies only if GitHub signed it. Only RS256 is accepted: the algorithm is never read
 //! from the key set or trusted from the token. No error or log line carries the token.
 
+use ployz_core::authority::MismatchField;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, PoisonError},
@@ -204,7 +205,7 @@ pub fn verify(token: &str, keys: &KeySet, now: Timestamp) -> Result<GithubClaims
         .map_err(TokenRefusal::Lifetime)?;
     if claims.nbf > now.plus(CLOCK_SKEW_MILLIS) {
         return Err(TokenRefusal::Lifetime(AuthorityRefusal::Mismatch {
-            field: "a start time",
+            field: MismatchField::StartTime,
         }));
     }
     Ok(claims)
@@ -301,7 +302,7 @@ impl IssuerKeys {
         })?;
         rule.verify_claims(&claims).map_err(|refusal| {
             if let AuthorityRefusal::Mismatch { field } = &refusal {
-                tracing::warn!(rule = %id, claim = field, "refused a GitHub token's claim");
+                tracing::warn!(rule = %id, claim = field.text(), "refused a GitHub token's claim");
             }
             ProofRefusal::Claim(refusal)
         })?;

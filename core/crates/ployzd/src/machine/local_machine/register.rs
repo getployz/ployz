@@ -1,5 +1,6 @@
 //! Register: admit a joiner, assign its subnet, and publish it to the Cluster.
 
+use ployz_core::authority::MismatchField;
 use std::collections::BTreeMap;
 
 use ployz_core::{Machine, RegisterRequest, Registered};
@@ -76,7 +77,7 @@ impl LocalMachine {
                     if !confirmed {
                         return Err(Error::JoinRefused(
                             ployz_core::authority::AuthorityRefusal::Mismatch {
-                                field: "a join confirmation",
+                                field: MismatchField::JoinConfirmation,
                             },
                         ));
                     }
@@ -114,7 +115,7 @@ impl LocalMachine {
         }) {
             return Err(Error::JoinRefused(
                 ployz_core::authority::AuthorityRefusal::Mismatch {
-                    field: "an unused subnet",
+                    field: MismatchField::UnusedSubnet,
                 },
             ));
         }

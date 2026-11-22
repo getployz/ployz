@@ -8,6 +8,7 @@
 //! signed key change or join approval, and checks its WebAuthn assertions itself against
 //! the public key it recorded.
 
+use crate::authority::MismatchField;
 use std::fmt;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -365,33 +366,33 @@ impl Passkey {
     ) -> Result<(), AuthorityRefusal> {
         let mismatch = |field| Err(AuthorityRefusal::Mismatch { field });
         if assertion.credential_id != self.credential_id {
-            return mismatch("a passkey");
+            return mismatch(MismatchField::Passkey);
         }
         let Ok(client) =
             serde_json::from_slice::<ClientData>(assertion.client_data_json.as_bytes())
         else {
-            return mismatch("an assertion");
+            return mismatch(MismatchField::Assertion);
         };
         if client.kind != "webauthn.get" {
-            return mismatch("an assertion type");
+            return mismatch(MismatchField::AssertionType);
         }
         if client.challenge != URL_SAFE_NO_PAD.encode(challenge) {
-            return mismatch("a challenge");
+            return mismatch(MismatchField::Challenge);
         }
         if client.cross_origin
             || client.origin != self.relying_party.origin.origin().ascii_serialization()
         {
-            return mismatch("an origin");
+            return mismatch(MismatchField::Origin);
         }
         let data = assertion.authenticator_data.as_bytes();
         let (Some(rp_id_hash), Some(flags)) = (data.get(..32), data.get(32)) else {
-            return mismatch("an assertion");
+            return mismatch(MismatchField::Assertion);
         };
         if rp_id_hash != Sha256::digest(self.relying_party.id.as_bytes()).as_slice() {
-            return mismatch("a relying party");
+            return mismatch(MismatchField::RelyingParty);
         }
         if flags & USER_PRESENT == 0 || flags & USER_VERIFIED == 0 {
-            return mismatch("user verification");
+            return mismatch(MismatchField::UserVerification);
         }
         let mut signed = data.to_vec();
         signed.extend_from_slice(&Sha256::digest(assertion.client_data_json.as_bytes()));
@@ -399,7 +400,7 @@ impl Passkey {
             .public_key
             .verifies(&signed, assertion.signature.as_bytes())
         {
-            return mismatch("a passkey signature");
+            return mismatch(MismatchField::PasskeySignature);
         }
         Ok(())
     }
@@ -667,9 +668,7 @@ impl TrustedKeys {
     ///
     /// # Errors
     /// As [`Self::covers`], and [`AuthorityRefusal::Mismatch`] naming
-    /// [`field::KEPT_REACH`] for a grant without a kept reach.
-    ///
-    /// [`field::KEPT_REACH`]: super::refusal::field::KEPT_REACH
+    /// [`MismatchField::KeptReach`] for a grant without a kept reach.
     pub fn covers_kept(
         &self,
         by: &Approver,
@@ -690,7 +689,7 @@ impl TrustedKeys {
                 match self.of(by).map(TrustedKey::kind) {
                     Some(kind) if kind.whole_cluster() => Ok(()),
                     _ => Err(AuthorityRefusal::Mismatch {
-                        field: super::refusal::field::KEPT_REACH,
+                        field: MismatchField::KeptReach,
                     }),
                 }
             }
