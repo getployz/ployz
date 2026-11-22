@@ -17,7 +17,7 @@ import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approve
 import { approvePrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
-import { lossMoment } from "#/modules/volume-placement/volume-placement";
+import { lossMoment } from "#/utils/relative-time";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";

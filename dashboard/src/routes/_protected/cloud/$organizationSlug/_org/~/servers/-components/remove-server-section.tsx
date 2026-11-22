@@ -3,7 +3,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon, UnplugIcon } from "lucide-react";
 import { toast } from "sonner";
-import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { DeletionDialog } from "#/components/deletion-dialog";
+import { type DeletionItem } from "#/modules/config-store/deletion";
 import { Button } from "#/components/ui/button";
 import { ForgetServersDialog } from "../../../-components/forget-servers-dialog";
 import {

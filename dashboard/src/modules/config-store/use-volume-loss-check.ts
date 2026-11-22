@@ -1,4 +1,4 @@
-import type { DeletionCheck } from "#/components/deletion-dialog";
+import type { DeletionCheck } from "#/modules/config-store/deletion";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreRefused } from "./store.contract";
 import { volumeLossItems } from "#/modules/volume-placement/volume-placement";

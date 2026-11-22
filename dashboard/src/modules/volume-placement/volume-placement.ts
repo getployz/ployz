@@ -1,6 +1,7 @@
 import type { ChangeKind, MachineId, MachineName, SlotRole, VolumeCopy } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import type { DeletionItem } from "#/components/deletion-dialog";
+import type { DeletionItem } from "#/modules/config-store/deletion";
+import { lossMoment } from "#/utils/relative-time";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
 import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
@@ -273,12 +274,6 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   }
   return changes;
 }
-
-const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
-export const lossTime = (at: Date) => clock.format(at);
-const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-/** The time alone for a point from today, the date as well for an older one. */
-export const lossMoment = (at: Date, now = new Date()) => (at.toDateString() === now.toDateString() ? lossTime(at) : dated.format(at));
 
 const deleteSlot = (role: SlotRole) => (server: MachineRef): VolumeRunInput =>
   ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id, role } });

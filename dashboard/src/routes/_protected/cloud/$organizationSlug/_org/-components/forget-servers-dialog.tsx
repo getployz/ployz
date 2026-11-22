@@ -2,7 +2,8 @@
 
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { DeletionDialog } from "#/components/deletion-dialog";
+import { type DeletionItem } from "#/modules/config-store/deletion";
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { useClusterReleased } from "#/providers/runtime-provider";
