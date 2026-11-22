@@ -13,7 +13,7 @@ fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
         cloud.report().message,
         "Server initialized; the Ingress Proxy did not follow."
     );
-    let set = crate::handlers::server::ingress_incomplete(
+    let set = crate::enrollment::output::ingress_incomplete(
         "Server updated",
         failure(),
         ployz_core::Hint::Next(String::new()),

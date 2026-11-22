@@ -182,14 +182,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         (unarrived, catch_up) = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(
-                super::catch_up::follow_globals(&mut entry, &assigned, |args| {
+                crate::enrollment::catch_up::follow_globals(&mut entry, &assigned, |args| {
                     super::super::recovery_command(matches, &context_name, args)
                 })
                 .await,
             )
         })?;
         catch_up.map_err(|error| {
-            super::catch_up::joined_catch_up_error(error, &assigned, |args| {
+            crate::enrollment::catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::super::recovery_command(matches, &context_name, args)
             })
         })?;
@@ -198,8 +198,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok(())
     })();
     crate::ui::emit_committed(
-        super::catch_up::with_unarrived(
-            json!({ "server": super::server_json(&assigned) }),
+        crate::enrollment::catch_up::with_unarrived(
+            json!({ "server": crate::enrollment::output::server_json(&assigned) }),
             &unarrived,
         ),
         follow_up,
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {
         let assigned = assigned_machine("edge", 'a');
-        let failure = super::super::catch_up::joined_catch_up_error(
+        let failure = crate::enrollment::catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned())
                     .hint(Hint::Next("ployz deploy".into())),

@@ -255,7 +255,7 @@ where
             .as_ref()
             .is_some_and(|machine| machine.id == assigned.id);
         let undo = (local.is_none() && !runs_assigned)
-            .then(|| Hint::Undo(crate::handlers::server::forget_unarrived(assigned.id)));
+            .then(|| Hint::Undo(super::output::forget_unarrived(assigned.id)));
         let undoable = |error: Error| error.hint(undo.clone());
         if local.is_none()
             && unlisted_participation(&details, &assigned).is_err()
@@ -327,10 +327,8 @@ where
         // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
         let capability = set_cloud_management_client(plan, &mut ready).await?;
         let (unarrived, catch_up) =
-            crate::handlers::server::catch_up::follow_globals(&mut ready, &assigned, |args| {
-                plan.reach().rerun(args)
-            })
-            .await;
+            super::catch_up::follow_globals(&mut ready, &assigned, |args| plan.reach().rerun(args))
+                .await;
         // Cloud may use the replacement after publication, revoking this key.
         // A committed join remains enrolled even when Global catch-up needs a separate retry.
         cloud::enroll::publish(
@@ -355,12 +353,12 @@ where
         ui::stream(format_args!("Joined Server {}.", assigned.name));
         // The join is committed; a catch-up failure makes it partial.
         let printed = ui::emit_committed(
-            crate::handlers::server::catch_up::with_unarrived(
-                serde_json::json!({ "server": crate::handlers::server::server_json(&assigned), "founded": false }),
+            super::catch_up::with_unarrived(
+                serde_json::json!({ "server": super::output::server_json(&assigned), "founded": false }),
                 &unarrived,
             ),
             catch_up.map_err(|error| {
-                crate::handlers::server::catch_up::joined_catch_up_error(error, &assigned, |args| {
+                super::catch_up::joined_catch_up_error(error, &assigned, |args| {
                     plan.reach().rerun(args)
                 })
             }),
@@ -501,7 +499,7 @@ where
             let elsewhere = error.only_elsewhere(&machine.id);
             let error = ingress_incomplete(
                 command,
-                crate::handlers::ingress_hints(error.into(), |args| plan.reach().rerun(args)),
+                super::output::ingress_hints(error.into(), |args| plan.reach().rerun(args)),
             );
             if !elsewhere {
                 return Err(error);
@@ -748,7 +746,7 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed.
 pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
-    crate::handlers::server::ingress_incomplete(
+    super::output::ingress_incomplete(
         "Server initialized",
         error,
         Hint::Retry(command.retry().to_owned()),
@@ -772,7 +770,7 @@ fn founder_result(
         ui::stream(format_args!("Enrolled Server {}.", machine.name));
     }
     let mut result = serde_json::json!({
-        "server": crate::handlers::server::server_json(machine),
+        "server": super::output::server_json(machine),
         "founded": founding,
         "deploys_saved_environments": founding,
         "next": next,

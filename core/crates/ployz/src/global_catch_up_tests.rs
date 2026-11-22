@@ -13,11 +13,11 @@ use ployz_core::{
 };
 
 use super::*;
+use crate::enrollment::catch_up::joined_catch_up_error;
 use crate::global_fixtures::{
     container_id, created_on, global_service, global_service_with_image, grouped, machine,
     qualified, requested, running_on, service_id,
 };
-use crate::handlers::server::catch_up::joined_catch_up_error;
 use ployz_core::Hint;
 
 fn rotated(mut observed: ContainerObservation, rotation: CopyRotation) -> ContainerObservation {

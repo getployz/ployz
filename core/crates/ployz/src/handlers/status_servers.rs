@@ -21,7 +21,6 @@ use ployz_core::{
 use ployz_store::{DeploymentStatus, DeploymentSummary};
 
 use super::route::{self, Reach, Unreached};
-use super::server;
 use super::shared::disk;
 use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
@@ -668,7 +667,9 @@ fn down_attention(observed: &MachineObservation) -> Attention {
         format!(
             "Hasn't joined and may still be joining. Once that Server is deleted or won't join, \
              take it out with `{}`.",
-            crate::ui::pasteable(&server::forget_unarrived(observed.machine.id))
+            crate::ui::pasteable(&crate::enrollment::output::forget_unarrived(
+                observed.machine.id
+            ))
         )
     } else {
         "Down. Its copies serve again once it's back.".to_owned()

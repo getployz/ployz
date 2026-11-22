@@ -119,7 +119,9 @@ fn never_joined(observed: &MachineObservation) -> String {
         "Server {} hasn't joined and may still be joining. Once that Server is deleted or won't \
          join, take it out with `{}`.",
         observed.machine.name,
-        ui::pasteable(&super::forget_unarrived(observed.machine.id))
+        ui::pasteable(&crate::enrollment::output::forget_unarrived(
+            observed.machine.id
+        ))
     )
 }
 
@@ -337,7 +339,10 @@ async fn inspect(
         fields.remove("upgrade");
         fields.insert("public_key".into(), json!(details.public_key.to_string()));
         if let Some(machine) = &details.machine {
-            fields.insert("machine".into(), super::machine_json(machine));
+            fields.insert(
+                "machine".into(),
+                crate::enrollment::output::machine_json(machine),
+            );
         }
     }
     crate::ui::fields(
@@ -663,7 +668,10 @@ fn joined(items: impl IntoIterator<Item = impl std::fmt::Display>) -> String {
 fn observation_json(observation: &MachineObservation) -> Value {
     let mut value = serde_json::to_value(observation).expect("a Machine observation serializes");
     if let Value::Object(fields) = &mut value {
-        fields.insert("machine".into(), super::machine_json(&observation.machine));
+        fields.insert(
+            "machine".into(),
+            crate::enrollment::output::machine_json(&observation.machine),
+        );
         fields.insert(
             "gateway".into(),
             json!(observation.machine.subnet.gateway().0),
@@ -946,7 +954,9 @@ mod tests {
         );
         assert_eq!(
             output.get("machine"),
-            Some(&super::super::machine_json(&observation.machine))
+            Some(&crate::enrollment::output::machine_json(
+                &observation.machine
+            ))
         );
     }
 }

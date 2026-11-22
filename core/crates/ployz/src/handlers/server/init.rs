@@ -176,9 +176,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         crate::enrollment::founding::open_ingress(&mut ready, &machine, closed)
             .await
             .map_err(|error| {
-                super::ingress_incomplete(
+                crate::enrollment::output::ingress_incomplete(
                     "Server initialized",
-                    super::super::ingress_hints(error.into(), |args| {
+                    crate::enrollment::output::ingress_hints(error.into(), |args| {
                         super::super::recovery_command(matches, &context_name, args)
                     }),
                     Hint::Next(ingress_recovery.clone()),
@@ -188,7 +188,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     // The Machine and its context are committed: print them before a follow-up failure.
     let named = named.unwrap_or(Ok(Default::default()));
     let result = json!({
-        "server": super::server_json(&machine),
+        "server": crate::enrollment::output::server_json(&machine),
         "context": context_name,
         "cluster": named.as_ref().ok(),
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
