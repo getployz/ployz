@@ -11,7 +11,6 @@ import { serverUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.c
 import { serverUpgradeChange } from "#/modules/server-upgrade/server-upgrade.queries";
 import { serviceActChange } from "#/modules/service-act/service-act.queries";
 import { supportAccess } from "#/modules/support-access/support-access.collection";
-import { mirrorSyncChange } from "#/modules/volume-copies/mirror-sync/mirror-sync.queries";
 import { volumePlacementChange } from "#/modules/volume-placement/volume-placement.queries";
 import { volumeRunChange } from "#/modules/volume-run/volume-run.queries";
 
@@ -24,7 +23,7 @@ export const orgCollections = [canvasPositions, organizationEnrollment, clusterD
 /** Every other change name a feature owns. The Config Store's families are `storeViewNames`. */
 export const orgChanges = [
   organizationChange, serverUpgradeChange, serverDrainChange, serverWebTrafficChange, clusterIngressChange,
-  volumeRunChange, mirrorSyncChange, serviceActChange, volumePlacementChange, membersChange,
+  volumeRunChange, serviceActChange, volumePlacementChange, membersChange,
 ] as const;
 
 type NamesOf<T extends ReadonlyArray<{ readonly name: string }>> = { readonly [K in keyof T]: T[K]["name"] };

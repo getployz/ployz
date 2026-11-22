@@ -5,7 +5,7 @@ import type { EnvironmentRef } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { refreshMirrorServerFn } from "./mirror-sync.functions";
-import { mirrorSyncKeys, useMirrorStatuses } from "./mirror-sync.queries";
+import { useMirrorStatuses } from "./mirror-sync.queries";
 
 /** Refresh now for one Volume's mirror, and what the mirror syncs last saw of each mirror. */
 export function useRefreshMirror(organizationSlug: string, environment: EnvironmentRef, volumeId: string) {
@@ -19,7 +19,6 @@ export function useRefreshMirror(organizationSlug: string, environment: Environm
       if (result.ok) toast.success(result.lines.join("\n"));
       else toast.error(result.refusal.message);
       void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
-      void queryClient.invalidateQueries({ queryKey: mirrorSyncKeys.all });
     }, (error: Error) => toast.error(toErrorMessage(error, "Could not refresh the mirror")))
       .finally(() => setSending(false));
   };
