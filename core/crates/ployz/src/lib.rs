@@ -15,6 +15,7 @@ mod cloud_origin;
 mod cloud_reply;
 mod cluster;
 mod cluster_teardown;
+mod coded;
 mod config_dir;
 pub mod connect;
 pub mod context;

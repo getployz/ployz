@@ -25,6 +25,7 @@ use thiserror::Error;
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{self, CredentialStore, LoginError};
 use crate::cloud_origin::CloudOrigin;
+use crate::coded::Coded;
 
 /// The manifest one Cloud serves, as `ployz` uses it.
 #[derive(Debug, Clone)]
@@ -145,13 +146,13 @@ pub(crate) enum PublishError {
     Slow { cloud: String, budget: Duration },
 }
 
-impl PublishError {
-    pub(crate) fn code(&self) -> RpcErrorCode {
+impl Coded for PublishError {
+    fn code(&self) -> RpcErrorCode {
         match self {
             Self::Unsupported { .. } => RpcErrorCode::Unsupported,
             Self::Unavailable(_) => RpcErrorCode::Unavailable,
             Self::Refused(error) => error.code.clone(),
-            Self::Cloud(error) => crate::failure::login_code(error),
+            Self::Cloud(error) => error.code(),
             Self::Malformed { .. } | Self::Cache { .. } | Self::Runtime(_) => {
                 RpcErrorCode::Internal
             }

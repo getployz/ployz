@@ -15,6 +15,9 @@ use std::{
 };
 
 use ployz_core::cloud_contract::CLIENT_ID;
+use ployz_core::{Hint, RpcErrorCode};
+
+use crate::coded::Coded;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -96,6 +99,70 @@ pub(crate) enum LoginError {
     UnknownCredential(String),
     #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
     AmbiguousCredential { name: String, ids: Vec<String> },
+}
+
+impl Coded for LoginError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Self::Unreachable { .. } | Self::Unanswered { .. } => RpcErrorCode::Unavailable,
+            Self::Unsupported(_) => RpcErrorCode::Unsupported,
+            Self::TokenBound => RpcErrorCode::InvalidArgument,
+            Self::Status { status, .. } => crate::cloud_reply::status_code(*status),
+            Self::Reply(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
+            Self::OtherCloud { .. } => RpcErrorCode::Conflict,
+            Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_) => RpcErrorCode::Unauthenticated,
+            Self::UnknownOrganization(_) | Self::UnknownCredential(_) => RpcErrorCode::NotFound,
+            Self::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
+        }
+    }
+
+    fn evidence(&self) -> Option<serde_json::Value> {
+        matches!(self, Self::Unanswered { .. }).then(|| serde_json::json!({ "writes": "unknown" }))
+    }
+
+    /// Sign-in failures name the command that fixes them.
+    fn hints(&self) -> Vec<Hint> {
+        let next = match self {
+            Self::Store { path, source } if source.kind() == io::ErrorKind::PermissionDenied => {
+                return vec![Hint::Next(format!(
+                    "chmod 600 {}",
+                    shell_words::quote(&path.to_string_lossy())
+                ))];
+            }
+            // Cloud binds every call to the acting Organization, `org ls` included: a
+            // sign-in left outside it can only start over.
+            Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::NotMember(_) => "ployz logout",
+            Self::SignedOut | Self::Expired | Self::Denied | Self::Ended => "ployz login",
+            Self::AwaitingApproval { .. } => "ployz login --wait",
+            Self::TokenRefused => crate::cloud_account::SIGN_IN_PAST_TOKEN,
+            Self::AgentTokenRefused => "ployz mcp login",
+            Self::UnknownOrganization(_) => "ployz org ls",
+            Self::UnknownCredential(_) | Self::AmbiguousCredential { .. } => "ployz token ls",
+            Self::Unreachable { .. }
+            | Self::Unanswered { .. }
+            | Self::Unsupported(_)
+            | Self::Status { .. }
+            | Self::Reply(_)
+            | Self::Store { .. }
+            | Self::TokenBound
+            | Self::TokenMalformed => return Vec::new(),
+        };
+        vec![Hint::Next(next.into())]
+    }
 }
 
 /// How far a failed Cloud call got, for a caller that must know whether Cloud may have acted.

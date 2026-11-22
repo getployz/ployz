@@ -4,11 +4,13 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, MachineId, MachineName, MachineToken,
-    ManagementCapability, RecoverySeed, Registered, SealingKeyBackup, SealingPublicKey,
-    StorageChoice, WireGuardPublicKey,
+    ManagementCapability, RecoverySeed, Registered, RpcErrorCode, SealingKeyBackup,
+    SealingPublicKey, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 pub(crate) use ployz_core::EnrollStage;
 
@@ -100,6 +102,23 @@ pub(crate) enum Error {
         "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
     )]
     CloudCantReach,
+}
+
+impl Coded for Error {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Error::Timeout(_)
+            | Error::Connect(_)
+            | Error::Http(_)
+            | Error::RetrySameCommand { .. }
+            | Error::CloudCantReach
+            | Error::FounderWait => RpcErrorCode::Unavailable,
+            Error::Json(_) => RpcErrorCode::Internal,
+            Error::TokenRefused => RpcErrorCode::Unauthenticated,
+            Error::Status { status, .. } => crate::cloud_reply::status_code(*status),
+            Error::CodedConflict { .. } => RpcErrorCode::Conflict,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

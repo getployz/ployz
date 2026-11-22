@@ -174,7 +174,7 @@ fn exits(error: Failure) -> String {
 fn login(error: LoginError) -> String {
     let described = format!(
         "{error:?} | {error} | code {:?}",
-        crate::failure::login_code(&error)
+        crate::coded::Coded::code(&error)
     );
     format!("{described} | {}", exits(Failure::from(error)))
 }

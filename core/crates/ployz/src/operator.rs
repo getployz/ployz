@@ -10,17 +10,19 @@ use std::{
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
-    FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, PartialResult,
-    QualifiedService, RpcError, ServiceContainer, ServiceObservation, ServiceSelector,
-    StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
+    FanoutSelector, Hint, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId,
+    MachineLogService, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
+    PartialResult, QualifiedService, RpcError, RpcErrorCode, ServiceContainer, ServiceObservation,
+    ServiceSelector, StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
     resolve_machine_selectors, select_service,
 };
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
+use crate::coded::Coded;
 use crate::connect::{Client, ConnectError, TransportError};
 use input::{ExecMode, InputError, ServiceArg};
 use ployz_core::EnvironmentValues;
@@ -140,6 +142,67 @@ pub enum OperatorError {
         #[source]
         source: Box<OperatorError>,
     },
+}
+
+impl Coded for OperatorError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            OperatorError::Connect(error) => error.code(),
+            OperatorError::Rpc(error)
+            | OperatorError::StartExec { source: error, .. }
+            | OperatorError::ExecConnectionLost { source: error, .. } => error.to_rpc_error().code,
+            OperatorError::Selector(error) => error.code(),
+            OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
+            OperatorError::MachineSelector(error) => error.code(),
+            OperatorError::Container(error) => error.code(),
+            OperatorError::Codec(error) => error.code(),
+            OperatorError::OpenContainerLogs { source, .. }
+            | OperatorError::OpenMachineLogs { source, .. } => source.code(),
+            OperatorError::Input(error) => error.code(),
+            OperatorError::Value(_) | OperatorError::UnsupportedLogService { .. } => {
+                RpcErrorCode::InvalidArgument
+            }
+            OperatorError::NoRegularContainer
+            | OperatorError::NoContainersOnMachines { .. }
+            | OperatorError::NoMachines
+            | OperatorError::NoServices
+            | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
+            OperatorError::StreamClosed
+            | OperatorError::NotRunningOnAnswered { .. }
+            | OperatorError::ExecContainerStopped { .. }
+            | OperatorError::NoServableContainer
+            | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
+            OperatorError::Protocol(_) => RpcErrorCode::Internal,
+        }
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        if let Self::StartExec { source, .. } = self {
+            return Some(source.to_rpc_error().details);
+        }
+        if let Self::NotRunningOnAnswered { gaps, .. } = self {
+            return Some(
+                serde_json::json!({ "failures": gaps.failures, "omitted": gaps.omissions }),
+            );
+        }
+        if let Self::Container(container) = self {
+            return container.evidence();
+        }
+        None
+    }
+
+    fn hints(&self) -> Vec<Hint> {
+        if let Self::Container(container) = self {
+            return container.hints();
+        }
+        if let Self::NotRunning {
+            running_in_scope, ..
+        } = self
+        {
+            return vec![Hint::valid(running_in_scope)];
+        }
+        Vec::new()
+    }
 }
 
 impl OperatorError {

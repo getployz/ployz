@@ -10,11 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    MachineId, ManagementCapability,
+    MachineId, ManagementCapability, RpcErrorCode,
     private_fs::{Durability, Existing, Replace, TempName, create_private_dir, replace_file},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 /// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
 /// `$XDG_CONFIG_HOME` when that is an absolute path, else `~/.config`.
@@ -883,6 +885,22 @@ pub enum ConfigError {
     Write { path: PathBuf, source: io::Error },
 }
 
+impl Coded for ConfigError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ConfigError::Context(error) => error.code(),
+            ConfigError::Parse { .. }
+            | ConfigError::PrivatePermissions(_)
+            | ConfigError::EmptyCurrentContext(_)
+            | ConfigError::Read { .. }
+            | ConfigError::Write { .. }
+            | ConfigError::CreateDirectory { .. }
+            | ConfigError::Encode(_)
+            | ConfigError::ManagementConnectionMissing => RpcErrorCode::Internal,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ConnectionError {
     #[error("invalid Management Capability")]
@@ -905,6 +923,12 @@ pub enum ConnectionError {
     UnsupportedScheme(String),
 }
 
+impl Coded for ConnectionError {
+    fn code(&self) -> RpcErrorCode {
+        RpcErrorCode::InvalidArgument
+    }
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ContextError {
     #[error("no Ployz config or local daemon socket is available")]
@@ -919,6 +943,20 @@ pub enum ContextError {
     NoConnections { name: String },
     #[error(transparent)]
     Connection(ConnectionError),
+}
+
+impl Coded for ContextError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ContextError::NoConfig
+            | ContextError::NoContexts(_)
+            | ContextError::ContextNotFound { .. }
+            | ContextError::NoConnections { .. } => RpcErrorCode::NotFound,
+            ContextError::NoCurrentContext(_) | ContextError::Connection(_) => {
+                RpcErrorCode::InvalidArgument
+            }
+        }
+    }
 }
 
 #[cfg(test)]

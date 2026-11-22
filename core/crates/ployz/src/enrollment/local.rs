@@ -1,7 +1,8 @@
 //! Durable operator-local history. Independent computers and Cloud do not share
 //! this lock and may still allocate overlapping subnets. No claims expire.
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, MachineId, RegisterRequest, WireGuardPublicKey,
+    EnrollmentAssignment, EnrollmentSnapshot, MachineId, RegisterRequest, RpcErrorCode,
+    WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,6 +11,8 @@ use std::{
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::Path,
 };
+
+use crate::coded::Coded;
 
 /// Failure to read or durably save operator-local enrollment history.
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +29,15 @@ pub enum Error {
     /// No observed durable Machine identity connects the enrollment scope.
     #[error("enrollment scope requires an observed Entry Machine")]
     MissingScope,
+}
+
+impl Coded for Error {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Error::Allocation(_) => RpcErrorCode::Conflict,
+            Error::Io(_) | Error::Serialization(_) | Error::MissingScope => RpcErrorCode::Internal,
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

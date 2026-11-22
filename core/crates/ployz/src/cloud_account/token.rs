@@ -350,7 +350,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(
-            crate::failure::login_code(&error),
+            crate::coded::Coded::code(&error),
             ployz_core::RpcErrorCode::Ambiguous
         );
     }

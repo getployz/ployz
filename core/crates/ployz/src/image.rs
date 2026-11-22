@@ -4,13 +4,14 @@ use std::future::Future;
 use ployz_core::{
     FanoutSelector, ImageIngestReason, ImagePulled, Machine, MachineFailure, MachineId,
     MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY, PartialResult,
-    PeerImagePull, PullFreeImageRequest, PullImageRequest, PullPolicy, RegistryAuth, RpcError, op,
-    resolve_machine_selectors,
+    PeerImagePull, PullFreeImageRequest, PullImageRequest, PullPolicy, RegistryAuth, RpcError,
+    RpcErrorCode, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 
 use crate::{
     cluster::answered_by,
+    coded::Coded,
     connect::{Client, rpc_error},
 };
 
@@ -65,6 +66,24 @@ pub enum PushError {
         "Docker on the target Machine is not using the required containerd image store; enable Docker's containerd image store on that Machine, then retry"
     )]
     UnsupportedImageStore,
+}
+
+impl Coded for PushError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            PushError::VariantUnavailable { .. } => RpcErrorCode::NotFound,
+            PushError::BuildIncomplete { .. } => RpcErrorCode::Conflict,
+            PushError::InvalidReference { .. } | PushError::InvalidSelector(_) => {
+                RpcErrorCode::InvalidArgument
+            }
+            PushError::Selector(error) => error.code(),
+            PushError::Cluster(error) => error.code(),
+            PushError::ImageIngest(error) | PushError::PeerPull(error) => error.code.clone(),
+            PushError::UnsupportedImageStore => RpcErrorCode::Unsupported,
+            // Ctrl-C or the caller stopped delivery: not a fault; it did not finish and can be retried.
+            PushError::Cancelled => RpcErrorCode::Unavailable,
+        }
+    }
 }
 
 impl PushError {

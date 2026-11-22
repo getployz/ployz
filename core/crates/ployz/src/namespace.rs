@@ -12,6 +12,12 @@ pub enum NamespaceError {
     Reserved { name: Namespace },
 }
 
+impl crate::coded::Coded for NamespaceError {
+    fn code(&self) -> ployz_core::RpcErrorCode {
+        ployz_core::RpcErrorCode::InvalidArgument
+    }
+}
+
 /// Refuse a reserved Namespace on deployment and removal commands.
 ///
 /// # Errors

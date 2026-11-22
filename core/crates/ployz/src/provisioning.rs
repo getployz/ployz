@@ -9,11 +9,13 @@ use std::{
 };
 
 use clap::ArgMatches;
-use ployz_core::{Hint, MachineRelease, StoragePreparation};
+use ployz_core::{Hint, MachineRelease, RpcErrorCode, StoragePreparation};
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::checkin::process_is_root;
+use crate::coded::Coded;
 use crate::context::{Connection, ConnectionError, SshDestination, Transport};
 
 mod bootstrap;
@@ -138,6 +140,61 @@ pub enum ProvisionError {
     /// ZFS was selected while installation was explicitly disabled.
     #[error("zfs storage preparation requires the installer; remove --no-install")]
     ZfsWithoutInstaller,
+}
+
+impl Coded for ProvisionError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            ProvisionError::CleanupAfter { primary, .. } => primary.code(),
+            ProvisionError::MissingDestination
+            | ProvisionError::RemoteTransport(_)
+            | ProvisionError::Connection(_)
+            | ProvisionError::ZfsWithoutInstaller => RpcErrorCode::InvalidArgument,
+            ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
+                RpcErrorCode::Unauthenticated
+            }
+            ProvisionError::UnsupportedOs
+            | ProvisionError::UnsupportedArchitecture(_)
+            | ProvisionError::BootstrapUnsigned(_) => RpcErrorCode::Unsupported,
+            ProvisionError::SshClientMissing
+            | ProvisionError::Whoami(_)
+            | ProvisionError::WhoamiFailed(_)
+            | ProvisionError::Sudo(_)
+            | ProvisionError::Platform(_)
+            | ProvisionError::PlatformFailed(_)
+            | ProvisionError::BootstrapDownload { .. }
+            | ProvisionError::Transfer(_)
+            | ProvisionError::TransferFailed { .. } => RpcErrorCode::Unavailable,
+            ProvisionError::WhoamiUtf8
+            | ProvisionError::EmptyUser
+            | ProvisionError::PlatformUtf8
+            | ProvisionError::BootstrapIo { .. }
+            | ProvisionError::BootstrapCommand { .. }
+            | ProvisionError::BootstrapVerification(_)
+            | ProvisionError::BootstrapSignature(_)
+            | ProvisionError::Install(_)
+            | ProvisionError::InstallFailed { .. }
+            | ProvisionError::InstallRefused { .. }
+            | ProvisionError::Cleanup(_)
+            | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
+        }
+    }
+
+    fn evidence(&self) -> Option<Value> {
+        let Self::CleanupAfter { cleanup, .. } = self else {
+            return None;
+        };
+        let mut lines = vec![cleanup.to_string()];
+        lines.extend(error_chain::causes(cleanup.as_ref()));
+        Some(serde_json::json!({ "cleanup": lines }))
+    }
+
+    fn hints(&self) -> Vec<Hint> {
+        if let Self::CleanupAfter { remove, .. } = self {
+            return vec![Hint::Next(remove.to_string())];
+        }
+        Vec::new()
+    }
 }
 
 /// Resolve Machine storage preparation once before provisioning or enrollment.

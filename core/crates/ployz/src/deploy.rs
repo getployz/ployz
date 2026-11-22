@@ -8,10 +8,12 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, ServiceName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 pub(crate) mod cleanup;
 mod exec;
@@ -1111,6 +1113,45 @@ pub enum PlanError {
     /// Services of a reserved Namespace are never retired by name.
     #[error("Services in Namespace {namespace} can't be removed by a Deploy")]
     RemovalInReservedNamespace { namespace: Namespace },
+}
+
+impl Coded for PlanError {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            PlanError::Service { source, .. } => source.code(),
+            PlanError::ConflictingHostPublications { .. }
+            | PlanError::VolumeInSeveralRegions { .. }
+            | PlanError::ConflictingDockerVolumeDefinitions { .. }
+            | PlanError::DuplicateTargetService { .. }
+            | PlanError::MixedVolumeModes { .. }
+            | PlanError::DependencyCycle { .. }
+            | PlanError::RemovalInTarget { .. }
+            | PlanError::RemovalNotSelected { .. }
+            | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
+            PlanError::Storage { .. }
+            | PlanError::HostPortConflict { .. }
+            | PlanError::InsufficientCapacity
+            | PlanError::NoEligibleMachines { .. }
+            | PlanError::ServiceModeCannotChange
+            | PlanError::ProvisionedVolumeStorageRequired { .. }
+            | PlanError::ProvisionedVolumeStorageUnavailable
+            | PlanError::ExistingPlainVolume { .. }
+            | PlanError::ExistingProvisionedVolumeMismatch { .. }
+            | PlanError::NoWriter { .. }
+            | PlanError::VolumeServerTakesNoServices { .. }
+            | PlanError::FirstCopyUnfit { .. }
+            | PlanError::VolumeOriginsUnchecked { .. }
+            | PlanError::RegionUnmatched { .. }
+            | PlanError::VolumeOutsideRegion { .. }
+            | PlanError::VolumesApart { .. }
+            | PlanError::VolumeSharedAcrossRegions { .. }
+            | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
+            PlanError::CapacityUnknown
+            | PlanError::CopiesUnknown { .. }
+            | PlanError::VolumeHolderUnknown { .. }
+            | PlanError::ProvisionedVolumeStorageUnknown { .. } => RpcErrorCode::Unavailable,
+        }
+    }
 }
 
 /// Why a hostname another Service publishes can't be claimed in this Deploy.
