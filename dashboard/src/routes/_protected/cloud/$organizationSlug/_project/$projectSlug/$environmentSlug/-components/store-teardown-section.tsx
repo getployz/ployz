@@ -18,7 +18,7 @@ import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { useServerList } from "#/modules/machines/use-servers";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
-import { getServiceIcon } from "./canvas/service-node-helpers";
+import { serviceIcon } from "./canvas/service-icon";
 
 /** How a removal that didn't apply ended, after "Deployment #N". */
 function ended(status: DeploymentStatus) {
@@ -98,7 +98,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
         ? each.map(({ environment }): DeletionItem => ({ kind: environment.parent ? "branch" : "environment", name: environment.name }))
         : [],
       ...each.flatMap(({ environment, services }) => services.map((service): DeletionItem =>
-        ({ kind: "service", name: service.name, icon: getServiceIcon({ source: { type: service.source } }), detail: detail(environment) }))),
+        ({ kind: "service", name: service.name, icon: serviceIcon(service.source), detail: detail(environment) }))),
       ...each.flatMap(({ environment, volumes }) => volumes.map((volume): DeletionItem =>
         ({ kind: "volume", name: volume, detail: detail(environment) }))),
     ];

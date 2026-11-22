@@ -1,4 +1,5 @@
-import { Schema, SchemaGetter } from "effect";
+import { Schema } from "effect";
+import { tabSearchSchema } from "#/lib/tab-search";
 
 export const VOLUME_PAGES = [
   { id: "copies", label: "Copies" },
@@ -7,10 +8,5 @@ export const VOLUME_PAGES = [
 
 export const volumePageSchema = Schema.Literals(VOLUME_PAGES.map((page) => page.id));
 
-/** The open tab. A tab this drawer doesn't have, say one carried over from another drawer, opens Copies. */
-export const volumeSearchSchema = Schema.Struct({
-  tab: Schema.optional(Schema.String.pipe(Schema.decodeTo(volumePageSchema, {
-    decode: SchemaGetter.transform((tab) => Schema.is(volumePageSchema)(tab) ? tab : "copies"),
-    encode: SchemaGetter.transform((tab) => tab),
-  }))),
-});
+/** The open tab, which falls back to Copies. */
+export const volumeSearchSchema = tabSearchSchema(VOLUME_PAGES, "copies");
