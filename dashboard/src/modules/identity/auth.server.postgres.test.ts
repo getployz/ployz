@@ -6,9 +6,9 @@ import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken } from "#/modules/ide
 import { Unauthorized } from "#/server/public-error";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { account as accountTable, deviceCode, member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
-import { organization as organizationTable } from "#/modules/organization/tables";
-import { hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { account as accountTable, deviceCode, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { member, organization as organizationTable } from "#/modules/organization/tables";
+import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { desc, eq, like, sql } from "drizzle-orm";
 import { expect, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";

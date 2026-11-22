@@ -6,15 +6,15 @@ import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { lacks, requireAccess } from "#/modules/organization/access.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { deleteEnrollmentTokens, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { removeOrganizationMachines } from "#/modules/machines/organization-machines.server";
+import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
-import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { and, asc, eq } from "drizzle-orm";
-import { member, session } from "#/modules/identity/tables";
+import { session } from "#/modules/identity/tables";
+import { member, organization, organizationChange } from "#/modules/organization/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { organization, organizationChange } from "./tables";
 import { Database } from "#/server/database.server";
 
 /** Removing an Organization as a human approves it, named by the slug `ployz org rm` confirms. */
@@ -55,6 +55,7 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
   // A Project refuses the removal before anyone is asked to approve, here and not at the Store: one removed meanwhile
   // would let the Store remove the Organization unapproved.
   if (gate !== undefined) {
+    // A Store read that fails here is a defect, not a refusal: the caller has nothing to retry with.
     const { projects } = yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
     const [first] = projects;
     if (first !== undefined) return refused(stillHasProjects(projects.map((project) => project.name), first.name));
@@ -119,11 +120,7 @@ const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* <E>(or
     operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
   });
   const [domain] = yield* drizzle.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, organizationId));
-  yield* drizzle.select({ id: fleetToken.id }).from(fleetToken)
-    .where(eq(fleetToken.organizationId, organizationId)).orderBy(fleetToken.id).for("update");
-  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
-    .where(eq(waitingServer.organizationId, organizationId)).orderBy(waitingServer.id).for("update");
-  yield* deleteEnrollmentTokens(organizationId);
+  yield* removeOrganizationMachines(organizationId);
   yield* deleting(drizzle.delete(organization).where(eq(organization.id, organizationId)).pipe(Effect.asVoid, Effect.orDie));
   // The cascade's statement triggers logged the deletes under the Organization's id; the log goes with it.
   yield* drizzle.delete(organizationChange).where(eq(organizationChange.organizationId, organizationId));

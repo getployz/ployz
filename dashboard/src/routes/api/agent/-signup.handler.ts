@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
+import { signUpAnonymous } from "#/modules/sandbox/anonymous-signup.server";
 import { admitWithinWindows, rateLimitAddress, type RateWindow } from "#/server/rate-limit.server";
 import { publicErrorResponse, RateLimited, Validation } from "#/server/public-error";
 

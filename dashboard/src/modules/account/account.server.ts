@@ -5,8 +5,8 @@ import type { Actor } from "#/modules/identity/actor";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.server";
 import { grantStands, signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
-import { account, member, session } from "#/modules/identity/tables";
-import { organization } from "#/modules/organization/tables";
+import { account, session } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 
 /** better-auth stores an IPv6 address as its /64 written out in full. A mapped IPv4 keeps its dotted form. */

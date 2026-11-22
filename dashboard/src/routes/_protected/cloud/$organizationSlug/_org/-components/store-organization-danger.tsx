@@ -10,7 +10,7 @@ import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
+import { removeOrganizationServerFn } from "#/modules/organization-teardown/organization-removal.functions";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ForgetServersDialog, useForgetServersGate } from "./forget-servers-dialog";
 

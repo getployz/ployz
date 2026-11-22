@@ -4,7 +4,7 @@ import type {
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
-import type { SupportShows } from "./support-access";
+import type { SupportShows } from "#/modules/organization/permissions";
 
 /** What a Store cell holds, as far as support's view of it goes. */
 type Holds = "variable" | "file" | "other";

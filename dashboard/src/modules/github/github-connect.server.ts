@@ -13,7 +13,7 @@ import { MAX_OFFERED_INSTALLATIONS, type ConnectNotice } from "#/modules/github/
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import type { Actor } from "#/modules/identity/actor";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";

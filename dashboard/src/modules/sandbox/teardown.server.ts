@@ -1,17 +1,17 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray, notExists, sql } from "drizzle-orm";
+import { and, eq, inArray, notExists, type SQL, sql } from "drizzle-orm";
 import type { ConfigCommand } from "@ployz/sdk";
 import { Data, Effect } from "effect";
-import { anonymousTeardown } from "#/modules/anonymous/tables";
+import { anonymousTeardown } from "#/modules/sandbox/tables";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { type RemovalConsent, removeTarget } from "#/modules/config-store/store-workspace";
-import { isOwnedOnlyByAgents, tokenRuns } from "#/modules/identity/claim-required.server";
-import { member, organizationToken, user } from "#/modules/identity/tables";
+import { tokenRuns } from "#/modules/sandbox/claim-required.server";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
-import { removeOrganization } from "#/modules/organization/organization-removal.server";
-import { organization } from "#/modules/organization/tables";
+import { removeOrganization } from "#/modules/organization-teardown/organization-removal.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
@@ -35,24 +35,41 @@ export type TeardownStep = { organizationId: string; state: SandboxState["state"
 
 const step = (organizationId: string, state: SandboxState["state"], did: TeardownDid): TeardownStep => ({ organizationId, state, did });
 
+/**
+ * Whether the Organization `organizationId` names has lapsed: an anonymous agent owns it, no person does, and no
+ * token of an agent owner still runs. The sweep's list and one run's state both read these three, so they agree.
+ */
+const lapsedParts = (organizationId: SQL) => ({
+  agentOwned: sql`exists (
+    select 1 from member where organization_id = ${organizationId} and role = 'owner'
+      and exists (select 1 from "user" where id = member.user_id and is_anonymous))`,
+  personOwned: sql`exists (
+    select 1 from member where organization_id = ${organizationId} and role = 'owner'
+      and exists (select 1 from "user" where id = member.user_id and not is_anonymous))`,
+  tokenLive: sql`exists (
+    select 1 from organization_token
+    join member tm on tm.organization_id = organization_token.organization_id and tm.user_id = organization_token.user_id and tm.role = 'owner'
+    join "user" tu on tu.id = organization_token.user_id
+    where organization_token.organization_id = ${organizationId} and tu.is_anonymous and ${tokenRuns})`,
+});
+
 const lockedOrganizationState = Effect.fn("AnonymousTeardown.lockedState")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ slug: organization.slug }).from(organization)
     .where(eq(organization.id, organizationId)).for("update");
   if (row === undefined) return { state: "gone" } as const;
-  if (!(yield* isOwnedOnlyByAgents(organizationId))) return { state: "claimed" } as const;
+  const parts = lapsedParts(sql`${organizationId}::uuid`);
+  const [held] = yield* drizzle.execute<{ agentOwned: boolean; personOwned: boolean; tokenLive: boolean }>(
+    sql`select ${parts.agentOwned} as "agentOwned", ${parts.personOwned} as "personOwned", ${parts.tokenLive} as "tokenLive"`,
+    "objects",
+  );
+  if (held === undefined || !held.agentOwned || held.personOwned) return { state: "claimed" } as const;
+  if (held.tokenLive) return { state: "live" } as const;
   const [owner] = yield* drizzle.select({ userId: member.userId }).from(member)
     .innerJoin(user, eq(user.id, member.userId))
     .where(and(eq(member.organizationId, organizationId), eq(member.role, "owner"), eq(user.isAnonymous, true)))
     .orderBy(member.createdAt).limit(1);
   if (owner === undefined) return { state: "claimed" } as const;
-  const [running] = yield* drizzle.select({ id: organizationToken.id }).from(organizationToken)
-    .innerJoin(member, and(eq(member.organizationId, organizationToken.organizationId), eq(member.userId, organizationToken.userId)))
-    .innerJoin(user, eq(user.id, member.userId))
-    .where(and(
-      eq(organizationToken.organizationId, organizationId), eq(member.role, "owner"), eq(user.isAnonymous, true), tokenRuns,
-    )).limit(1);
-  if (running !== undefined) return { state: "live" } as const;
   const [pairing] = yield* drizzle.select({ organizationId: organizationPairing.organizationId }).from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId));
   return { state: "lapsed", ownerId: owner.userId, slug: row.slug, paired: pairing !== undefined } as const;
@@ -217,20 +234,12 @@ const removeProject = Effect.fn("AnonymousTeardown.removeProject")(function* (or
 /** Organizations an anonymous agent alone owns whose every agent token has lapsed: the sweep's work list. */
 export const listLapsedOrganizationIds = Effect.fn("AnonymousTeardown.listLapsed")(function* () {
   const { drizzle } = yield* Database;
+  const parts = lapsedParts(sql`m.organization_id`);
   const rows = yield* drizzle.execute<{ id: string }>(sql`
     select distinct m.organization_id as id
     from member m
     join "user" u on u.id = m.user_id
-    where m.role = 'owner' and u.is_anonymous
-      and not exists (
-        select 1 from organization_token
-        join member tm on tm.organization_id = organization_token.organization_id and tm.user_id = organization_token.user_id and tm.role = 'owner'
-        join "user" tu on tu.id = organization_token.user_id
-        where organization_token.organization_id = m.organization_id and tu.is_anonymous and ${tokenRuns})
-      and not exists (
-        select 1 from member hm
-        join "user" hu on hu.id = hm.user_id
-        where hm.organization_id = m.organization_id and hm.role = 'owner' and not hu.is_anonymous)
+    where m.role = 'owner' and u.is_anonymous and not ${parts.tokenLive} and not ${parts.personOwned}
     order by id`, "objects");
   return rows.map((row) => row.id);
 });

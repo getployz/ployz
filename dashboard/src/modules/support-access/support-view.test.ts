@@ -1,7 +1,7 @@
 import type { ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { SupportShows } from "./support-access";
+import type { SupportShows } from "#/modules/organization/permissions";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { holds, refusalForSupport, viewForSupport, withoutCheckOutput, writtenForSupport } from "./support-view";
 

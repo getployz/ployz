@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
-import { organization } from "#/modules/organization/tables";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { setSupportAccess } from "#/modules/support-access/support-access.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";

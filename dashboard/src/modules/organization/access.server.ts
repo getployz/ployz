@@ -3,16 +3,14 @@ import { and, eq } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
 import { type Actor, type Caller, callerEnvironments, callerOrSupportCan } from "#/modules/identity/actor";
 import { FULL_GRANT, granted, outsideEnvironments, type TokenGrant } from "#/modules/identity/token-grant";
-import { member } from "#/modules/identity/tables";
-import type { SupportShows } from "#/modules/support-access/support-access";
+import { member, organization } from "#/modules/organization/tables";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { RequestScope } from "#/server/request-scope.server";
-import { can, type Permission, permissionsOf, reads } from "./permissions";
-import { organization } from "./tables";
+import { can, type Permission, permissionsOf, reads, type SupportShows } from "./permissions";
 
 export type Role = typeof member.$inferSelect.role;
 type OrganizationRef = { readonly id: string; readonly slug: string };

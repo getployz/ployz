@@ -18,15 +18,8 @@ import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { createHmac } from "node:crypto";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
-import {
-  account,
-  deviceCode,
-  invitation,
-  member,
-  session,
-  user,
-  verification,
-} from "#/modules/identity/tables";
+import { account, deviceCode, session, user, verification } from "#/modules/identity/tables";
+import { invitation, member, organization } from "#/modules/organization/tables";
 import {
   jwks,
   oauthAccessToken,
@@ -38,7 +31,6 @@ import {
   oauthResource,
   rateLimit,
 } from "#/modules/identity/oauth-tables";
-import { organization } from "#/modules/organization/tables";
 import { organizationBillingSyncRequested } from "#/modules/billing/billing.events";
 import {
   billingSyncsFromCustomerStatePayload,
@@ -58,7 +50,7 @@ import { takeDeviceOrganization } from "#/modules/identity/device-organization.s
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { grantActs, signOutSessionAgents, withAgentGrants } from "#/modules/identity/session-agents.server";
-import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
+import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/sandbox/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";

@@ -32,7 +32,8 @@ import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUncheck
 import type { TokenGrant } from "#/modules/identity/token-grant";
 import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
-import { member, session as sessionTable, user } from "#/modules/identity/tables";
+import { session as sessionTable, user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import {
   prepareMachineRemoveAttemptActivity,

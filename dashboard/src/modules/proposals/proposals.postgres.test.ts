@@ -10,7 +10,8 @@ import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import {
   advanceProposal,
   createProposal,

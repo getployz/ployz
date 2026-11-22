@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNull, or } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { renderMail, type MailContent } from "#/modules/mail/layout";
 import { queueMail } from "#/modules/mail/mail.inngest";
 import { NOTIFICATION_TYPES, type NotificationType } from "#/modules/notifications/notification-types";

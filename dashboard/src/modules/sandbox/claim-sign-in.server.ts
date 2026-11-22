@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { verification } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Data, Effect } from "effect";
-import { claimSignInCookie } from "#/modules/identity/claim-sign-in.server";
+import { claimSignInCookie } from "#/modules/sandbox/claim-sign-in.server";
 import { seeOther } from "#/server/api-route";
 import { Auth } from "#/modules/identity/auth.server";
 import { runAppEffect } from "#/server/run.server";

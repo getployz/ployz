@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { Effect } from "effect";
-import { claimSecretFor, claimUrlForSecret, hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { claimSecretFor, claimUrlForSecret, hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
-import { member, user } from "#/modules/identity/tables";
-import { organization } from "#/modules/organization/tables";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { allocateUnique } from "#/utils/slug";

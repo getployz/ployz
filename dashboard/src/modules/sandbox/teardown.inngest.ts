@@ -1,7 +1,7 @@
 import { type Effect, Option } from "effect";
-import { listLapsedOrganizationIds, tearDownStep } from "#/modules/anonymous/teardown.server";
+import { listLapsedOrganizationIds, tearDownStep } from "#/modules/sandbox/teardown.server";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
-import { anonymousTeardownRequested } from "#/modules/anonymous/anonymous.events";
+import { anonymousTeardownRequested } from "#/modules/sandbox/anonymous.events";
 import { eventData } from "#/modules/inngest/define-event";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
