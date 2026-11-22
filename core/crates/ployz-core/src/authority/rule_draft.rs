@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use super::{
-    birth::{self, BirthError, Births, Mounts, PlannedVolumes},
+    birth::{self, BirthError, Births, MountLines, Mounts, PlannedVolumes},
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
     deploy::run_fields_cleared,
     keys::{Signed, SignerKey},
@@ -400,6 +400,7 @@ impl AutoDeployRule {
             volumes: &basis.volumes,
             minted: &basis.minted,
             now: self.issued_at,
+            against: None,
         };
         let builder = &self.source.builder;
         let sha = builder.sha.to_string();
@@ -431,7 +432,7 @@ impl AutoDeployRule {
                         .target
                         .iter()
                         .find(|spec| spec.name == service.name)
-                        .map(|spec| settings(spec, &mounts))
+                        .map(|spec| settings(spec, mounts.shown(spec)))
                         .unwrap_or_default()
                         .into_iter()
                         .map(String::from)
@@ -534,7 +535,7 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 /// read the same, but for a Sealed ciphertext and the name a born Volume is declared under,
 /// which its birth stands for.
 #[must_use]
-pub fn settings(spec: &RequestedServiceSpec, mounts: &Mounts<'_>) -> Vec<Shown> {
+pub fn settings(spec: &RequestedServiceSpec, mounted: MountLines) -> Vec<Shown> {
     let mut value =
         serde_json::to_value(run_fields_cleared(spec)).expect("a spec serializes to JSON");
     drop_nulls(&mut value);
@@ -556,9 +557,8 @@ pub fn settings(spec: &RequestedServiceSpec, mounts: &Mounts<'_>) -> Vec<Shown> 
             hook.remove("environment"),
         );
     }
-    let (mounted, shown) = mounts.lines(spec);
-    lines.extend(mounted);
-    leave_out_mounts(spec, &mut fields, &shown);
+    lines.extend(mounted.lines);
+    leave_out_mounts(spec, &mut fields, &mounted.targets);
     if let Some(Value::Array(configs)) = fields.get_mut("configs") {
         configs.iter_mut().for_each(config_text);
     }

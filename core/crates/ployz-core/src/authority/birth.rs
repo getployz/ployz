@@ -11,10 +11,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
-use super::{canonical::Timestamp, shown::Shown};
+use super::{
+    TrustedKeys,
+    canonical::Timestamp,
+    deploy::PayloadDigest,
+    keys::Signed,
+    shown::Shown,
+    version::{self, ServiceVersion},
+};
 use crate::{
-    BirthNonce, DockerVolumeName, Namespace, RawVolumeSource, RequestedServiceSpec, ServiceName,
-    VolumeBirth, VolumeDriver,
+    BirthNonce, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    MountOrigins, Namespace, RawVolumeSource, RequestedServiceSpec, SealingPublicKey, ServiceMount,
+    ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
 };
 
 /// A Volume a plan's specs mount, as the Config Store names it.
@@ -40,6 +48,26 @@ pub type Births = BTreeMap<DockerVolumeName, VolumeBirth>;
 pub enum BirthError {
     #[error("{0} mounts a volume from another environment. Nothing signed.")]
     OtherEnvironment(ServiceName),
+    #[error(
+        "{service} mounts {volume}, data from before Ployz recorded where data began, but no \
+         version you approved mounts it and no server lists a container using it. Start its \
+         old container once, or restore the data into a new volume. Nothing signed.{}",
+        retry(.unanswered)
+    )]
+    Legacy {
+        service: ServiceName,
+        volume: DockerVolumeName,
+        /// The Servers that failed or didn't answer, by name.
+        unanswered: Vec<String>,
+    },
+    #[error(
+        "{service} mounts {volume} as data from before Ployz recorded where data began, but \
+         the version you approved mounts it with a birth. Nothing signed."
+    )]
+    Unbirthed {
+        service: ServiceName,
+        volume: DockerVolumeName,
+    },
 }
 
 /// Give every mount in `target`'s specs of a Volume `volumes` lists as unborn, and whose
@@ -112,6 +140,158 @@ pub fn carried(spec: &RequestedServiceSpec, minted: &Births) -> Births {
         .collect()
 }
 
+/// A parentless version a person or a Full CLI key signed, with the spec its digest
+/// covers. Only [`Approved::verify`] makes one. It proves who signed, not that it is the
+/// newest.
+#[derive(Clone, Debug)]
+pub struct Approved {
+    spec: RequestedServiceSpec,
+    signed_at: Timestamp,
+}
+
+impl Approved {
+    /// `spec` as `statement` approved it, when `statement` opens as a root under `trusted`
+    /// for `cluster`, names `service` in `namespace`, and `spec` comes to its digest.
+    #[must_use]
+    pub fn verify(
+        statement: &Signed<ServiceVersion>,
+        spec: RequestedServiceSpec,
+        (trusted, cluster): (&TrustedKeys, SealingPublicKey),
+        (namespace, service): (&Namespace, &ServiceName),
+    ) -> Option<Self> {
+        let version = version::open_root(statement, trusted, cluster).ok()?;
+        let digest = PayloadDigest::of(&spec, namespace).ok();
+        (version.service == *service
+            && version.namespace == *namespace
+            && digest == Some(version.digest))
+        .then_some(Self {
+            spec,
+            signed_at: version.signed_at,
+        })
+    }
+
+    #[must_use]
+    pub fn spec(&self) -> &RequestedServiceSpec {
+        &self.spec
+    }
+}
+
+/// A Service's last approved version, as the signer could check it.
+#[derive(Clone, Debug)]
+pub enum Before {
+    Approved(Approved),
+    /// No Deployment ran the Service.
+    New,
+    Unknown(Unknown),
+}
+
+/// Why a Service has no approved version to compare with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unknown {
+    /// It runs, but no Deploy a person approved is on record.
+    NoRecord,
+    /// The version on record doesn't check against the Servers' keys.
+    Unchecked,
+    /// The Servers' keys weren't read over a route that answers for itself.
+    Unread,
+}
+
+impl Unknown {
+    fn why(self) -> &'static str {
+        match self {
+            Self::NoRecord => "it runs, but no deploy a person approved is on record",
+            Self::Unchecked => {
+                "the version Ployz Cloud returned doesn't check against your servers' keys"
+            }
+            Self::Unread => "your servers' keys weren't read over a route that answers for itself",
+        }
+    }
+}
+
+/// The named-volume mounts of each Service Container in one Namespace, as its Servers
+/// list them.
+#[derive(Clone, Debug, Default)]
+pub struct Held {
+    containers: Vec<HeldContainer>,
+    /// Each Server that failed or didn't answer, by name.
+    unanswered: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct HeldContainer {
+    service: ServiceName,
+    /// Running, paused or restarting, so it uses its data now.
+    running: bool,
+    /// By target, the physical name mounted there and the origin the Container's label
+    /// expects of it. `None` when the label doesn't parse or leaves the name out.
+    mounts: BTreeMap<String, (DockerVolumeName, Option<VolumeOrigin>)>,
+}
+
+impl Held {
+    /// The Service Containers of `namespace` among `containers`, with the Servers in
+    /// `unanswered` that failed or didn't answer. A Container without the origins label
+    /// expects Legacy data at every mount.
+    #[must_use]
+    pub fn of(
+        namespace: &Namespace,
+        containers: &[ContainerObservation],
+        unanswered: Vec<String>,
+    ) -> Self {
+        let containers = containers
+            .iter()
+            .filter(|seen| {
+                seen.namespace == *namespace && seen.kind == ContainerKind::ServiceContainer
+            })
+            .map(|seen| {
+                let label = seen.labels.get(crate::labels::VOLUME_ORIGINS);
+                let origins = label.map(|label| MountOrigins::parse(label).ok());
+                let graph = seen.resolved_spec.volume_graph();
+                let mounts = graph.mounts().iter().filter_map(|mount| {
+                    let physical = graph.volume_for(mount).source.docker_volume_name()?;
+                    let origin = match &origins {
+                        None => Some(VolumeOrigin::legacy(physical)),
+                        Some(origins) => origins.as_ref().and_then(|held| held.get(physical)),
+                    };
+                    Some((mount.target.as_str().to_owned(), (physical.clone(), origin)))
+                });
+                HeldContainer {
+                    service: seen.resolved_spec.name.clone(),
+                    running: matches!(
+                        seen.runtime,
+                        ContainerRuntimeObservation::Running { .. }
+                            | ContainerRuntimeObservation::Paused
+                            | ContainerRuntimeObservation::Restarting
+                    ),
+                    mounts: mounts.collect(),
+                }
+            })
+            .collect();
+        Self {
+            containers,
+            unanswered,
+        }
+    }
+
+    /// The Containers that mount `mounted`'s data, running ones first.
+    fn holders(&self, mounted: &Mounted<'_>) -> Vec<&HeldContainer> {
+        let mut holders: Vec<_> = self
+            .containers
+            .iter()
+            .filter(|container| container.mounts.values().any(|held| mounted.is(held)))
+            .collect();
+        holders.sort_by_key(|container| !container.running);
+        holders
+    }
+}
+
+/// What a person's Deploy compares each mount with.
+#[derive(Clone, Copy, Debug)]
+pub struct Against<'a> {
+    pub before: &'a BTreeMap<ServiceName, Before>,
+    /// `None` when no route that answers for itself listed the Containers.
+    pub held: Option<&'a Held>,
+}
+
 /// What the approver's client knows about the Volumes a spec mounts beyond the spec.
 #[derive(Clone, Copy, Debug)]
 pub struct Mounts<'a> {
@@ -121,6 +301,27 @@ pub struct Mounts<'a> {
     /// The births this approval minted, the only ones that read as new.
     pub minted: &'a Births,
     pub now: Timestamp,
+    /// `None` shows every mount in full and asks nothing: a silent child's mounts are
+    /// pinned to its parent, and a rule compares Services at the template level.
+    pub against: Option<Against<'a>>,
+}
+
+/// The lines for a spec's mounts, the targets they cover, and the lines a person must say
+/// yes to before signing.
+#[derive(Clone, Debug, Default)]
+pub struct MountLines {
+    pub lines: Vec<Shown>,
+    pub targets: Vec<String>,
+    pub confirm: Vec<Shown>,
+}
+
+/// What one mount's line says after its settings.
+enum Said {
+    /// Counted in one line with the other mounts that keep what the version signed at
+    /// this time approved.
+    Kept(Timestamp),
+    Told(Shown),
+    Asked(Shown),
 }
 
 impl Mounts<'_> {
@@ -130,82 +331,316 @@ impl Mounts<'_> {
     /// birth, or for data from before births, the name the Volume has on its Servers. It
     /// carries every other setting the mount signs. Every other mount shows with the
     /// spec's other settings.
-    #[must_use]
-    pub fn lines(&self, spec: &RequestedServiceSpec) -> (Vec<Shown>, Vec<String>) {
-        let graph = spec.volume_graph();
-        let mut lines = Vec::new();
-        let mut shown = Vec::new();
-        for mount in graph.mounts() {
-            let Some(volume) = Lined::of(graph.volume_for(mount).source.kind()) else {
-                continue;
-            };
-            let called = self
-                .volumes
-                .get(volume.name)
-                .map(|planned| planned.name.as_str());
-            let line = Shown::words(match volume.driver {
-                None => "mounts managed volume ",
-                Some(_) => "mounts Docker volume ",
-            });
-            let line = match volume.birth {
-                Some(birth) => line.and_text(&birth.name),
-                None => line.and_text(self.namespace.volume_name(volume.name).as_str()),
-            };
-            let mut line = line.and_words(" at ").and_text(mount.target.as_str());
-            if let Some(subpath) = &mount.subpath {
-                line = line.and_words(", subpath ").and_text(subpath);
-            }
-            if mount.no_copy {
-                line = line.and_words(", no initial copy");
-            }
-            if !volume.labels.is_empty() {
-                line = line.and_words(", labels ").and_value(volume.labels);
-            }
-            if let Some(driver) = volume
-                .driver
-                .filter(|driver| driver.name() != "local" || !driver.options().is_empty())
-            {
-                line = line.and_words(", driver ").and_value(driver);
-            }
-            let line = line.and_words(match mount.read_only {
-                true => ", read-only: ",
-                false => ", read-write: ",
-            });
-            lines.push(line.and(match volume.birth {
-                Some(birth) if self.minted.get(volume.name) == Some(birth) => {
-                    Shown::words("a new, empty volume")
-                }
-                Some(birth) => self.made(birth, called),
-                None => calls(
-                    Shown::words(
-                        "data from before this version of Ployz recorded where data began",
-                    ),
-                    called,
-                ),
-            }));
-            shown.push(mount.target.as_str().to_owned());
+    ///
+    /// Against a person's Deploy, mounts that keep the data the approved version mounts,
+    /// as every listed Container of the Service does, collapse into one line. Any other
+    /// existing data, and a new volume that may hide data, also goes in `confirm`.
+    ///
+    /// # Errors
+    /// Returns [`BirthError::Legacy`] or [`BirthError::Unbirthed`] for data from before
+    /// births that neither the approved version nor a listed Container vouches for.
+    pub fn lines(&self, spec: &RequestedServiceSpec) -> Result<MountLines, BirthError> {
+        match self.against {
+            None => Ok(self.shown(spec)),
+            Some(against) => self.each(spec, |mounted| self.review(against, spec, mounted)),
         }
-        (lines, shown)
     }
 
-    /// `data made as previews, 3 Nov 14:02 UTC, 16 days ago`, naming what Cloud calls it
-    /// now when that differs.
-    fn made(&self, birth: &VolumeBirth, called: Option<&str>) -> Shown {
-        let mut made = Shown::words("data made as ")
-            .and_text(&birth.name)
-            .and_words(", ");
-        for (index, part) in birth.made_at.day_and_time(self.now).split(' ').enumerate() {
-            if index > 0 {
-                made = made.and_words(" ");
+    /// [`Self::lines`] with nothing compared: every mount in full, none asked.
+    #[must_use]
+    pub fn shown(&self, spec: &RequestedServiceSpec) -> MountLines {
+        let told = |mounted: &Mounted<'_>| {
+            Ok::<_, std::convert::Infallible>(Said::Told(self.data(mounted, Shown::default())))
+        };
+        let Ok(lines) = self.each(spec, told);
+        lines
+    }
+
+    /// The lines for `spec`'s mounts, each as `say` says it.
+    fn each<E>(
+        &self,
+        spec: &RequestedServiceSpec,
+        mut say: impl FnMut(&Mounted<'_>) -> Result<Said, E>,
+    ) -> Result<MountLines, E> {
+        let mut out = MountLines::default();
+        let mut kept = Vec::new();
+        for mounted in mounts_of(self.namespace, spec) {
+            out.targets.push(mounted.mount.target.as_str().to_owned());
+            let said = say(&mounted)?;
+            let line = |data| self.prefix(&mounted).and(data);
+            match said {
+                Said::Kept(signed_at) => kept.push(signed_at),
+                Said::Told(data) => out.lines.push(line(data)),
+                Said::Asked(data) => {
+                    out.confirm.push(line(data.clone()));
+                    out.lines.push(line(data));
+                }
             }
-            made = made.and_text(part);
         }
+        if let Some(signed_at) = kept.first() {
+            let count = match kept.len() {
+                1 => Shown::words("1 volume keeps"),
+                count => Shown::text(&count.to_string()).and_words(" volumes keep"),
+            };
+            let line = count
+                .and_words(" the data you approved (signed ")
+                .and(when(*signed_at, self.now))
+                .and_words(")");
+            out.lines.insert(0, line);
+        }
+        let unknown = match self.against.map(|against| against.before.get(&spec.name)) {
+            Some(Some(Before::Unknown(why))) => Some(*why),
+            Some(None) => Some(Unknown::NoRecord),
+            _ => None,
+        };
+        if let Some(why) = unknown
+            && !out.lines.is_empty()
+        {
+            let heading =
+                Shown::words("no approved version to compare with: ").and_words(why.why());
+            out.lines.insert(0, heading);
+        }
+        Ok(out)
+    }
+
+    /// `mounts managed volume previews at /srv/previews, read-write: `.
+    fn prefix(&self, mounted: &Mounted<'_>) -> Shown {
+        let (mount, volume) = (mounted.mount, &mounted.volume);
+        let line = Shown::words(match volume.driver {
+            None => "mounts managed volume ",
+            Some(_) => "mounts Docker volume ",
+        });
+        let line = match volume.birth {
+            Some(birth) => line.and_text(&birth.name),
+            None => line.and_text(mounted.physical.as_str()),
+        };
+        let mut line = line.and_words(" at ").and_text(mount.target.as_str());
+        if let Some(subpath) = &mount.subpath {
+            line = line.and_words(", subpath ").and_text(subpath);
+        }
+        if mount.no_copy {
+            line = line.and_words(", no initial copy");
+        }
+        if !volume.labels.is_empty() {
+            line = line.and_words(", labels ").and_value(volume.labels);
+        }
+        if let Some(driver) = volume
+            .driver
+            .filter(|driver| driver.name() != "local" || !driver.options().is_empty())
+        {
+            line = line.and_words(", driver ").and_value(driver);
+        }
+        line.and_words(match mount.read_only {
+            true => ", read-only: ",
+            false => ", read-write: ",
+        })
+    }
+
+    /// The data `mounted` holds, with `witness` before the name Ployz Cloud gives it.
+    fn data(&self, mounted: &Mounted<'_>, witness: Shown) -> Shown {
+        let name = mounted.volume.name;
+        let called = self.volumes.get(name).map(|planned| planned.name.as_str());
+        match mounted.volume.birth {
+            Some(birth) if self.minted.get(name) == Some(birth) => {
+                Shown::words("a new, empty volume").and(witness)
+            }
+            Some(birth) => calls(
+                self.made(birth).and(witness),
+                called.filter(|called| *called != birth.name),
+            ),
+            None => calls(Shown::words(LEGACY).and(witness), called),
+        }
+    }
+
+    /// What `mounted` says against the approved version and the listed Containers.
+    fn review(
+        &self,
+        against: Against<'_>,
+        spec: &RequestedServiceSpec,
+        mounted: &Mounted<'_>,
+    ) -> Result<Said, BirthError> {
+        let (service, target, held) = (&spec.name, mounted.mount.target.as_str(), against.held);
+        let mine: Vec<&HeldContainer> = held
+            .into_iter()
+            .flat_map(|held| &held.containers)
+            .filter(|container| container.service == *service)
+            .collect();
+        let complete = held.is_some_and(|held| held.unanswered.is_empty());
+        let base = match against.before.get(service) {
+            Some(Before::Approved(base)) => Some(base),
+            _ => None,
+        };
+        let was = base.map_or_else(Vec::new, |base| mounts_of(self.namespace, &base.spec));
+        let at_target = was
+            .iter()
+            .find(|was| was.mount.target == mounted.mount.target);
+        if mounted.volume.birth.is_some()
+            && self.minted.get(mounted.volume.name) == mounted.volume.birth
+        {
+            let replaced = at_target.is_some()
+                || mine
+                    .iter()
+                    .any(|container| container.mounts.contains_key(target));
+            return Ok(match (replaced, complete) {
+                (true, _) => Said::Asked(
+                    Shown::words("a new, empty volume in place of the data at ")
+                        .and_text(target)
+                        .and_words(". That data stays, but ")
+                        .and_text(service.as_str())
+                        .and_words(" no longer sees it."),
+                ),
+                (false, true) => Said::Told(Shown::words("a new, empty volume")),
+                (false, false) => {
+                    Said::Asked(Shown::words("a new, empty volume").and(unseen(held)))
+                }
+            });
+        }
+        let holders = held.map_or_else(Vec::new, |held| held.holders(mounted));
+        if mounted.volume.birth.is_none() {
+            let named = || was.iter().filter(|was| was.physical == mounted.physical);
+            if named().any(|was| was.volume.birth.is_some()) {
+                return Err(BirthError::Unbirthed {
+                    service: service.clone(),
+                    volume: mounted.physical.clone(),
+                });
+            }
+            if named().next().is_none() {
+                let Some(holder) = holders.first() else {
+                    return Err(BirthError::Legacy {
+                        service: service.clone(),
+                        volume: mounted.physical.clone(),
+                        unanswered: held.map_or_else(Vec::new, |held| held.unanswered.clone()),
+                    });
+                };
+                return Ok(Said::Asked(self.data(mounted, witness(holder))));
+            }
+        }
+        let agrees = |container: &&HeldContainer| {
+            container
+                .mounts
+                .get(target)
+                .is_some_and(|held| mounted.is(held))
+        };
+        let current =
+            complete && mine.iter().any(|container| container.running) && mine.iter().all(agrees);
+        if let Some(base) = base {
+            match at_target {
+                Some(was) if was.same_data(mounted) => {
+                    let settings = |mounted: &Mounted<'_>| {
+                        let mount = mounted.mount;
+                        (mount.read_only, mount.no_copy, mount.subpath.clone())
+                    };
+                    return Ok(if was.volume.driver != mounted.volume.driver {
+                        Said::Asked(Shown::words("the data you approved, on another driver"))
+                    } else if !current {
+                        Said::Asked(self.stale(base, service, &mine, held, agrees))
+                    } else if settings(was) == settings(mounted)
+                        && was.volume.labels == mounted.volume.labels
+                    {
+                        Said::Kept(base.signed_at)
+                    } else {
+                        Said::Told(Shown::words("the data you approved"))
+                    });
+                }
+                Some(was) => return Ok(Said::Asked(self.different(was, mounted))),
+                None if current && was.iter().any(|was| was.same_data(mounted)) => {
+                    return Ok(Said::Told(Shown::words("the data you approved")));
+                }
+                None => {}
+            }
+        }
+        let witness = match (holders.first(), held) {
+            (Some(holder), _) => witness(holder),
+            (None, None) => unseen(held),
+            (None, Some(_)) => {
+                Shown::words(", that no server lists a container using").and(unseen(held))
+            }
+        };
+        Ok(Said::Asked(self.data(mounted, witness)))
+    }
+
+    /// `the data of your version signed 1 Oct 09:00 UTC`, and why it isn't what `service`
+    /// runs now, as far as the listed Containers say.
+    fn stale(
+        &self,
+        base: &Approved,
+        service: &ServiceName,
+        mine: &[&HeldContainer],
+        held: Option<&Held>,
+        agrees: impl Fn(&&HeldContainer) -> bool,
+    ) -> Shown {
+        let then =
+            Shown::words("the data of your version signed ").and(when(base.signed_at, self.now));
+        let service = service.as_str();
+        if mine
+            .iter()
+            .any(|container| container.running && !agrees(container))
+        {
+            then.and_words(", not what ")
+                .and_text(service)
+                .and_words(" uses now")
+        } else if mine.iter().any(|container| !agrees(container)) {
+            then.and_words(", not what a container of ")
+                .and_text(service)
+                .and_words(" mounts")
+        } else if !held.is_some_and(|held| held.unanswered.is_empty()) {
+            then.and(unseen(held))
+        } else {
+            then.and_words(", and no server lists a running container of ")
+                .and_text(service)
+        }
+    }
+
+    /// `different data than the version you approved: was …, now …`. When the two read
+    /// the same, each carries a prefix of its origin long enough to tell them apart.
+    fn different(&self, was: &Mounted<'_>, now: &Mounted<'_>) -> Shown {
+        let (mut then, mut later) = (self.named(was), self.named(now));
+        if then == later {
+            let origins = [was, now].map(|mounted| {
+                mounted
+                    .origin()
+                    .map(|origin| origin.to_string())
+                    .unwrap_or_default()
+            });
+            let [one, two] = &origins;
+            let length = (6..64).find(|length| one.get(..*length) != two.get(..*length));
+            let short = |origin: &str| {
+                origin
+                    .get(..length.unwrap_or(64))
+                    .unwrap_or(origin)
+                    .to_owned()
+            };
+            then = then.and_words(" #").and_text(&short(one));
+            later = later.and_words(" #").and_text(&short(two));
+        }
+        Shown::words("different data than the version you approved: was ")
+            .and(then)
+            .and_words(", now ")
+            .and(later)
+    }
+
+    /// `previews, 3 Nov 14:02 UTC`, or the name data from before births has on its Servers.
+    fn named(&self, mounted: &Mounted<'_>) -> Shown {
+        match mounted.volume.birth {
+            Some(birth) => Shown::text(&birth.name)
+                .and_words(", ")
+                .and(when(birth.made_at, self.now)),
+            None => Shown::text(mounted.physical.as_str()),
+        }
+    }
+
+    /// `data made as previews, 3 Nov 14:02 UTC, 16 days ago`.
+    fn made(&self, birth: &VolumeBirth) -> Shown {
+        let made = Shown::words("data made as ")
+            .and_text(&birth.name)
+            .and_words(", ")
+            .and(when(birth.made_at, self.now));
         let ago = self
             .now
             .as_millis()
             .checked_sub(birth.made_at.as_millis())
             .map(|millis| millis / 86_400_000);
-        made = match ago {
+        match ago {
             Some(0) => made.and_words(", today"),
             Some(1) => made.and_words(", 1 day ago"),
             Some(days) => made
@@ -213,9 +648,101 @@ impl Mounts<'_> {
                 .and_text(&days.to_string())
                 .and_words(" days ago"),
             None => made,
-        };
-        calls(made, called.filter(|called| *called != birth.name))
+        }
     }
+}
+
+const LEGACY: &str = "data from before this version of Ployz recorded where data began";
+
+/// `3 Nov 14:02 UTC`, with the year when it isn't `now`'s.
+fn when(at: Timestamp, now: Timestamp) -> Shown {
+    let mut shown = Shown::default();
+    for (index, part) in at.day_and_time(now).split(' ').enumerate() {
+        if index > 0 {
+            shown = shown.and_words(" ");
+        }
+        shown = shown.and_text(part);
+    }
+    shown
+}
+
+/// `, that db uses now`, or `, that a container of db mounts` for one that doesn't run.
+fn witness(holder: &HeldContainer) -> Shown {
+    let service = holder.service.as_str();
+    match holder.running {
+        true => Shown::words(", that ")
+            .and_text(service)
+            .and_words(" uses now"),
+        false => Shown::words(", that a container of ")
+            .and_text(service)
+            .and_words(" mounts"),
+    }
+}
+
+/// What the Container list left out: `; no answer from web-2`, or that no route that
+/// answers for itself listed them.
+fn unseen(held: Option<&Held>) -> Shown {
+    match held {
+        None => Shown::words("; your servers weren't asked over a route that answers for itself"),
+        Some(held) if held.unanswered.is_empty() => Shown::default(),
+        Some(held) => Shown::words("; no answer from ").and(Shown::list(
+            held.unanswered.iter().map(|name| Shown::text(name)),
+        )),
+    }
+}
+
+/// ` No answer from web-2. Try again when it answers.`, or nothing when every Server answered.
+fn retry(unanswered: &[String]) -> String {
+    match unanswered {
+        [] => String::new(),
+        names => format!(
+            " No answer from {}. Try again when it answers.",
+            names.join(", ")
+        ),
+    }
+}
+
+/// One mount of a managed or Docker volume, with the name its Servers know the volume by.
+struct Mounted<'a> {
+    mount: &'a ServiceMount,
+    volume: Lined<'a>,
+    physical: DockerVolumeName,
+}
+
+impl Mounted<'_> {
+    fn origin(&self) -> Option<VolumeOrigin> {
+        VolumeOrigin::expected(self.volume.birth, &self.physical).ok()
+    }
+
+    /// Whether a Container's mount of `held` holds this mount's data.
+    fn is(&self, (physical, origin): &(DockerVolumeName, Option<VolumeOrigin>)) -> bool {
+        *physical == self.physical && origin.is_some() && *origin == self.origin()
+    }
+
+    fn same_data(&self, other: &Mounted<'_>) -> bool {
+        match (self.volume.birth, other.volume.birth) {
+            (Some(one), Some(two)) => one == two,
+            (None, None) => self.physical == other.physical,
+            _ => false,
+        }
+    }
+}
+
+/// Each mount of `spec` a managed or Docker volume backs, in order.
+fn mounts_of<'a>(namespace: &Namespace, spec: &'a RequestedServiceSpec) -> Vec<Mounted<'a>> {
+    let graph = spec.volume_graph();
+    graph
+        .mounts()
+        .iter()
+        .filter_map(|mount| {
+            let volume = Lined::of(graph.volume_for(mount).source.kind())?;
+            Some(Mounted {
+                mount,
+                physical: namespace.volume_name(volume.name),
+                volume,
+            })
+        })
+        .collect()
 }
 
 /// `shown`, then the name Ployz Cloud gives the Volume, when it gives one.

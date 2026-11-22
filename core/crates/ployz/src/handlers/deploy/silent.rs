@@ -242,6 +242,7 @@ pub(in crate::handlers) fn sign(
         volumes: &plan.volumes,
         minted: &BTreeMap::new(),
         now,
+        against: None,
     };
     let approved =
         ApprovedChange::of(&shown, &plan.namespace, &pins, &mounts).map_err(Error::command)?;

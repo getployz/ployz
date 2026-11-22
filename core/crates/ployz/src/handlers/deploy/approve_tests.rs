@@ -49,6 +49,7 @@ fn change(spec: &RequestedServiceSpec, pins: &BTreeMap<ServiceName, String>) -> 
             volumes: &BTreeMap::new(),
             minted: &BTreeMap::new(),
             now: ployz_core::authority::Timestamp::now(),
+            against: None,
         },
     )
     .unwrap()
@@ -434,4 +435,21 @@ fn declining_signs_nothing_and_fails() {
         ))
     );
     assert!(error.is_interrupted(), "a no exits 130, not 0");
+}
+
+/// A mount that needs a yes is asked about on its own: a person who approves the deploy
+/// but says no to the data signs nothing.
+#[test]
+fn a_no_to_the_marked_data_signs_nothing() {
+    let mut change = approved(&spec(PINNED));
+    change.confirm = vec!["mounts managed volume app_vol-1 at /srv, read-write: …".to_owned()];
+    let error = consent(
+        (&Namespace::parse("app").unwrap(), &[change]),
+        |question, _, _| match question {
+            "Use the data marked above?" => Err(crate::handlers::Error::cancelled()),
+            _ => Ok(()),
+        },
+    )
+    .unwrap_err();
+    assert!(error.is_interrupted(), "{}", error.report().message);
 }

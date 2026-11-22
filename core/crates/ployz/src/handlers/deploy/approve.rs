@@ -8,19 +8,25 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedChange, Mounts, ServiceVersion, SignerKey, Timestamp, birth, deploy::content_addressed,
+    Against, Approved, ApprovedChange, Before, Held, Mounts, ServiceVersion, SignerKey, Timestamp,
+    TrustedKeys, Unknown, birth,
+    deploy::{ChangeError, content_addressed},
 };
 use ployz_core::{
-    Claim, Hint, MachineId, MachineObservation, MachineTarget, Namespace,
-    PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode, SCOPED_KEYS_CAPABILITY,
-    SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
+    Claim, ContainerObservation, EnvironmentValues, Hint, InspectRequest, MachineId,
+    MachineObservation, MachineTarget, Namespace, PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec,
+    RpcErrorCode, SCOPED_KEYS_CAPABILITY, SIGNED_VERSION_CAPABILITY, Sealing, SealingPublicKey,
+    ServiceName, cluster_sealing_key, op,
 };
-use ployz_store::{EnvironmentRef, PlanQuery, PlanView, PostedVersion, TagPin};
+use ployz_store::{
+    EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, TagPin,
+};
 use serde_json::json;
 
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::silent::{self, ImageEdit};
+use crate::cluster::Call;
 use crate::connect::Client;
 use crate::device::DeviceSigning;
 use crate::image::{PinError, pin_public};
@@ -118,10 +124,12 @@ pub(in crate::handlers) fn sign(
         true => Needs::Silent,
         false => Needs::Person,
     };
-    let (probe, plan) = std::thread::scope(|scope| {
+    let (probe, evidence, plan) = std::thread::scope(|scope| {
         let probe = scope.spawn(|| probe(matches, needs));
+        let evidence = (!silent).then(|| scope.spawn(|| evidence(matches)));
         let plan = store.read(&plan_query);
-        (probe.join().unwrap_or(Probe::Unknown), plan)
+        let evidence = evidence.and_then(|read| read.join().ok().flatten());
+        (probe.join().unwrap_or(Probe::Unknown), evidence, plan)
     });
     let enforcing = match probe {
         Probe::Off => return Ok(None),
@@ -178,14 +186,43 @@ pub(in crate::handlers) fn sign(
             error,
         )
     })?;
+    let evidence = evidence.filter(|evidence| evidence.cluster == Some(enforcing.cluster));
+    if evidence.is_none() && target.iter().any(named_mounts) {
+        crate::ui::warn(
+            "Couldn't read your servers' keys and containers over a route that answers for \
+             itself, so every volume shows in full. Data from before births passes only when \
+             the version you approved mounts it. Retry with --connect ssh://<server> or a \
+             direct context.",
+        );
+    }
+    let before = bases(
+        store,
+        environment,
+        (&target, &namespace),
+        &evidence,
+        enforcing.cluster,
+    );
+    let held =
+        evidence.map(|evidence| Held::of(&namespace, &evidence.containers, evidence.unanswered));
     let mounts = Mounts {
         namespace: &namespace,
         volumes: &plan.volumes,
         minted: &minted,
         now,
+        against: Some(Against {
+            before: &before,
+            held: held.as_ref(),
+        }),
     };
     let approved =
-        ApprovedChange::of(&target, &namespace, &pins, &mounts).map_err(Error::command)?;
+        ApprovedChange::of(&target, &namespace, &pins, &mounts).map_err(|error| match error {
+            ChangeError::Digest(error) => Error::command(error),
+            ChangeError::Mounts(error) => Error::caused(
+                RpcErrorCode::InvalidArgument,
+                "Can't sign this deploy",
+                error,
+            ),
+        })?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
         crate::ui::note(format_args!("{line}"));
     }
@@ -268,12 +305,39 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
 /// before the yes, not only those signed before the prompt.
 fn consent(
     (namespace, approved): (&Namespace, &[ApprovedChange]),
-    confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
+    mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
     let services: Vec<&str> = approved
         .iter()
         .map(|change| change.service.as_str())
         .collect();
+    let marked: Vec<String> = approved
+        .iter()
+        .flat_map(|change| {
+            let service = change.service.as_str();
+            change
+                .confirm
+                .iter()
+                .map(move |line| format!("{service}: {line}"))
+        })
+        .collect();
+    if !marked.is_empty() {
+        crate::ui::note("Needs your yes:");
+        for line in &marked {
+            crate::ui::note(format_args!("  {line}"));
+        }
+        let refusal = Error::detailed(
+            RpcErrorCode::ConfirmationRequired,
+            "This deploy uses data that needs your yes, and there's no terminal to ask in. Run \
+             it at a terminal. Nothing deployed.",
+            json!({ "services": services, "confirm": marked }),
+        );
+        confirm(
+            "Use the data marked above?",
+            refusal,
+            "Cancelled. Nothing signed or deployed.",
+        )?;
+    }
     let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         "Signing this deploy needs your yes, and there's no terminal to ask in. Run it at a \
@@ -291,6 +355,124 @@ fn consent(
         "Cancelled. Nothing signed or deployed.",
     )?;
     Ok(Timestamp::now())
+}
+
+/// What this Device read over a Full route whose entry answers for itself: the keys and
+/// Cluster key the entry holds, and every Server's Containers.
+struct Evidence {
+    trusted: TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+    containers: Vec<ContainerObservation>,
+    /// The Servers that failed or didn't answer the listing, by name.
+    unanswered: Vec<String>,
+}
+
+/// The [`Evidence`] a mount's line is checked against, or `None` when no Full route
+/// answered, or its entry doesn't answer for itself, as through Ployz Cloud's Server Access.
+fn evidence(matches: &ArgMatches) -> Option<Evidence> {
+    let context = matches
+        .try_get_one::<String>("context")
+        .ok()
+        .flatten()
+        .map(String::as_str);
+    let runtime = super::super::runtime().ok()?;
+    runtime.block_on(async {
+        let (client, machines, details) = tokio::time::timeout(PROBE_TIMEOUT, async {
+            let mut client = route::connect_full(matches, context).await.ok()?;
+            let entry = client.entry_id().await.ok()?;
+            if !client.answers_for_itself(&entry) {
+                return None;
+            }
+            let to = MachineTarget::from(&entry);
+            let inspect = Call::once().to(&to);
+            let details = client
+                .call_shared::<op::Inspect>(InspectRequest::default(), inspect)
+                .await
+                .ok()?;
+            let machines = client.machines().await.ok()?;
+            Some((client, machines, details))
+        })
+        .await
+        .ok()
+        .flatten()?;
+        // Each Server's listing ends on its own deadline, so one that doesn't answer is
+        // kept as unanswered beside the others' replies.
+        let live = client
+            .live_services_from(&machines, EnvironmentValues::Redacted)
+            .await
+            .ok()?
+            .containers;
+        let name = |id: MachineId| {
+            machines
+                .iter()
+                .find(|seen| seen.machine.id == id)
+                .map_or_else(|| id.to_string(), |seen| seen.machine.name.to_string())
+        };
+        let failed = live.failures.iter().map(|failure| failure.machine_id);
+        Some(Evidence {
+            trusted: TrustedKeys::new(details.devices, details.passkeys, details.grants),
+            cluster: details.sealing.and_then(Sealing::held_key),
+            unanswered: failed.chain(live.omissions).map(name).collect(),
+            containers: live
+                .successes
+                .into_iter()
+                .flat_map(|success| success.value)
+                .collect(),
+        })
+    })
+}
+
+/// Each Service of `target`'s last approved version, checked against `evidence`'s keys
+/// for `cluster`. Without evidence every one is unknown, whatever Cloud says.
+fn bases(
+    store: &Store,
+    environment: &EnvironmentRef,
+    (target, namespace): (&[RequestedServiceSpec], &Namespace),
+    evidence: &Option<Evidence>,
+    cluster: SealingPublicKey,
+) -> BTreeMap<ServiceName, Before> {
+    let services: Vec<ServiceName> = target.iter().map(|spec| spec.name.clone()).collect();
+    let Some(evidence) = evidence else {
+        let unread = || Before::Unknown(Unknown::Unread);
+        return services
+            .into_iter()
+            .map(|service| (service, unread()))
+            .collect();
+    };
+    // A Config Store too old to answer leaves every Service unknown.
+    let parents = store
+        .read(&ParentQuery {
+            environment: environment.clone(),
+            services,
+        })
+        .map(|parents| parents.services)
+        .unwrap_or_default();
+    parents
+        .into_iter()
+        .map(|(service, parent)| {
+            let before = match parent {
+                Parent::Missing { deployed: false } => Before::New,
+                Parent::Missing { deployed: true } => Before::Unknown(Unknown::NoRecord),
+                Parent::Signed {
+                    statement, spec, ..
+                } => Approved::verify(
+                    &statement,
+                    *spec,
+                    (&evidence.trusted, cluster),
+                    (namespace, &service),
+                )
+                .map_or(Before::Unknown(Unknown::Unchecked), Before::Approved),
+            };
+            (service, before)
+        })
+        .collect()
+}
+
+/// Whether `spec` mounts a named volume, which [`Mounts::lines`] checks.
+fn named_mounts(spec: &RequestedServiceSpec) -> bool {
+    spec.volume_graph()
+        .mounted_volumes()
+        .any(|volume| volume.source.docker_volume_name().is_some())
 }
 
 /// The plan's target when a Device can sign every spec it ships, once its tags are pinned.

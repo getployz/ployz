@@ -30,6 +30,7 @@ impl Mounts<'static> {
             volumes: &NONE_PLANNED,
             minted: &NONE_MINTED,
             now,
+            against: None,
         }
     }
 }
@@ -90,6 +91,7 @@ fn lines(spec: &RequestedServiceSpec, volumes: &PlannedVolumes, minted: &Births)
         volumes,
         minted,
         now: at(MADE + 16 * DAY),
+        against: None,
     };
     ApprovedChange::of(
         std::slice::from_ref(spec),
@@ -358,5 +360,254 @@ fn a_rule_that_adds_a_mount_mints_it_and_prints_the_line() {
     assert_eq!(
         template(&pushed, &basis.namespace).unwrap(),
         rule.services[0].template
+    );
+}
+
+fn thumbs(nonce: u8) -> VolumeBirth {
+    VolumeBirth {
+        nonce: BirthNonce::from_bytes([nonce; 16]),
+        ..previews()
+    }
+}
+
+/// What a Machine is handed for `spec`: scoped and resolved.
+fn resolved(spec: &RequestedServiceSpec) -> crate::ResolvedServiceSpec {
+    let mut spec = spec.clone();
+    spec.mount_graph = spec.mount_graph.scope_to_namespace(&namespace()).unwrap();
+    let id = crate::ServiceId::parse("c".repeat(32)).unwrap();
+    spec.to_resolved(id, crate::ResolvedUpdateConfig::default())
+        .unwrap()
+}
+
+/// `spec` as a Server lists its Container, labelled with the origins its mounts expect
+/// unless `legacy`, as a Container from before origins.
+fn listed(spec: &RequestedServiceSpec, running: bool, legacy: bool) -> ContainerObservation {
+    let resolved_spec = resolved(spec);
+    let mut labels = BTreeMap::new();
+    if let (false, Some(origins)) = (
+        legacy,
+        MountOrigins::of(resolved_spec.volume_graph()).unwrap(),
+    ) {
+        labels.insert(
+            crate::labels::VOLUME_ORIGINS.to_owned(),
+            origins.label().unwrap(),
+        );
+    }
+    ContainerObservation::try_from(crate::ContainerObservationParts {
+        container_id: crate::ContainerId::parse("a".repeat(64)).unwrap(),
+        display_name: spec.name.to_string(),
+        created_at_unix_nanos: 0,
+        machine_id: crate::MachineId::parse("6".repeat(32)).unwrap(),
+        namespace: namespace(),
+        kind: ContainerKind::ServiceContainer,
+        runtime: match running {
+            true => ContainerRuntimeObservation::Running {
+                health: crate::HealthObservation::Unhealthy,
+            },
+            false => ContainerRuntimeObservation::Exited { code: 0 },
+        },
+        effective_healthcheck: None,
+        resolved_spec,
+        address: None,
+        labels,
+        rotation: None,
+        r#gen: None,
+        stopped: false,
+        run: None,
+        log_driver: None,
+    })
+    .unwrap()
+}
+
+fn named(mut spec: RequestedServiceSpec, name: &str) -> RequestedServiceSpec {
+    spec.name = ServiceName::parse(name).unwrap();
+    spec
+}
+
+fn approved(spec: &RequestedServiceSpec) -> Before {
+    Before::Approved(Approved {
+        spec: spec.clone(),
+        signed_at: at(MADE + DAY),
+    })
+}
+
+/// `spec`'s mounts against `before`, with `containers` listed and `unanswered` silent.
+fn reviewed(
+    spec: &RequestedServiceSpec,
+    before: Before,
+    containers: &[ContainerObservation],
+    unanswered: &[&str],
+    minted: &Births,
+) -> Result<(Vec<String>, Vec<String>), BirthError> {
+    let held = Held::of(
+        &APP,
+        containers,
+        unanswered.iter().map(|name| (*name).to_owned()).collect(),
+    );
+    let before = BTreeMap::from([(spec.name.clone(), before)]);
+    let mounts = Mounts {
+        namespace: &APP,
+        volumes: &planned("previews", false),
+        minted,
+        now: at(MADE + 16 * DAY),
+        against: Some(Against {
+            before: &before,
+            held: Some(&held),
+        }),
+    };
+    let lines = mounts.lines(spec)?;
+    let text = |lines: Vec<Shown>| lines.into_iter().map(String::from).collect();
+    Ok((text(lines.lines), text(lines.confirm)))
+}
+
+#[test]
+fn an_image_bump_onto_the_data_the_servers_run_collapses_and_asks_nothing() {
+    let base = files(Some(&previews()));
+    let mut bumped = base.clone();
+    bumped.container.image = IMAGE.replace("0001", "0002");
+    let (lines, confirm) = reviewed(
+        &bumped,
+        approved(&base),
+        &[listed(&base, true, false)],
+        &[],
+        &Births::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        lines,
+        ["1 volume keeps the data you approved (signed 4 Nov 14:02 UTC)"]
+    );
+    assert!(confirm.is_empty(), "{confirm:#?}");
+}
+
+/// Cloud offers a genuine older version as the base. It matches the proposed data, but
+/// the Server runs other data, so the line asks rather than collapsing.
+#[test]
+fn a_stale_base_asks_when_the_servers_run_other_data() {
+    let base = files(Some(&previews()));
+    let (_, confirm) = reviewed(
+        &base,
+        approved(&base),
+        &[listed(&files(Some(&thumbs(3))), true, false)],
+        &[],
+        &Births::new(),
+    )
+    .unwrap();
+    assert_eq!(confirm.len(), 1, "{confirm:#?}");
+    assert!(
+        confirm[0].contains(", not what files uses now"),
+        "{confirm:#?}"
+    );
+}
+
+/// A birth swapped in at the same target asks, and two births with the same name and time
+/// read apart by their origins.
+#[test]
+fn a_swapped_birth_asks_and_reads_apart_from_its_look_alike() {
+    let base = files(Some(&previews()));
+    let swapped = files(Some(&thumbs(8)));
+    let (_, confirm) = reviewed(
+        &swapped,
+        approved(&base),
+        &[listed(&base, true, false)],
+        &[],
+        &Births::new(),
+    )
+    .unwrap();
+    let [line] = confirm.as_slice() else {
+        panic!("{confirm:#?}");
+    };
+    let ids: Vec<&str> = line.split(" #").skip(1).map(|id| &id[..6]).collect();
+    assert!(
+        line.contains("different data than the version you approved: was previews"),
+        "{line}"
+    );
+    assert_eq!(ids.len(), 2, "{line}");
+    assert_ne!(ids[0], ids[1], "{line}");
+}
+
+/// A Server that doesn't answer may hold other data, so the mount prints in full, names
+/// it and asks.
+#[test]
+fn a_server_that_doesnt_answer_keeps_a_mount_from_collapsing() {
+    let base = files(Some(&previews()));
+    let (_, confirm) = reviewed(
+        &base,
+        approved(&base),
+        &[listed(&base, true, false)],
+        &["web-2"],
+        &Births::new(),
+    )
+    .unwrap();
+    assert_eq!(confirm.len(), 1, "{confirm:#?}");
+    assert!(confirm[0].contains("no answer from web-2"), "{confirm:#?}");
+}
+
+#[test]
+fn a_new_volume_at_a_target_that_held_data_asks() {
+    let base = files(Some(&previews()));
+    let fresh = thumbs(5);
+    let minted = Births::from([(declared(), fresh.clone())]);
+    let (_, confirm) = reviewed(
+        &files(Some(&fresh)),
+        approved(&base),
+        &[listed(&base, true, false)],
+        &[],
+        &minted,
+    )
+    .unwrap();
+    assert_eq!(confirm.len(), 1, "{confirm:#?}");
+    assert!(
+        confirm[0].contains("a new, empty volume in place of the data at /srv/previews"),
+        "{confirm:#?}"
+    );
+}
+
+/// Data from before births needs a version that mounts it with no birth, or a listed
+/// Container that uses it. A name no one uses, such as a new Volume Cloud left out of
+/// `unborn`, is refused.
+#[test]
+fn legacy_data_passes_only_on_an_approved_version_or_a_listed_container() {
+    let legacy = files(None);
+    let none = Births::new();
+    for before in [Before::New, Before::Unknown(Unknown::NoRecord)] {
+        let refused = reviewed(&legacy, before, &[], &[], &none);
+        assert!(
+            matches!(refused, Err(BirthError::Legacy { .. })),
+            "{refused:?}"
+        );
+    }
+    let db = listed(&named(legacy.clone(), "db"), true, true);
+    let (_, confirm) = reviewed(&legacy, Before::New, &[db], &[], &none).unwrap();
+    assert_eq!(confirm.len(), 1, "{confirm:#?}");
+    assert!(confirm[0].contains(", that db uses now"), "{confirm:#?}");
+    let mine = listed(&legacy, true, true);
+    let (lines, confirm) = reviewed(&legacy, approved(&legacy), &[mine], &[], &none).unwrap();
+    assert!(confirm.is_empty(), "{confirm:#?}");
+    assert!(lines[0].starts_with("1 volume keeps"), "{lines:#?}");
+    let unbirthed = reviewed(
+        &legacy,
+        approved(&files(Some(&previews()))),
+        &[],
+        &[],
+        &none,
+    );
+    assert!(
+        matches!(unbirthed, Err(BirthError::Unbirthed { .. })),
+        "{unbirthed:?}"
+    );
+}
+
+#[test]
+fn a_first_attach_names_the_service_that_uses_the_data_or_says_none_does() {
+    let born = files(Some(&previews()));
+    let none = Births::new();
+    let db = listed(&named(born.clone(), "db"), true, false);
+    let (_, confirm) = reviewed(&born, Before::New, &[db], &[], &none).unwrap();
+    assert!(confirm[0].contains(", that db uses now"), "{confirm:#?}");
+    let (_, confirm) = reviewed(&born, Before::New, &[], &[], &none).unwrap();
+    assert!(
+        confirm[0].contains(", that no server lists a container using"),
+        "{confirm:#?}"
     );
 }
