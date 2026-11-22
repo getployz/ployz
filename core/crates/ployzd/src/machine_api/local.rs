@@ -24,7 +24,7 @@ use crate::{
         AdmittedSpec, Caller, LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError,
         Scope, SealingError, StoreError,
     },
-    management::build_grant::{Mint, Minter},
+    management::build_grant::Minter,
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
@@ -1018,7 +1018,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let local = self.at(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
-        // Refused before `Mint::check_admitted`, which opens the Sealed record to check it. A rule
+        // Refused before the mint, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
         let minter = match (&request.rule, local.scope()) {
             (None, Scope::Operator) => {
@@ -1041,16 +1041,12 @@ impl MachineRpc for MachineService {
                 }
             }
         };
-        let sealing = self.containers().ok().map(ContainerRuntime::sealing);
-        let mint = match Mint::check_admitted(request, sealing, minter) {
-            Ok(mint) => mint,
-            Err(refused) => return respond(refused),
-        };
-        match crate::management::build_grant::mint_for(
+        match crate::management::build_grant::mint(
             &self.grants,
             &local,
             Arc::clone(&self.ingest),
-            mint,
+            request,
+            minter,
         )
         .await
         {

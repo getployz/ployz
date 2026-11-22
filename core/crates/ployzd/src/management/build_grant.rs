@@ -6,12 +6,11 @@
 //! A grant allows the OCI Distribution calls one `docker push` makes into its one
 //! repository, and ends after one tagged manifest lands (or the ingest confirms it
 //! already holds that tag at its digest), after [`GRANT_LIFETIME`], or when the daemon
-//! stops. The Machine RPC handlers only forward to [`mint_for`] and
+//! stops. The Machine RPC handlers only forward to [`mint`] and
 //! [`BuildGrants::inspect`].
 //!
-//! A grant records the scope of the caller that minted it. An Operator's grant is refused
-//! at admission and on every request, and one with no recorded scope counts as an
-//! Operator's.
+//! Only a [`Minter`] mints: a Full caller, or a rule build every `rule_grant` check
+//! passed. An Operator is neither.
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
@@ -299,14 +298,27 @@ impl BuildGrants {
     }
 }
 
-/// Mint for a Machine RPC request, opening image ingest first so its failure
-/// reaches the minting caller rather than the pusher.
-pub(crate) async fn mint_for(
+/// Mint a grant for `request`, made by `minter`. Its Sealed values must open with this
+/// Machine's Sealing Key before image ingest opens, and ingest opens before the grant
+/// is held, so its failure reaches the minting caller rather than the pusher.
+///
+/// # Errors
+/// The refusal [`Mint::check`] answers or [`BuildGrants::mint`] answers, in the inner
+/// result; the [`crate::machine::LocalMachineError`] of an ingest that didn't open.
+pub(crate) async fn mint(
     grants: &BuildGrants,
     local: &crate::machine::LocalMachine,
     ingest: Arc<crate::docker::ImageIngest>,
-    mint: Mint,
+    request: MintBuildGrantRequest,
+    minter: Minter,
 ) -> Result<Result<BuildGrantMinted, RpcError>, crate::machine::LocalMachineError> {
+    let sealing = local
+        .containers()
+        .map(crate::docker::ContainerRuntime::sealing);
+    let mint = match Mint::check_admitted(request, sealing, minter) {
+        Ok(mint) => mint,
+        Err(refused) => return Ok(Err(refused)),
+    };
     let opened = local.ensure_image_ingest(ingest).await?.destination;
     Ok(grants.mint(
         local.record().management_secret().public_key(),
