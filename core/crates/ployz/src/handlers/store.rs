@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit, Edited,
-    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, Publish, Published, Removal,
-    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, VolumeObservation,
+    EnvironmentRef, ObservationFailure, OrganizationId, Publish, Published, Removal, RemovalsQuery,
+    Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, VolumeObservation,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -228,15 +228,11 @@ impl<'m> Store<'m> {
             else {
                 return Err(StoreCallError::Refused(refused));
             };
-            let verb = match command
-                .to_command()
-                .get("command")
-                .and_then(serde_json::Value::as_str)
-            {
-                Some("publish") => approval::Verb::Publish,
-                Some("remove") => OperationVerb::Remove.into(),
-                _ => approval::Verb::Deploy,
-            };
+            let verb = asked.verb(
+                ployz_store::Command::decode(command.to_command())
+                    .ok()
+                    .as_ref(),
+            );
             let retry = self.approving(&asked.id);
             approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);
         }

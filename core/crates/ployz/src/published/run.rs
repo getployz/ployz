@@ -95,7 +95,7 @@ pub(crate) fn run(
         };
         let retry = retry(root, command, &asked.id);
         approval = Some(
-            crate::approval::settle(&runtime, &credential, asked.verb(), &asked, retry)
+            crate::approval::settle(&runtime, &credential, asked.verb(None), &asked, retry)
                 .map_err(Failure::from)?,
         );
     };
