@@ -615,6 +615,18 @@ pub(crate) struct Lowered {
     pub(crate) warnings: Vec<DeploymentWarning>,
 }
 
+impl Lowered {
+    /// The specs it creates: a `narrowed` one only those it ships, while the rest ride
+    /// along unchanged.
+    pub(crate) fn created(self, narrowed: bool) -> Vec<ployz_core::RequestedServiceSpec> {
+        let mut target = self.intent.target;
+        if narrowed {
+            target.retain(|spec| self.shipped.contains(&spec.name));
+        }
+        target
+    }
+}
+
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]
 /// resolves them. The compiled producers are `saved`'s own: live values order
 /// nothing, since what provides them runs elsewhere.
