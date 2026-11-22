@@ -9353,7 +9353,7 @@ fn a_deploy_of_one_service_keeps_the_pin_of_an_unchanged_service_it_references()
 }
 
 #[test]
-fn a_deploy_of_one_service_takes_a_signed_version_of_a_service_it_references() {
+fn a_deploy_of_one_service_runs_the_applied_pin_of_a_service_it_references_over_a_new_one() {
     let (store, who) = shop();
     web_reads_api(&store, &who);
     let versions = vec![
@@ -9361,10 +9361,32 @@ fn a_deploy_of_one_service_takes_a_signed_version_of_a_service_it_references() {
         posted(&store, &who, "api", P2),
     ];
     admit_services(&store, &who, (2, &["web"]), versions).unwrap();
-    assert_eq!(
-        runs(&store, 2, "api").map(|(image, _)| image),
-        Some(P2.to_owned())
-    );
+    assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+    apply(&store, 2);
+    let web = posted(&store, &who, "web", P1);
+    admit_services(&store, &who, (3, &["web"]), vec![web]).unwrap();
+    assert_eq!(runs(&store, 3, "api"), Some((P1.to_owned(), 1)));
+}
+
+#[test]
+fn a_retry_runs_what_a_service_it_references_was_applied_at_since_its_source() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let web = posted(&store, &who, "web", P1);
+    admit_services(&store, &who, (2, &["web"]), vec![web]).unwrap();
+    assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+    store
+        .record(
+            &id(2),
+            &runner("runner-a"),
+            RunEvidence::NotExecuted("stopped".into()),
+        )
+        .unwrap();
+    let api = posted(&store, &who, "api", P2);
+    admit_services(&store, &who, (3, &["api"]), vec![api]).unwrap();
+    apply(&store, 3);
+    retry_of(&store, &who, (4, 2)).unwrap();
+    assert_eq!(runs(&store, 4, "api"), Some((P2.to_owned(), 1)));
 }
 
 #[test]

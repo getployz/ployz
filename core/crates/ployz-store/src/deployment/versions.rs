@@ -326,12 +326,21 @@ pub(crate) fn versions(
 /// ran; else its Saved image as written, which is all a Deployment from before records
 /// ever gets.
 ///
+/// A Service that is no node of `id`, handed its runner only because another references
+/// it, runs what the Deployment that last applied it ran, for a Deploy or a replay alike,
+/// over a version posted with `id`: only a node advances what Applied State ran, so a new
+/// version there would be lost to the next Deploy that reuses it.
+///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
 pub(super) fn pinned(
     tx: &mut dyn Tx,
     (id, environment, namespace): (&DeploymentId, &str, &Namespace),
-    (saved, target): (&SavedEnvironmentIntent, &[RequestedServiceSpec]),
+    (saved, nodes, target): (
+        &SavedEnvironmentIntent,
+        &[TargetNode],
+        &[RequestedServiceSpec],
+    ),
 ) -> Result<BTreeMap<ServiceName, Pinned>, RpcError> {
     let recorded = record_of(tx, id)?;
     let mut record = recorded.clone();
@@ -346,19 +355,26 @@ pub(super) fn pinned(
         Origin::Own | Origin::Legacy => BTreeMap::new(),
     };
     for spec in target {
-        if record.services.contains_key(&spec.name) {
+        let node = nodes.iter().any(
+            |node| matches!(node, TargetNode::Service { runtime, .. } if *runtime == spec.name),
+        );
+        if node && record.services.contains_key(&spec.name) {
             continue;
         }
-        let from = match &record.origin {
-            Origin::Own => reused(tx, environment, (saved, spec), namespace)?,
-            Origin::Legacy => None,
-            Origin::Replay { .. } => replays.get(&spec.name).cloned(),
+        let from = match (&record.origin, node) {
+            (Origin::Legacy, _) => None,
+            (Origin::Own, _) | (Origin::Replay { .. }, false) => {
+                reused(tx, environment, (saved, spec), namespace)?
+            }
+            (Origin::Replay { .. }, true) => replays.get(&spec.name).cloned(),
         };
-        let ran = from.or_else(|| {
-            PayloadDigest::of(spec, namespace)
-                .ok()
-                .map(|digest| RanService { digest, pin: None })
-        });
+        let ran = from
+            .or_else(|| record.services.get(&spec.name).cloned())
+            .or_else(|| {
+                PayloadDigest::of(spec, namespace)
+                    .ok()
+                    .map(|digest| RanService { digest, pin: None })
+            });
         if let Some(ran) = ran {
             record.services.insert(spec.name.clone(), ran);
         }
@@ -478,9 +494,7 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
 }
 
 /// What the Deployment that last applied `spec`'s Service in `saved` ran, when `spec`
-/// with that pin has the digest it ran: the same tag, and only run fields changed. A
-/// Service a Deploy hands its runner only because another references it is no node of
-/// it, and keeps what runs the same way.
+/// with that pin has the digest it ran: the same tag, and only run fields changed.
 fn reused(
     tx: &mut dyn Tx,
     environment: &str,
