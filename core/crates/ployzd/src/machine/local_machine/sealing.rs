@@ -273,18 +273,18 @@ impl LocalMachine {
     ///   - refuses [`Error::AwaitsRecovery`] and inserts nothing when this
     ///     Machine reads its Cluster awaiting recovery of another key
     ///     ([`ClusterSealing::awaits_another`]);
-    ///   - otherwise inserts its public half as the Cluster's (a no-op when a
-    ///     key is already published there, this one or another) and answers
-    ///     it;
+    ///   - otherwise takes the sender's removals, inserts its public half as
+    ///     the Cluster's (a no-op when a key is already published there, this
+    ///     one or another) and answers it;
     ///   - when the read fails, logs the failure, inserts and answers as
     ///     above;
     /// - another key: refuses [`Error::HeldAnother`];
     /// - no file, or a file that is not 32 bytes: reads the Cluster's Sealing
     ///   and refuses [`Error::Published`] when it publishes another key, or
     ///   [`Error::AwaitsRecovery`] when it awaits recovery of another key (the
-    ///   rule `awaits_another` states), and otherwise writes the key over the
-    ///   file, inserts its public half as the Cluster's and answers it. A
-    ///   failed read refuses with its error;
+    ///   rule `awaits_another` states), and otherwise takes the sender's
+    ///   removals, writes the key over the file, inserts its public half as the
+    ///   Cluster's and answers it. A failed read refuses with its error;
     /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn install_admitted(
         &self,
@@ -329,8 +329,8 @@ impl LocalMachine {
                         "could not read whether the Cluster awaits recovery of another Sealing Key; publishing the held key"
                     ),
                 }
-                replicated.publish_sealing_public_key(public_key).await?;
                 self.take_removals(removals).await?;
+                replicated.publish_sealing_public_key(public_key).await?;
                 tracing::info!(
                     machine = %record.id(),
                     from = %request.from,
@@ -359,9 +359,11 @@ impl LocalMachine {
             | ClusterSealing::AwaitsRecovery(_)
             | ClusterSealing::Unsealed => {}
         }
+        // Removals land before the key, so an Install cut off after either write leaves a
+        // Machine that already enforces them, and a retry finds it holding the key.
+        self.take_removals(removals).await?;
         self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
-        self.take_removals(removals).await?;
         tracing::info!(
             machine = %record.id(),
             from = %request.from,
