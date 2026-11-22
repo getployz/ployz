@@ -1,5 +1,6 @@
 /** @data-source remote: proposals waiting on a human, and each one a card shows, polled every 2s while waiting or running: an agent can present, another tab decide, and each step end at any moment */
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
+import { decidable, DECIDABLE_POLL_MS } from "./decidable";
 import {
   decideProposalServerFn,
   getProposalServerFn,
@@ -8,53 +9,41 @@ import {
 
 export type ProposalView = NonNullable<Awaited<ReturnType<typeof getProposalServerFn>>>;
 
-/** How often the sidebar rereads proposals: an agent can present, or another tab decide, at any moment. */
-const PROPOSAL_POLL_MS = 2_000;
-
-const proposalKeys = (organizationSlug: string) => ["proposals", organizationSlug] as const;
-
-/** Every proposal waiting on a person in the Organization. Drives the collapsed badge and the waiting list. */
-export function pendingProposalsOptions(organizationSlug: string) {
-  return queryOptions({
-    queryKey: [...proposalKeys(organizationSlug), "pending"] as const,
-    queryFn: () => listPendingProposalsServerFn({ data: { organizationSlug } }),
-    staleTime: 0,
-    refetchInterval: PROPOSAL_POLL_MS,
-  });
-}
-
 /** A proposal that can still change: waiting on a person, or approved with a step yet to end. */
 const moving = (proposal: ProposalView | null | undefined) =>
   proposal?.status === "presented"
   || (proposal?.status === "approved" && proposal.progress.some((step) => step.state === "waiting" || step.state === "accepted" || step.state === "running"));
 
-/** One proposal as Cloud holds it now; polled while it waits or runs, since the answer and each step's end come from anywhere. */
-export function proposalOptions(organizationSlug: string, id: string) {
+const proposals = decidable({
+  root: "proposals",
+  decide: (organizationSlug: string, id: string, decision: Parameters<typeof decideProposalServerFn>[0]["data"]["decision"]) =>
+    decideProposalServerFn({ data: { organizationSlug, id, decision } }),
+  unwrap: (answer) => answer.ok ? { ok: true, decided: answer.proposal } : answer,
+});
+
+/** Every proposal waiting on a person in the Organization. Drives the collapsed badge and the waiting list. */
+export function pendingProposalsOptions(organizationSlug: string) {
   return queryOptions({
-    queryKey: [...proposalKeys(organizationSlug), id] as const,
-    queryFn: () => getProposalServerFn({ data: { organizationSlug, id } }),
+    queryKey: proposals.pendingKey(organizationSlug),
+    queryFn: () => listPendingProposalsServerFn({ data: { organizationSlug } }),
     staleTime: 0,
-    refetchInterval: (query) => moving(query.state.data) ? PROPOSAL_POLL_MS : false,
+    refetchInterval: DECIDABLE_POLL_MS,
   });
 }
 
-/** Approve every step, or deny with a reason. Answers Cloud's refusal as its message. */
-export async function decideProposal(
-  organizationSlug: string,
-  id: string,
-  decision: Parameters<typeof decideProposalServerFn>[0]["data"]["decision"],
-): Promise<{ ok: true; decided: ProposalView } | { ok: false; message: string }> {
-  const answer = await decideProposalServerFn({ data: { organizationSlug, id, decision } }).catch(() => null);
-  if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
-  return answer.ok ? { ok: true, decided: answer.proposal } : answer;
+/** One proposal as Cloud holds it now; polled while it waits or runs, since the answer and each step's end come from anywhere. */
+export function proposalOptions(organizationSlug: string, id: string) {
+  return queryOptions({
+    queryKey: proposals.rowKey(organizationSlug, id),
+    queryFn: () => getProposalServerFn({ data: { organizationSlug, id } }),
+    staleTime: 0,
+    refetchInterval: (query) => moving(query.state.data) ? DECIDABLE_POLL_MS : false,
+  });
 }
 
-/** Show a decision at once, then reread every proposal: the badge and the waiting list drop it. */
-export function landProposal(queryClient: QueryClient, organizationSlug: string, id: string, decided: ProposalView) {
-  queryClient.setQueryData(proposalOptions(organizationSlug, id).queryKey, (row) => row && { ...row, ...decided });
-  return refetchProposals(queryClient, organizationSlug);
-}
+/** Approve every step, or deny with a reason. */
+export const decideProposal = proposals.decide;
 
-export function refetchProposals(queryClient: QueryClient, organizationSlug: string) {
-  return queryClient.invalidateQueries({ queryKey: proposalKeys(organizationSlug) });
-}
+export const landProposal = proposals.land;
+
+export const refetchProposals = proposals.refetch;

@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { Link, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
-import { AgentDock } from "#/components/agent-sidebar/agent-dock";
+import { AgentDock } from "#/components/agent-sidebar/agent-sidebar";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { ConfirmDialog } from "#/components/confirm-dialog";

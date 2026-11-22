@@ -22,22 +22,14 @@ import {
   pageFilterParam,
   parsePageFilter,
   type RangeSpec,
-  type RequestWindow,
   viewsPerVisit,
 } from "./analytics-model";
 import { type AnalyticsScope, type AnalyticsView, analyticsViewQueryOptions, type RequestRead, useAnalyticsView } from "./analytics.queries";
 import { AnalyticsGoals } from "./analytics-goals";
+import { type AnalyticsSearch } from "./analytics-search";
 import { ApiView } from "./api-view";
 import { ErrorsView } from "./errors-view";
 import { RangePicker } from "./range-picker";
-
-export type AnalyticsSearch = {
-  readonly view: AnalyticsViewKind;
-  readonly range: RangeSpec;
-  readonly page?: string;
-  readonly window: RequestWindow;
-  readonly service?: string;
-};
 
 type AnalyticsPageProps = {
   scope: AnalyticsScope;

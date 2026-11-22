@@ -10,7 +10,8 @@ import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { FAILURES } from "#/modules/agent/provider-error";
-import { agentThreadsOptions, type ThreadSummary } from "./threads.queries";
+import type { ThreadSummary } from "#/modules/agent/persistence.server";
+import { agentThreadsOptions } from "./threads.queries";
 import { pendingProposalsOptions, proposalOptions, type ProposalView } from "./proposals.queries";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });

@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import remend from "remend";
 import { ArrowUpIcon, HistoryIcon, SquareIcon, SquarePenIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
+import { useStoredState } from "#/hooks/use-stored-state";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
 import { RelativeTime } from "#/components/relative-time";
@@ -27,12 +28,13 @@ import {
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { type PageContext, typedText } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
+import type { ThreadSummary } from "#/modules/agent/persistence.server";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { answeredBy, pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
 import { ProposalCard } from "./proposal-card";
 import { pendingProposalsOptions } from "./proposals.queries";
-import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
+import { agentThreadsOptions, refetchAgentThreads } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
@@ -43,13 +45,6 @@ type Asked = typeof Asked.Type;
 const decidedKey = (organizationSlug: string) => `ployz.agent.decided.${organizationSlug}`;
 const Decided = Schema.fromJsonString(Schema.Array(Schema.String));
 const DECIDED_KEPT = 3;
-const stored = <A,>(schema: Schema.Codec<A, string>, key: string, empty: A): A => {
-  try {
-    return Option.getOrElse(Schema.decodeUnknownOption(schema)(localStorage.getItem(key)), () => empty);
-  } catch {
-    return empty;
-  }
-};
 
 type PanelProps = {
   organizationSlug: string;
@@ -121,8 +116,8 @@ function ChatHistory({ organizationSlug, threadId, onChat }: {
   );
 }
 
-/** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
-const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
+/** The chat client reports a refused request only as "HTTP error! status: 403 …"; a 403 means the thread in the link is another member's. */
+const refused = (error: Error | undefined) => error !== undefined && /\bstatus: (\d+)/.exec(error.message)?.[1] === "403";
 
 function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }: {
   organizationSlug: string;
@@ -158,10 +153,9 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
       : []);
 
-  const [asked, setAsked] = useState<Asked>(() => stored(Asked, askedKey(threadId), {}));
+  const [asked, setAsked] = useStoredState(askedKey(threadId), Asked, {});
   const unseen = bound.filter(({ key, approvalId }) => asked[key] !== approvalId);
   if (unseen.length > 0) setAsked({ ...asked, ...Object.fromEntries(unseen.map(({ key, approvalId }) => [key, approvalId])) });
-  useEffect(() => { localStorage.setItem(askedKey(threadId), JSON.stringify(asked)); }, [threadId, asked]);
 
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
   const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
@@ -171,8 +165,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   const asks = (pending ?? []).filter((approval) => bound.some(({ approvalId }) => approvalId === approval.id));
   const asking = chat.interrupts.length === 0 ? null : answeredBy(asks);
   const proposed = proposals ?? [];
-  const [decided, setDecided] = useState<readonly string[]>(() => stored(Decided, decidedKey(organizationSlug), []));
-  useEffect(() => { localStorage.setItem(decidedKey(organizationSlug), JSON.stringify(decided)); }, [organizationSlug, decided]);
+  const [decided, setDecided] = useStoredState<readonly string[]>(decidedKey(organizationSlug), Decided, []);
   const pendingIds = new Set(proposed.map((proposal) => proposal.id));
   const recent = decided.filter((id) => !pendingIds.has(id));
   // A proposal that leaves the waiting list was decided, here or anywhere, so it moves to Recent. Watching the list

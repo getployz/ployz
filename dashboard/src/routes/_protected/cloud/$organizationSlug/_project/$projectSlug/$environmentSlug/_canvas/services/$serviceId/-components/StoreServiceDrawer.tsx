@@ -3,7 +3,7 @@ import { StoreRefused } from "#/lib/refusal";
 import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { EllipsisIcon, PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { EllipsisIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
@@ -12,7 +12,7 @@ import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing"
 import { sharedRegion, type SharedRegion } from "#/modules/config-store/deploy-waits";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector";
-import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { serviceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-icon";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
@@ -568,8 +568,8 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 
 type SourceKind = "image" | "repository";
 const SOURCES = {
-  repository: { label: "GitHub repository", icon: <GitHubMarkIcon /> },
-  image: { label: "Container image", icon: <PackageIcon /> },
+  repository: { label: "GitHub repository", icon: serviceIcon("git") },
+  image: { label: "Container image", icon: serviceIcon("image") },
 } satisfies Record<SourceKind, { label: string; icon: ReactNode }>;
 const other = (kind: SourceKind): SourceKind => kind === "image" ? "repository" : "image";
 

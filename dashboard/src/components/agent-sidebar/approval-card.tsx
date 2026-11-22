@@ -1,13 +1,12 @@
 import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRightIcon, XIcon } from "lucide-react";
+import { ChevronRightIcon } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { TraceLine } from "#/components/ui/trace";
-import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
@@ -22,6 +21,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { approvalBadge, approvedLine, redeployLine } from "./approval-copy";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
+import { denial, DenyReason, DenyWithReasonButton, DestroyedItem, DestroysList, ServerLine } from "./decision-parts";
 
 /**
  * One destructive Save, Deploy or Server operation waiting on a human, drawn from its Cloud row and reread while it waits, so a
@@ -96,7 +96,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
     return landDecision(queryClient, organizationSlug, approval.id, { ...approval, ...answer.approval });
   };
   const approve = () => keyed ? approveWithKey() : decide({ approve: { digest: approval.digest } });
-  const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
+  const deny = () => decide(denial(reason));
 
   return (
     <>
@@ -119,34 +119,28 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
             <p className="font-mono text-xs break-all">{switched.from} → {switched.to}</p>
           )}
           {serviceAct !== null && (
-            <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{serviceAct.namespace}/{serviceAct.runtime}</code></p>
+            <ServerLine namespace={serviceAct.namespace} runtime={serviceAct.runtime} />
           )}
           {(effects.length > 0 || prunes(approval.review)) && (
-            <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
+            <DestroysList label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"}>
               {effects.map((effect) => {
                 const line = destroyedLine(effect, approval.command, approval.review);
                 return (
-                  <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
-                    <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                    <span>
-                      {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
-                      {effect.lost_after !== undefined && (
-                        <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
-                      )}
-                    </span>
-                  </li>
+                  <DestroyedItem key={`${effect.kind}:${effect.path}`}>
+                    {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
+                    {effect.lost_after !== undefined && (
+                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
+                    )}
+                  </DestroyedItem>
                 );
               })}
               {prunes(approval.review) && (
-                <li className="flex gap-2">
-                  <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                  <span>
-                    Also removes any other service running in this environment
-                    {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
-                  </span>
-                </li>
+                <DestroyedItem>
+                  Also removes any other service running in this environment
+                  {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
+                </DestroyedItem>
               )}
-            </ul>
+            </DestroysList>
           )}
           {region.length > 0 && <ChangeLines changes={region} className="text-foreground" />}
           {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
@@ -167,8 +161,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
           )}
           {keyProblem !== null && <p className="text-xs text-destructive">{keyProblem}</p>}
           {reason !== null && (
-            <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
-              onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
+            <DenyReason value={reason} onChange={setReason} />
           )}
           {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
         </CardContent>
@@ -181,11 +174,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
           <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
             Deny
           </Button>
-          {reason === null && (
-            <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>
-              Deny with a reason…
-            </Button>
-          )}
+          {reason === null && <DenyWithReasonButton onClick={() => setReason("")} />}
         </CardFooter>}
       </Card>
     </>
