@@ -1,4 +1,4 @@
-//! The canvas word's cases, from the dashboard's node-status tests.
+//! The status rule's cases.
 
 use super::*;
 use Container::{Down, Idle, Running, Serving, Stopped};
@@ -11,8 +11,6 @@ fn facts(containers: Option<&[Container]>, watch: Watch) -> ServiceFacts<'_> {
         empty_source: false,
         watch,
         containers,
-        desired_replicas: None,
-        deploying: false,
     }
 }
 
@@ -56,15 +54,11 @@ fn no_container_is_not_running_only_when_every_server_reported() {
 
 #[test]
 fn never_guesses_without_current_evidence() {
-    for watch in [Watch::Connecting, Watch::Unavailable, Watch::Unreachable] {
-        assert_eq!(
-            status(Some(&[Serving]), watch),
-            ServiceStatus::CantReachServers
-        );
-    }
-    for watch in [Watch::NoServers, Watch::NoConnection] {
-        assert_eq!(status(None, watch), ServiceStatus::NeedsAServer);
-    }
+    assert_eq!(
+        status(Some(&[Serving]), Watch::Unreachable),
+        ServiceStatus::CantReachServers
+    );
+    assert_eq!(status(None, Watch::NoServers), ServiceStatus::NeedsAServer);
 }
 
 #[test]
@@ -85,23 +79,4 @@ fn a_new_or_empty_service_is_not_deployed_whatever_the_servers_say() {
         ..facts(Some(&[Down]), SEEN)
     };
     assert_eq!(service_status(&started), ServiceStatus::Crashed);
-}
-
-#[test]
-fn fewer_serving_replicas_than_asked_is_degraded_unless_rolling_or_partial() {
-    let one: &[Container] = &[Serving, Stopped];
-    let with = |desired, deploying, watch| {
-        service_status(&ServiceFacts {
-            desired_replicas: Some(desired),
-            deploying,
-            ..facts(Some(one), watch)
-        })
-    };
-    assert_eq!(with(2, false, SEEN), ServiceStatus::Degraded);
-    assert_eq!(with(2, true, SEEN), ServiceStatus::Online);
-    assert_eq!(with(1, false, SEEN), ServiceStatus::Online);
-    assert_eq!(
-        with(2, false, Watch::Observed { whole: false }),
-        ServiceStatus::Online
-    );
 }

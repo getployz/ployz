@@ -163,10 +163,6 @@ impl Tool for ServiceState {
             .iter()
             .filter_map(|deployment| Some((&deployment.id, deployment.number?)))
             .collect::<BTreeMap<_, _>>();
-        let deploying = page
-            .deployments
-            .iter()
-            .any(|deployment| deployment.in_flight);
         let services = listed
             .services
             .iter()
@@ -187,8 +183,6 @@ impl Tool for ServiceState {
                     empty_source: listing.source == SourceKind::Empty,
                     watch,
                     containers: (!counted.is_empty()).then_some(counted.as_slice()),
-                    desired_replicas: None,
-                    deploying,
                 });
                 json!({
                     "service": name,

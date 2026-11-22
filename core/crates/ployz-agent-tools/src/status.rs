@@ -1,5 +1,5 @@
-//! A Service's status in one word, from what its Servers report. The canvas word and
-//! the agent's status tool read the same rule.
+//! A Service's status in one word, from what its Servers report, as the agent's
+//! status tool words it. The dashboard's canvas words it by a rule of its own.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -9,7 +9,7 @@ use ts_rs::TS;
 #[serde(rename_all = "snake_case")]
 pub enum ServiceStatus {
     Online,
-    /// It runs, but fewer replicas serve than it asks for, or none serves yet.
+    /// It runs, but none of its containers serves yet.
     Degraded,
     Crashed,
     /// Nothing runs or crashed, and a Server stopped one of its containers on request.
@@ -44,16 +44,10 @@ pub enum Container {
 pub enum Watch {
     /// The Environment has no Server.
     NoServers,
-    /// No Server is connected.
-    NoConnection,
+    /// No Server answered.
     Unreachable,
-    Connecting,
-    /// The connection dropped. Evidence from before then is not current.
-    Unavailable,
     /// Current evidence. `whole`: no Server is missing from it.
-    Observed {
-        whole: bool,
-    },
+    Observed { whole: bool },
 }
 
 /// What a Service's status is decided from.
@@ -66,10 +60,6 @@ pub struct ServiceFacts<'a> {
     pub watch: Watch,
     /// Its containers in the evidence; `None` when the evidence names none of it.
     pub containers: Option<&'a [Container]>,
-    /// How many replicas it asks for, when known.
-    pub desired_replicas: Option<u32>,
-    /// A Deploy is rolling its replicas.
-    pub deploying: bool,
 }
 
 /// A Service's status. It never guesses: without current evidence it says so.
@@ -80,10 +70,8 @@ pub fn service_status(facts: &ServiceFacts<'_>) -> ServiceStatus {
         return ServiceStatus::NotDeployed;
     }
     match facts.watch {
-        Watch::NoServers | Watch::NoConnection => ServiceStatus::NeedsAServer,
-        Watch::Unreachable | Watch::Connecting | Watch::Unavailable => {
-            ServiceStatus::CantReachServers
-        }
+        Watch::NoServers => ServiceStatus::NeedsAServer,
+        Watch::Unreachable => ServiceStatus::CantReachServers,
         Watch::Observed { whole } => evidence(facts, whole),
     }
 }
@@ -110,18 +98,10 @@ fn evidence(facts: &ServiceFacts<'_>, whole: bool) -> ServiceStatus {
             ServiceStatus::NotRunning
         };
     }
-    let serving = containers
-        .iter()
-        .filter(|container| **container == Container::Serving)
-        .count();
-    let short = facts
-        .desired_replicas
-        .is_some_and(|desired| u32::try_from(serving).is_ok_and(|serving| serving < desired));
-    // A replica missing from partial evidence may serve on the Server that didn't report.
-    if serving == 0 || whole && !facts.deploying && short {
-        ServiceStatus::Degraded
-    } else {
+    if containers.contains(&Container::Serving) {
         ServiceStatus::Online
+    } else {
+        ServiceStatus::Degraded
     }
 }
 
