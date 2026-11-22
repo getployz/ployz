@@ -16,6 +16,7 @@ use super::{
     keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
     open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
+    scope::Ask,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{Ciphertext, SealingPublicKey};
@@ -150,13 +151,14 @@ pub struct PrivateAccessFacts<'a> {
 }
 
 /// Check `approval` lets this Machine join the tailnet of `facts.sealed` now: signed by a
-/// Device this Machine trusts, or answered by a trusted passkey's own prompt. An envelope
-/// that rides a proposal is refused.
+/// Device this Machine trusts, or answered by a trusted passkey's own prompt, either of
+/// which covers Private Access. An envelope that rides a proposal is refused.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed body, a
 /// signer that is not a trusted Device or passkey, a body naming another Cluster or auth
-/// key, an invalid lifetime, or an expired window.
+/// key, an approver whose kind doesn't cover Private Access, an invalid lifetime, or an
+/// expired window.
 pub fn verify(
     approval: &KeyApproval,
     facts: &PrivateAccessFacts<'_>,
@@ -173,11 +175,9 @@ pub fn verify(
             body: text,
             assertion,
         } => {
-            let passkey = facts.trusted.passkey_approval(
-                Purpose::Workflow,
-                assertion,
-                &key_approval_challenge(text),
-            )?;
+            let passkey = facts
+                .trusted
+                .passkey_approval(assertion, &key_approval_challenge(text))?;
             Approver::Passkey(passkey.passkey.code())
         }
         KeyApproval::Signed(signed) => {
@@ -195,6 +195,10 @@ pub fn verify(
             field: "the signer",
         });
     }
+    // This approval never rides `open_approval`, so it asks its approver here: a router
+    // reaches every private address, so only a person's or full CLI key with Join at the
+    // Cluster turns it on.
+    facts.trusted.covers(&by, Ask::PrivateAccess)?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),

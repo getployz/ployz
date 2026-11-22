@@ -4198,6 +4198,7 @@ dependencies = [
  "ployz-decide",
  "serde_json",
  "stateright",
+ "uuid",
 ]
 
 [[package]]

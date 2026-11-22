@@ -719,6 +719,7 @@ impl FakeMachine for JoinDaemon {
             }),
             sealing: None,
             founding: *self.inner.founding.lock().unwrap(),
+            grants: Vec::new(),
         })
     }
 
@@ -1249,6 +1250,7 @@ pub fn approved_registration() -> Registered {
         expires_at: issued_at.plus(60_000),
         signer: signer.public().into(),
         proposal: None,
+        grants: Vec::new(),
     };
     registration.assigned_machine.join_approval = Some(Signed::sign(&body, &signer).unwrap());
     registration
@@ -1261,6 +1263,7 @@ pub fn registration() -> Registered {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
+        grants: Vec::new(),
     }
 }
 

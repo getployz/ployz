@@ -1,11 +1,11 @@
 //! Management Client slots and the client keys they admit, as admitted mutations.
 
 use ployz_core::{
-    ClientKey, DeviceCode, DeviceSet, KeyStepRequest, ManagementCapability, SetDeviceRequest,
-    SetManagementClientRequest, SetManagementClientResponse,
+    ClientKey, DeviceCode, DeviceKey, DeviceSet, KeyStepRequest, ManagementCapability,
+    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse,
     authority::{
-        Approver, KeyChange, KeyFacts, KeyMember, NewKey, PasskeyApprover, Timestamp,
-        TrustedPasskey, key,
+        Approver, KeyFacts, KeyKind, KeyMember, KeyVerified, NewKey, PasskeyApprover, Timestamp,
+        TrustedGrant, TrustedPasskey, key,
     },
 };
 
@@ -95,7 +95,7 @@ impl LocalMachine {
                     let by = caller.full_caller(store.record())?;
                     match request {
                         SetDeviceRequest::Approve { key } => {
-                            trust(store, NewKey::Device { key }, by)
+                            trust(store, NewKey::Device { key }, by, Timestamp::now())
                         }
                         SetDeviceRequest::Remove { code } => {
                             let removed = store.remove_by_code(code)?;
@@ -120,8 +120,9 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::KeyRefused`] for a step this Machine does not accept,
-    /// [`Error::PasskeyIsDevice`], [`Error::DeviceIsPasskey`] and [`Error::CredentialHeld`]
-    /// for a key that collides with one held, [`Error::NotParticipating`], admission
+    /// [`Error::PasskeyIsDevice`], [`Error::DeviceIsPasskey`], [`Error::KeyHeld`],
+    /// [`Error::KeyIsClient`] and [`Error::CredentialHeld`] for a key that collides with one
+    /// held, [`Error::NotParticipating`], admission
     /// failures, [`Error::ApprovalRecord`] when the clock floor cannot be kept,
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
@@ -150,12 +151,12 @@ impl LocalMachine {
                     let (change, by) =
                         key::verify(&request.step, &facts).map_err(Error::KeyRefused)?;
                     let by = match by {
-                        Approver::Device(key) => PasskeyApprover::Device { code: key.code() },
+                        Approver::Signing(key) => PasskeyApprover::Device { code: key.code() },
                         Approver::Passkey(_) => PasskeyApprover::Unknown,
                     };
                     match change {
-                        KeyChange::Trust { key, .. } => trust(store, key, by),
-                        KeyChange::Remove { key } => {
+                        KeyVerified::Trust { key, issued_at } => trust(store, key, by, issued_at),
+                        KeyVerified::Remove { key } => {
                             let removed = store.remove_key(key)?;
                             Ok(removal(key.code(), removed, by))
                         }
@@ -214,15 +215,29 @@ fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
     }
 }
 
-/// Trust `key` here, approved by `by`, refusing a key that collides with one held by the
-/// other kind or another passkey's credential.
+/// Trust `key` here, approved by `by` under a bundle issued at `issued_at`, refusing a key
+/// that collides with one held by another kind or another passkey's credential, so a CI or
+/// agent key never shares its key with a Device or passkey.
 fn trust(
     store: &mut crate::machine::LocalMachineStore,
     key: NewKey,
     by: PasskeyApprover,
+    issued_at: Timestamp,
 ) -> Result<DeviceSet, Error> {
     let record = store.record();
     let code = key.key().code();
+    let granted = record
+        .grants()
+        .iter()
+        .find(|held| held.grant.key.code() == code);
+    let approved = |added: bool, kind: &str| {
+        if added {
+            tracing::info!("trusted key added kind={kind} code={code} by={by}");
+            DeviceSet::Approved { code }
+        } else {
+            DeviceSet::AlreadyApproved { code }
+        }
+    };
     match key {
         NewKey::Device { key } => {
             if record
@@ -232,16 +247,23 @@ fn trust(
             {
                 return Err(Error::DeviceIsPasskey(code));
             }
-            Ok(if store.approve_device(key)? {
-                tracing::info!("trusted key added kind=device code={code} by={by}");
-                DeviceSet::Approved { code }
-            } else {
-                DeviceSet::AlreadyApproved { code }
-            })
+            if let Some(held) = granted {
+                return Err(Error::KeyHeld {
+                    code,
+                    held: held.grant.kind.into(),
+                });
+            }
+            Ok(approved(store.approve_device(key)?, "device"))
         }
         NewKey::Passkey { passkey } => {
             if record.devices().any(|device| device.code() == code) {
                 return Err(Error::PasskeyIsDevice(code));
+            }
+            if let Some(held) = granted {
+                return Err(Error::KeyHeld {
+                    code,
+                    held: held.grant.kind.into(),
+                });
             }
             if let Some(held) = record.passkeys().iter().find(|held| {
                 held.passkey.credential_id == passkey.credential_id && held.passkey.code() != code
@@ -250,17 +272,50 @@ fn trust(
                     held: held.passkey.code(),
                 });
             }
-            Ok(
-                if store.approve_passkey(TrustedPasskey {
+            Ok(approved(
+                store.approve_passkey(TrustedPasskey {
                     passkey,
                     approved_by: by,
-                })? {
-                    tracing::info!("trusted key added kind=passkey code={code} by={by}");
-                    DeviceSet::Approved { code }
-                } else {
-                    DeviceSet::AlreadyApproved { code }
-                },
-            )
+                })?,
+                "passkey",
+            ))
+        }
+        NewKey::Ci { key: signing, .. } | NewKey::Agent { key: signing, .. } => {
+            // A Device slot the grant would shadow still counts: `devices()` already hides
+            // it, so look at the slot itself.
+            let client = ClientKey::from(DeviceKey::from(signing));
+            if record.accepted_client(&code.label()) == Some(client) {
+                return Err(Error::KeyHeld {
+                    code,
+                    held: KeyKind::FullCli,
+                });
+            }
+            // A key any other slot holds keeps its connection, so it never becomes a grant
+            // that removing it later would leave connected.
+            if record.admits_management_client(&client) {
+                return Err(Error::KeyIsClient(code));
+            }
+            if record
+                .passkeys()
+                .iter()
+                .any(|held| held.passkey.code() == code)
+            {
+                return Err(Error::KeyHeld {
+                    code,
+                    held: KeyKind::Person,
+                });
+            }
+            let grant = key
+                .grant(issued_at)
+                .expect("a CI or agent key carries a grant");
+            let kind = KeyKind::from(grant.kind);
+            Ok(approved(
+                store.approve_grant(TrustedGrant {
+                    grant,
+                    approved_by: by,
+                })?,
+                &kind.to_string(),
+            ))
         }
     }
 }
@@ -270,8 +325,8 @@ mod tests {
     use super::*;
     use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
     use ployz_core::authority::{
-        KeyRef, KeyStep, ProposalApproval, ProposalRef, ProposalStep, Signed, Signer, StepDigest,
-        StepKind,
+        KeyChange, KeyRef, KeyStep, ProposalApproval, ProposalRef, ProposalStep, Signed, Signer,
+        StepDigest, StepKind,
     };
     use ployz_core::{DeviceKey, ManagementScope};
 
@@ -699,6 +754,11 @@ mod tests {
 
     /// A trust of `key` on `local` alone, as the only step of a bundle [`signer`] signed now.
     fn trust_step(local: &LocalMachine, key: NewKey) -> KeyStepRequest {
+        trust_step_at(local, key, Timestamp::now())
+    }
+
+    /// [`trust_step`] under a bundle issued at `issued_at`.
+    fn trust_step_at(local: &LocalMachine, key: NewKey, issued_at: Timestamp) -> KeyStepRequest {
         let record = local.record();
         let operation = ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
         let step = KeyStep {
@@ -716,7 +776,6 @@ mod tests {
                 index: 0,
             }),
         };
-        let issued_at = Timestamp::now();
         let plan = ProposalApproval {
             cluster: step.cluster,
             environment: ployz_core::Namespace::parse("app").unwrap(),
@@ -759,6 +818,196 @@ mod tests {
         KeyRef::Passkey {
             key: passkey(key).public_key,
         }
+    }
+
+    fn ci_key(key: ployz_core::authority::SigningPublicKey, namespaces: &[&str]) -> NewKey {
+        use ployz_core::authority::{Cap, CapSet, KeyPlace, KeyPlaces, KeyScope};
+        NewKey::Ci {
+            key,
+            scope: KeyScope {
+                caps: CapSet::of(&[Cap::Spec]),
+                places: KeyPlaces::Only(
+                    namespaces
+                        .iter()
+                        .map(|namespace| KeyPlace {
+                            environment: uuid::Uuid::from_u128(1),
+                            namespace: ployz_core::Namespace::parse(*namespace).unwrap(),
+                            service: None,
+                        })
+                        .collect(),
+                ),
+            },
+            volumes: Vec::new(),
+        }
+    }
+
+    fn ci_signer() -> Signer {
+        Signer::from_seed(&[12; 32])
+    }
+
+    #[tokio::test]
+    async fn only_a_newer_bundle_edits_a_ci_keys_scope_so_an_older_wider_one_cant_be_replayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let now = Timestamp::now();
+        let earlier = Timestamp::from_millis(now.as_millis() - 120_000).unwrap();
+        let first = Timestamp::from_millis(now.as_millis() - 60_000).unwrap();
+        let ci = ci_signer().public();
+        let code = ci.code();
+        let scope_of = |local: &LocalMachine| {
+            let record = local.record();
+            let [held] = record.grants() else {
+                panic!("one grant");
+            };
+            (held.grant.scope.clone(), held.grant.issued_at)
+        };
+
+        let staging = ci_key(ci, &["staging"]);
+        assert_eq!(
+            local
+                .key_step(trust_step_at(&local, staging.clone(), first))
+                .await
+                .unwrap(),
+            DeviceSet::Approved { code }
+        );
+        let wider = ci_key(ci, &["staging", "prod"]);
+        assert_eq!(
+            local
+                .key_step(trust_step_at(&local, wider, earlier))
+                .await
+                .unwrap(),
+            DeviceSet::AlreadyApproved { code }
+        );
+        let NewKey::Ci {
+            scope: staging_scope,
+            ..
+        } = staging
+        else {
+            unreachable!()
+        };
+        assert_eq!(scope_of(&local), (staging_scope, first));
+
+        let narrowed = ci_key(ci, &["web-staging"]);
+        local
+            .key_step(trust_step_at(&local, narrowed.clone(), now))
+            .await
+            .unwrap();
+        let NewKey::Ci {
+            scope: narrowed_scope,
+            ..
+        } = narrowed
+        else {
+            unreachable!()
+        };
+        assert_eq!(scope_of(&local), (narrowed_scope, now));
+        assert_eq!(
+            local
+                .record()
+                .management_scope(&ClientKey::from(DeviceKey::from(ci))),
+            None,
+            "a CI key holds no slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_waiting_in_a_management_client_slot_never_becomes_a_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let capability = local
+            .set_management_client(set())
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let operator = Signer::from_seed(capability.client_secret()).public();
+        assert!(
+            local
+                .record()
+                .pending_label(&ClientKey::from(DeviceKey::from(operator)))
+                .is_some()
+        );
+
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, ci_key(operator, &["app"])))
+                .await,
+            Err(Error::KeyIsClient(_))
+        ));
+        assert!(local.record().grants().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_ci_key_never_shares_its_key_with_a_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let device = signer().public();
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, ci_key(device, &["app"])))
+                .await,
+            Err(Error::KeyHeld {
+                held: ployz_core::authority::KeyKind::FullCli,
+                ..
+            })
+        ));
+
+        let ci = ci_signer().public();
+        local
+            .key_step(trust_step(&local, ci_key(ci, &["app"])))
+            .await
+            .unwrap();
+        assert!(matches!(
+            local
+                .set_device(SetDeviceRequest::Approve { key: ci.into() })
+                .await,
+            Err(Error::KeyHeld {
+                held: ployz_core::authority::KeyKind::Ci,
+                ..
+            })
+        ));
+        assert_eq!(
+            local
+                .record()
+                .management_scope(&ClientKey::from(DeviceKey::from(ci))),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ci_key_never_stands_in_for_the_last_device_and_its_removal_is_permanent() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let ci = ci_signer().public();
+        local
+            .key_step(trust_step(&local, ci_key(ci, &["app"])))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            local
+                .set_device(SetDeviceRequest::RemoveKey {
+                    key: KeyRef::Signing {
+                        key: signer().public().into()
+                    }
+                })
+                .await,
+            Err(Error::Store(StoreError::LastKey(_)))
+        ));
+        let ci_ref = KeyRef::Signing { key: ci.into() };
+        assert_eq!(
+            local
+                .key_step(removal_step(&local, ci_ref, &signer()))
+                .await
+                .unwrap(),
+            DeviceSet::Removed { code: ci.code() }
+        );
+        assert!(local.record().grants().is_empty());
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, ci_key(ci, &["app"])))
+                .await,
+            Err(Error::Store(StoreError::KeyRemoved(_)))
+        ));
     }
 
     #[tokio::test]
@@ -846,7 +1095,7 @@ mod tests {
         );
         let reread: crate::machine::LocalMachineRecord =
             serde_json::from_str(&serde_json::to_string(&*local.record()).unwrap()).unwrap();
-        assert!(reread.removes_key(&KeyRef::Device { key: removed }));
+        assert!(reread.removes_key(&KeyRef::Signing { key: removed }));
         assert!(matches!(
             local
                 .set_device(SetDeviceRequest::Approve { key: removed })
@@ -893,7 +1142,7 @@ mod tests {
         assert_eq!(
             local
                 .set_device(SetDeviceRequest::RemoveKey {
-                    key: KeyRef::Device { key: never }
+                    key: KeyRef::Signing { key: never }
                 })
                 .await
                 .unwrap(),
@@ -923,14 +1172,14 @@ mod tests {
             local
                 .key_step(removal_step(
                     &local,
-                    KeyRef::Device { key: only },
+                    KeyRef::Signing { key: only },
                     &signer()
                 ))
                 .await,
             Err(Error::Store(StoreError::LastKey(_)))
         ));
         assert_eq!(local.record().devices().collect::<Vec<_>>(), [only]);
-        assert!(!local.record().removes_key(&KeyRef::Device { key: only }));
+        assert!(!local.record().removes_key(&KeyRef::Signing { key: only }));
     }
 
     #[tokio::test]

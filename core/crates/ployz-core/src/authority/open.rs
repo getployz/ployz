@@ -27,21 +27,34 @@ pub(super) fn the_signer(
 }
 
 /// Open `approval` as the body it carries, its approver and this Machine's Cluster key:
-/// a single approval signed by a Device, or a step of the proposal bundle it carries. The
-/// caller checks the body against its request.
+/// a single approval a trusted key signed, or a step of the proposal bundle it carries.
+/// The approver must cover what the body asks, so a key whose kind or scope doesn't reach
+/// is refused here, before any verifier writes. A step is checked against its bundle's
+/// signer. The caller checks the body against its request.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed
-/// body, no Cluster identity, a body that names a proposal it does not ride in, or no
-/// approver signing as the body says. A step is refused by [`proposal::open_step`].
+/// body, no Cluster identity, a body that names a proposal it does not ride in, no
+/// approver signing as the body says, or one [`TrustedKeys::covers`] refuses. A step is
+/// refused by [`proposal::open_step`].
 pub(super) fn open_approval<T: StepBody>(
     approval: &Signed<T>,
     trusted: &TrustedKeys,
     cluster: Option<SealingPublicKey>,
 ) -> Result<(T, Approver, SealingPublicKey), AuthorityRefusal> {
-    if let Some(bundle) = &approval.proposal {
-        return proposal::open_step(bundle, approval, trusted, cluster);
-    }
+    let (body, by, cluster) = match &approval.proposal {
+        Some(bundle) => proposal::open_step(bundle, approval, trusted, cluster)?,
+        None => open_alone(approval, trusted, cluster)?,
+    };
+    trusted.covers(&by, body.ask())?;
+    Ok((body, by, cluster))
+}
+
+fn open_alone<T: StepBody>(
+    approval: &Signed<T>,
+    trusted: &TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+) -> Result<(T, Approver, SealingPublicKey), AuthorityRefusal> {
     let approvers = approval.approvers(trusted)?;
     let body = approval.open()?;
     let Some(cluster) = cluster else {

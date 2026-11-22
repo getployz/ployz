@@ -17,6 +17,7 @@ use super::{
     canonical::Timestamp,
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
+    scope::Ask,
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
@@ -117,10 +118,12 @@ pub(super) trait StepBody: Statement {
     fn cluster(&self) -> SealingPublicKey;
     /// `None` for a step that changes the whole Cluster, which no Environment bounds.
     fn namespace(&self) -> Option<&Namespace>;
+    /// What the step asks of the key that signed it.
+    fn ask(&self) -> Ask<'_>;
 }
 
 /// Open `step`, an unsigned step body, as the step of `bundle` it names, signed by one of
-/// this Machine's Devices. Returns the body, its approver, and this Machine's Cluster
+/// a key this Machine trusts. Returns the body, its approver, and this Machine's Cluster
 /// key. The caller checks the body against its request.
 ///
 /// # Errors

@@ -10,11 +10,12 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    deploy::{Creation, PayloadDigest, content_addressed},
+    deploy::{Creation, PayloadDigest, content_addressed, host_reach},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
+    scope::{Ask, Reach},
     trusted_key::TrustedKeys,
 };
 use crate::{ContainerKind, Namespace, QualifiedService, SealingPublicKey, ServiceName};
@@ -60,6 +61,15 @@ impl StepBody for ServiceVersion {
     }
     fn namespace(&self) -> Option<&Namespace> {
         Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Version {
+            namespace: &self.namespace,
+            service: &self.service,
+            forgets: self.forget_older,
+            reaches_host: false,
+            reach: Reach::none(),
+        }
     }
 }
 
@@ -125,11 +135,13 @@ pub struct VersionFacts<'a> {
     pub creation: Creation<'a>,
 }
 
-/// Every signed version that admitted a creation, never empty, and the creation's digest.
+/// Every signed version that admitted a creation, never empty, the creation's digest, and
+/// what it reaches, which each of their signers covers alone.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VersionAdmitted {
     pub by: Vec<Approved>,
     pub digest: PayloadDigest,
+    pub reach: Reach,
 }
 
 /// One signed version that admitted a creation. A key that signed several appears once
@@ -144,8 +156,10 @@ pub struct Approved {
 /// Check `versions` against the creation `facts` names. Each statement whose signature a
 /// key trusted here made, opened as a proposal step or alone, admits when it names this
 /// Cluster, Namespace and Service and the digest of the requested spec, the spec runs a
-/// content-addressed image, and a hook creation has a hook. Statements are opened in
-/// order, each charged to `budget` first, until the next costs more than is left.
+/// content-addressed image, a hook creation has a hook, and its one signer covers the
+/// whole spec: its host reach, every Sealed part it opens and every Volume it mounts.
+/// Statements are opened in order, each charged to `budget` first, until the next costs
+/// more than is left.
 ///
 /// # Errors
 /// Returns the first statement's refusal when none admits,
@@ -160,7 +174,11 @@ pub fn verify(
     facts: &VersionFacts<'_>,
     budget: &mut Budget,
 ) -> Result<VersionAdmitted, AuthorityRefusal> {
-    let digest = requested_digest(facts.namespace, facts.creation)?;
+    let Requested {
+        digest,
+        reaches_host,
+        reach,
+    } = requested(facts.namespace, facts.creation)?;
     let mut by = Vec::new();
     let mut first = None;
     let mut forget_refused = None;
@@ -171,7 +189,7 @@ pub fn verify(
             break;
         }
         opened += 1;
-        match admits(version, facts, digest) {
+        match admits(version, facts, digest, reaches_host, &reach) {
             Ok(approved) => by.push(approved),
             Err(refusal) => {
                 if claims_forget(version, facts.trusted) {
@@ -196,7 +214,7 @@ pub fn verify(
             purpose: Purpose::Workflow,
         }));
     }
-    Ok(VersionAdmitted { by, digest })
+    Ok(VersionAdmitted { by, digest, reach })
 }
 
 /// Whether `version` reads as a forget and a key trusted here signed it. Only such a
@@ -206,12 +224,29 @@ pub fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) ->
     verifications(version, trusted) > 0 && version.open().is_ok_and(|body| body.forget_older)
 }
 
+/// Whether `version` admits the creation whose spec has `digest`. Its signer alone must
+/// cover the spec: [`Cap::HostReach`] when it `reaches_host`, and a place and Volume list
+/// that hold all of `reach`.
+///
+/// [`Cap::HostReach`]: super::scope::Cap::HostReach
 fn admits(
     version: &Signed<ServiceVersion>,
     facts: &VersionFacts<'_>,
     digest: PayloadDigest,
+    reaches_host: bool,
+    reach: &Reach,
 ) -> Result<Approved, AuthorityRefusal> {
     let (body, by, cluster) = open_approval(version, facts.trusted, facts.cluster)?;
+    facts.trusted.covers(
+        &by,
+        Ask::Version {
+            namespace: &body.namespace,
+            service: &body.service,
+            forgets: body.forget_older,
+            reaches_host,
+            reach,
+        },
+    )?;
     let creation = facts.creation;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
@@ -268,12 +303,16 @@ pub fn verify_forget(
         .collect()
 }
 
+/// What a signed version must cover of a creation's spec.
+struct Requested {
+    digest: PayloadDigest,
+    reaches_host: bool,
+    reach: Reach,
+}
+
 /// The digest of the creation's spec, once its name, hook and image are ones a signed
-/// version can cover.
-fn requested_digest(
-    namespace: &Namespace,
-    creation: Creation<'_>,
-) -> Result<PayloadDigest, AuthorityRefusal> {
+/// version can cover, whether it reaches its Server's host, and what else it reaches.
+fn requested(namespace: &Namespace, creation: Creation<'_>) -> Result<Requested, AuthorityRefusal> {
     first_mismatch([
         ("a Service", &creation.spec.name == creation.service),
         (
@@ -289,8 +328,16 @@ fn requested_digest(
             creation.spec.volume_graph().born_in(namespace),
         ),
     ])?;
-    PayloadDigest::of(&creation.spec.to_requested(), namespace)
-        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })
+    let spec = creation.spec.to_requested();
+    let digest = PayloadDigest::of(&spec, namespace)
+        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
+    let reach = Reach::of(creation.kind, creation.spec)
+        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
+    Ok(Requested {
+        digest,
+        reaches_host: !host_reach(&spec).is_empty(),
+        reach,
+    })
 }
 
 /// How many signature verifications opening `signed` can cost here: one per signature
@@ -316,8 +363,7 @@ fn envelope_verifications<T>(signed: &Signed<T>, trusted: &TrustedKeys) -> usize
         .iter()
         .map(|assertion| {
             trusted
-                .passkeys
-                .iter()
+                .passkeys()
                 .filter(|passkey| passkey.passkey.credential_id == assertion.credential_id)
                 .count()
         })

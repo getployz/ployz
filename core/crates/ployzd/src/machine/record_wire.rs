@@ -35,10 +35,14 @@ pub(super) struct LocalMachineRecordWire {
     device_enforcement: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
-    /// Read one by one in [`readable_passkeys`], so an entry a newer daemon wrote never
+    /// Read one by one in [`readable`], so an entry a newer daemon wrote never
     /// stops the record from loading.
     #[serde(default)]
     passkeys: Vec<serde_json::Value>,
+    /// Read one by one in [`readable`], so an entry a newer daemon wrote never stops the
+    /// record from loading, and trusts nothing here.
+    #[serde(default)]
+    grants: Vec<serde_json::Value>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
@@ -65,7 +69,8 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.device_slots_vetted = wire.device_slots_vetted;
         record.filters_peers = wire.device_enforcement;
         record.trusted_machines = wire.trusted_machines;
-        record.passkeys = readable_passkeys(wire.passkeys);
+        record.passkeys = readable(wire.passkeys, "trusted passkey");
+        record.grants = readable(wire.grants, "CI or agent key");
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
         record.removed_keys = wire.removed_keys;
@@ -91,18 +96,19 @@ fn pins_when_none_stored(record: &LocalMachineRecord) -> PinnedAddresses {
     }
 }
 
-/// The trusted passkeys this daemon can read. One it can't, such as one with an algorithm a
-/// newer daemon added, is logged and left out: it approves nothing here, and the next save
-/// drops it.
-fn readable_passkeys(
+/// The trusted keys of one list this daemon can read. One it can't, such as a passkey with
+/// an algorithm a newer daemon added or a grant with a field it doesn't know, is logged and
+/// left out: it approves nothing here, and the next save drops it.
+fn readable<T: serde::de::DeserializeOwned>(
     entries: Vec<serde_json::Value>,
-) -> Vec<ployz_core::authority::TrustedPasskey> {
+    what: &'static str,
+) -> Vec<T> {
     entries
         .into_iter()
         .filter_map(|entry| match serde_json::from_value(entry) {
             Ok(trusted) => Some(trusted),
             Err(error) => {
-                tracing::warn!(%error, "skipped a trusted passkey this daemon can't read");
+                tracing::warn!(%error, "skipped a {what} this daemon can't read");
                 None
             }
         })

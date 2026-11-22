@@ -249,6 +249,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             token: None,
                             sealing: None,
                             founding: Default::default(),
+                            grants: Vec::new(),
                         })
                     }
                     other => panic!("unexpected Deploy Snapshot RPC: {other:?}"),
@@ -803,6 +804,7 @@ impl Resealing {
                         token: None,
                         sealing,
                         founding: Default::default(),
+                        grants: Vec::new(),
                     })
                 } else {
                     calls.lock().unwrap().push("another call");

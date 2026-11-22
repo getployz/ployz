@@ -1454,6 +1454,7 @@ mod tests {
             token: None,
             sealing: None,
             founding: Default::default(),
+            grants: Vec::new(),
         };
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
@@ -1531,6 +1532,7 @@ mod tests {
                 token: None,
                 sealing: None,
                 founding: Default::default(),
+                grants: Vec::new(),
             };
             unix_daemon(path, move |body| {
                 let details = details.clone();
@@ -1651,6 +1653,7 @@ mod tests {
             token: None,
             sealing: None,
             founding: Default::default(),
+            grants: Vec::new(),
         };
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
@@ -1764,6 +1767,7 @@ mod tests {
                             target_versions: Default::default(),
                             sealing_key: None,
                             devices: Vec::new(),
+                            grants: Vec::new(),
                         },
                     },
                     &policy,
@@ -1830,6 +1834,7 @@ mod tests {
                 token: None,
                 sealing: None,
                 founding: Default::default(),
+                grants: Vec::new(),
             };
             let observed = details.clone();
             let reached = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -1927,6 +1932,7 @@ mod tests {
                                 target_versions: Default::default(),
                                 sealing_key: None,
                                 devices: Vec::new(),
+                                grants: Vec::new(),
                             },
                         },
                         &policy,
@@ -1986,6 +1992,7 @@ mod tests {
             token: None,
             sealing: None,
             founding: Default::default(),
+            grants: Vec::new(),
         };
         assert_eq!(
             already_assigned(&details(LocalMachinePhase::Participating), &listed),
@@ -2064,6 +2071,7 @@ mod tests {
                 upgrade: None,
                 token: None,
                 sealing: local_key,
+                grants: Vec::new(),
             };
             let peers = peer_keys
                 .into_iter()
@@ -2085,6 +2093,7 @@ mod tests {
                     target_versions: Default::default(),
                     devices: Vec::new(),
                     sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
+                    grants: Vec::new(),
                 },
             };
             let identity = test_identity(&join.registration.assigned_machine);
@@ -2158,6 +2167,7 @@ mod tests {
             token: None,
             sealing: None,
             founding: Default::default(),
+            grants: Vec::new(),
         };
         for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
             assert_eq!(
