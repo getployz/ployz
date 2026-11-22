@@ -1,10 +1,11 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the automatic deploy rule,
-//! Private Access approval and join a passkey answers, and the key an install line carries.
+//! Private Access approval, join and versions a passkey answers, and the key an install line
+//! carries.
 //! All policy lives in ployz-core.
 use ployz_core::OperationId;
 use ployz_core::authority::{
     AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
-    RuleTerms, SignerKey, Timestamp,
+    RuleTerms, SignerKey, Timestamp, version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
@@ -179,6 +180,22 @@ pub fn passkey_join_step(input: &str) -> Result<String, JsError> {
     let draft = input
         .join
         .passkey_step(input.operation, input.issued_at, input.expires_at)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// One version of each Service `input` asks for, as steps of one bundle a passkey answers,
+/// as [`VersionsAsked::draft`] builds it: the bundle, each step body with what the Store
+/// records beside it, and the lines the person reads.
+///
+/// # Errors
+/// Rejects malformed input and whatever `draft` refuses, before any bundle.
+#[wasm_bindgen]
+pub fn version_steps(input: &str) -> Result<String, JsError> {
+    let input: VersionsAsked =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let draft = input
+        .draft()
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }

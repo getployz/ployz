@@ -257,6 +257,7 @@ const observeRunning = rpc(native.observeRunning);
 const allocateEnrollment = rpc(native.allocateEnrollment);
 const machineUpgradeAttemptId = rpc(native.machineUpgradeAttemptId);
 const ployzVersion = rpc(native.ployzVersion);
+const pinImages = rpc(native.pinImages);
 const agentTools = rpc(native.agentTools);
 const agentStart = rpc(native.agentStart);
 const agentResume = rpc(native.agentResume);
@@ -284,6 +285,7 @@ module.exports = {
   setVolumeCopyRefusal,
   machineUpgradeAttemptId,
   ployzVersion,
+  pinImages,
   agentTools,
   agentStart,
   agentResume,

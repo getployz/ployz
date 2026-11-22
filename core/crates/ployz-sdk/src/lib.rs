@@ -1149,6 +1149,36 @@ pub fn machine_upgrade_attempt_id(uuid: String) -> Result<String> {
         .map_err(invalid_argument)
 }
 
+/// The digest each of `tags`, images on public registries, has on its registry, asked of
+/// each registry anonymously, all at once: `tag@sha256:…`, which a person signs.
+///
+/// # Errors
+/// Rejects with the first tag that can't be pinned, naming it.
+#[napi(ts_return_type = "Promise<Array<{ tag: string; image: string }>>")]
+pub async fn pin_images(tags: Vec<String>) -> Result<serde_json::Value> {
+    let mut lookups = tokio::task::JoinSet::new();
+    for tag in tags {
+        lookups.spawn(async move {
+            let pinned = ployz::pin_public(&tag).await;
+            (tag, pinned)
+        });
+    }
+    let mut pinned = Vec::new();
+    while let Some(joined) = lookups.join_next().await {
+        let (tag, image) = joined.map_err(|error| Error::from_reason(error.to_string()))?;
+        let image = image.map_err(|error| match error {
+            ployz::PinError::NotATag { .. } | ployz::PinError::NeedsCredentials { .. } => {
+                invalid_argument(error)
+            }
+            ployz::PinError::TimedOut { .. } | ployz::PinError::Unread { .. } => {
+                rpc_to_napi(RpcError::unavailable(error.to_string()))
+            }
+        })?;
+        pinned.push(serde_json::json!({ "tag": tag, "image": image.as_str() }));
+    }
+    Ok(serde_json::Value::Array(pinned))
+}
+
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]
