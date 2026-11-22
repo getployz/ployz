@@ -1,17 +1,16 @@
 //! Admission and lifetime of one connection-scoped remote Build.
 
 mod queue;
-mod sealed;
 pub(crate) use queue::Runner;
 
 use crate::logs::RpcStream;
+use crate::sealed_env::{SealedRecord, SealingKeyStore};
 use ployz_build::{
     Admission, BuildError, HostPolicy, Output, Progress, Stage,
     remote::{self, Definition, Event, Input, Outcome},
 };
-use ployz_core::{BuildConcurrency, MachineId, OpaquePayload};
+use ployz_core::{BuildConcurrency, MachineId, OpaquePayload, OpenedSealed};
 use std::{
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -41,21 +40,13 @@ pub(crate) fn start(
     local: crate::machine::LocalMachine,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     runner: std::sync::Arc<Runner>,
-    sealing_key_dir: Option<PathBuf>,
+    sealing: SealingKeyStore,
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(
-            local,
-            requests,
-            &events,
-            runner,
-            state.clone(),
-            sealing_key_dir,
-        )
-        .await;
+        let outcome = attempt(local, requests, &events, runner, state.clone(), sealing).await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -120,7 +111,7 @@ async fn attempt(
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     runner: Arc<Runner>,
     state: Arc<AttemptState>,
-    sealing_key_dir: Option<PathBuf>,
+    sealing: SealingKeyStore,
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
     let request = match start {
@@ -245,7 +236,7 @@ async fn attempt(
                     installation,
                 },
                 policy,
-                sealing_key_dir.as_deref(),
+                &sealing,
                 &output,
                 &observed,
             ),
@@ -339,7 +330,7 @@ fn receive_and_execute(
     mut source: mpsc::Receiver<OpaquePayload>,
     admission: ExecutionAdmission,
     policy: HostPolicy,
-    sealing_key_dir: Option<&Path>,
+    sealing: &SealingKeyStore,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
@@ -374,7 +365,7 @@ fn receive_and_execute(
     }
     let sealed = match upload.private_file(ployz_build::capture::SEALED_RECORD) {
         Ok(None) => None,
-        Ok(Some(record)) => match sealed::open(&record, sealing_key_dir) {
+        Ok(Some(record)) => match open_sealed(&record, sealing) {
             Ok(opened) => {
                 let scrub = ployz_build::OutputScrub::new(&opened);
                 Some((opened, scrub))
@@ -471,6 +462,16 @@ fn joined(result: Result<Outcome, tokio::task::JoinError>) -> Outcome {
         message: "Build task failed; termination cannot be confirmed".into(),
     })
 }
+/// Open the Build's Sealed record. The message names a variable at most, never what
+/// it holds.
+fn open_sealed(record: &[u8], sealing: &SealingKeyStore) -> Result<OpenedSealed, String> {
+    let record: SealedRecord = serde_json::from_slice(record)
+        .map_err(|_| "the Build's sealed values are not a valid record".to_owned())?;
+    sealing
+        .open_for_build(&record)
+        .map_err(|error| error.to_string())
+}
+
 fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
         work: Default::default(),

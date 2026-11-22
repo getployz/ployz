@@ -2,8 +2,9 @@
 //! sign-in; and the Cloud and Organization it acts in.
 
 use super::{org::listed, token::TokenKind};
-use crate::cloud_login::{self, CredentialStore, LoginError, Organization, Secret, SignedIn};
-use crate::cloud_origin::CloudOrigin;
+use crate::cloud;
+use crate::cloud::login::{CredentialStore, LoginError, Organization, Secret, SignedIn};
+use crate::cloud::origin::CloudOrigin;
 
 /// What a Cloud call acts with.
 pub(crate) enum Credential {
@@ -32,6 +33,11 @@ impl Credential {
             Self::Device(signed_in) => &signed_in.cloud,
             Self::Token { cloud, .. } => cloud,
         }
+    }
+
+    /// [`Self::cloud`] as a [`CloudOrigin`], for a link a person opens.
+    pub(crate) fn origin(&self) -> CloudOrigin {
+        CloudOrigin::new(self.cloud())
     }
 
     /// Cloud refused this token: the refusal names where it came from and its fix.
@@ -65,7 +71,7 @@ pub(crate) async fn credential(
     cloud: Option<String>,
 ) -> Result<Credential, LoginError> {
     let Some(token) = pasted(token) else {
-        return cloud_login::signed_in(store).await.map(Credential::Device);
+        return cloud::login::signed_in(store).await.map(Credential::Device);
     };
     if reqwest::header::HeaderValue::from_str(&token).is_err() {
         return Err(LoginError::TokenMalformed);
@@ -177,7 +183,7 @@ pub(crate) async fn acting_as(credential: &Credential) -> Result<Acting, LoginEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::testing::signed_in_store;
+    use crate::cloud::account::testing::signed_in_store;
 
     #[test]
     fn a_device_acts_where_it_signed_in_and_a_token_where_the_cloud_url_says() {

@@ -6,7 +6,7 @@ use std::{
 };
 
 use super::credential::{Credential, TokenFrom};
-use crate::cloud_login::{CredentialStore, LoginError, Secret};
+use crate::cloud::login::{CredentialStore, LoginError, Secret};
 
 /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
 pub(crate) fn fake_cloud(

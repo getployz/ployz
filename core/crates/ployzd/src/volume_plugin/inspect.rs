@@ -31,13 +31,6 @@ pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option
     copy
 }
 
-pub(super) fn internal(error: PluginError) -> RpcError {
-    match error.into_capacity() {
-        Ok(error) => error.into_rpc_error(),
-        Err(error) => RpcError::internal(error.to_string()),
-    }
-}
-
 /// Every snapshot of `dataset` as `name<TAB>guid<TAB>creation`, newest first by
 /// transaction group (creation time ties within a second).
 fn snapshot_listing(dataset: &str) -> [&str; 11] {
@@ -289,8 +282,8 @@ pub(super) async fn inspect(
     Json(request): Json<InspectVolumeCopyRequest>,
 ) -> Json<std::result::Result<VolumeCopyView, RpcError>> {
     let result = match request.name.as_str().parse::<VolumeName>() {
-        Ok(name) => storage.inspect_copy(&name).await.map_err(internal),
-        Err(error) => Err(internal(PluginError::from(error))),
+        Ok(name) => storage.inspect_copy(&name).await.map_err(RpcError::from),
+        Err(error) => Err(error.into()),
     };
     Json(result)
 }

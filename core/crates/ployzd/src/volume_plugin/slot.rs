@@ -13,15 +13,10 @@ use tokio::process::Command;
 
 use super::{
     Dataset, VolumeName, VolumeStorage,
-    inspect::internal,
     marks::{Mark, Write},
     storage::HeldMutation,
     transfer::{Stop, ZfsChild},
 };
-
-pub(super) fn name(name: &ployz_core::DockerVolumeName) -> Result<VolumeName, RpcError> {
-    VolumeName::try_from(name).map_err(|error| internal(error.into()))
-}
 
 /// The arguments of the `zfs receive` that fills a slot's copy `fs` bounded by `bound`:
 /// unmounted, resumable, read-only.
@@ -154,8 +149,7 @@ impl VolumeStorage {
     ) -> Result<(), RpcError> {
         for snapshot in snapshots {
             self.zfs(&["destroy", &format!("{dataset}@{}", snapshot.name)])
-                .await
-                .map_err(internal)?;
+                .await?;
         }
         Ok(())
     }

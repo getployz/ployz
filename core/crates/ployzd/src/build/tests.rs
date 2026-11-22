@@ -793,7 +793,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         fixture.local.clone(),
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
-        None,
+        crate::sealed_env::SealingKeyStore::default(),
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),

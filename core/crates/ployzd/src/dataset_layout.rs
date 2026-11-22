@@ -73,6 +73,12 @@ impl VolumeName {
         &self.0
     }
 
+    /// The name as Core carries it.
+    #[must_use]
+    pub fn wire(&self) -> ployz_core::DockerVolumeName {
+        ployz_core::DockerVolumeName::parse(self.0.clone()).expect("a VolumeName is never empty")
+    }
+
     /// Where Docker mounts this Volume's writer root.
     #[must_use]
     pub fn mountpoint(&self) -> String {

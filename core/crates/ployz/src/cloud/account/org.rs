@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     calls::{approved_answer, call},
     credential::Credential,
-    http::{self, Effect},
     reply::{StoreCallError, answer},
     token::ServerClears,
 };
-use crate::cloud_login::{CredentialStore, LoginError, Organization};
+use crate::cloud::http::{self, Effect};
+use crate::cloud::login::{CredentialStore, LoginError, Organization};
 
 /// One Organization the credential may act in.
 #[derive(Debug, Serialize, Deserialize)]
@@ -169,11 +169,11 @@ pub(crate) async fn remove_organization(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::{
+    use crate::cloud::account::{
         credential, refusal,
         testing::{signed_in_store, token},
     };
-    use crate::{cloud_account::testing::fake_cloud, cloud_login};
+    use crate::{cloud, cloud::account::testing::fake_cloud};
 
     #[tokio::test]
     async fn org_use_moves_the_device_among_its_own_organizations() {
@@ -207,7 +207,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(organization.slug, "beta");
-        let stored = cloud_login::signed_in(&store).await.unwrap();
+        let stored = cloud::login::signed_in(&store).await.unwrap();
         assert_eq!(stored.organization.id, "o2");
 
         // A listed Organization goes by its ID, so a slug Cloud no longer knows still moves.
@@ -263,7 +263,7 @@ mod tests {
         };
         assert!(refusal(body.as_bytes()).is_some());
         assert_eq!(
-            cloud_login::signed_in(&store)
+            cloud::login::signed_in(&store)
                 .await
                 .unwrap()
                 .organization
@@ -276,7 +276,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(made.slug, "acme-corp-1a2b3c4d");
-        let stored = cloud_login::signed_in(&store).await.unwrap();
+        let stored = cloud::login::signed_in(&store).await.unwrap();
         assert_eq!(
             stored.organization,
             Organization {

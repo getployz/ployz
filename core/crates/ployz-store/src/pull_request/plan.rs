@@ -19,10 +19,7 @@ pub(crate) fn set_plan(
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
     // Serialize plan writes per Project.
-    tx.execute(
-        "UPDATE config_project SET name = name WHERE id = ?1",
-        &[project.id.as_str().into()],
-    )?;
+    scope::lock_project(tx, &project.id)?;
     let repositories = repositories(tx, &project.id)?;
     let Some(Repository {
         id: repository_id, ..

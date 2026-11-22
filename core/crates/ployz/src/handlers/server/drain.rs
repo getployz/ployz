@@ -15,8 +15,9 @@ use serde_json::{Value, json};
 
 use super::target;
 use crate::approval;
-use crate::cloud_account::{self, Credential};
-use crate::cluster::KeptVersions;
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::deploy::{Approvals, KeptVersions};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -60,8 +61,8 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     crate::handlers::runtime()?.block_on(async {
         let mut client = route::connect(matches, context).await?;
-        let mut client = match kept {
-            Some(kept) => client.with_kept_versions(kept),
+        let approvals = match kept {
+            Some(kept) => Approvals::kept(kept),
             None => {
                 let unsigned = crate::drain::needing_versions(&mut client, &target, &scope)
                     .await
@@ -69,12 +70,12 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
                 if !unsigned.is_empty() {
                     return Err(unsigned_moves(matches, selector, &unsigned));
                 }
-                client
+                Approvals::default()
             }
         };
         let cancellation = crate::cancellation::on_ctrl_c();
         let report = client
-            .drain(&target, &scope, &cancellation, &mut show)
+            .drain(&target, &scope, approvals, &cancellation, &mut show)
             .await
             .map_err(refusal)?;
         render(&report)
@@ -95,7 +96,7 @@ fn through_cloud(
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
-            cloud_account::start_run(
+            cloud::account::start_run(
                 credential,
                 Method::POST,
                 &format!("servers/{}/drain", machine.id),
@@ -109,7 +110,7 @@ fn through_cloud(
     struct Finished {
         report: DrainReport,
     }
-    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
+    let settled = runtime.block_on(cloud::account::follow_operation::<Finished>(
         credential,
         &format!("server-drains/{id}"),
         &format!("Draining Server {}", machine.name),

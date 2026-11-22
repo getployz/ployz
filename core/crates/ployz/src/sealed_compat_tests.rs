@@ -140,9 +140,13 @@ async fn a_sealed_value_reaches_a_cluster_only_when_every_machine_can_keep_it_se
             ensure_calls,
         } = fleet(b_claims).await;
 
-        let result = client
-            .ensure_unsettled(&target, want(spec(sealed)), None)
-            .await;
+        let result = crate::deploy::CopyLifecycle::ensure_unsettled(
+            &client,
+            &target,
+            want(spec(sealed)),
+            None,
+        )
+        .await;
 
         assert_eq!(
             ensure_calls.load(Ordering::SeqCst),
@@ -189,10 +193,14 @@ async fn a_sealed_value_is_refused_when_the_target_shows_no_capability_evidence(
             ensure_calls,
         } = listing(machines).await;
 
-        let error = client
-            .ensure_unsettled(&target, want(spec(true)), None)
-            .await
-            .unwrap_err();
+        let error = crate::deploy::CopyLifecycle::ensure_unsettled(
+            &client,
+            &target,
+            want(spec(true)),
+            None,
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(ensure_calls.load(Ordering::SeqCst), 0);
         assert_eq!(error.code, RpcErrorCode::Unsupported);

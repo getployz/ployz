@@ -7,11 +7,11 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use super::{
     credential::Credential,
-    http::{self, CALL_DEADLINE, Effect, Via},
     reply::{StoreCallError, answer, refusal, store_answer, stored},
 };
-use crate::cloud_login::LoginError;
-use crate::cloud_reply::{EndedCode, RunState};
+use crate::cloud::http::{self, CALL_DEADLINE, Effect, Via};
+use crate::cloud::login::LoginError;
+use crate::cloud::reply::{EndedCode, RunState};
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
 /// for one, and return the run's id.
@@ -270,7 +270,7 @@ pub(crate) async fn call<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::testing::{fake_cloud, token};
+    use crate::cloud::account::testing::{fake_cloud, token};
 
     #[tokio::test]
     async fn a_reads_refusal_reaches_the_caller() {

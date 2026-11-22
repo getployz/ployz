@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::cloud;
 use crate::{
-    cloud_account::{self, Credential, Settled, StoreCallError},
-    cloud_reply::{self, EndedCode},
+    cloud::account::{Credential, Settled, StoreCallError},
+    cloud::reply::EndedCode,
     cluster::Client,
     connect::ConnectError,
     ingress::Followed,
@@ -243,7 +244,7 @@ fn through_cloud(
     let mut skipped = Vec::new();
     for (index, (machine, selector)) in servers.iter().zip(selectors).enumerate() {
         let (id, name) = (machine.id, machine.name.as_str());
-        let started = runtime.block_on(cloud_account::start_run(
+        let started = runtime.block_on(cloud::account::start_run(
             credential,
             Method::POST,
             &format!("servers/{id}/upgrade"),
@@ -252,7 +253,7 @@ fn through_cloud(
         ));
         let run = match started {
             Ok(run) => run,
-            Err(StoreCallError::Refused(refused)) if cloud_reply::channel_mismatch(&refused) => {
+            Err(StoreCallError::Refused(refused)) if cloud::reply::channel_mismatch(&refused) => {
                 let along = refused
                     .details
                     .get("channel")
@@ -277,7 +278,7 @@ fn through_cloud(
             }
         };
         crate::ui::stream(format_args!("Upgrading Server {name}."));
-        let followed = runtime.block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
+        let followed = runtime.block_on(cloud::account::follow_run::<Settled<CloudUpgrade>>(
             credential,
             &format!("server-upgrades/{run}"),
             &format!("Upgrading Server {name}"),

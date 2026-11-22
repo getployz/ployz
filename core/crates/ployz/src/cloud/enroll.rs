@@ -4,11 +4,13 @@ use std::{net::IpAddr, time::Duration};
 
 use ployz_core::{
     AdvertisedEndpoint, CloudEnrollToken, MachineId, MachineName, MachineToken,
-    ManagementCapability, RecoverySeed, Registered, SealingKeyBackup, SealingPublicKey,
-    StorageChoice, WireGuardPublicKey,
+    ManagementCapability, RecoverySeed, Registered, RpcErrorCode, SealingKeyBackup,
+    SealingPublicKey, StorageChoice, WireGuardPublicKey,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
+
+use crate::coded::Coded;
 
 pub(crate) use ployz_core::EnrollStage;
 
@@ -17,8 +19,6 @@ pub(crate) mod recovery_compat;
 const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 1;
 const RECOVERY_SUPPORT: u8 = 1;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long an enroll request waits for Cloud's answer. Cloud reads its database
 /// unbounded, then may spend 10s reaching the Cluster, so the client's 15s default
 /// would give up on an enrollment Cloud goes on to finish. It ends inside
@@ -74,9 +74,9 @@ pub(crate) enum Error {
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("{}", crate::cloud_login::answered("enroll", *.status, .body))]
+    #[error("{}", crate::cloud::reply::answered("enroll", *.status, .body))]
     Status { status: u16, body: String },
-    #[error("{}", crate::cloud_login::answered("enroll", 409, .body))]
+    #[error("{}", crate::cloud::reply::answered("enroll", 409, .body))]
     CodedConflict { body: String },
     #[error(
         "Cloud no longer takes this enrollment token: it is unknown, used or expired, or this Organization's Servers were forgotten; make a new one with ployz server add --command"
@@ -100,6 +100,23 @@ pub(crate) enum Error {
         "Cloud can't reach this Server through the relay or directly. Allow https to relay.ployz.dev from this Server, and from Cloud if you host it yourself, then try again."
     )]
     CloudCantReach,
+}
+
+impl Coded for Error {
+    fn code(&self) -> RpcErrorCode {
+        match self {
+            Error::Timeout(_)
+            | Error::Connect(_)
+            | Error::Http(_)
+            | Error::RetrySameCommand { .. }
+            | Error::CloudCantReach
+            | Error::FounderWait => RpcErrorCode::Unavailable,
+            Error::Json(_) => RpcErrorCode::Internal,
+            Error::TokenRefused => RpcErrorCode::Unauthenticated,
+            Error::Status { status, .. } => crate::cloud::reply::status_code(*status),
+            Error::CodedConflict { .. } => RpcErrorCode::Conflict,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -645,7 +662,7 @@ async fn post_callback(
                     | Error::RetrySameCommand { .. }
                     | Error::CloudCantReach) => return error,
                 };
-                if crate::cloud_reply::message(body.as_bytes())
+                if crate::cloud::reply::message(body.as_bytes())
                     .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
                 {
                     return Error::CloudCantReach;
@@ -768,12 +785,11 @@ fn coded_cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
     {
         return None;
     }
-    cloud_refusal(&serde_json::json!({"error": said}).to_string(), sent)
+    sentence(&said, sent)
 }
 
 /// Cloud's refusal sentence, when `body` is exactly the `{"error": "..."}` its enroll
-/// routes answer with, short, free of control and direction characters, and holding no
-/// piece of anything `sent` nor anything that reads as an encoded value.
+/// routes answer with and its sentence passes [`sentence`].
 fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
     let serde_json::Value::Object(fields) = serde_json::from_str(body).ok()? else {
         return None;
@@ -783,9 +799,17 @@ fn cloud_refusal(body: &str, sent: &[String]) -> Option<String> {
     else {
         return None;
     };
+    if name != "error" {
+        return None;
+    }
+    sentence(&said, sent)
+}
+
+/// `said`, trimmed, when it is short, free of control and direction characters, and holds
+/// no piece of anything `sent` nor anything that reads as an encoded value.
+fn sentence(said: &str, sent: &[String]) -> Option<String> {
     let said = said.trim();
-    (name == "error"
-        && !said.is_empty()
+    (!said.is_empty()
         && said.chars().count() <= CLOUD_REFUSAL_MAX
         && !said.chars().any(|c| c.is_control() || invisible(c))
         && !echoes(said, sent))
@@ -857,9 +881,7 @@ fn retry_error(
 
 fn http_client() -> Result<reqwest::Client, Error> {
     // Bound each request; `not_yet` polling may legitimately outlive one request.
-    reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
+    crate::cloud::http::builder(crate::cloud::http::REQUEST_TIMEOUT)
         .build()
         .map_err(classify_http)
 }
@@ -1021,7 +1043,7 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
-    use crate::cloud_origin::CloudOrigin;
+    use crate::cloud::origin::CloudOrigin;
     use ployz_core::error_chain;
 
     #[tokio::test]
@@ -1123,7 +1145,7 @@ mod tests {
                 if path == 0 && !(*status == 409 && *code == Some("CONFLICT")) {
                     assert_eq!(
                         error.to_string(),
-                        crate::cloud_login::answered(
+                        crate::cloud::reply::answered(
                             "enroll",
                             *status,
                             &String::from_utf8_lossy(answer)
@@ -1998,7 +2020,7 @@ mod tests {
                 // The request has reached the server, so its timeout is armed.
                 // Advance only that wait; use real time again for the retry's I/O.
                 tokio::time::pause();
-                tokio::time::advance(REQUEST_TIMEOUT).await;
+                tokio::time::advance(crate::cloud::http::REQUEST_TIMEOUT).await;
                 tokio::time::resume();
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();

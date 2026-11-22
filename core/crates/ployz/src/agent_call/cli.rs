@@ -9,9 +9,10 @@ use ployz_core::Hint;
 
 use super::agent;
 use super::{CallError, CallReport, Client, Kind, Started, Surface};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::CredentialStore;
-use crate::cloud_origin::CloudOrigin;
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::cloud::login::CredentialStore;
+use crate::cloud::origin::CloudOrigin;
 use crate::failure::Failure;
 use crate::handlers::verbs::{self, Surface as VerbSurface};
 
@@ -167,8 +168,8 @@ fn quoted(arg: String) -> String {
 /// the sign-in stored beside the config.
 async fn credential(config: &std::path::Path) -> Option<Credential> {
     let store = CredentialStore::beside(config);
-    match cloud_account::env_token() {
-        Some(token) => cloud_account::credential(&store, Some(token), CloudOrigin::named_by_env())
+    match cloud::account::env_token() {
+        Some(token) => cloud::account::credential(&store, Some(token), CloudOrigin::named_by_env())
             .await
             .ok(),
         None => store.stored_sign_in().map(Credential::Device),

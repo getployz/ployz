@@ -5,7 +5,7 @@ use ployz_testkit::fake_fleet::{FakeFleet, FleetFile, Scenario};
 use serde_json::json;
 
 use super::*;
-use crate::cloud_login::Secret;
+use crate::cloud::login::Secret;
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 
 const ORGANIZATION: &str = "org-1";
@@ -18,13 +18,13 @@ fn token(cloud: String) -> Credential {
     Credential::Token {
         cloud,
         token: Secret::new("ployz_secret".to_owned()),
-        from: crate::cloud_account::TokenFrom::Env,
+        from: crate::cloud::account::TokenFrom::Env,
     }
 }
 
 /// A Cloud whose Organization backs up `backed_up` as its Cluster's key.
 fn cloud(backed_up: SealingPublicKey) -> Credential {
-    token(crate::cloud_account::testing::fake_cloud(
+    token(crate::cloud::account::testing::fake_cloud(
         move |route, _| match route {
             "GET /api/cli/organizations" => (
                 200,

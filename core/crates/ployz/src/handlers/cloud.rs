@@ -1,5 +1,6 @@
 //! Cloud enrollment behind `ployz server add`, and `ployz cloud reset`.
 
+use crate::cloud;
 use crate::cluster::{Call, Deadline, Wait};
 use std::{future::Future, time::Duration};
 
@@ -17,11 +18,11 @@ use ployz_core::{
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::server::{AskedPolicy, EnrollPlan};
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cloud_enroll::{
-    self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
+use crate::cloud::enroll::{
+    CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
     InitializeMode, Join, Outcome, Recovery,
 };
-use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
+use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::provisioning::Installation;
@@ -372,7 +373,7 @@ async fn enroll_current_identity(
         crate::handlers::server::inspect_token(client, token_request).await?;
     let initial_policy = asked.settle(existing(&details), |args| plan.reach().rerun(args))?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
-    let recovery_supported = cloud_enroll::recovery_compat::supported(client).await?;
+    let recovery_supported = cloud::enroll::recovery_compat::supported(client).await?;
     let identity = EnrollIdentity::from_machine_token(
         name.clone(),
         &machine_token,
@@ -381,7 +382,7 @@ async fn enroll_current_identity(
         recovery_supported,
     );
     progress(EnrollStage::Enrolling);
-    let outcome = match cloud_enroll::enroll(command, url, token, &identity, progress).await {
+    let outcome = match cloud::enroll::enroll(command, url, token, &identity, progress).await {
         Err(error)
             if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
         {
@@ -411,7 +412,7 @@ async fn enroll_current_identity(
                     super::device::JoinEntry::Relayed
                 };
                 if super::device::sign_waiting_join(&mut entry, &config, &expected, from).await? {
-                    cloud_enroll::enroll(command, url, token, &identity, progress).await?
+                    cloud::enroll::enroll(command, url, token, &identity, progress).await?
                 } else {
                     return Err(error.into());
                 }
@@ -561,7 +562,7 @@ where
     if relays {
         let confirmation =
             confirmation.ok_or_else(crate::handlers::server::confirmation_missing)?;
-        cloud_enroll::enroll(
+        cloud::enroll::enroll(
             command,
             enroll_url,
             token,
@@ -591,7 +592,7 @@ where
         .await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
-    cloud_enroll::publish(
+    cloud::enroll::publish(
         command,
         callback_url,
         token,
@@ -600,7 +601,7 @@ where
         &capability,
     )
     .await?;
-    cloud_enroll::callback(
+    cloud::enroll::callback(
         command,
         callback_url,
         token,
@@ -645,7 +646,7 @@ async fn refuse_founding(
     found: &str,
     resettable: bool,
 ) -> Error {
-    let released = cloud_enroll::release(
+    let released = cloud::enroll::release(
         &CloudOrigin::new(cloud_url).callback_url(),
         token,
         machine_id,
@@ -871,7 +872,7 @@ where
                 command.again()
             ))
         })?;
-    cloud_enroll::publish(
+    cloud::enroll::publish(
         command,
         &CloudOrigin::new(cloud_url).callback_url(),
         token,
@@ -880,7 +881,7 @@ where
         &capability,
     )
     .await?;
-    let reply = cloud_enroll::callback(
+    let reply = cloud::enroll::callback(
         command,
         &CloudOrigin::new(cloud_url).callback_url(),
         token,
@@ -1015,7 +1016,7 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    let storage = cloud_enroll::storage_with_requested_device(storage, &plan.shaping().storage());
+    let storage = cloud::enroll::storage_with_requested_device(storage, &plan.shaping().storage());
     crate::provisioning::announce_storage(&storage);
     if storage.choice() != StorageChoice::Zfs {
         return Ok(client);
@@ -1309,12 +1310,12 @@ pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
         )
         .hint(Hint::Retry("ployz cloud reset --yes".into())));
     }
-    let store = crate::cloud_login::CredentialStore::beside(&config_path(matches)?);
+    let store = crate::cloud::login::CredentialStore::beside(&config_path(matches)?);
     runtime()?.block_on(async {
         // PLOYZ_TOKEN or this device's sign-in, as every Cloud command: one Organization.
-        let credential = crate::cloud_account::from_env(&store).await?;
-        let organization = crate::cloud_account::acting_in(&credential).await?;
-        let _: serde_json::Value = crate::cloud_account::call(
+        let credential = crate::cloud::account::from_env(&store).await?;
+        let organization = crate::cloud::account::acting_in(&credential).await?;
+        let _: serde_json::Value = crate::cloud::account::call(
             &credential,
             reqwest::Method::POST,
             "cloud/reset",
@@ -1709,7 +1710,7 @@ mod tests {
         let matches = &EnrollPlan::from_matches(&root);
         let token = CloudEnrollToken::parse("pmet_resumed_enroll").unwrap();
         let pairing = CloudPairing {
-            secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
+            secret: cloud::enroll::PairingCredential::parse("pairing").unwrap(),
         };
         let policy = ployz_core::InitialMachinePolicy::default();
         let mut report = SetupReport::start();
@@ -1869,7 +1870,7 @@ mod tests {
             let matches = &EnrollPlan::from_matches(&root);
             let token = CloudEnrollToken::parse("pmet_unacknowledged_enroll").unwrap();
             let pairing = CloudPairing {
-                secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
+                secret: cloud::enroll::PairingCredential::parse("pairing").unwrap(),
             };
             let policy = ployz_core::InitialMachinePolicy {
                 accepts_ingress: false,
@@ -2080,7 +2081,7 @@ mod tests {
                 .collect();
             let join = Join {
                 pairing: CloudPairing {
-                    secret: cloud_enroll::PairingCredential::parse("ppair_fake").unwrap(),
+                    secret: cloud::enroll::PairingCredential::parse("ppair_fake").unwrap(),
                 },
                 storage: StorageChoice::None.into(),
                 registration: ployz_core::Registered {

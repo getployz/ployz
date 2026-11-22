@@ -11,7 +11,7 @@ fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
         "Server initialized; ingress deployment incomplete."
     );
     let cloud = crate::handlers::cloud::ingress_incomplete(
-        crate::cloud_enroll::Command::ServerAdd,
+        crate::cloud::enroll::Command::ServerAdd,
         failure(),
     );
     assert_eq!(
@@ -19,7 +19,7 @@ fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
         "Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it."
     );
     let enrolled = crate::handlers::cloud::ingress_incomplete(
-        crate::cloud_enroll::Command::ServerEnroll,
+        crate::cloud::enroll::Command::ServerEnroll,
         failure(),
     );
     assert_eq!(

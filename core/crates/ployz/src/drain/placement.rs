@@ -34,7 +34,7 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::{
-    DeploySnapshot, MachineOperations, MoveEnd, MoveError, destinations, health_error,
+    Approved, DeploySnapshot, MachineOperations, MoveEnd, MoveError, destinations, health_error,
     is_active_runtime, move_container, place_one, region_waits,
 };
 
@@ -389,12 +389,12 @@ pub(crate) trait ConvergenceClient {
     ) -> Result<Self::Moved, MoveFailure>;
 }
 
-impl ConvergenceClient for Client {
+impl ConvergenceClient for Approved {
     type Moved = Moving;
 
     async fn observe(&mut self) -> Result<DeploySnapshot, ConnectError> {
-        let machines = self.machines().await?;
-        self.deploy_snapshot(machines).await
+        let machines = self.client.machines().await?;
+        self.client.deploy_snapshot(machines).await
     }
 
     async fn move_one(
@@ -984,7 +984,7 @@ pub(crate) async fn retire_old<C: MachineOperations>(
 }
 
 async fn move_one(
-    client: &mut Client,
+    client: &Approved,
     snapshot: &DeploySnapshot,
     container: &ContainerObservation,
     cancellation: &CancellationToken,
@@ -1019,19 +1019,19 @@ async fn move_one(
     })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
-    let image_id = image_id(client, &container.container_id, &from, &to).await?;
+    let image_id = image_id(&client.client, &container.container_id, &from, &to).await?;
     let image = ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
         from: from.clone(),
         to: to.clone(),
         detail: error_chain::row(&error),
     })?;
     crate::image::copy_running_image(
-        client,
+        &client.client,
         source,
         dest,
         &spec.container.image,
         &image_id,
-        client.image_naming(&dest.id),
+        client.client.image_naming(&dest.id),
     )
     .await
     .map_err(|error| MoveFailure::CopyImage {
@@ -1042,7 +1042,7 @@ async fn move_one(
     let old = Copy::observed(container);
     let known = known(snapshot);
     let relocated = relocate(
-        &*client,
+        client,
         &container.namespace,
         (spec, &image),
         &dest.id,
@@ -1076,7 +1076,7 @@ fn known(snapshot: &DeploySnapshot) -> Vec<MachineRef> {
 /// A move whose replacement is In: `old` retires once every proxy listed the replacement,
 /// and otherwise keeps serving beside it.
 fn moving(
-    client: &Client,
+    client: &Approved,
     (from, to): (MachineRef, MachineRef),
     old: Copy,
     known: Vec<MachineRef>,

@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use super::*;
-use crate::cloud_login::{CredentialStore, LoginError, Secret};
+use crate::cloud::http::{Via, revision_seen};
+use crate::cloud::login::{CredentialStore, LoginError, Secret};
 use crate::failure::Failure;
 
 const STATUSES: [u16; 7] = [200, 401, 403, 404, 409, 413, 500];
@@ -174,7 +175,7 @@ fn exits(error: Failure) -> String {
 fn login(error: LoginError) -> String {
     let described = format!(
         "{error:?} | {error} | code {:?}",
-        crate::failure::login_code(&error)
+        crate::coded::Coded::code(&error)
     );
     format!("{described} | {}", exits(Failure::from(error)))
 }

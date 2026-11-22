@@ -8,7 +8,6 @@ use ployz_core::{
     PlacementAdmission, PlacementRefusal, ResolvedServiceSpec, admit_placement,
 };
 
-use super::limits::is_running;
 use super::{ContainerRuntime, Error, require_eligible};
 
 impl ContainerRuntime {
@@ -34,12 +33,7 @@ impl ContainerRuntime {
     ) -> Result<ContainerPlacementUpdated, Error> {
         let mut config_operation = self.specs.config_operation().await;
         let inspected = self.observation().ensure_managed(container_id).await?;
-        let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .ok_or(Error::NotManaged)?;
-        let labels = ServiceLabels::parse(labels)?;
+        let labels = ServiceLabels::parse(inspected.labels().ok_or(Error::NotManaged)?)?;
         if labels.kind != ContainerKind::ServiceContainer {
             return Err(Error::NotAServiceContainer(*container_id));
         }
@@ -60,7 +54,7 @@ impl ContainerRuntime {
             PlacementAdmission::Recorded => return Ok(updated),
             PlacementAdmission::Record => {}
         }
-        if !is_running(&inspected) {
+        if !inspected.process_alive() {
             return Err(refused(PlacementRefusal::NotRunning));
         }
         let storage = if spec.volume_graph().has_mounted_provisioned_volume() {

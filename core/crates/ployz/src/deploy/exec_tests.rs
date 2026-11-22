@@ -1509,6 +1509,7 @@ impl DeployOperations for Scripted {
         &self,
         machine_id: &MachineId,
         _spec: &ResolvedServiceSpec,
+        _auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ImagePulled, RpcError> {
         self.pulled.lock().unwrap().insert(*machine_id);
         self.pull_error.clone().map_or_else(

@@ -28,7 +28,7 @@ impl LocalDocker {
     pub(super) async fn bridge(&self) -> Result<Bridge, Error> {
         let network = self
             .client
-            .inspect_network(super::DOCKER_NETWORK_NAME, None)
+            .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
             .await?;
         let configs = network
             .ipam
@@ -46,7 +46,7 @@ impl LocalDocker {
                     .all(true)
                     .filters(&HashMap::from([(
                         "network",
-                        vec![super::DOCKER_NETWORK_NAME],
+                        vec![crate::network::DOCKER_NETWORK_NAME],
                     )]))
                     .build(),
             ))
@@ -54,7 +54,7 @@ impl LocalDocker {
         Ok(Bridge {
             capacity: BridgeEndpointCapacity::new(usable_endpoints, containers.len() as u64),
             subnet,
-            taken: super::bridge_address::taken(&containers),
+            taken: crate::network::bridge::address::taken(&containers),
         })
     }
 

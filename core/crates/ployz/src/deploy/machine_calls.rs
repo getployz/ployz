@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::cluster::{Call, Deadline};
+use std::sync::Arc;
+
+use crate::cluster::{Call, Carried, Deadline};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 use ployz_core::{
     ContainerDetails, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerNow,
@@ -9,11 +11,12 @@ use ployz_core::{
     IngressDoorsSet, InspectContainerRequest, ListContainersRequest, MachineFailure, MachineId,
     MachineName, MachineTarget, MembershipObservation, Namespace, ObservationGap,
     ObservationGapReason, ObservationKind, PrivateAccessSet, QualifiedService, ReadRoutesRequest,
-    RemoveVolumeRequest, ResolvedServiceSpec, RoutesRead, RpcError, RunTarget,
+    RegistryAuth, RemoveVolumeRequest, ResolvedServiceSpec, RoutesRead, RpcError, RunTarget,
     SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest,
     UpdateContainerPlacementRequest, op,
 };
 
+use super::approvals::Approvals;
 use super::progress::Progress;
 
 mod set_each;
@@ -175,11 +178,13 @@ pub(crate) trait DeployOperations: Session {
         spec: &ResolvedServiceSpec,
     ) -> Result<bool, RpcError>;
     /// Make the image `spec` runs present on `machine_id`, pulled as its policy
-    /// asks, before any Container changes, and answer what the Machine reports of it.
+    /// asks with `auth`, before any Container changes, and answer what the Machine
+    /// reports of it.
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
+        auth: Option<RegistryAuth>,
     ) -> Result<ImagePulled, RpcError>;
 }
 
@@ -345,23 +350,9 @@ impl CopyLifecycle for Client {
     async fn ensure_container(
         &self,
         machine_id: &MachineId,
-        mut want: ContainerWant,
+        want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
-        let timeout = match &mut want {
-            ContainerWant::Running {
-                container: RunTarget::New(new),
-                ..
-            } => {
-                self.prepare_new(machine_id, new).await?;
-                None
-            }
-            ContainerWant::Running { .. }
-            | ContainerWant::Out { .. }
-            | ContainerWant::Held { .. } => Some(TARGET_RPC_TIMEOUT),
-            ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
-            ContainerWant::Gone { .. } => None,
-        };
-        Client::ensure_settled(self, machine_id, want, timeout).await
+        self.ensure_settled(machine_id, want, None).await
     }
 
     async fn ensure_unsettled(
@@ -370,31 +361,16 @@ impl CopyLifecycle for Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError> {
-        Client::ensure_unsettled(self, machine_id, want, timeout).await
+        self.ensure_approved::<op::EnsureContainer>(machine_id, want, None, timeout)
+            .await
     }
 
     async fn ensure_new(
         &self,
         machine_id: &MachineId,
-        mut want: ContainerWant,
+        want: ContainerWant,
     ) -> Result<EnsuredContainer, RpcError> {
-        let mut pinned = false;
-        if let ContainerWant::Running {
-            container: RunTarget::New(new),
-            ..
-        } = &mut want
-        {
-            self.prepare_new(machine_id, new).await?;
-            pinned = new.image_id.is_some();
-        }
-        let request = self.ensure_request_to(machine_id, want).await?;
-        if pinned {
-            self.send_ensure::<op::EnsurePinnedContainer>(machine_id, request, None)
-                .await
-        } else {
-            self.send_ensure::<op::EnsureContainer>(machine_id, request, None)
-                .await
-        }
+        self.ensure_created(machine_id, want, None).await
     }
 
     async fn inspect_container(
@@ -530,13 +506,14 @@ impl DeployOperations for Client {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
+        auth: Option<RegistryAuth>,
     ) -> Result<ImagePulled, RpcError> {
         crate::image::pull_cluster_image(
             self,
             machine_id,
             &spec.container.image,
             spec.container.pull_policy,
-            self.deploy.registry_auth.get(&spec.name).cloned(),
+            auth,
         )
         .await
     }
@@ -566,9 +543,270 @@ pub(in crate::deploy) fn omission_requires_observation(
     membership.is_none_or(MembershipObservation::invites_rpc)
 }
 
+/// A Client whose Container changes carry a Deploy's or a drain's approvals to each
+/// Server.
+#[derive(Clone)]
+pub(crate) struct Approved {
+    pub(crate) client: Client,
+    approvals: Arc<Approvals>,
+}
+
+impl Approved {
+    pub(crate) fn new(client: Client, approvals: Approvals) -> Self {
+        Self {
+            client,
+            approvals: Arc::new(approvals),
+        }
+    }
+}
+
+impl Session for Approved {
+    async fn redial(&self) -> Option<Result<(), RedialFailure>> {
+        self.client.redial().await
+    }
+}
+
+impl CopyLifecycle for Approved {
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        self.client.service_containers(service).await
+    }
+
+    async fn listed_copies(&self, service: &QualifiedService) -> Result<Listed, RpcError> {
+        self.client.listed_copies(service).await
+    }
+
+    async fn target_copies(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, RpcError> {
+        self.client.target_copies(machine_id, service).await
+    }
+
+    async fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError> {
+        self.client.replicated_containers().await
+    }
+
+    async fn ensure_container(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
+        self.client
+            .ensure_settled(machine_id, want, Some(&self.approvals))
+            .await
+    }
+
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        self.client
+            .ensure_approved::<op::EnsureContainer>(
+                machine_id,
+                want,
+                Some(&self.approvals),
+                timeout,
+            )
+            .await
+    }
+
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<EnsuredContainer, RpcError> {
+        self.client
+            .ensure_created(machine_id, want, Some(&self.approvals))
+            .await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ContainerDetails, RpcError> {
+        self.client
+            .inspect_container(machine_id, container_id)
+            .await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.client.read_routes(machine_id, service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.client.read_entry_routes(service).await
+    }
+}
+
+impl DeployOperations for Approved {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        self.client.prepare_volumes(machine_id, specs).await
+    }
+
+    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
+        self.client.remove_volume(id).await
+    }
+
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        self.client
+            .update_container_limits(machine_id, container_id, spec)
+            .await
+    }
+
+    async fn update_container_placement(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerPlacementUpdated, RpcError> {
+        self.client
+            .update_container_placement(machine_id, container_id, spec)
+            .await
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        self.client.runs_global(machine_id, slot, spec).await
+    }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        auth: Option<RegistryAuth>,
+    ) -> Result<ImagePulled, RpcError> {
+        self.client.ensure_image(machine_id, spec, auth).await
+    }
+}
+
 impl Client {
-    /// What every new creation carries from this client: a retained Global's key, and
-    /// the label of the Deploy a replacement joins.
+    /// [`CopyLifecycle::ensure_container`], carrying what `approvals` hand the Server.
+    async fn ensure_settled(
+        &self,
+        machine_id: &MachineId,
+        mut want: ContainerWant,
+        approvals: Option<&Approvals>,
+    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
+        let timeout = match &mut want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+                ..
+            } => {
+                self.prepare_new(machine_id, new).await?;
+                None
+            }
+            ContainerWant::Running { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => Some(TARGET_RPC_TIMEOUT),
+            ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
+            ContainerWant::Gone { .. } => None,
+        };
+        self.ensure_approved::<op::EnsureContainer>(machine_id, want, approvals, timeout)
+            .await?
+            .into_settled()
+    }
+
+    /// [`CopyLifecycle::ensure_new`], carrying what `approvals` hand the Server.
+    async fn ensure_created(
+        &self,
+        machine_id: &MachineId,
+        mut want: ContainerWant,
+        approvals: Option<&Approvals>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        let mut pinned = false;
+        if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &mut want
+        {
+            self.prepare_new(machine_id, new).await?;
+            pinned = new.image_id.is_some();
+        }
+        if pinned {
+            self.ensure_approved::<op::EnsurePinnedContainer>(machine_id, want, approvals, None)
+                .await
+        } else {
+            self.ensure_approved::<op::EnsureContainer>(machine_id, want, approvals, None)
+                .await
+        }
+    }
+
+    /// Send `want` on route `R` with what `approvals` hand the Server, and keep the
+    /// verified build it issued for a Service the change creates.
+    async fn ensure_approved<R>(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        approvals: Option<&Approvals>,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError>
+    where
+        R: ployz_core::Rpc<
+                Request = ployz_core::EnsureContainerRequest,
+                Response = EnsuredContainer,
+            >,
+    {
+        let created = if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &want
+        {
+            Some(new.slot.service.clone())
+        } else {
+            None
+        };
+        // Boxed as a trait object so the Store and Cloud reads behind a kept version stay
+        // out of the type of every Deploy future, which would otherwise outgrow the
+        // compiler's recursion limit when the napi SDK checks it is Send.
+        let carry = async |want: &ContainerWant| match approvals {
+            Some(approvals) => {
+                let carried: std::pin::Pin<Box<dyn Future<Output = Carried> + Send + '_>> =
+                    Box::pin(approvals.carried(want));
+                carried.await
+            }
+            None => Carried::default(),
+        };
+        let ensured = self.ensure::<R>(machine_id, want, carry, timeout).await?;
+        if let (
+            Some(service),
+            EnsuredContainer::Ensured {
+                verified: Some(verified),
+                ..
+            },
+            Some(approvals),
+        ) = (&created, &ensured, approvals)
+        {
+            approvals.note_issued(service, *verified);
+        }
+        Ok(ensured)
+    }
+
+    /// A retained Global's key for a new creation, so a retry lands on the Container
+    /// already there.
     async fn prepare_new(
         &self,
         machine_id: &MachineId,
@@ -579,10 +817,6 @@ impl Client {
             .await?
         {
             new.slot.creation_key = key;
-        }
-        // A replacement joining a named Deploy keeps that Deploy's label.
-        if new.deployment_id.is_none() {
-            new.deployment_id.clone_from(&self.deploy.id);
         }
         Ok(())
     }

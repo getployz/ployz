@@ -23,7 +23,7 @@ use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, Replicas, ServiceBuildConfig,
-    ServiceHealthcheck, ServiceImageCredentials, ServiceRestartPolicy, ServiceSource,
+    ServiceHealthcheck, ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, Setting,
     UPDATE_ORDERS, default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{Hint, RpcError, ServiceName};
@@ -46,6 +46,43 @@ pub enum Apply {
     Staged,
     /// Takes effect as soon as it is written.
     Immediate,
+}
+
+/// What one Setting is: everything `get`, `explain`, the catalog and validation say
+/// about it. Behavior that differs by Setting (`value`, `set`, `unset`) stays in code.
+#[derive(Clone, Copy)]
+pub(crate) struct Spec {
+    pub(crate) name: &'static str,
+    /// The dashboard's field label.
+    pub(crate) label: &'static str,
+    pub(crate) description: &'static str,
+    /// The core config field it writes, as change rows and restores name it.
+    pub(crate) field: &'static str,
+    /// The core Setting a review row of it is, if any.
+    pub(crate) core: Option<Setting>,
+    pub(crate) apply: Apply,
+    pub(crate) needs: Needs,
+    /// What `unset` restores for the Service named, if one is; `null` for none.
+    pub(crate) default: fn(Option<&ServiceName>) -> Value,
+    /// The JSON Schema of a value: its type and allowed values or bounds.
+    pub(crate) expected: fn() -> Value,
+    /// One to three values `set` accepts.
+    pub(crate) examples: fn() -> Value,
+}
+
+/// The sources a Setting means anything for.
+#[derive(Clone, Copy)]
+pub(crate) enum Needs {
+    Any,
+    Image,
+    /// Anything built: a repository, or uploads to a Service without a source.
+    Built,
+    Git,
+}
+
+/// A command's schema.
+pub(crate) fn command() -> Value {
+    json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
 }
 
 /// One Setting of one Service. Names are the dashboard's field names, so `diff`,
@@ -103,26 +140,245 @@ impl ServiceSetting {
         Self::Policy(PolicySetting::PreferredBuilder),
     ];
 
+    /// What this Setting is: one row for each.
+    pub(crate) const fn spec(self) -> Spec {
+        match self {
+            Self::CpuLimit => Spec {
+                name: "cpuLimit",
+                label: "CPU limit",
+                description: "Most vCPUs each replica may use. Unset means no limit.",
+                field: "cpuLimit",
+                core: Some(Setting::CpuLimit),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "number", "exclusiveMinimum": 0, "maximum": CPU_LIMIT_MAX }),
+                examples: || json!([0.5, 2]),
+            },
+            Self::Healthcheck => Spec {
+                name: "healthcheck",
+                label: "Healthcheck",
+                description: "A check a new replica must pass before it takes traffic: an HTTP path on the port the domains send traffic to (PORT with no domains, or when they differ) or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
+                field: "healthcheck",
+                core: Some(Setting::Healthcheck),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || {
+                    let path = json!({
+                        "type": "string",
+                        "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                        "minLength": 1,
+                        "maxLength": HEALTHCHECK_PATH_MAX,
+                    });
+                    let command = json!({
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$",
+                        "minLength": 1,
+                        "maxLength": COMMAND_MAX,
+                    });
+                    let timeout = json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": HEALTHCHECK_TIMEOUT_MAX,
+                        "default": HEALTHCHECK_TIMEOUT_DEFAULT,
+                    });
+                    // Each alternative names its own fields, so a path and a command together match neither.
+                    let only = |field: &str, schema: &Value| {
+                        json!({
+                            "properties": { field: schema, "timeoutSeconds": timeout },
+                            "required": [field],
+                            "additionalProperties": false,
+                        })
+                    };
+                    json!({
+                        "type": "object",
+                        "properties": { "path": path, "command": command, "timeoutSeconds": timeout },
+                        "anyOf": [only("path", &path), only("command", &command)],
+                        "additionalProperties": false,
+                    })
+                },
+                examples: || {
+                    json!([
+                        { "path": "/health", "timeoutSeconds": 30 },
+                        { "command": "pg_isready -h 127.0.0.1", "timeoutSeconds": 60 },
+                    ])
+                },
+            },
+            Self::Image => Spec {
+                name: "image",
+                label: "Container image",
+                description: "The container image each replica runs.",
+                field: "source.image",
+                core: None,
+                apply: Apply::Staged,
+                needs: Needs::Image,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": IMAGE_MAX }),
+                examples: || json!(["nginx:1.27", "ghcr.io/acme/web:1.4.0"]),
+            },
+            Self::MaxRetries => Spec {
+                name: "maxRetries",
+                label: "Max retries",
+                description: "How often an on-failure restart policy restarts a replica.",
+                field: "maxRetries",
+                core: Some(Setting::MaxRetries),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| json!(default_max_retries()),
+                expected: || json!({ "type": "integer", "minimum": 0, "maximum": MAX_RETRIES_MAX }),
+                examples: || json!([3]),
+            },
+            Self::MemLimit => Spec {
+                name: "memLimit",
+                label: "Memory limit",
+                description: "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit.",
+                field: "memLimit",
+                core: Some(Setting::MemLimit),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || {
+                    json!({
+                        "anyOf": [
+                            { "type": "number", "minimum": size::MEM_LIMIT_MIN, "maximum": MEM_LIMIT_MAX },
+                            { "type": "string", "pattern": size::PATTERN },
+                        ],
+                    })
+                },
+                examples: || json!(["1GiB", "512MiB", 0.5]),
+            },
+            Self::PreDeployCommand => Spec {
+                name: "preDeployCommand",
+                label: "Pre-deploy command",
+                description: "Runs once in a new replica before a Deploy starts the Service.",
+                field: "preDeployCommand",
+                core: Some(Setting::PreDeployCommand),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: command,
+                examples: || json!(["npm run migrate"]),
+            },
+            Self::PrivateDns => Spec {
+                name: "privateDns",
+                label: "Private DNS",
+                description: "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name.",
+                field: "privateDns",
+                core: Some(Setting::PrivateDns),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                // The Service's current name, so none until a Service is named.
+                default: |service| service.map_or(Value::Null, |name| json!(name)),
+                expected: || json!({ "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 }),
+                examples: || json!(["api", "api-v2"]),
+            },
+            Self::RegistryCredential => Spec {
+                name: "registryCredential",
+                label: "Registry credentials",
+                description: "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it.",
+                field: "source.credentials",
+                core: None,
+                apply: Apply::Immediate,
+                needs: Needs::Image,
+                default: |_| Value::Null,
+                expected: || {
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "username": { "type": "string", "minLength": 1, "maxLength": 255 },
+                            "secret": { "anyOf": [{ "type": "string", "minLength": 1 }, { "const": true }] },
+                        },
+                        "required": ["secret"],
+                        "additionalProperties": false,
+                    })
+                },
+                examples: || json!([SecretInput::Keep.to_value()]),
+            },
+            Self::Replicas => Spec {
+                name: "replicas",
+                label: "Replicas",
+                description: "How many copies of the Service run. A number, or a count for each region like {\"fsn\":2,\"syd\":1}.",
+                field: "replicas",
+                core: Some(Setting::Replicas),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| json!(default_replicas()),
+                expected: || {
+                    let count = json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX });
+                    json!({ "anyOf": [count, { "type": "object", "additionalProperties": count }] })
+                },
+                examples: || json!([3, { "fsn": 2, "syd": 1 }]),
+            },
+            Self::RestartPolicy => Spec {
+                name: "restartPolicy",
+                label: "Restart policy",
+                description: "When a stopped replica restarts.",
+                field: "restartPolicy",
+                core: Some(Setting::RestartPolicy),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| json!(ServiceRestartPolicy::default()),
+                expected: || json!({ "type": "string", "enum": RESTART_POLICIES }),
+                examples: || json!(["on-failure"]),
+            },
+            Self::StartCommand => Spec {
+                name: "startCommand",
+                label: "Start command",
+                description: "Overrides the image's command. Unset runs the image's own.",
+                field: "startCommand",
+                core: Some(Setting::StartCommand),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: command,
+                examples: || json!(["npm start"]),
+            },
+            Self::Template => Spec {
+                name: "template",
+                label: "Template",
+                description: "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
+                field: "template",
+                core: None,
+                // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
+                apply: Apply::Immediate,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || {
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 },
+                            "version": { "type": "integer", "minimum": 1 },
+                        },
+                        "required": ["id", "version"],
+                        "additionalProperties": false,
+                    })
+                },
+                examples: || json!([{ "id": "postgres", "version": 1 }]),
+            },
+            Self::UpdateOrder => Spec {
+                name: "updateOrder",
+                label: "Update order",
+                description: "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
+                field: "updateOrder",
+                core: Some(Setting::UpdateOrder),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "enum": UPDATE_ORDERS }),
+                examples: || json!(["rolling"]),
+            },
+            Self::Git(git) => git.spec(),
+            Self::Policy(policy) => policy.spec(),
+        }
+    }
+
     /// The Setting a core row's `setting` is, if `set` has one.
-    pub(crate) const fn of(setting: ployz_core::config::Setting) -> Option<Self> {
-        use ployz_core::config::Setting as Core;
-        Some(match setting {
-            Core::Branch => Self::Git(GitSetting::Branch),
-            Core::PrivateDns => Self::PrivateDns,
-            Core::PreDeployCommand => Self::PreDeployCommand,
-            Core::StartCommand => Self::StartCommand,
-            Core::Healthcheck => Self::Healthcheck,
-            Core::RestartPolicy => Self::RestartPolicy,
-            Core::MaxRetries => Self::MaxRetries,
-            Core::UpdateOrder => Self::UpdateOrder,
-            Core::Replicas => Self::Replicas,
-            Core::CpuLimit => Self::CpuLimit,
-            Core::MemLimit => Self::MemLimit,
-            Core::BuildMethod => Self::Git(GitSetting::BuildMethod),
-            Core::DockerfilePath => Self::Git(GitSetting::DockerfilePath),
-            Core::BuildCommand => Self::Git(GitSetting::BuildCommand),
-            Core::Source | Core::ManagedHostnames | Core::Routes => return None,
-        })
+    pub(crate) fn of(setting: Setting) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|one| one.spec().core == Some(setting))
     }
 
     /// What discards it: the source holds each of its parts as one change row.
@@ -147,80 +403,15 @@ impl ServiceSetting {
     }
 
     pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::CpuLimit => "cpuLimit",
-            Self::Healthcheck => "healthcheck",
-            Self::Image => "image",
-            Self::MaxRetries => "maxRetries",
-            Self::MemLimit => "memLimit",
-            Self::PreDeployCommand => "preDeployCommand",
-            Self::PrivateDns => "privateDns",
-            Self::RegistryCredential => "registryCredential",
-            Self::Replicas => "replicas",
-            Self::RestartPolicy => "restartPolicy",
-            Self::StartCommand => "startCommand",
-            Self::Template => "template",
-            Self::UpdateOrder => "updateOrder",
-            Self::Git(git) => git.name(),
-            Self::Policy(policy) => policy.name(),
-        }
+        self.spec().name
     }
 
-    /// The dashboard's field label.
     pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::CpuLimit => "CPU limit",
-            Self::Healthcheck => "Healthcheck",
-            Self::Image => "Container image",
-            Self::MaxRetries => "Max retries",
-            Self::MemLimit => "Memory limit",
-            Self::PreDeployCommand => "Pre-deploy command",
-            Self::PrivateDns => "Private DNS",
-            Self::RegistryCredential => "Registry credentials",
-            Self::Replicas => "Replicas",
-            Self::RestartPolicy => "Restart policy",
-            Self::StartCommand => "Start command",
-            Self::Template => "Template",
-            Self::UpdateOrder => "Update order",
-            Self::Git(git) => git.label(),
-            Self::Policy(policy) => policy.label(),
-        }
+        self.spec().label
     }
 
     pub(crate) const fn description(self) -> &'static str {
-        match self {
-            Self::CpuLimit => "Most vCPUs each replica may use. Unset means no limit.",
-            Self::Healthcheck => {
-                "A check a new replica must pass before it takes traffic: an HTTP path on the port the domains send traffic to (PORT with no domains, or when they differ) or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check."
-            }
-            Self::Image => "The container image each replica runs.",
-            Self::MaxRetries => "How often an on-failure restart policy restarts a replica.",
-            Self::MemLimit => {
-                "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit."
-            }
-            Self::PreDeployCommand => {
-                "Runs once in a new replica before a Deploy starts the Service."
-            }
-            Self::PrivateDns => {
-                "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name."
-            }
-            Self::RegistryCredential => {
-                "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it."
-            }
-            Self::Replicas => {
-                "How many copies of the Service run. A number, or a count for each region like {\"fsn\":2,\"syd\":1}."
-            }
-            Self::RestartPolicy => "When a stopped replica restarts.",
-            Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
-            Self::Template => {
-                "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it."
-            }
-            Self::UpdateOrder => {
-                "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without."
-            }
-            Self::Git(git) => git.description(),
-            Self::Policy(policy) => policy.description(),
-        }
+        self.spec().description
     }
 
     /// A caveat on this Setting for a Service with `config`: why its value may not act.
@@ -244,224 +435,42 @@ impl ServiceSetting {
         }
     }
 
-    /// The core config field this Setting writes, as change rows and restores name it.
     pub(crate) const fn field(self) -> &'static str {
-        match self {
-            Self::Image => "source.image",
-            Self::RegistryCredential => "source.credentials",
-            Self::Git(git) => git.field(),
-            Self::Policy(policy) => policy.name(),
-            Self::CpuLimit
-            | Self::Healthcheck
-            | Self::MaxRetries
-            | Self::MemLimit
-            | Self::PreDeployCommand
-            | Self::PrivateDns
-            | Self::Replicas
-            | Self::RestartPolicy
-            | Self::StartCommand
-            | Self::Template
-            | Self::UpdateOrder => self.name(),
-        }
+        self.spec().field
     }
 
     pub(crate) const fn apply(self) -> Apply {
-        match self {
-            Self::CpuLimit
-            | Self::Healthcheck
-            | Self::Image
-            | Self::MaxRetries
-            | Self::MemLimit
-            | Self::PreDeployCommand
-            | Self::PrivateDns
-            | Self::Replicas
-            | Self::RestartPolicy
-            | Self::StartCommand
-            | Self::UpdateOrder
-            | Self::Git(_) => Apply::Staged,
-            // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
-            Self::Template | Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
-        }
+        self.spec().apply
     }
 
-    /// The value `unset` restores for `service`; `null` when the Setting has none. A
-    /// Private DNS name defaults to the Service's current name, so it has none until
-    /// a Service is named.
+    /// The value `unset` restores for `service`; `null` when the Setting has none.
     pub(crate) fn default(self, service: Option<&ServiceName>) -> Value {
-        match self {
-            Self::PrivateDns => service.map_or(Value::Null, |name| json!(name)),
-            Self::CpuLimit
-            | Self::Healthcheck
-            | Self::Image
-            | Self::MemLimit
-            | Self::PreDeployCommand
-            | Self::RegistryCredential
-            | Self::StartCommand
-            | Self::Template
-            | Self::UpdateOrder => Value::Null,
-            Self::MaxRetries => json!(default_max_retries()),
-            Self::Replicas => json!(default_replicas()),
-            Self::RestartPolicy => json!(ServiceRestartPolicy::default()),
-            Self::Git(git) => git.default(),
-            Self::Policy(policy) => policy.default(),
-        }
+        (self.spec().default)(service)
     }
 
-    /// The JSON Schema of a value: its type and allowed values or bounds.
     pub(crate) fn expected(self) -> Value {
-        match self {
-            Self::CpuLimit => {
-                json!({ "type": "number", "exclusiveMinimum": 0, "maximum": CPU_LIMIT_MAX })
-            }
-            Self::MemLimit => json!({
-                "anyOf": [
-                    { "type": "number", "minimum": size::MEM_LIMIT_MIN, "maximum": MEM_LIMIT_MAX },
-                    { "type": "string", "pattern": size::PATTERN },
-                ],
-            }),
-            Self::Healthcheck => {
-                let path = json!({
-                    "type": "string",
-                    "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
-                    "minLength": 1,
-                    "maxLength": HEALTHCHECK_PATH_MAX,
-                });
-                let command = json!({
-                    "type": "string",
-                    "pattern": "^[^\\u0000]*$",
-                    "minLength": 1,
-                    "maxLength": COMMAND_MAX,
-                });
-                let timeout = json!({
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": HEALTHCHECK_TIMEOUT_MAX,
-                    "default": HEALTHCHECK_TIMEOUT_DEFAULT,
-                });
-                // Each alternative names its own fields, so a path and a command together match neither.
-                let only = |field: &str, schema: &Value| {
-                    json!({
-                        "properties": { field: schema, "timeoutSeconds": timeout },
-                        "required": [field],
-                        "additionalProperties": false,
-                    })
-                };
-                json!({
-                    "type": "object",
-                    "properties": { "path": path, "command": command, "timeoutSeconds": timeout },
-                    "anyOf": [only("path", &path), only("command", &command)],
-                    "additionalProperties": false,
-                })
-            }
-            Self::Image => {
-                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": IMAGE_MAX })
-            }
-            Self::MaxRetries => {
-                json!({ "type": "integer", "minimum": 0, "maximum": MAX_RETRIES_MAX })
-            }
-            Self::Replicas => {
-                let count = json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX });
-                json!({ "anyOf": [count, { "type": "object", "additionalProperties": count }] })
-            }
-            Self::PreDeployCommand | Self::StartCommand => {
-                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
-            }
-            Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
-            Self::UpdateOrder => json!({ "type": "string", "enum": UPDATE_ORDERS }),
-            Self::Template => json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 },
-                    "version": { "type": "integer", "minimum": 1 },
-                },
-                "required": ["id", "version"],
-                "additionalProperties": false,
-            }),
-            Self::PrivateDns => {
-                json!({ "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 })
-            }
-            Self::RegistryCredential => json!({
-                "type": "object",
-                "properties": {
-                    "username": { "type": "string", "minLength": 1, "maxLength": 255 },
-                    "secret": { "anyOf": [{ "type": "string", "minLength": 1 }, { "const": true }] },
-                },
-                "required": ["secret"],
-                "additionalProperties": false,
-            }),
-            Self::Git(git) => git.expected(),
-            Self::Policy(policy) => policy.expected(),
-        }
+        (self.spec().expected)()
     }
 
-    /// One to three values `set` accepts.
     pub(crate) fn examples(self) -> Value {
-        match self {
-            Self::CpuLimit => json!([0.5, 2]),
-            Self::Healthcheck => json!([
-                { "path": "/health", "timeoutSeconds": 30 },
-                { "command": "pg_isready -h 127.0.0.1", "timeoutSeconds": 60 },
-            ]),
-            Self::Image => json!(["nginx:1.27", "ghcr.io/acme/web:1.4.0"]),
-            Self::MaxRetries => json!([3]),
-            Self::MemLimit => json!(["1GiB", "512MiB", 0.5]),
-            Self::PreDeployCommand => json!(["npm run migrate"]),
-            Self::PrivateDns => json!(["api", "api-v2"]),
-            Self::RegistryCredential => json!([SecretInput::Keep.to_value()]),
-            Self::Replicas => json!([3, { "fsn": 2, "syd": 1 }]),
-            Self::RestartPolicy => json!(["on-failure"]),
-            Self::StartCommand => json!(["npm start"]),
-            Self::Template => json!([{ "id": "postgres", "version": 1 }]),
-            Self::UpdateOrder => json!(["rolling"]),
-            Self::Git(git) => git.examples(),
-            Self::Policy(policy) => policy.examples(),
-        }
+        (self.spec().examples)()
     }
 
-    /// Whether this Setting means anything for a Service with `config`'s source:
-    /// `image` for an image, the source and build Settings for a repository.
+    /// Whether this Setting means anything for a Service with `config`'s source.
     pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
-        match self {
-            Self::Image | Self::RegistryCredential => {
-                matches!(config.source, ServiceSource::Image { .. })
-            }
-            // A Service without a source builds from uploads, with the same build Settings.
-            Self::Git(
-                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
-            ) => !matches!(config.source, ServiceSource::Image { .. }),
-            Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
-            Self::Policy(_) => PolicySetting::applies(config),
-            Self::CpuLimit
-            | Self::Healthcheck
-            | Self::MaxRetries
-            | Self::MemLimit
-            | Self::PreDeployCommand
-            | Self::PrivateDns
-            | Self::Replicas
-            | Self::RestartPolicy
-            | Self::StartCommand
-            | Self::Template
-            | Self::UpdateOrder => true,
+        match self.spec().needs {
+            Needs::Any => true,
+            Needs::Image => matches!(config.source, ServiceSource::Image { .. }),
+            Needs::Built => !matches!(config.source, ServiceSource::Image { .. }),
+            Needs::Git => matches!(config.source, ServiceSource::Git { .. }),
         }
     }
 
     /// Refuse this Setting for `service`, whose source it does not [apply](Self::applies) to.
     pub(crate) fn not_for(self, service: &ServiceName, source: &ServiceSource) -> RpcError {
-        let needs = match self {
-            Self::Image | Self::RegistryCredential => "an image source",
-            Self::Git(_)
-            | Self::Policy(_)
-            | Self::CpuLimit
-            | Self::Healthcheck
-            | Self::MaxRetries
-            | Self::MemLimit
-            | Self::PreDeployCommand
-            | Self::PrivateDns
-            | Self::Replicas
-            | Self::RestartPolicy
-            | Self::StartCommand
-            | Self::Template
-            | Self::UpdateOrder => "a repository source",
+        let needs = match self.spec().needs {
+            Needs::Image => "an image source",
+            Needs::Any | Needs::Built | Needs::Git => "a repository source",
         };
         let has = match source {
             ServiceSource::Image { .. } => "runs an image",

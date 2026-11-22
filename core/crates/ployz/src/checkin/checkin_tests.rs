@@ -14,7 +14,7 @@ use super::client::{self, Reply};
 use super::probe::tests::Faults;
 use super::wire::{self, Answer};
 use super::*;
-use crate::cloud_reply::Hold;
+use crate::cloud::reply::Hold;
 
 const PROBE: &str = r#"{
     "facts": {
@@ -152,7 +152,7 @@ impl Host for FakeHost {
     async fn enroll(
         &self,
         _: &crate::checkin::EnrollInstruction,
-        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+        _: &dyn Fn(crate::cloud::enroll::EnrollStage),
     ) -> Result<crate::checkin::Committed, String> {
         Err("this fake does not enroll".to_owned())
     }

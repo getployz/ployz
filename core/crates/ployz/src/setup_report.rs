@@ -7,15 +7,11 @@
 //! removes IP addresses from it, but hostnames may remain.
 
 use ployz_core::error_chain;
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{path::Path, time::Instant};
 
 use ployz_core::{CloudEnrollToken, MachineToken, StorageChoice};
 use serde::Serialize;
 
-const TIMEOUT: Duration = Duration::from_secs(2);
 /// DMI vendor substring, short provider name, and whether the product name is the instance type.
 const PROVIDERS: &[(&str, &str, bool)] = &[
     ("hetzner", "hetzner", true),
@@ -211,7 +207,8 @@ impl SetupReport {
             steps: &self.finished,
             total_seconds: self.started.elapsed().as_secs_f64(),
         };
-        let Ok(http) = reqwest::Client::builder().timeout(TIMEOUT).build() else {
+        let Ok(http) = crate::cloud::http::builder(crate::cloud::http::REPORT_TIMEOUT).build()
+        else {
             return;
         };
         let _ = http

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::Actor;
 use crate::id::EnvironmentId;
-use crate::settings::ServiceSetting;
+use crate::settings::{Apply, Needs, ServiceSetting, Spec};
 use crate::storage::Tx;
 use crate::storage::json_text;
 
@@ -126,74 +126,63 @@ impl PolicySetting {
         Self::PreferredBuilder,
     ];
 
-    pub(crate) const fn name(self) -> &'static str {
+    pub(crate) const fn spec(self) -> Spec {
         match self {
-            Self::AutoDeploy => "autoDeploy",
-            Self::WaitForCi => "waitForCi",
-            Self::WatchPaths => "watchPaths",
-            Self::PreferredBuilder => "preferredBuilder",
+            Self::AutoDeploy => Spec {
+                name: "autoDeploy",
+                label: "Auto-deploy",
+                description: "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
+                field: "autoDeploy",
+                core: None,
+                apply: Apply::Immediate,
+                needs: Needs::Git,
+                default: |_| json!(true),
+                expected: || json!({ "type": "boolean" }),
+                examples: || json!([false]),
+            },
+            Self::WaitForCi => Spec {
+                name: "waitForCi",
+                label: "Wait for CI",
+                description: "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
+                field: "waitForCi",
+                core: None,
+                apply: Apply::Immediate,
+                needs: Needs::Git,
+                default: |_| json!(false),
+                expected: || json!({ "type": "boolean" }),
+                examples: || json!([true]),
+            },
+            Self::WatchPaths => Spec {
+                name: "watchPaths",
+                label: "Watch paths",
+                description: "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once.",
+                field: "watchPaths",
+                core: None,
+                apply: Apply::Immediate,
+                needs: Needs::Git,
+                default: |_| json!([]),
+                expected: || {
+                    json!({
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1, "maxLength": 255 },
+                        "maxItems": WATCH_PATHS,
+                    })
+                },
+                examples: || json!([["apps/web/**", "!**/*.md"]]),
+            },
+            Self::PreferredBuilder => Spec {
+                name: "preferredBuilder",
+                label: "Preferred Builder",
+                description: "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID; then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build.",
+                field: "preferredBuilder",
+                core: None,
+                apply: Apply::Immediate,
+                needs: Needs::Git,
+                default: |_| Value::Null,
+                expected: Preferred::schema,
+                examples: || json!(["github"]),
+            },
         }
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::AutoDeploy => "Auto-deploy",
-            Self::WaitForCi => "Wait for CI",
-            Self::WatchPaths => "Watch paths",
-            Self::PreferredBuilder => "Preferred Builder",
-        }
-    }
-
-    pub(crate) const fn description(self) -> &'static str {
-        match self {
-            Self::AutoDeploy => {
-                "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once."
-            }
-            Self::WaitForCi => {
-                "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once."
-            }
-            Self::WatchPaths => {
-                "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once."
-            }
-            Self::PreferredBuilder => {
-                "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID; then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build."
-            }
-        }
-    }
-
-    pub(crate) fn default(self) -> Value {
-        match self {
-            Self::AutoDeploy => json!(true),
-            Self::WaitForCi => json!(false),
-            Self::WatchPaths => json!([]),
-            Self::PreferredBuilder => Value::Null,
-        }
-    }
-
-    pub(crate) fn expected(self) -> Value {
-        match self {
-            Self::AutoDeploy | Self::WaitForCi => json!({ "type": "boolean" }),
-            Self::WatchPaths => json!({
-                "type": "array",
-                "items": { "type": "string", "minLength": 1, "maxLength": 255 },
-                "maxItems": WATCH_PATHS,
-            }),
-            Self::PreferredBuilder => Preferred::schema(),
-        }
-    }
-
-    pub(crate) fn examples(self) -> Value {
-        match self {
-            Self::AutoDeploy => json!([false]),
-            Self::WaitForCi => json!([true]),
-            Self::WatchPaths => json!([["apps/web/**", "!**/*.md"]]),
-            Self::PreferredBuilder => json!(["github"]),
-        }
-    }
-
-    /// Only a Git Service deploys on push.
-    pub(crate) const fn applies(config: &AuthoredServiceConfig) -> bool {
-        matches!(config.source, ServiceSource::Git { .. })
     }
 
     /// What this Setting can't promise for `config`: Cloud added its repository as
@@ -232,7 +221,7 @@ impl PolicySetting {
                 .transpose()?;
             return Ok(());
         }
-        let value = value.unwrap_or_else(|| self.default());
+        let value = value.unwrap_or_else(|| setting.default(None));
         match self {
             Self::AutoDeploy | Self::WaitForCi => {
                 let flag = match &value {
@@ -627,7 +616,7 @@ mod tests {
 
     #[test]
     fn watch_paths_set_as_text_take_a_json_list_or_one_pattern() {
-        let example = super::PolicySetting::WatchPaths
+        let example = crate::settings::ServiceSetting::Policy(super::PolicySetting::WatchPaths)
             .examples()
             .get(0)
             .cloned()

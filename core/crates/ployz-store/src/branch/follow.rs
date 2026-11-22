@@ -404,8 +404,7 @@ pub(crate) fn take(
     };
     let named = scope::environment(tx, who, at)?;
     let row = branch_row(tx, &named)?;
-    scope::lock_project(tx, &named.summary.id)?;
-    let (mut branch, from) = scope::load_pair(tx, who, (&named.summary.id, &row.parent), true)?;
+    let (mut branch, from) = scope::lock_pair(tx, who, (&named.summary.id, &row.parent))?;
     if from.summary.name != *parent {
         return Err(error::invalid(
             format!(

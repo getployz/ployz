@@ -3,7 +3,7 @@ use ployz_core::{
     ContainerWant, NewContainer, ResolvedUpdateConfig, RunRotation, RunTarget, ServiceMode,
 };
 
-use super::DeployContext;
+use super::{Approvals, RuleProofs};
 use crate::global_fixtures::{requested, service_id};
 
 fn version(digest: PayloadDigest) -> Signed<ServiceVersion> {
@@ -33,8 +33,7 @@ async fn a_new_copy_carries_only_the_versions_of_the_spec_it_runs() {
     let tagged = requested(ServiceMode::Global);
     let signed = version(PayloadDigest::of(&pinned, &namespace).unwrap());
     let other = version(PayloadDigest::of(&tagged, &namespace).unwrap());
-    let mut context = DeployContext::default();
-    context.set_versions(vec![signed.clone(), other.clone()]);
+    let approvals = Approvals::signed(vec![signed.clone(), other.clone()], RuleProofs::default());
     for (spec, sent) in [(pinned, signed), (tagged, other)] {
         let resolved = spec
             .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
@@ -57,6 +56,6 @@ async fn a_new_copy_carries_only_the_versions_of_the_spec_it_runs() {
             }),
             rotation: RunRotation::Pending,
         };
-        assert_eq!(context.carried(&want).await.versions, vec![sent]);
+        assert_eq!(approvals.carried(&want).await.versions, vec![sent]);
     }
 }

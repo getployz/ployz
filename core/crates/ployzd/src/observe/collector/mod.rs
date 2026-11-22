@@ -38,7 +38,7 @@ use crate::{
     filesystem::atomic_write,
     machine::store,
     observe::{salts::Salts, ship},
-    sealed_env::{Unseal as _, record_from_label},
+    sealed_env::{SealingKeyStore, record_from_label},
 };
 
 use config::Paths;
@@ -161,7 +161,7 @@ impl Inner {
         else {
             return Ok(SealedValues::none());
         };
-        Ok(record.secrets(Some(&self.data_dir))?)
+        Ok(SealingKeyStore::at(self.data_dir.clone()).secrets(&record)?)
     }
 
     fn target(&self) -> Option<Connected> {

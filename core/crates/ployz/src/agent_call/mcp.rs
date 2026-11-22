@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
 use super::{CallError, CallReport, Client, ErrorType, Feedback, Kind, Started, Surface};
-use crate::cloud_account::Credential;
+use crate::cloud::account::Credential;
 
 pub(crate) const INTENT: &str = "intent";
 pub(crate) const FEEDBACK_TOOL: &str = "send_feedback";
@@ -237,7 +237,7 @@ impl Reporter {
             Ok(mut sends) => std::mem::take(&mut *sends),
             Err(_) => return,
         };
-        let _ = tokio::time::timeout(super::SEND_TIMEOUT, async {
+        let _ = tokio::time::timeout(crate::cloud::http::REPORT_TIMEOUT, async {
             while sends.join_next().await.is_some() {}
         })
         .await;

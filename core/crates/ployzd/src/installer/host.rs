@@ -24,7 +24,7 @@ use super::assess::{docker_blocker, read_docker};
 use super::os_release;
 use super::release::{fetch, installed_release};
 use super::{
-    Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
+    Error, InstallPaths, PLOYZ_USER, command_exists, failure, refuse, run_apt, run_host, systemctl,
 };
 
 // Guards a wedged child, not latency: its fsyncs can take seconds each on a busy disk.
@@ -100,19 +100,7 @@ pub(super) fn create_user_and_directories(
     group_user: Option<&str>,
     paths: &InstallPaths,
 ) -> Result<(), Error> {
-    let mut exists = Command::new("id");
-    exists
-        .arg(PLOYZ_USER)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if !exists
-        .status()
-        .map_err(|source| Error::Io {
-            stage: "inspect Ployz service account",
-            source,
-        })?
-        .success()
-    {
+    if !service_account_exists("inspect Ployz service account")? {
         run_host(
             "create Ployz service account",
             "useradd",
@@ -146,6 +134,16 @@ pub(super) fn create_user_and_directories(
     Ok(())
 }
 
+fn service_account_exists(stage: &'static str) -> Result<bool, Error> {
+    Command::new("id")
+        .arg(PLOYZ_USER)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|source| Error::Io { stage, source })
+}
+
 /// The data and run directories `install -d` creates, spelled as the installer was handed them.
 fn directory_arguments(paths: &InstallPaths) -> (String, String) {
     let data = paths.layout.data_dir().to_string_lossy().into_owned();
@@ -162,16 +160,7 @@ pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), 
                 .into(),
         });
     }
-    let service_account = Command::new("id")
-        .arg(PLOYZ_USER)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|source| Error::Io {
-            stage: "software-only preflight",
-            source,
-        })?;
-    if !service_account.success() {
+    if !service_account_exists("software-only preflight")? {
         return Err(Error::Command {
             stage: "software-only preflight".into(),
             message: "the Ployz service account is missing; run ployzd install without --software-only first".into(),
@@ -216,17 +205,10 @@ pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
         Some(USAGE_ERROR) => {
             write_units(&paths.bin_dir, paths.layout.run_dir(), &paths.systemd_dir)
         }
-        _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            Err(Error::Command {
-                stage: stage.into(),
-                message: if stderr.is_empty() {
-                    format!("exited with {}", output.status)
-                } else {
-                    stderr
-                },
-            })
-        }
+        _ => Err(Error::Command {
+            stage: stage.into(),
+            message: failure(&output),
+        }),
     }
 }
 

@@ -187,7 +187,7 @@ async fn a_destination_silent_during_its_registry_pull_is_named() {
     let mut service = spec(None, None, None);
     service.container.pull_policy = ployz_core::PullPolicy::Always;
 
-    let error = DeployOperations::ensure_image(&client, &machine('1'), &service)
+    let error = DeployOperations::ensure_image(&client, &machine('1'), &service, None)
         .await
         .unwrap_err();
 
@@ -202,7 +202,7 @@ async fn a_destination_that_answers_unavailable_keeps_its_words() {
     let mut service = spec(None, None, None);
     service.container.pull_policy = ployz_core::PullPolicy::Always;
 
-    let error = DeployOperations::ensure_image(&client, &machine('1'), &service)
+    let error = DeployOperations::ensure_image(&client, &machine('1'), &service, None)
         .await
         .unwrap_err();
 

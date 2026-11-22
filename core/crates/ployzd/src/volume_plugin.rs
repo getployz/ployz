@@ -49,9 +49,7 @@ use crate::{
     },
 };
 use error::PluginError;
-use storage::{
-    CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, run_command,
-};
+use storage::{CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output};
 
 type Result<T> = std::result::Result<T, PluginError>;
 
