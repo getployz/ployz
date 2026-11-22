@@ -292,7 +292,7 @@ async fn release_checksum(
     let signature = String::from_utf8(signature)
         .map_err(|_| Error::Verification(format!("{RELEASE_SIGNATURE_ASSET} is not UTF-8")))?;
     verify_release_checksums(&source.public_key(), &checksums, &signature, target)
-        .map_err(|error| Error::Verification(ployz_core::error_chain::inline(&error)))?;
+        .map_err(Error::Signature)?;
     checksum_for(&checksums, archive)
         .ok_or_else(|| Error::Verification(format!("checksums.txt has no hash for {archive}")))
 }
