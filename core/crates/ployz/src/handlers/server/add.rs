@@ -110,15 +110,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .await
         {
             Err(error)
-                if error.code == ployz_core::RpcErrorCode::from("forbidden")
-                    && error
-                        .details
-                        .get("capability")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY)
-                    // A forgotten Server needs a new identity, not an approval.
-                    && error.details.get("reason").and_then(serde_json::Value::as_str)
-                        != Some("member_removed") =>
+                if error.enforcement().is_some_and(|gate| {
+                    gate.capability == ployz_core::JOIN_APPROVAL_CAPABILITY
+                        // A forgotten Server needs a new identity, not an approval.
+                        && gate.reason != Some(ployz_core::GateReason::MemberRemoved)
+                }) =>
             {
                 if !crate::handlers::device::sign_waiting_join(
                     &mut entry,
