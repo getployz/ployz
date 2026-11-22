@@ -380,6 +380,21 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_DEVICE_CAPABILITY, _) => unary::<op::SetDevice>(json!({
             "kind": "approve", "key": DeviceKey::from(Signer::from_seed(&[9; 32]).public()),
         })),
+        (ployz_core::SET_KEY_CAPABILITY, _) => unary::<op::SetKey>(json!({
+            "key": ployz_core::first_key::LineKey::Device {
+                key: DeviceKey::from(Signer::from_seed(&[9; 32]).public()),
+            },
+        })),
+        (ployz_core::CONFIRM_JOIN_CAPABILITY, _) => unary::<op::ConfirmJoin>(json!({
+            "restrictions": ployz_core::JoinRestrictions {
+                set: ployz_core::JoinRestrictionSet {
+                    removed_keys: Vec::new(),
+                    removed_members: Vec::new(),
+                    floors: std::collections::BTreeMap::new(),
+                },
+                tag: ployz_core::authority::join::RestrictionTag([7; 32]),
+            },
+        })),
         (ployz_core::SET_PUSH_TARGET_CAPABILITY, _) => {
             unary::<op::SetPushTarget>(json!({"url": "https://observe.invalid/push"}))
         }
@@ -439,6 +454,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                     machine.peer_store.record().private_key(),
                     &machine.machine.public_key,
                     None,
+                    None,
                 )
                 .unwrap();
             unary::<op::InstallSealingKey>(json!({
@@ -449,7 +465,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
             let other = SealingKey::generate();
             let stranger = crate::network::WireGuardPrivateKey::generate();
             let sealed = other
-                .seal_from(&stranger, &machine.machine.public_key, None)
+                .seal_from(&stranger, &machine.machine.public_key, None, None)
                 .unwrap();
             unary::<op::InstallSealingKey>(json!({
                 "from": peer, "sealed": sealed, "public_key": other.public_key(),
@@ -894,6 +910,18 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
                 machine.store.record().devices().count(),
                 1,
                 "{case:?}: the approved Device is still the only one"
+            );
+        }
+        "restrictions Cloud wrote change nothing the Machine trusts" => {
+            let record = machine.store.record();
+            assert_eq!(
+                record.devices().count(),
+                1,
+                "{case:?}: the approved Device stays"
+            );
+            assert!(
+                record.removed_keys().is_empty() && record.removed_members().is_empty(),
+                "{case:?}: nothing was removed"
             );
         }
         other => panic!("{case:?} names a check this test does not run: {other}"),

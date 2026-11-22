@@ -754,6 +754,7 @@ impl FakeMachine for DiscoveryService {
             sealing_key: None,
             devices: Vec::new(),
             grants: Vec::new(),
+            restrictions: None,
         };
         reply(registered)
     }

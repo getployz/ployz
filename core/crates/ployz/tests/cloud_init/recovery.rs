@@ -30,6 +30,7 @@ fn founder_daemon() -> JoinDaemon {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     })
 }
 

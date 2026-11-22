@@ -127,6 +127,27 @@ pub async fn run_machine_publisher(
                     return Ok(());
                 }
             }
+            // A joiner under sealed trust participates only once its admitting Machine's
+            // restrictions arrive; until then it serves nothing.
+            let restricted = records.wait_for(|record| {
+                !matches!(
+                    record.body(),
+                    LocalMachineBody::Joining {
+                        awaits_restrictions: true,
+                        ..
+                    }
+                )
+            });
+            tokio::select! {
+                result = restricted => {
+                    if result.is_err() {
+                        return Ok(());
+                    }
+                }
+                () = shutdown.cancelled() => {
+                    return Ok(());
+                }
+            }
             let publication = replicated.machine_publication().await;
             let completed = publication
                 .complete_catch_up(&local)

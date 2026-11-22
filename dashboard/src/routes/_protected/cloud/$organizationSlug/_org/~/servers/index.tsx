@@ -15,6 +15,7 @@ import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRun } from "./-components/first-run-card";
 import { FirstTunnelStatus } from "./-components/first-tunnel";
 import { FleetHealth } from "./-components/fleet-health";
+import { PendingJoins } from "./-components/pending-joins";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
 import { foundingFirstServer, serversPageState } from "./-components/servers-page-state";
 import { ServersSkeleton } from "./-components/servers-skeleton";
@@ -88,6 +89,7 @@ function RouteComponent() {
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
       {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} regionLabels={labels} /> : null}
       {page.kind === "fleet" ? <FirstTunnelStatus organizationSlug={organizationSlug} /> : null}
+      {page.kind === "fleet" ? <PendingJoins organizationSlug={organizationSlug} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (

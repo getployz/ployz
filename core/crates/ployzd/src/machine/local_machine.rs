@@ -719,6 +719,12 @@ impl LocalMachine {
         let record = self.record();
         let discovered = discover_network(public_ip).await?;
         let capacity = host_capacity::observe();
+        // A hint for whoever approves this Machine's join; unread, it names nothing.
+        let first_key = ployz_core::first_key::FirstKeyFile::beside(self.owner.data_dir())
+            .peek()
+            .ok()
+            .flatten()
+            .and_then(|state| state.waiting().map(ployz_core::first_key::LineKey::hint));
         Ok(MachineToken {
             id: record.id(),
             public_key: record.wireguard_private_key.public_key(),
@@ -732,6 +738,7 @@ impl LocalMachine {
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
+            first_key,
         })
     }
 

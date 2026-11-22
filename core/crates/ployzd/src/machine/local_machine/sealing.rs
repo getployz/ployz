@@ -23,7 +23,7 @@ use thiserror::Error as ThisError;
 use super::LocalMachine;
 use super::join_approval::Entered;
 use crate::corrosion::ClusterSealing;
-use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
+use crate::sealing_key::{Floors, KeyFile, OpenError, Removals, SealingKey};
 
 #[derive(Debug, ThisError)]
 pub enum Error {
@@ -237,6 +237,7 @@ impl LocalMachine {
             super::consumption::JoinResult {
                 approval: approval.clone(),
                 reply: super::consumption::JoinReply::Share(sealed.clone()),
+                sealed_trust: false,
             },
         )?;
         tracing::info!(
@@ -260,10 +261,21 @@ impl LocalMachine {
             .claim(ployz_core::FORGET_VERSIONS_CAPABILITY)
             == ployz_core::Claim::Advertises;
         let floors = self.floors_for(key, opens_floors)?;
+        // A recovery founder may already participate, so it takes the removals this Machine
+        // holds, as a joiner takes them with its restrictions. An older ployzd refuses them.
+        let record = self.record();
+        let removals = (opens_floors
+            && recipient.runtime.claim(ployz_core::JOIN_TRUST_CAPABILITY)
+                == ployz_core::Claim::Advertises)
+            .then(|| Removals {
+                removed_keys: record.removed_keys().to_vec(),
+                removed_members: record.removed_members().to_vec(),
+            });
         Ok(key.seal_from(
-            self.record().private_key(),
+            record.private_key(),
             &recipient.public_key,
             floors.as_ref(),
+            removals.as_ref(),
         )?)
     }
 
@@ -283,18 +295,18 @@ impl LocalMachine {
     ///   - refuses [`Error::AwaitsRecovery`] and inserts nothing when this
     ///     Machine reads its Cluster awaiting recovery of another key
     ///     ([`ClusterSealing::awaits_another`]);
-    ///   - otherwise inserts its public half as the Cluster's (a no-op when a
-    ///     key is already published there, this one or another) and answers
-    ///     it;
+    ///   - otherwise takes the sender's removals, inserts its public half as
+    ///     the Cluster's (a no-op when a key is already published there, this
+    ///     one or another) and answers it;
     ///   - when the read fails, logs the failure, inserts and answers as
     ///     above;
     /// - another key: refuses [`Error::HeldAnother`];
     /// - no file, or a file that is not 32 bytes: reads the Cluster's Sealing
     ///   and refuses [`Error::Published`] when it publishes another key, or
     ///   [`Error::AwaitsRecovery`] when it awaits recovery of another key (the
-    ///   rule `awaits_another` states), and otherwise writes the key over the
-    ///   file, inserts its public half as the Cluster's and answers it. A
-    ///   failed read refuses with its error;
+    ///   rule `awaits_another` states), and otherwise takes the sender's
+    ///   removals, writes the key over the file, inserts its public half as the
+    ///   Cluster's and answers it. A failed read refuses with its error;
     /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn install_admitted(
         &self,
@@ -307,7 +319,7 @@ impl LocalMachine {
             .machine(&request.from.to_string())
             .await?
             .ok_or(Error::UnknownMachine(request.from))?;
-        let (key, floors) =
+        let (key, floors, removals) =
             SealingKey::open_from(&request.sealed, record.private_key(), &sender.public_key)
                 .map_err(|source| Error::Unopenable {
                     from: request.from,
@@ -339,6 +351,7 @@ impl LocalMachine {
                         "could not read whether the Cluster awaits recovery of another Sealing Key; publishing the held key"
                     ),
                 }
+                self.take_removals(removals).await?;
                 replicated.publish_sealing_public_key(public_key).await?;
                 tracing::info!(
                     machine = %record.id(),
@@ -368,6 +381,9 @@ impl LocalMachine {
             | ClusterSealing::AwaitsRecovery(_)
             | ClusterSealing::Unsealed => {}
         }
+        // Removals land before the key, so an Install cut off after either write leaves a
+        // Machine that already enforces them, and a retry finds it holding the key.
+        self.take_removals(removals).await?;
         self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
@@ -377,5 +393,22 @@ impl LocalMachine {
             "installed the Cluster's Sealing Key"
         );
         Ok(SealingKeyHeld { public_key })
+    }
+
+    /// Stop trusting each key the sender removed and hold each Member it removed. These only
+    /// add restrictions, so they go over this Machine's own record and never replace its keys.
+    async fn take_removals(&self, removals: Removals) -> Result<(), super::Error> {
+        if removals == Removals::default() {
+            return Ok(());
+        }
+        let set = ployz_core::JoinRestrictionSet {
+            removed_keys: removals.removed_keys,
+            removed_members: removals.removed_members,
+            floors: Default::default(),
+        };
+        self.owner
+            .mutate(move |store| store.apply_join_restrictions(&set))
+            .await??;
+        Ok(())
     }
 }

@@ -188,6 +188,7 @@ where
                         advertised_endpoints: machine_token.advertised_endpoints.clone(),
                         runtime: Default::default(),
                         capabilities: Vec::new(),
+                        first_key: None,
                     };
                     // This join's pin is this computer's Device alone, whatever the route.
                     let from = if crate::sealing_pin::SealTo::direct(&entry) {
@@ -195,7 +196,7 @@ where
                             pins_its_devices: false,
                         }
                     } else {
-                        JoinEntry::Relayed
+                        JoinEntry::relayed(&config).await?
                     };
                     if device::sign_waiting_join(&mut entry, &config, &expected, from).await? {
                         cloud::enroll::enroll(command, &url, token, &identity, progress).await?
@@ -303,7 +304,7 @@ where
         };
         if relays {
             let confirmation = confirmation.ok_or_else(machine::confirmation_missing)?;
-            cloud::enroll::enroll(
+            let answered = cloud::enroll::enroll(
                 command,
                 &enroll_url,
                 token,
@@ -311,6 +312,27 @@ where
                 progress,
             )
             .await?;
+            let claimed = identity.claims(ployz_core::JOIN_TRUST_CAPABILITY);
+            match answered {
+                Outcome::Join(join) => {
+                    // The daemon restarts after it enrolls, so this dials the same connection again.
+                    let via = client.connection().clone();
+                    crate::enrollment::confirm_join(
+                        async || {
+                            machine::connect_direct_within(plan.reach().ssh_timeout(), &via).await
+                        },
+                        claimed,
+                        &join.registration,
+                    )
+                    .await?;
+                }
+                Outcome::Initialize(_) if claimed => {
+                    return Err(Error::conflict(
+                        "Cloud answered this Server's join confirmation with a founding. Nothing joined; run the install command again.",
+                    ));
+                }
+                Outcome::Initialize(_) => {}
+            }
         }
         progress(EnrollStage::Joining);
         let mut ready = wait_phase(
@@ -465,11 +487,19 @@ where
                     wireguard_mtu: plan.shaping().wg_mtu(),
                     pinned,
                 };
-                let machine = match &recovery {
+                let enrolled = match &recovery {
                     Some(Recovery::Seed(seed)) => {
-                        machine::enroll_for_recovery(&mut client, request, seed.clone()).await?
+                        machine::enroll_for_recovery(&mut client, request, seed.clone()).await
                     }
-                    Some(Recovery::BackUp) | None => machine::enroll(&mut client, request).await?,
+                    Some(Recovery::BackUp) | None => machine::enroll(&mut client, request).await,
+                };
+                let machine = match enrolled {
+                    Err(error) if first_key_spent(&error) => {
+                        // The storage it set up stands; the enroll is what was refused.
+                        progress(EnrollStage::Enrolling);
+                        return Err(refuse_spent(cloud_url, token, details.id, &pairing).await);
+                    }
+                    enrolled => enrolled?,
                 };
                 progress(EnrollStage::Joining);
                 machine
@@ -697,18 +727,7 @@ async fn refuse_founding(
     found: &str,
     resettable: bool,
 ) -> Error {
-    let released = cloud::enroll::release(
-        &CloudOrigin::new(cloud_url).callback_url(),
-        token,
-        machine_id,
-        &pairing.secret,
-    )
-    .await;
-    let next = if released {
-        "Ployz Cloud let go of this founding attempt"
-    } else {
-        "In Ployz Cloud, reset the founding attempt"
-    };
+    let next = release_founding(cloud_url, token, machine_id, pairing).await;
     let or_this = if resettable {
         ", or add this Server: make a new token with `ployz server add --command --reset` and run the line it prints on this Server. The reset takes it out of its Cluster and removes every container Ployz runs on it"
     } else {
@@ -716,6 +735,55 @@ async fn refuse_founding(
     };
     Error::conflict(format!(
         "{found}. An Organization's first Server starts a new Cluster. {next}, then add a Server that isn't in a Cluster with a new token{or_this}."
+    ))
+}
+
+/// Let go of the Founding Claim, and say what that leaves the person to do.
+async fn release_founding(
+    cloud_url: &str,
+    token: &CloudEnrollToken,
+    machine_id: ployz_core::MachineId,
+    pairing: &CloudPairing,
+) -> &'static str {
+    let released = cloud::enroll::release(
+        &CloudOrigin::new(cloud_url).callback_url(),
+        token,
+        machine_id,
+        &pairing.secret,
+    )
+    .await;
+    if released {
+        "Ployz Cloud let go of this founding attempt"
+    } else {
+        "In Ployz Cloud, reset the founding attempt"
+    }
+}
+
+/// Whether the Server refused to found because it already used its First Key.
+fn first_key_spent(error: &Error) -> bool {
+    matches!(
+        error.connect_error(),
+        Some(ConnectError::Remote(remote))
+            if remote.gate().and_then(|gate| gate.reason)
+                == Some(ployz_core::GateReason::FirstKeySpent)
+    )
+}
+
+/// Refuse a founding on a Server that already used its First Key, as a reset Server has. A
+/// token alone can't found there, or Cloud could steer a reset disk into a Cluster of its own,
+/// so the way on is a line that names the key, confirmed at the Server's terminal.
+async fn refuse_spent(
+    cloud_url: &str,
+    token: &CloudEnrollToken,
+    machine_id: ployz_core::MachineId,
+    pairing: &CloudPairing,
+) -> Error {
+    let next = release_founding(cloud_url, token, machine_id, pairing).await;
+    Error::conflict(format!(
+        "This Server already used its First Key, so a token alone can't make it found a Cluster. {next}. Nothing was founded."
+    ))
+    .hint(Hint::Next(
+        "run ployz server add --command, then run the line it prints at a terminal on the Server".into(),
     ))
 }
 

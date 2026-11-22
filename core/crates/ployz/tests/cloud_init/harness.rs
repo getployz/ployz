@@ -46,7 +46,9 @@ mod inspect_telemetry_fixture;
 mod servers;
 
 pub use enroll_http::{CallbackReply, EnrollListen, EventLog, ReportReply};
-pub use servers::{DEVICE_SEED, cli, device_cli, serve_local_machine, serve_machine};
+pub use servers::{
+    DEVICE_SEED, cli, device_cli, serve_local_machine, serve_machine, serve_restarting_machine,
+};
 
 pub const TOKEN: &str = "pmet_test";
 
@@ -147,6 +149,14 @@ struct JoinInner {
     recovery_seeds: Mutex<Vec<RecoverySeed>>,
     wrap_calls: AtomicUsize,
     refuses_unsigned_joins: AtomicBool,
+    /// Claims `join-trust.v1` and takes the restrictions a confirmation answers with.
+    takes_restrictions: AtomicBool,
+    /// Restarts as a real daemon does after it enrolls: the first call after the enroll
+    /// finds every connection open before it closed.
+    restarts_after_enroll: AtomicBool,
+    restart_pending: AtomicBool,
+    restarts: tokio::sync::watch::Sender<u64>,
+    restrictions_taken: AtomicUsize,
 }
 
 impl JoinDaemon {
@@ -196,6 +206,11 @@ impl JoinDaemon {
                 recovery_seeds: Mutex::new(Vec::new()),
                 wrap_calls: AtomicUsize::new(0),
                 refuses_unsigned_joins: AtomicBool::new(false),
+                takes_restrictions: AtomicBool::new(false),
+                restarts_after_enroll: AtomicBool::new(false),
+                restart_pending: AtomicBool::new(false),
+                restarts: tokio::sync::watch::Sender::new(0),
+                restrictions_taken: AtomicUsize::new(0),
             }),
         }
     }
@@ -340,6 +355,37 @@ impl JoinDaemon {
             .replace_identity_on_initialize
             .store(true, Ordering::SeqCst);
         self
+    }
+
+    /// A joiner that claims `join-trust.v1`, so it waits for the restrictions its
+    /// confirmation is answered with, and restarts after it enrolls as a real daemon does.
+    pub fn taking_restrictions_after_a_restart(self) -> Self {
+        self.inner.takes_restrictions.store(true, Ordering::SeqCst);
+        self.inner
+            .restarts_after_enroll
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    /// How many times this joiner took its restrictions.
+    pub fn restrictions_taken(&self) -> usize {
+        self.inner.restrictions_taken.load(Ordering::SeqCst)
+    }
+
+    /// Changes each time the daemon restarts, closing every connection open before it.
+    pub fn restarts(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.restarts.subscribe()
+    }
+
+    /// Restart now if an enroll asked for it: every connection open before closes, and
+    /// the call that found the restart never answers.
+    async fn restart_if_enrolled(&self) {
+        if self.inner.restart_pending.swap(false, Ordering::SeqCst) {
+            self.inner
+                .restarts
+                .send_modify(|generation| *generation += 1);
+            std::future::pending::<()>().await;
+        }
     }
 
     /// Answer an approved join as a daemon from before join confirmations: with none.
@@ -696,10 +742,20 @@ impl FakeMachine for JoinDaemon {
                 } else {
                     inspect.advertised_endpoints.clone()
                 },
-                runtime: Default::default(),
+                runtime: ployz_core::MachineRuntime {
+                    capabilities: self
+                        .inner
+                        .takes_restrictions
+                        .load(Ordering::SeqCst)
+                        .then(|| ployz_core::JOIN_TRUST_CAPABILITY.to_owned())
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                },
                 memory_total_bytes: None,
                 disk_total_bytes: None,
                 disk_available_bytes: None,
+                first_key: None,
             }),
             sealing: None,
             founding: *self.inner.founding.lock().unwrap(),
@@ -1178,6 +1234,27 @@ impl FakeMachine for JoinDaemon {
         })
     }
 
+    async fn confirm_join(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        self.restart_if_enrolled().await;
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::ConfirmJoin(_) = decoded.body else {
+            return Err(Status::invalid_argument("expected ConfirmJoin"));
+        };
+        if !self.inner.takes_restrictions.load(Ordering::SeqCst) {
+            return Err(Status::unimplemented(
+                "ConfirmJoin is not used by this fixture",
+            ));
+        }
+        self.inner.restrictions_taken.fetch_add(1, Ordering::SeqCst);
+        reply(ployz_core::JoinConfirmed {})
+    }
+
     async fn leave(
         &self,
         _request: Request<OpaquePayload>,
@@ -1248,6 +1325,7 @@ pub fn registration() -> Registered {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     }
 }
 
@@ -1425,6 +1503,9 @@ impl JoinDaemon {
         self.inner.joined.store(true, Ordering::SeqCst);
         match enroll.role {
             EnrollAs::Member { .. } => {
+                if self.inner.restarts_after_enroll.load(Ordering::SeqCst) {
+                    self.inner.restart_pending.store(true, Ordering::SeqCst);
+                }
                 if self
                     .inner
                     .lose_lifecycle_reply

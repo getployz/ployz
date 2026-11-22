@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { MachineDetails, TrustedPasskey } from "@ployz/sdk";
+import type { MachineDetails, Passkey, TrustedPasskey } from "@ployz/sdk";
+import { installKey } from "@ployz/sdk/authority";
 import {
   generateRegistrationOptions,
   type RegistrationResponseJSON,
@@ -68,7 +69,7 @@ export const beginPasskeyRegistration = Effect.fn("Passkeys.begin")(function* (a
 /**
  * Checks the browser's answer against the waiting challenge, the Cloud origin and its relying party, with the user
  * verified, then files the passkey under the code its key hashes to. Filing proves nothing to a Server: only
- * `ployz device approve --passkey <code>` there makes the passkey trusted.
+ * `sudo ployz key add` there, with the passkey's key from an install command, makes the passkey trusted.
  */
 export const finishPasskeyRegistration = Effect.fn("Passkeys.finish")(function* (actor: Actor, organizationSlug: string, responseJson: string) {
   const person = yield* member(actor, organizationSlug);
@@ -104,7 +105,7 @@ export const finishPasskeyRegistration = Effect.fn("Passkeys.finish")(function* 
   return { code: key.code };
 });
 
-/** The Organization's passkey at `code` while the CLI may still fetch it, in the shape `ployz device approve --passkey` reads. */
+/** The Organization's passkey at `code` while the CLI may still fetch it, as the CLI reads it. */
 export const readPasskeyRequest = Effect.fn("Passkeys.readRequest")(function* (organizationId: string, code: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(passkeyRequest)
@@ -144,7 +145,7 @@ export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, 
     .from(passkeyRequest)
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, actor.userId)))
     .orderBy(desc(passkeyRequest.createdAt));
-  const servers = rows.length === 0 ? [] : yield* trustedPasskeys(organizationId);
+  const servers = rows.length === 0 ? [] : (yield* trustedPasskeys(organizationId)) ?? [];
   return {
     observed: servers.some((server) => server.passkeys !== null),
     passkeys: rows.map((row) => ({
@@ -169,7 +170,7 @@ type ServerPasskeys = { readonly id: string | null; readonly server: string; rea
 
 /**
  * Each Server's own list of trusted passkeys, read from it directly through one entry. A Server that doesn't answer reads
- * `null`; with no entry at all, there is no Server to list.
+ * `null`; with no entry at all, there is no Server to list. `null` when Cloud reached none of them.
  */
 const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId: string) {
   const loaded = yield* loadOrganizationConnections(organizationId);
@@ -190,5 +191,57 @@ const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId:
       Effect.map((details): ServerPasskeys => ({ id, server: name, passkeys: listed(details) })),
       Effect.orElseSucceed((): ServerPasskeys => ({ id, server: name, passkeys: null })),
     ), { concurrency: "unbounded" });
-  })).pipe(clusterRead, Effect.orElseSucceed((): ServerPasskeys[] => []));
+  })).pipe(clusterRead, Effect.orElseSucceed((): ServerPasskeys[] | null => null));
+});
+
+/**
+ * The key a new Server's install line carries, which it trusts to found or join the Cluster: your passkey, when every
+ * Server Cloud reads trusts it, or your newest one before there is a Cluster. Otherwise the line carries none, and
+ * names whose passkeys the Servers trust, with the key of yours they could be told to trust.
+ */
+export type InstallKey =
+  | { readonly kind: "key"; readonly key: string; readonly account: string }
+  | { readonly kind: "no_passkey" }
+  | { readonly kind: "unreachable" }
+  | { readonly kind: "untrusted"; readonly trustedBy: readonly string[]; readonly yours: string | null };
+
+export const readInstallKey = Effect.fn("Passkeys.installKey")(function* (actor: Actor, organizationSlug: string) {
+  const { organizationId } = yield* member(actor, organizationSlug);
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({
+    code: passkeyRequest.code, credentialId: passkeyRequest.credentialId, algorithm: passkeyRequest.algorithm,
+    publicKey: passkeyRequest.publicKey, account: passkeyRequest.account,
+  }).from(passkeyRequest)
+    .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, actor.userId)))
+    .orderBy(desc(passkeyRequest.createdAt));
+  const rp = relyingPartyOf((yield* AppConfig).app.url);
+  // SAFETY: the passkey_request_algorithm check admits only the algorithms a Passkey names.
+  const filed = (row: (typeof rows)[number]): Passkey => ({
+    credential_id: row.credentialId,
+    public_key: { algorithm: row.algorithm as PasskeyKey["algorithm"], key: row.publicKey },
+    account: row.account,
+    relying_party: rp,
+  });
+  const servers = yield* trustedPasskeys(organizationId);
+  if (servers === null) return { kind: "unreachable" } satisfies InstallKey;
+  const newest = rows[0];
+  if (servers.length === 0) {
+    return newest === undefined
+      ? { kind: "no_passkey" } satisfies InstallKey
+      : { kind: "key", key: installKey(filed(newest)), account: newest.account } satisfies InstallKey;
+  }
+  const answered = servers.flatMap(({ passkeys }) => passkeys === null ? [] : [passkeys]);
+  // A Server that didn't answer might trust none of them, and a line it can't verify would leave its joiner stuck.
+  if (answered.length < servers.length) return { kind: "unreachable" } satisfies InstallKey;
+  // Trusted on every Server, as the first one holds it.
+  const everywhere = (answered[0] ?? []).filter(({ code }) => answered.every((held) => held.some((passkey) => passkey.code === code)));
+  const yours = rows.flatMap((row) => everywhere.find(({ code }) => code === row.code) ?? [])[0];
+  if (yours !== undefined) {
+    return { kind: "key", key: installKey(yours.trusted.passkey), account: yours.trusted.passkey.account } satisfies InstallKey;
+  }
+  return {
+    kind: "untrusted",
+    trustedBy: [...new Set(everywhere.map(({ trusted }) => trusted.passkey.account))],
+    yours: newest === undefined ? null : installKey(filed(newest)),
+  } satisfies InstallKey;
 });

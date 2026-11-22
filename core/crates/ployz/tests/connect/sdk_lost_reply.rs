@@ -77,6 +77,7 @@ fn assignment(snapshot: &ployz_core::EnrollmentSnapshot) -> ployz_core::Enrollme
         )],
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     };
     ployz_core::allocate_enrollment(&identity, snapshot, &[]).unwrap()
 }

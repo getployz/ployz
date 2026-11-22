@@ -401,6 +401,7 @@ define_responses! {
     VersionsForgotten(VersionsForgotten) => "versions_forgotten";
     PendingJoins(PendingJoins) => "pending_joins";
     JoinApproved(JoinApproved) => "join_approved";
+    JoinConfirmed(JoinConfirmed) => "join_confirmed";
     PushTargetSet(PushTargetSet) => "push_target_set";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
@@ -627,6 +628,7 @@ mod set_management_client_wire {
                     sealing_key: None,
                     devices: Vec::new(),
                     grants: Vec::new(),
+                    restrictions: None,
                 },
             },
             wireguard_mtu: Some(1380),

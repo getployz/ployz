@@ -34,8 +34,8 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
         .map(|endpoint| endpoint.0.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let summary = format!(
-        "Approving Server {} on {} with endpoints {} (join code {}).",
+    format!(
+        "Approving Server {} on {} with endpoints {} (join code {}). It will trust the same devices, passkeys and CI or agent keys as the Server that admits it, and none that Server removed.",
         body.machine.name,
         body.machine.subnet,
         if endpoints.is_empty() {
@@ -44,82 +44,34 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
             &endpoints
         },
         body.code()
-    );
-    let devices = body
-        .devices
-        .iter()
-        .map(|device| device.code().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut summary = format!("{summary} The Server will trust device {devices}.");
-    if !body.passkeys.is_empty() {
-        let passkeys = body
-            .passkeys
-            .iter()
-            .map(|passkey| format!("{} for {}", passkey.code(), passkey.account))
-            .collect::<Vec<_>>()
-            .join(", ");
-        summary = format!(
-            "{summary} The Server will also trust passkey {passkeys}. A passkey approves workflows, automatic deploy rules, volume changes, Release Channels, and Server joins and key changes in a bundle."
-        );
-    }
-    if !body.grants.is_empty() {
-        let grants = body
-            .grants
-            .iter()
-            .map(grant_summary)
-            .collect::<Vec<_>>()
-            .join("; ");
-        summary = format!(
-            "{summary} The Server will also trust {grants}. These keys sign service deploys only, in the places named."
-        );
-    }
-    summary
-}
-
-/// One CI or agent key as a person reads it before they sign: its kind, code, places and
-/// the volumes it may mount.
-fn grant_summary(grant: &ployz_core::authority::Grant) -> String {
-    let places = match &grant.scope.places {
-        ployz_core::authority::KeyPlaces::Cluster => "every environment".to_owned(),
-        ployz_core::authority::KeyPlaces::Only(places) => places
-            .iter()
-            .map(|place| match &place.service {
-                Some(service) => format!(
-                    "service {} in {} (environment {})",
-                    service.name, place.namespace, place.environment
-                ),
-                None => format!("{} (environment {})", place.namespace, place.environment),
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
-    let kind = ployz_core::authority::KeyKind::from(grant.kind);
-    let volumes = if grant.volumes.is_empty() {
-        "no volumes".to_owned()
-    } else {
-        let names = grant
-            .volumes
-            .iter()
-            .map(|volume| volume.name.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("volumes {names}")
-    };
-    format!(
-        "{kind} key {} for {places}, with {volumes}",
-        grant.key.code()
     )
 }
 
 /// Where the join this CLI signs came from, which decides what the signed body may name.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum JoinEntry {
-    /// Through Cloud, which could name a Cluster or a Device of its own.
-    Relayed,
+    /// Through Cloud, which could name a Cluster or a Device of its own. Only `pin`, the key
+    /// this computer pinned for the Organization it is signed in to, vouches for the Cluster.
+    Relayed {
+        pin: Option<crate::sealing_pin::Pin>,
+    },
     /// Over a route the person chose, so the body is the entry's own word. `pins_its_devices`
     /// when the joiner's pin also holds the Devices the entry trusts, as `server add` sends.
     Chosen { pins_its_devices: bool },
+}
+
+impl JoinEntry {
+    /// A join relayed through Cloud, vouched for by the pin of the Organization this
+    /// computer is signed in to.
+    ///
+    /// # Errors
+    /// Fails when Cloud can't say which Organization the sign-in acts in, or the pins
+    /// can't be read.
+    pub(crate) async fn relayed(config: &Path) -> Result<Self, Error> {
+        Ok(Self::Relayed {
+            pin: crate::handlers::device::join_pin(config).await?,
+        })
+    }
 }
 
 /// Sign the join waiting for `expected`, narrowed to what the joiner's pin installs, so the
@@ -148,13 +100,8 @@ pub(crate) async fn sign_waiting_join(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
     }
-    let left_out = narrow_pinned_join(&mut body, signing.device_key(), entry, |cluster| {
-        crate::sealing_pin::Pins::beside(config).knows(cluster)
-    })?;
+    check_waiting_join(&body, signing.device_key(), &entry)?;
     show_join(&body);
-    if !left_out.is_empty() {
-        ui::note(left_out_summary(&left_out));
-    }
     let approval = sign_join(&signing, &mut body)?;
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
@@ -162,57 +109,71 @@ pub(crate) async fn sign_waiting_join(
     Ok(true)
 }
 
-/// Narrow a pinned join's `body` to what its joiner installs, answering the Devices left out.
-/// The joiner trusts no passkey or grant, and only the pinned Devices the body names. A
-/// relayed body is signed only for a Cluster this computer pinned.
-fn narrow_pinned_join(
-    body: &mut ployz_core::authority::JoinApproval,
+/// Refuse to sign a join this computer can't vouch for: a body relayed through Cloud for a
+/// Cluster this computer never pinned, or one whose admitting Server doesn't trust this
+/// computer's Device. The joiner trusts what its admitting Server seals, not the body's lists.
+fn check_waiting_join(
+    body: &ployz_core::authority::JoinApproval,
     own: DeviceKey,
-    entry: JoinEntry,
-    pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
-) -> Result<Vec<DeviceKey>, Error> {
-    body.passkeys.clear();
-    body.grants.clear();
-    if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
-        return Err(Error::conflict(format!(
-            "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
-            body.machine.name
-        ))
-        .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned())));
+    entry: &JoinEntry,
+) -> Result<(), Error> {
+    if let JoinEntry::Relayed { pin } = entry {
+        refuse_unpinned(body, pin.as_ref())?;
     }
-    if entry
-        == (JoinEntry::Chosen {
+    if *entry
+        != (JoinEntry::Chosen {
             pins_its_devices: true,
         })
+        && !body.devices.contains(&own)
     {
-        return Ok(Vec::new());
-    }
-    if !body.devices.contains(&own) {
         return Err(Error::conflict(format!(
             "The Server admitting {} doesn't list this computer's device {}, so this computer can't approve the join. Nothing was approved.",
             body.machine.name,
             own.code()
         )));
     }
-    let left_out = body
-        .devices
-        .iter()
-        .copied()
-        .filter(|device| *device != own)
-        .collect();
-    body.devices = vec![own];
-    Ok(left_out)
+    Ok(())
 }
 
-fn left_out_summary(left_out: &[DeviceKey]) -> String {
-    let codes = left_out
-        .iter()
-        .map(|device| device.code().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Not trusting device {codes} on the new Server: only this computer's device is pinned for the join. Approve them there afterwards with ployz device approve <code>."
-    )
+/// Refuse to sign, with `own`, a join whose Server waits for another key from its install
+/// line: it would refuse the approval, and the join would be spent on it.
+pub(crate) fn refuse_another_key(
+    body: &ployz_core::authority::JoinApproval,
+    expected: ployz_core::first_key::FirstKeyHint,
+    own: DeviceKey,
+) -> Result<(), Error> {
+    if expected == (ployz_core::first_key::FirstKeyHint::Device { code: own.code() }) {
+        return Ok(());
+    }
+    let how = match expected {
+        ployz_core::first_key::FirstKeyHint::Passkey { .. } => {
+            "Approve it with that passkey: choose Approve with passkey on the Servers page in Ployz Cloud."
+        }
+        ployz_core::first_key::FirstKeyHint::Device { .. } => {
+            "Run this command on the computer that holds that device."
+        }
+    };
+    Err(Error::conflict(format!(
+        "Server {} trusts only {expected}, not this computer's device {}. {how} Nothing was approved.",
+        body.machine.name,
+        own.code()
+    )))
+}
+
+/// Refuse a join relayed through Cloud for a Cluster other than `pin`, the one this
+/// computer pinned for the Organization it is signed in to.
+pub(crate) fn refuse_unpinned(
+    body: &ployz_core::authority::JoinApproval,
+    pin: Option<&crate::sealing_pin::Pin>,
+) -> Result<(), Error> {
+    if pin.is_some_and(|pin| pin.public_key == body.cluster) {
+        return Ok(());
+    }
+    Err(Error::conflict(format!(
+        "Server {} would join a Cluster other than the one this computer pinned for the Organization you're signed in to, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
+        body.machine.name
+    ))
+    .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned())))
 }
 
 #[cfg(test)]

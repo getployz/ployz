@@ -246,6 +246,7 @@ mod tests {
             machine: machine.clone(),
             bootstrap: vec![machine],
             min_store_version: Default::default(),
+            awaits_restrictions: false,
         });
         assert_eq!(
             DnsSpec::of(&joining, &[], Path::new("/d"), Path::new("/r")),

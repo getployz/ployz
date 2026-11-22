@@ -3,15 +3,15 @@
 //! [`CheckCode`], which Cloud can't grind a second key to match.
 
 use crate::cloud;
-use crate::cluster::{Call, fan_out_entry_last};
+use crate::cluster::{Call, Deadline, fan_out_entry_last};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY, MachineId,
-    MachineName, MachineTarget, Rpc, RpcError, RpcErrorCode, SET_DEVICE_CAPABILITY,
-    SetDeviceRequest,
+    CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY,
+    MachineFailure, MachineId, MachineName, MachineTarget, Rpc, RpcError, RpcErrorCode,
+    SET_DEVICE_CAPABILITY, SetDeviceRequest,
     authority::{KeyRef, PasskeyAccount, PasskeyApprover},
     op,
 };
@@ -29,9 +29,11 @@ use ployz_core::Hint;
 
 mod pin;
 
-use crate::device::{DeviceSigning, key, show_join, sign_join};
+use crate::device::{
+    DeviceSigning, key, refuse_another_key, refuse_unpinned, show_join, sign_join,
+};
 pub(super) use pin::seal_to;
-pub(crate) use pin::{pin, pin_command};
+pub(crate) use pin::{join_pin, pin, pin_command};
 
 pub(crate) fn group(command: Command) -> Command {
     command.about("Approve the devices that can exec and port-forward")
@@ -184,7 +186,7 @@ pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<Device
 }
 
 /// This computer's Device key beside `config`, made now if it has none.
-fn own_key(config: &Path) -> Result<DeviceKey, Error> {
+pub(in crate::handlers) fn own_key(config: &Path) -> Result<DeviceKey, Error> {
     let path = key::path(config);
     let secret = match key::load(&path)? {
         Some(secret) => secret,
@@ -269,15 +271,19 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
             )
             .await
             .map_err(crate::connect::rpc_error)?;
+        let first_keys = pending.first_keys;
         matching.extend(
             pending
                 .joins
                 .into_iter()
                 .filter(|body| body.code() == code)
-                .map(|body| (*machine, body)),
+                .map(|body| {
+                    let hint = first_keys.get(&body.machine.id).copied();
+                    (*machine, body, hint)
+                }),
         );
     }
-    let [(admitting, body)] = matching.as_mut_slice() else {
+    let [(admitting, body, first_key)] = matching.as_mut_slice() else {
         return Err(if matching.is_empty() {
             Error::not_found(format!(
                 "No Server join is waiting for {code}. Run the Server's join command again."
@@ -288,6 +294,16 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
             )
         });
     };
+    // Cloud relays this body, so it can name a Cluster of its own; only a route the person
+    // chose, or the Cluster this computer pinned for the Organization, vouches for it.
+    if let crate::sealing_pin::SealTo::Pinned(pin) =
+        pin::join_seal_to(&config_path(leaf)?, &client).await?
+    {
+        refuse_unpinned(body, pin.as_ref())?;
+    }
+    if let Some(expected) = *first_key {
+        refuse_another_key(body, expected, signing.device_key())?;
+    }
     show_join(body);
     let approval = sign_join(&signing, body)?;
     client
@@ -463,9 +479,10 @@ where
     Fut: Future<Output = Result<Option<O>, RpcError>> + Send + 'static,
     O: Into<Outcome> + Send + 'static,
 {
-    let reach = Reach::full(client).await?;
+    let mut reach = Reach::full(client).await?;
+    let client: &Client = client;
     let (answers, gaps) = reach
-        .fan_out(|machine_id| set(client.clone(), machine_id))
+        .fan_out_through_joins(client, |machine_id| set(client.clone(), machine_id))
         .await;
     Ok(Settled {
         answers: answers
@@ -697,12 +714,16 @@ mod compat {
     }
 }
 
-/// The Servers a fan-out asks, the ones it can't, and how warnings name each.
+/// The Servers a fan-out asks, the ones it can't, and how warnings name each. `names`
+/// holds every Member the fan-out knows of, also those outside its scope.
 pub(super) struct Reach {
     asked: Vec<MachineId>,
     silent: Vec<MachineId>,
     entry: Option<MachineId>,
     names: BTreeMap<MachineId, MachineName>,
+    /// Whether the fan-out also asks the Members that joined while it ran. A change the
+    /// person aimed at one Server never reaches past it.
+    follows_joins: bool,
 }
 
 impl Reach {
@@ -712,6 +733,7 @@ impl Reach {
         if client.full_routes().single() {
             reach.asked.retain(|machine| Some(*machine) == reach.entry);
             reach.silent.retain(|machine| Some(*machine) == reach.entry);
+            reach.follows_joins = false;
         } else if !direct.is_empty() {
             reach.silent.extend(
                 reach
@@ -738,7 +760,96 @@ impl Reach {
                 .iter()
                 .map(|observed| (observed.machine.id, observed.machine.name.clone()))
                 .collect(),
+            follows_joins: true,
         })
+    }
+
+    /// [`Self::fan_out`], then the same call on each Member that joined while it ran, until
+    /// no Server that answered lists a Member this reach never named. A joiner is sealed what
+    /// its admitting Server held then, so it may lack the change, and a Member found this way
+    /// may itself have admitted another.
+    pub(super) async fn fan_out_through_joins<T, F, Fut>(
+        &mut self,
+        client: &Client,
+        call: F,
+    ) -> (Vec<(MachineId, T)>, Gaps)
+    where
+        F: Fn(MachineId) -> Fut,
+        Fut: Future<Output = Result<Option<T>, RpcError>>,
+    {
+        let (mut answers, mut gaps) = self.fan_out(&call).await;
+        if !self.follows_joins {
+            return (answers, gaps);
+        }
+        let unlisted = loop {
+            let (joined, unlisted) = self
+                .joined_since(client, answers.iter().map(|(machine_id, _)| *machine_id))
+                .await;
+            if joined.names.is_empty() {
+                break unlisted;
+            }
+            let (later, later_gaps) = joined.fan_out(&call).await;
+            answers.extend(later);
+            gaps.extend(&later_gaps.failures, &later_gaps.omitted);
+            self.asked.extend(joined.asked);
+            self.silent.extend(joined.silent);
+            self.names.extend(joined.names);
+        };
+        gaps.extend(&unlisted, &[]);
+        (answers, gaps)
+    }
+
+    /// The Members the `answered` Servers list now that this reach never named, and the
+    /// Servers that answered but couldn't list theirs within the target deadline: a gap,
+    /// since a Member one of them knows of may then go unreached. A Member found here is
+    /// asked whatever its membership reads: a joiner is listed before peers see it up, and a
+    /// call it can't answer is a gap too.
+    async fn joined_since(
+        &self,
+        client: &Client,
+        answered: impl Iterator<Item = MachineId>,
+    ) -> (Self, Vec<MachineFailure<RpcError>>) {
+        let listed = fan_out_entry_last(answered, None, |machine_id| {
+            let client = client.clone();
+            async move {
+                client
+                    .call_shared::<op::ListMachines>(
+                        ployz_core::ListMachinesRequest {},
+                        Call::once()
+                            .to(&MachineTarget::from(&machine_id))
+                            .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
+                    )
+                    .await
+                    .map(|list| Some(list.machines))
+                    .map_err(crate::connect::rpc_error)
+            }
+        })
+        .await;
+        let direct = client.full_machines();
+        let mut joined = Self {
+            asked: Vec::new(),
+            silent: Vec::new(),
+            entry: None,
+            names: BTreeMap::new(),
+            follows_joins: true,
+        };
+        for observed in listed
+            .successes
+            .into_iter()
+            .flat_map(|success| success.value)
+        {
+            let id = observed.machine.id;
+            if self.names.contains_key(&id) || joined.names.contains_key(&id) {
+                continue;
+            }
+            joined.names.insert(id, observed.machine.name.clone());
+            if direct.is_empty() || direct.contains(&id) {
+                joined.asked.push(id);
+            } else {
+                joined.silent.push(id);
+            }
+        }
+        (joined, listed.failures)
     }
 
     pub(super) async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)

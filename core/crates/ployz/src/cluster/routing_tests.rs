@@ -391,6 +391,7 @@ const DIRECT: &[&str] = &[
     "WrapSealingKey",
     "RecoverSealingKey",
     "SetDevice",
+    "SetKey",
     "SeedVolume",
     "Exec",
     "Build",

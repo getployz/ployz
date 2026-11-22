@@ -2,7 +2,7 @@
 
 use ployz_core::{
     ClientKey, DeviceCode, DeviceKey, DeviceSet, KeyStepRequest, ManagementCapability,
-    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse,
+    SetDeviceRequest, SetKeyRequest, SetManagementClientRequest, SetManagementClientResponse,
     authority::{
         Approver, KeyFacts, KeyKind, KeyMember, KeyVerified, NewKey, PasskeyApprover, Timestamp,
         TrustedGrant, TrustedPasskey, key,
@@ -106,6 +106,27 @@ impl LocalMachine {
                             Ok(removal(key.code(), removed, by))
                         }
                     }
+                })
+                .await?
+        })
+        .await
+    }
+
+    /// Trust one person's passkey or CLI Device on this Machine alone, as root on this
+    /// Server asks with `ployz key add`, under mutation admission. It reuses [`trust`], so a
+    /// removed key, or one that collides with a key held as another kind, is refused.
+    ///
+    /// # Errors
+    /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
+    pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
+        let full = self.full_caller()?;
+        self.finish_mutation(move |local| async move {
+            local
+                .owner
+                .mutate(move |store| {
+                    store.record().require_participating()?;
+                    let by = full.approver(store.record())?;
+                    trust(store, request.key.into(), by, Timestamp::now())
                 })
                 .await?
         })

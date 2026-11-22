@@ -4,9 +4,10 @@ use ployz_core::authority::MismatchField;
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ApproveJoinRequest, DeviceKey, JoinApproved, Machine, MachineId, PendingJoins,
-    WireGuardPublicKey,
+    ApproveJoinRequest, ConfirmJoinRequest, DeviceKey, JoinApproved, JoinConfirmed, Machine,
+    MachineId, PendingJoins, WireGuardPublicKey,
     authority::{AuthorityRefusal, JoinApproval, Purpose, Signed, SignerKey, Timestamp, join},
+    first_key::FirstKeyHint,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,9 @@ struct Joins {
 struct Proposal {
     body: JoinApproval,
     approval: Option<Signed<JoinApproval>>,
+    /// The key the joiner said its First Key file waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first_key: Option<FirstKeyHint>,
 }
 
 /// What entering a join found for one Machine.
@@ -64,16 +68,42 @@ impl LocalMachine {
         .map_err(Error::JoinRecord)
     }
 
+    /// The joins waiting for a person's approval: drafted and not yet approved, or answered
+    /// under a key other than the one the joiner said it waits for, which that joiner refuses.
     pub(crate) fn pending_joins(&self) -> Result<PendingJoins, Error> {
         let now = Timestamp::now();
-        Ok(PendingJoins {
-            joins: self
-                .read_joins()?
-                .proposals
-                .into_values()
-                .filter(|proposal| proposal.body.expires_at >= now && proposal.approval.is_none())
-                .map(|proposal| proposal.body)
-                .collect(),
+        let mut pending = PendingJoins {
+            joins: Vec::new(),
+            first_keys: std::collections::BTreeMap::new(),
+        };
+        for (machine, proposal) in self.read_joins()?.proposals {
+            if proposal.body.expires_at < now || proposal.approval.is_some() {
+                continue;
+            }
+            if let Some(stored) = self.approvals.join_result(machine)?
+                && !self.answered_with_another_key(&stored, proposal.first_key)
+            {
+                continue;
+            }
+            if let Some(hint) = proposal.first_key {
+                pending.first_keys.insert(machine, hint);
+            }
+            pending.joins.push(proposal.body);
+        }
+        Ok(pending)
+    }
+
+    /// Whether `stored` answered a joiner that waits for `first_key` under an approval some
+    /// other key signed. Such a joiner refuses the capsule, unless the person's CLI pinned
+    /// that key, so a fresh approval may take its place until the joiner confirms.
+    fn answered_with_another_key(
+        &self,
+        stored: &super::consumption::JoinResult,
+        first_key: Option<FirstKeyHint>,
+    ) -> bool {
+        first_key.is_some_and(|hint| {
+            join::approver(&stored.approval, &self.record().trusted_keys())
+                .is_none_or(|approver| !hint.names(&approver))
         })
     }
 
@@ -88,18 +118,95 @@ impl LocalMachine {
                 .await?;
             local.verify_join(&request.approval, &body.machine, body.network)?;
             let mut joins = local.read_joins()?;
-            local.require_unused_join(body.machine.id)?;
+            let first_key = joins
+                .proposals
+                .get(&body.machine.id)
+                .and_then(|proposal| proposal.first_key);
+            if let Some(stored) = local.approvals.join_result(body.machine.id)? {
+                local
+                    .require_replaceable(&stored, first_key, &request.approval)
+                    .await?;
+            }
             joins.proposals.insert(
                 body.machine.id,
                 Proposal {
                     body,
                     approval: Some(request.approval),
+                    first_key,
                 },
             );
             local.save_joins(joins)?;
             Ok(JoinApproved {})
         })
         .await
+    }
+
+    /// Refuse a fresh approval for a join already answered, unless the answer was approved
+    /// under a key the joiner doesn't wait for, the joiner hasn't confirmed it, and the fresh
+    /// one is signed by the key it does wait for. A joiner is confirmed once its row is out.
+    async fn require_replaceable(
+        &self,
+        stored: &super::consumption::JoinResult,
+        first_key: Option<FirstKeyHint>,
+        fresh: &Signed<JoinApproval>,
+    ) -> Result<(), Error> {
+        let body = stored.approval.open().map_err(Error::JoinRefused)?;
+        let confirmed = self
+            .replicated()?
+            .machine(body.machine.id.as_str())
+            .await?
+            .is_some_and(|row| row.public_key == body.machine.public_key);
+        let Some(hint) =
+            first_key.filter(|_| !confirmed && self.answered_with_another_key(stored, first_key))
+        else {
+            return Err(Error::JoinConsumed(body.machine.id));
+        };
+        let trusted = self.record().trusted_keys();
+        if join::approver(fresh, &trusted).is_none_or(|approver| !hint.names(&approver)) {
+            return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                field: MismatchField::FirstKey,
+            }));
+        }
+        Ok(())
+    }
+
+    /// Before a joiner registers again: when a person approved its join afresh to replace
+    /// an answer the joiner refused, drop that answer so the fresh approval admits it. An
+    /// approval that no longer verifies here leaves the answer as it is. `confirmed` when
+    /// the joiner's row is out, which keeps the answer it confirmed.
+    pub(crate) fn give_way_to_a_fresh_approval(
+        &self,
+        machine: MachineId,
+        confirmed: bool,
+    ) -> Result<(), Error> {
+        if confirmed {
+            return Ok(());
+        }
+        let Some(fresh) = self
+            .read_joins()?
+            .proposals
+            .get(&machine)
+            .and_then(|proposal| proposal.approval.clone())
+        else {
+            return Ok(());
+        };
+        let body = fresh.open().map_err(Error::JoinRefused)?;
+        if self
+            .verify_join(&fresh, &body.machine, body.network)
+            .is_err()
+        {
+            return Ok(());
+        }
+        self.approvals.release_join(machine, &fresh)
+    }
+
+    /// Stop offering `machine`'s join for approval once it confirmed its answer.
+    pub(crate) fn settle_join(&self, machine: MachineId) -> Result<(), Error> {
+        let mut joins = self.read_joins()?;
+        if joins.proposals.remove(&machine).is_some() {
+            self.save_joins(joins)?;
+        }
+        Ok(())
     }
 
     /// Refuse a join for a Member this Machine saw removed: in its own record, or by its
@@ -155,6 +262,44 @@ impl LocalMachine {
             .map(|proposal| proposal.body.machine.public_key))
     }
 
+    /// Take the restrictions this joiner's admitting Machine answered its confirmation with,
+    /// once their MAC shows a holder of the Cluster's Sealing Key made them for this join:
+    /// raise the floors, hold each removed key and Member removed, and stop waiting, so
+    /// catch-up may finish. A joiner refuses anything else, so a relay that drops or forges
+    /// them only keeps it from participating.
+    pub(crate) async fn confirm_join(
+        &self,
+        request: ConfirmJoinRequest,
+    ) -> Result<JoinConfirmed, Error> {
+        self.finish_mutation(move |local| async move {
+            let record = local.record();
+            let approval = record
+                .machine()
+                .and_then(|machine| machine.join_approval.clone())
+                .ok_or(Error::Store(crate::machine::StoreError::NotJoining))?;
+            let key = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                .map_err(Error::JoinRecord)?
+                .ok_or(Error::JoinRefused(AuthorityRefusal::NoClusterIdentity))?;
+            let confirmation = key.confirm_join(&approval);
+            if !key.restricts_join(&approval, &confirmation, &request.restrictions) {
+                return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::JoinRestrictions,
+                }));
+            }
+            let set = request.restrictions.set;
+            local
+                .approvals
+                .install_floors(key.public_key(), &set.floors)?;
+            local
+                .owner
+                .mutate(move |store| store.apply_join_restrictions(&set))
+                .await??;
+            Ok(JoinConfirmed {})
+        })
+        .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn require_unused_join(&self, machine: MachineId) -> Result<(), Error> {
         self.approvals.require_unused_join(machine)
     }
@@ -197,8 +342,15 @@ impl LocalMachine {
             }));
         }
         self.approvals.consume_join(result, Timestamp::now())?;
+        // A joiner that named the key it waits for keeps its draft until it confirms, so if
+        // it refuses this answer it can still be approved with that key.
         let mut joins = self.read_joins()?;
-        joins.proposals.remove(&machine);
+        match joins.proposals.get_mut(&machine) {
+            Some(proposal) if proposal.first_key.is_some() => proposal.approval = None,
+            _ => {
+                joins.proposals.remove(&machine);
+            }
+        }
         self.save_joins(joins)
     }
 
@@ -232,12 +384,13 @@ impl LocalMachine {
         network: ipnet::Ipv4Net,
         approval: Option<Signed<JoinApproval>>,
         peers: &[Machine],
+        first_key: Option<FirstKeyHint>,
     ) -> Result<Signed<JoinApproval>, Error> {
         debug_assert_eq!(
             fresh.machine, machine.id,
             "a join is admitted as it was entered"
         );
-        let mut joins = self.read_joins()?;
+        let joins = self.read_joins()?;
         let approval = approval.or_else(|| {
             joins
                 .proposals
@@ -262,6 +415,51 @@ impl LocalMachine {
             }
             return Ok(approval);
         }
+        self.draft_join(joins, machine, network, peers, first_key)?;
+        Err(Error::JoinRefused(AuthorityRefusal::Unsigned {
+            purpose: Purpose::Join,
+        }))
+    }
+
+    /// Offer `machine`'s join for a person's approval again when its answer was approved
+    /// under a key other than the one it waits for, the joiner hasn't confirmed, and no draft
+    /// waits for a signature: its window closed, the answer predates kept drafts, or the
+    /// approval that would replace the answer no longer verifies. The fresh draft gets a new
+    /// window and the key the joiner named; the old answer stands until an approval under
+    /// that key replaces it.
+    pub(crate) fn redraft_refused_join(
+        &self,
+        stored: &super::consumption::JoinResult,
+        machine: &Machine,
+        network: ipnet::Ipv4Net,
+        peers: &[Machine],
+        first_key: Option<FirstKeyHint>,
+    ) -> Result<(), Error> {
+        if !self.answered_with_another_key(stored, first_key) {
+            return Ok(());
+        }
+        let joins = self.read_joins()?;
+        let now = Timestamp::now();
+        if joins
+            .proposals
+            .get(&machine.id)
+            .is_some_and(|proposal| proposal.approval.is_none() && proposal.body.expires_at >= now)
+        {
+            return Ok(());
+        }
+        self.draft_join(joins, machine, network, peers, first_key)
+    }
+
+    /// Save a draft of `machine`'s join, with a fresh window and the trust this Machine
+    /// holds now, for a person to sign.
+    fn draft_join(
+        &self,
+        mut joins: Joins,
+        machine: &Machine,
+        network: ipnet::Ipv4Net,
+        peers: &[Machine],
+        first_key: Option<FirstKeyHint>,
+    ) -> Result<(), Error> {
         let record = self.record();
         let cluster = crate::sealing_key::SealingKey::load(self.owner.data_dir())
             .map_err(Error::JoinRecord)?
@@ -304,11 +502,9 @@ impl LocalMachine {
                     proposal: None,
                 },
                 approval: None,
+                first_key,
             },
         );
-        self.save_joins(joins)?;
-        Err(Error::JoinRefused(AuthorityRefusal::Unsigned {
-            purpose: Purpose::Join,
-        }))
+        self.save_joins(joins)
     }
 }

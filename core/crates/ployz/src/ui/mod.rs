@@ -2,7 +2,7 @@
 //! errors and exit codes. Handlers pass values and typed parts, never layout.
 
 mod error;
-mod exit;
+pub(crate) mod exit;
 mod mode;
 pub(crate) mod progress;
 mod prompt;

@@ -6,8 +6,8 @@ import { organization } from "#/modules/organization/tables";
 
 /**
  * A passkey someone added in the browser, under the code they read out on a Server. Cloud only relays it: a Server
- * trusts the passkey once a Full caller runs `ployz device approve --passkey <code>` there, and only the Servers say
- * whether that happened. The CLI can fetch it for a day; the row stays so the person keeps seeing their passkey.
+ * trusts the passkey once it founds or joins with the passkey's key on its install line, or someone runs
+ * `sudo ployz key add` there with that key, and only the Servers say whether that happened. The CLI can fetch it for a day; the row stays so the person keeps seeing their passkey.
  */
 export const passkeyRequest = pgTable("passkey_request", {
   organizationId: uuid("organization_id").notNull()

@@ -124,6 +124,7 @@ fn joiner_identity() -> RegisterRequest {
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.9:51820".parse().unwrap())],
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     }
 }
 

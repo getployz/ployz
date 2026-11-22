@@ -69,6 +69,8 @@ macro_rules! rpc_catalog {
                 PendingJoins: (pending_joins, PendingJoinsRequest, PendingJoins, PENDING_JOINS_CAPABILITY, "ployz.machine.join.pending.v1", Always, Operator),
                 ApproveJoin: (approve_join, ApproveJoinRequest, JoinApproved, APPROVE_JOIN_CAPABILITY, "ployz.machine.join.approve.v1", Always, Operator),
                 SetDevice: (set_device, SetDeviceRequest, DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
+                SetKey: (set_key, SetKeyRequest, DeviceSet, SET_KEY_CAPABILITY, "ployz.machine.set-key.v1", Always, Full),
+                ConfirmJoin: (confirm_join, ConfirmJoinRequest, JoinConfirmed, CONFIRM_JOIN_CAPABILITY, "ployz.machine.join.confirm.v1", Always, Operator),
                 SetPushTarget: (set_push_target, SetPushTargetRequest, PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
                 KeyStep: (key_step, KeyStepRequest, DeviceSet, KEY_STEP_CAPABILITY, "ployz.machine.key-step.v1", Always, Operator),
                 ForgetVersions: (forget_versions, ForgetVersionsRequest, VersionsForgotten, FORGET_VERSIONS_CAPABILITY, "ployz.machine.forget-versions.v1", Always, Operator),
@@ -123,6 +125,10 @@ macro_rules! rpc_catalog {
             }
             capabilities {
                 JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
+                /// A joiner that claims it opens the trust an admitting Machine seals in its
+                /// capsule, and takes that Machine's restrictions with `ConfirmJoin` before it
+                /// participates. An admitting Machine that advertises it seals them.
+                JOIN_TRUST_CAPABILITY: ("ployz.machine.join-trust.v1", Always),
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.

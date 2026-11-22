@@ -565,22 +565,6 @@ fn a_join_carries_a_grant_only_as_this_machine_holds_it_now() {
 }
 
 #[test]
-fn a_joiner_refuses_a_grant_that_holds_a_device_key() {
-    let shadowing = Grant {
-        key: device().public(),
-        ..grant(GrantKind::Ci, spec_scope(vec![place("app", None)]), NOW)
-    };
-    let signed = Signed::sign(&join_body(&device(), vec![shadowing]), &device()).unwrap();
-
-    assert_eq!(
-        join::verify_as_joiner(&signed, None, &joiner(), Some(cluster()), at(NOW + 1)),
-        Err(AuthorityRefusal::Mismatch {
-            field: MismatchField::ApprovedGrants
-        }),
-    );
-}
-
-#[test]
 fn a_ci_key_turns_on_no_private_access() {
     let sealed = Ciphertext::from_bytes(vec![3; 80]);
     let body = PrivateAccessApproval {

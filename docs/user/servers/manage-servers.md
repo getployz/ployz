@@ -307,20 +307,29 @@ read the key from that server and need no pin.
 
 ### Add a passkey
 
-A passkey approves an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push)
-and a Private Access key from your browser, and nothing else: it can't deploy, open a
-connection, run `exec`, or approve a device.
+A passkey approves an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push),
+a Private Access key and a new server's [join](add-a-server.md#approve-a-join) from your
+browser, and nothing else: it can't deploy, open a connection, run `exec`, or approve a device.
 
 In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
 asks for a fingerprint, face or security key. That files the passkey with Ployz Cloud, which
 approves nothing by itself: a passkey counts on a server only once that server trusts it, and
 **Account** shows which servers do.
 
-This version of Ployz has no command that adds a passkey to a server. A server that already
-trusts a passkey keeps trusting it. A server you add from the dashboard trusts the passkeys your
-admitting server trusts when you approve its join; see
-[Approve a join](add-a-server.md#approve-a-join). Until a server trusts your passkey, approve
-rules from an approved device with `ployz github rule approve`, and turn Private Access on with
+A server you add trusts the passkeys of the server that admits it; see
+[Approve a join](add-a-server.md#approve-a-join). While your servers trust no passkey of yours,
+the dashboard shows no install line when you add a server. It shows the command that makes a
+server trust your passkey instead. Run it as root on the server:
+
+```sh
+sudo ployz key add pk1_…
+```
+
+It changes only the server you run it on, and names the servers that still don't trust the key.
+Run it on each of them. It also takes a device's key, as `ployz server add --command` prints it.
+It reaches the server through its local socket, which admits root and members of the `ployz`
+group, so anyone in that group can add a key. Until a server trusts your passkey, approve rules
+from an approved device with `ployz github rule approve`, and turn Private Access on with
 `ployz private-access on`.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its

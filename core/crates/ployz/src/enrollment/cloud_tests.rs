@@ -16,6 +16,7 @@ fn identified(
         memory_total_bytes: None,
         disk_total_bytes: None,
         disk_available_bytes: None,
+        first_key: None,
     };
     let identity = EnrollIdentity::from_machine_token(
         machine.name.clone(),
@@ -41,6 +42,7 @@ fn registered(machine: Machine) -> ployz_core::Registered {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     }
 }
 
@@ -713,6 +715,7 @@ async fn an_add_on_another_cluster_is_refused_only_with_different_observed_keys(
                 devices: Vec::new(),
                 sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
                 grants: Vec::new(),
+                restrictions: None,
             },
         };
         let identified = identified(

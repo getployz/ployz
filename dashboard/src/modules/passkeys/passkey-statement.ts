@@ -26,13 +26,25 @@ export const statementChallenge = async (body: string, purpose: Purpose) =>
 /** Why a passkey didn't answer, in words a prompt shows as they are. */
 export class PasskeyDeclined extends Error {}
 
-/** One user-verified passkey prompt answering `challenge`, as Servers check it. */
-export async function passkeyAnswer(challenge: Uint8Array<ArrayBuffer>): Promise<PasskeyAssertion> {
+const fromBase64url = (text: string) => {
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+};
+
+/** The one passkey a prompt may use: its credential, and its code to name it if another answers. */
+export type OnlyPasskey = { readonly credentialId: string; readonly code: string };
+
+/** One user-verified passkey prompt answering `challenge`, as Servers check it, offering only `only` when given. */
+export async function passkeyAnswer(challenge: Uint8Array<ArrayBuffer>, only?: OnlyPasskey): Promise<PasskeyAssertion> {
+  const allowCredentials = only === undefined ? undefined : [{ type: "public-key" as const, id: fromBase64url(only.credentialId) }];
   // SAFETY: a `publicKey` get request answers with a public key credential, or null.
   const credential = await navigator.credentials.get({
-    publicKey: { challenge, rpId: location.hostname, userVerification: "required", timeout: 60_000 },
+    publicKey: { challenge, rpId: location.hostname, userVerification: "required", timeout: 60_000, allowCredentials },
   }) as PublicKeyCredential | null;
   if (credential === null) throw new PasskeyDeclined("Your passkey didn't answer. Try again.");
+  if (only !== undefined && base64url(credential.rawId) !== only.credentialId) {
+    throw new PasskeyDeclined(`Use passkey ${only.code}. This server trusts only that one.`);
+  }
   // SAFETY: a `publicKey` get request answers with an assertion response.
   const response = credential.response as AuthenticatorAssertionResponse;
   return {
@@ -47,6 +59,6 @@ export async function passkeyAnswer(challenge: Uint8Array<ArrayBuffer>): Promise
  * `body`, a statement of `purpose` in canonical form, answered by the person's passkey with a prompt of its own. The
  * envelope carries no signature and no grant: the answer is the approval.
  */
-export async function signWithPasskey(body: string, purpose: Purpose): Promise<Signed> {
-  return { body, signatures: [], assertions: [await passkeyAnswer(await statementChallenge(body, purpose))] };
+export async function signWithPasskey(body: string, purpose: Purpose, only?: OnlyPasskey): Promise<Signed> {
+  return { body, signatures: [], assertions: [await passkeyAnswer(await statementChallenge(body, purpose), only)] };
 }

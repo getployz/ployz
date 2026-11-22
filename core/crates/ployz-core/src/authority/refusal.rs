@@ -152,6 +152,9 @@ pub enum MismatchField {
     Repository,
     PendingJoinCapacity,
     BootstrapPeers,
+    FirstKey,
+    JoinRestrictions,
+    SealedTrust,
 }
 
 impl MismatchField {
@@ -231,6 +234,9 @@ impl MismatchField {
             Self::Repository => "a repository",
             Self::PendingJoinCapacity => "pending join capacity",
             Self::BootstrapPeers => "bootstrap peers",
+            Self::FirstKey => "the joiner's First Key",
+            Self::JoinRestrictions => "join restrictions",
+            Self::SealedTrust => "sealed trust",
         }
     }
 
@@ -328,7 +334,10 @@ impl MismatchField {
             | Self::Branch
             | Self::Repository
             | Self::PendingJoinCapacity
-            | Self::BootstrapPeers => return None,
+            | Self::BootstrapPeers
+            | Self::FirstKey
+            | Self::JoinRestrictions
+            | Self::SealedTrust => return None,
         })
     }
 
@@ -422,7 +431,10 @@ impl MismatchField {
             | Self::Branch
             | Self::Repository
             | Self::PendingJoinCapacity
-            | Self::BootstrapPeers => return None,
+            | Self::BootstrapPeers
+            | Self::FirstKey
+            | Self::JoinRestrictions
+            | Self::SealedTrust => return None,
         })
     }
 }

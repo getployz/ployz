@@ -55,6 +55,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         advertised_endpoints: expected_machine.advertised_endpoints.clone(),
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     };
     let mut allocation = JoinAllocation::from(&expected_machine);
     allocation.public_key = ployz_core::WireGuardPublicKey([9; 32]);
@@ -87,16 +88,24 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
                     "a substituted key must never reach ApproveJoin"
                 );
                 Ok(Response::new(
-                    RpcResponse::from(PendingJoins { joins: vec![body] })
-                        .encode()
-                        .unwrap(),
+                    RpcResponse::from(PendingJoins {
+                        joins: vec![body],
+                        first_keys: Default::default(),
+                    })
+                    .encode()
+                    .unwrap(),
                 ))
             }
         })
         .await;
-    let error = sign_waiting_join(&mut client, &config, &expected, JoinEntry::Relayed)
-        .await
-        .unwrap_err();
+    let error = sign_waiting_join(
+        &mut client,
+        &config,
+        &expected,
+        JoinEntry::Relayed { pin: None },
+    )
+    .await
+    .unwrap_err();
     assert!(error.to_string().contains("does not match"));
     server.abort();
 }
@@ -123,6 +132,7 @@ fn relayed_join(
         advertised_endpoints: joiner.advertised_endpoints.clone(),
         runtime: Default::default(),
         capabilities: Vec::new(),
+        first_key: None,
     };
     let issued_at = Timestamp::now();
     let body = JoinApproval {
@@ -144,9 +154,17 @@ fn relayed_join(
 }
 
 fn pin_cluster(config: &std::path::Path, cluster: ployz_core::SealingPublicKey) {
+    pin_cluster_for(config, "org", cluster);
+}
+
+fn pin_cluster_for(
+    config: &std::path::Path,
+    organization: &str,
+    cluster: ployz_core::SealingPublicKey,
+) {
     crate::sealing_pin::Pins::beside(config)
         .set(
-            "org",
+            organization,
             crate::sealing_pin::Pin {
                 public_key: cluster,
                 server: MachineName::parse("entry").unwrap(),
@@ -155,8 +173,8 @@ fn pin_cluster(config: &std::path::Path, cluster: ployz_core::SealingPublicKey) 
         .unwrap();
 }
 
-/// A join relayed through Cloud whose body names `devices`, answering each approval the CLI
-/// sent.
+/// A join relayed through Cloud whose body names `devices`, while this computer is signed
+/// in to Organization "org", answering each approval the CLI sent.
 async fn sign_relayed(
     config: &std::path::Path,
     devices: Vec<DeviceKey>,
@@ -181,7 +199,10 @@ async fn sign_relayed(
                 )]
                 let response = match request.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::PendingJoins(_) => {
-                        RpcResponse::from(ployz_core::PendingJoins { joins: vec![body] })
+                        RpcResponse::from(ployz_core::PendingJoins {
+                            joins: vec![body],
+                            first_keys: Default::default(),
+                        })
                     }
                     RpcRequestBody::ApproveJoin(request) => {
                         seen.lock().unwrap().push(request.approval);
@@ -193,33 +214,12 @@ async fn sign_relayed(
             }
         })
         .await;
-    let signed = sign_waiting_join(&mut client, config, &expected, JoinEntry::Relayed).await;
+    let pin = crate::sealing_pin::Pins::beside(config).get("org").unwrap();
+    let signed =
+        sign_waiting_join(&mut client, config, &expected, JoinEntry::Relayed { pin }).await;
     server.abort();
     let sent = sent.lock().unwrap().clone();
     (signed, sent)
-}
-
-/// Cloud relays the body a person signs, so it can name a Device of its own. The CLI signs
-/// only for itself, so even a joiner that ignores its pin installs nothing else.
-#[tokio::test]
-async fn a_relayed_join_signs_for_this_device_alone_and_no_passkey() {
-    let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("config.yaml");
-    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
-    let own = super::key::public(&[1; 32]);
-    let cluster = ployz_core::SealingPublicKey::from_bytes([2; 32]);
-    pin_cluster(&config, cluster);
-
-    let (signed, sent) = sign_relayed(&config, vec![key(40), own], cluster).await;
-
-    assert!(signed.unwrap());
-    let [approval] = sent.as_slice() else {
-        panic!("one approval, got {}", sent.len());
-    };
-    let body = approval.open().unwrap();
-    assert_eq!(body.devices, [own]);
-    assert_eq!(body.signer, own.into());
-    assert!(body.passkeys.is_empty());
 }
 
 #[tokio::test]
@@ -248,6 +248,28 @@ async fn a_relayed_join_to_a_cluster_this_computer_never_pinned_is_refused_unsig
     );
 }
 
+/// One Device can be trusted in two Organizations. A join relayed while it is signed in to
+/// one is vouched for only by that Organization's pin, so Cloud can't steer it into signing
+/// a join to the other's Cluster.
+#[tokio::test]
+async fn a_relayed_join_to_another_organizations_cluster_is_refused_unsigned() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.yaml");
+    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
+    let own = super::key::public(&[1; 32]);
+    let other = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    pin_cluster(&config, ployz_core::SealingPublicKey::from_bytes([3; 32]));
+    pin_cluster_for(&config, "other-org", other);
+
+    let (signed, sent) = sign_relayed(&config, vec![own], other).await;
+
+    assert!(signed.is_err());
+    assert!(
+        sent.is_empty(),
+        "nothing may be signed for another Organization"
+    );
+}
+
 #[tokio::test]
 async fn a_relayed_join_that_leaves_out_this_device_is_refused_unsigned() {
     let directory = tempfile::tempdir().unwrap();
@@ -260,57 +282,6 @@ async fn a_relayed_join_that_leaves_out_this_device_is_refused_unsigned() {
 
     assert!(signed.is_err());
     assert!(sent.is_empty());
-}
-
-#[test]
-fn a_join_from_an_entry_the_person_chose_keeps_its_devices_and_drops_its_passkeys() {
-    let joiner = machine('a', "joiner");
-    let own = key(1);
-    let (_, mut body) = relayed_join(
-        &joiner,
-        vec![own, key(40)],
-        ployz_core::SealingPublicKey::from_bytes([2; 32]),
-    );
-
-    let left_out = narrow_pinned_join(
-        &mut body,
-        own,
-        JoinEntry::Chosen {
-            pins_its_devices: true,
-        },
-        |_| panic!("an entry the person chose vouches for its own Cluster"),
-    )
-    .unwrap();
-
-    assert!(left_out.is_empty());
-    assert_eq!(body.devices, [own, key(40)]);
-    assert!(body.passkeys.is_empty());
-}
-
-/// A Cloud-token join run over the person's own route pins only this computer's Device, so
-/// it needs no Cluster pin, and signs for that Device alone.
-#[test]
-fn a_join_whose_pin_is_this_device_alone_signs_for_it_alone_over_a_chosen_route() {
-    let joiner = machine('a', "joiner");
-    let own = key(1);
-    let (_, mut body) = relayed_join(
-        &joiner,
-        vec![own, key(40)],
-        ployz_core::SealingPublicKey::from_bytes([2; 32]),
-    );
-
-    let left_out = narrow_pinned_join(
-        &mut body,
-        own,
-        JoinEntry::Chosen {
-            pins_its_devices: false,
-        },
-        |_| panic!("an entry the person chose vouches for its own Cluster"),
-    )
-    .unwrap();
-
-    assert_eq!(left_out, [key(40)]);
-    assert_eq!(body.devices, [own]);
 }
 
 #[test]
@@ -341,9 +312,38 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
     assert_eq!(
         join_summary(&body),
         format!(
-            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}). The Server will trust device {}.",
-            body.code(),
-            key(1).code()
+            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}). It will trust the same devices, passkeys and CI or agent keys as the Server that admits it, and none that Server removed.",
+            body.code()
         )
     );
+}
+
+/// A Server whose install command named a key takes only that key's approval, so this
+/// computer refuses to spend the join under its own device, and says which key to use.
+#[test]
+fn a_join_waiting_for_another_key_is_not_signed_with_this_device() {
+    use ployz_core::first_key::FirstKeyHint;
+    let own: DeviceKey = ployz_core::authority::Signer::from_seed(&[1; 32])
+        .public()
+        .into();
+    let other: DeviceKey = ployz_core::authority::Signer::from_seed(&[2; 32])
+        .public()
+        .into();
+    let (_, body) = relayed_join(
+        &crate::global_fixtures::machine('a', "web-3"),
+        vec![own],
+        ployz_core::SealingPublicKey::from_bytes([2; 32]),
+    );
+    let passkey = FirstKeyHint::Passkey { code: other.code() };
+    let refused = super::refuse_another_key(&body, passkey, own).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(&format!("passkey {}", other.code())),
+        "{refused}"
+    );
+    assert!(
+        super::refuse_another_key(&body, FirstKeyHint::Device { code: other.code() }, own).is_err()
+    );
+    super::refuse_another_key(&body, FirstKeyHint::Device { code: own.code() }, own).unwrap();
 }

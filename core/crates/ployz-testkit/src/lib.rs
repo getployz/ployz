@@ -1197,6 +1197,7 @@ mod tests {
             sealing_key: None,
             devices: Vec::new(),
             grants: Vec::new(),
+            restrictions: None,
         };
         let EnrollAs::Member {
             registration: join,

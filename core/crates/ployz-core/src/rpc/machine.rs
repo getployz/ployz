@@ -169,15 +169,29 @@ pub struct RegisterRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub capabilities: Vec<String>,
+    /// The key the joiner's First Key file waits for, so whoever approves the join signs
+    /// with it. A hint, not part of the retry identity: the joiner checks its approval
+    /// against its own file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_key: Option<crate::first_key::FirstKeyHint>,
 }
 
 /// Read the join requests waiting for a Device's approval on this Machine.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingJoinsRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PendingJoins {
     pub joins: Vec<crate::authority::JoinApproval>,
+    /// The key each waiting joiner said its First Key file waits for, by Machine. Only
+    /// that key's approval lets such a joiner in, unless the person's CLI pinned another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(
+        optional,
+        as = "Option<BTreeMap<MachineId, crate::first_key::FirstKeyHint>>"
+    )]
+    pub first_keys: BTreeMap<MachineId, crate::first_key::FirstKeyHint>,
 }
 
 /// Carry Device authority to the Machine that will admit the join.
@@ -188,6 +202,43 @@ pub struct ApproveJoinRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct JoinApproved {}
+
+/// A Member a Machine no longer admits, by its ID and, when known, its WireGuard key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemovedMember {
+    pub id: MachineId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<WireGuardPublicKey>,
+}
+
+/// What the admitting Machine had stopped trusting when a joiner's confirmation reached it,
+/// and its floors then. Each list is written even when empty, and a reader refuses one that
+/// is missing, so a relay can't drop a removal by dropping its list.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinRestrictionSet {
+    pub removed_keys: Vec<crate::authority::KeyRef>,
+    pub removed_members: Vec<RemovedMember>,
+    pub floors: BTreeMap<crate::QualifiedService, crate::authority::Timestamp>,
+}
+
+/// A [`JoinRestrictionSet`] with the admitting Machine's MAC over it under the Cluster's
+/// Sealing Key, bound to the join and the confirmation it answers. A joiner that claims
+/// [`JOIN_TRUST_CAPABILITY`] takes these before it participates, and refuses to without them.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinRestrictions {
+    #[serde(flatten)]
+    pub set: JoinRestrictionSet,
+    pub tag: crate::authority::join::RestrictionTag,
+}
+
+/// Hand a joining Machine the restrictions its admitting Machine answered its confirmation with.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConfirmJoinRequest {
+    pub restrictions: JoinRestrictions,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinConfirmed {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListMachinesRequest {}
@@ -237,6 +288,11 @@ pub struct Registered {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<crate::authority::Grant>>")]
     pub grants: Vec<crate::authority::Grant>,
+    /// Present on the answer to a confirmed join from an admitting Machine that seals
+    /// [`JOIN_TRUST_CAPABILITY`]: the driver hands it to the joiner with `ConfirmJoin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub restrictions: Option<JoinRestrictions>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

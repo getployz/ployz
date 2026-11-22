@@ -31,7 +31,7 @@ pub use admission::{DataReach, needs_signature};
 pub use birth::{BirthError, Births, Mounts, PlannedVolume, PlannedVolumes};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
-pub use join::{JoinApproval, Member};
+pub use join::{JoinApproval, Member, PasskeyJoinDraft};
 pub use key::{KeyChange, KeyFacts, KeyMember, KeyRef, KeyStep, KeyVerified, NewKey};
 pub use keys::{
     Approver, KeySignature, OwnPrompt, Purpose, Signed, Signer, SignerKey, SigningPublicKey,

@@ -14,7 +14,7 @@ mod signed_in;
 use harness::{
     EnrollListen, EventLog, JOIN_CONFIRMATION, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
     approved_registration, default_policy, founder_machine, ingress_on, registration,
-    serve_machine,
+    serve_machine, serve_restarting_machine,
 };
 use ployz::connect::Call;
 use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
@@ -161,7 +161,13 @@ async fn a_join_over_ssh_from_a_computer_with_no_device_key_refuses_before_enrol
 }
 
 async fn add_through_cloud(daemon: JoinDaemon, enroll: &EnrollListen) -> std::process::Output {
-    let machine_addr = serve_machine(daemon).await;
+    add_through_cloud_at(serve_machine(daemon).await, enroll).await
+}
+
+async fn add_through_cloud_at(
+    machine_addr: std::net::SocketAddr,
+    enroll: &EnrollListen,
+) -> std::process::Output {
     let mut child = harness::device_cli()
         .args([
             "--connect",
@@ -219,6 +225,42 @@ async fn an_approved_join_relays_the_joiners_confirmation_through_cloud() {
         enroll.paths().get(..2),
         Some(["/api/enroll".to_owned(), "/api/enroll".to_owned()].as_slice())
     );
+}
+
+/// The joiner's daemon restarts after it enrolls, which closes the connection that
+/// enrolled it. The restrictions its confirmation was answered with still reach it, over a
+/// new connection, and the join finishes.
+#[tokio::test]
+async fn an_approved_join_hands_over_its_restrictions_after_the_joiners_restart() {
+    let registration = approved_registration();
+    let mut confirmed = registration.clone();
+    confirmed.restrictions = Some(ployz_core::JoinRestrictions {
+        set: ployz_core::JoinRestrictionSet {
+            removed_keys: Vec::new(),
+            removed_members: Vec::new(),
+            floors: std::collections::BTreeMap::new(),
+        },
+        tag: ployz_core::authority::join::RestrictionTag([3; 32]),
+    });
+    let reply = |registration: &ployz_core::Registered| {
+        json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": { "secret": PAIRING },
+            "registration": registration,
+        })
+    };
+    let enroll = EnrollListen::script([reply(&registration), reply(&confirmed)]).await;
+    let daemon = JoinDaemon::new(registration).taking_restrictions_after_a_restart();
+    let output =
+        add_through_cloud_at(serve_restarting_machine(daemon.clone()).await, &enroll).await;
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(daemon.restrictions_taken(), 1);
 }
 
 #[tokio::test]
@@ -346,6 +388,7 @@ async fn cloud_founder_advertises_and_pins_the_chosen_public_ip() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -563,6 +606,7 @@ async fn cloud_init_initialize_participates() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     })
     .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -795,6 +839,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -883,6 +928,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -941,6 +987,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -1007,6 +1054,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         sealing_key: None,
         devices: Vec::new(),
         grants: Vec::new(),
+        restrictions: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
