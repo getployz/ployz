@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { requireStoreEnvironment, streamRemoteUptime } from "#/collections/route-data";
+import { requireStoreEnvironment } from "#/modules/config-store/store.route-data";
+import { streamRemoteUptime } from "#/modules/uptime/uptime.route-data";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,

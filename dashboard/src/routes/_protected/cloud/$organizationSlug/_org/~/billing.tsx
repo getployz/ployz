@@ -20,7 +20,8 @@ import {
   syncBillingAfterCheckoutServerFn,
 } from "#/modules/billing/billing.functions";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
-import { prefetchRemote, requireBilling } from "#/collections/route-data";
+import { prefetchRemote } from "#/collections/route-data";
+import { requireBilling } from "#/modules/organization/organization.route-data";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"

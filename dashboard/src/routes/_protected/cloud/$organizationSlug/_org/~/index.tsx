@@ -3,7 +3,7 @@ import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon, SearchIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { prefetchStoreViews, requireStoreProjects } from "#/collections/route-data";
+import { prefetchStoreViews, requireStoreProjects } from "#/modules/config-store/store.route-data";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,

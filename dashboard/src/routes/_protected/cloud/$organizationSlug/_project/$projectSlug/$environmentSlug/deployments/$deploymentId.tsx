@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchStoreViews } from "#/collections/route-data";
+import { prefetchStoreViews } from "#/modules/config-store/store.route-data";
 import { deploymentQuery } from "#/modules/config-store/store-view.queries";
 import { StoreDeploymentPage } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage";
 import { DeploymentsPageError, DeploymentsPagePending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/DeploymentsPageStates";

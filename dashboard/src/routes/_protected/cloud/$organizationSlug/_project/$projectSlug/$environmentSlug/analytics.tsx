@@ -1,6 +1,7 @@
 import { createFileRoute, useLoaderData } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemote, requireStoreEnvironment } from "#/collections/route-data";
+import { prefetchRemote } from "#/collections/route-data";
+import { requireStoreEnvironment } from "#/modules/config-store/store.route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { DEFAULT_RANGE, DEFAULT_WINDOW, isAnalyticsView, isRequestWindow } from "#/modules/web-analytics/ui/analytics-model";
 import { analyticsViewQueryOptions, apiViewQueryOptions, errorsViewQueryOptions } from "#/modules/web-analytics/ui/analytics.queries";

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
-import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
+import { prefetchRemoteWithStoreViews } from "#/modules/config-store/store.route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { servicesQuery } from "#/modules/config-store/store-view.queries";

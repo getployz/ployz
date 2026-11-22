@@ -1,5 +1,6 @@
 import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
-import { requireOrganization, requireStoreProjects } from "#/collections/route-data";
+import { requireStoreProjects } from "#/modules/config-store/store.route-data";
+import { requireOrganization } from "#/modules/organization/organization.route-data";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/lib/environment-routes";
 
 export const Route = createFileRoute(

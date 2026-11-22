@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
+import { prefetchRemoteWithStoreViews } from "#/modules/config-store/store.route-data";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pr-grants.queries";
 import { environmentsQuery } from "#/modules/config-store/store-view.queries";

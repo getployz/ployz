@@ -26,6 +26,8 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 // The first line of a data file: /** @data-source <kind>: <freshness> */
 const DATA_SOURCE_HEADER = /^\/\*\* @data-source (\S+?): (.+) \*\/$/;
 const DATA_SOURCE_KINDS = ["org-store", "runtime", "remote"];
+const ROUTE_DATA_FILE = /(^|[./])route-data\.ts$/;
+const ROUTE_DATA_MODULE = /(^|[./])route-data$/;
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
@@ -226,7 +228,7 @@ describe("data boundaries", () => {
   it("prefetches every Remote Read in a loader unless it is read on demand", () => {
     const remoteFiles = sources.filter(({ path, text }) => path.endsWith(".queries.ts") && text.startsWith("/** @data-source remote:"));
     const factories = remoteFiles.flatMap(({ text }) => [...text.matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
-    const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
+    const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || ROUTE_DATA_FILE.test(path)).map(({ text }) => text).join("\n");
     // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
     const unprefetched = factories.filter((name) => !new RegExp(`((prefetchRemote\\w*|streamRemote\\w*)\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
     expect(unprefetched.sort(), "Prefetch it with prefetchRemote or streamRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
@@ -297,9 +299,9 @@ describe("data boundaries", () => {
                 const name = calleeName(inner.expression);
                 const from = name ? importedFrom.get(name) : undefined;
                 // The session read is isomorphic: the client reads it from memory.
-                const allowed = (name && /^(require|prefetch)[A-Z]/.test(name) && from?.endsWith("collections/route-data"))
+                const allowed = (name && /^(require|prefetch)[A-Z]/.test(name) && from !== undefined && ROUTE_DATA_MODULE.test(from))
                   || (name === "getAuthSession" && from?.endsWith("auth/auth"));
-                if (!allowed) at(source, inner, "loaders may await only require*/prefetch* helpers from #/collections/route-data");
+                if (!allowed) at(source, inner, "loaders may await only require*/prefetch* helpers from a *.route-data.ts file");
               }
               const name = calleeName(inner);
               if (name && (/ServerFn$/.test(name) || ["ensureQueryData", "prefetchQuery", "fetchQuery", "preload", "preloadCollection"].includes(name))) {

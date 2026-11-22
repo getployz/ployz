@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
-import { prefetchRemote, requireOrganization, streamRemote } from "#/collections/route-data";
+import { prefetchRemote, streamRemote } from "#/collections/route-data";
+import { requireOrganization } from "#/modules/organization/organization.route-data";
 import { accountReads, AccountSections } from "../-components/account-sections";
 import { passkeysQueryOptions } from "#/modules/passkeys/passkeys.queries";
 import { PasskeysSection } from "../-components/passkeys-section";

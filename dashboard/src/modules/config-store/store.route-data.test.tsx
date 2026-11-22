@@ -4,9 +4,9 @@ import { cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
-import * as functions from "#/modules/config-store/store.functions";
-import { environmentsQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
-import { requireStoreEnvironment } from "./route-data";
+import * as functions from "./store.functions";
+import { environmentsQuery, useCachedStoreView } from "./store-view.queries";
+import { requireStoreEnvironment } from "./store.route-data";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 

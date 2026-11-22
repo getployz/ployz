@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchStoreViews } from "#/collections/route-data";
+import { prefetchStoreViews } from "#/modules/config-store/store.route-data";
 import { branchPlanQuery } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorError, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { StoreNewBranchPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel";
