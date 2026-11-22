@@ -112,15 +112,10 @@ mod tests {
     /// On Postgres when `PLOYZ_STORE_TEST_POSTGRES` names a server.
     #[test]
     fn every_postgres_table_is_swept_or_cascaded() {
-        let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
+        let Some(url) = crate::storage::fresh_postgres("tables") else {
             return;
         };
-        let database = format!("tables_{}", uuid::Uuid::new_v4().simple());
-        postgres::Client::connect(&server, postgres::NoTls)
-            .unwrap()
-            .batch_execute(&format!("CREATE DATABASE {database}"))
-            .unwrap();
-        let (storage, _) = Storage::open(&format!("{server}/{database}")).unwrap();
+        let (storage, _) = Storage::open(&url).unwrap();
         storage
             .read(|tx| {
                 let tables = names(&tx.query(

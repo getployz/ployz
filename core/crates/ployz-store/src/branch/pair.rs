@@ -1932,17 +1932,8 @@ mod tests {
     /// A Store with one Project and its Environment, the receiver; on a fresh
     /// Postgres database when `PLOYZ_STORE_TEST_POSTGRES` names a server.
     fn shop() -> (crate::ConfigStore, Actor, EnvironmentId) {
-        let url = match std::env::var("PLOYZ_STORE_TEST_POSTGRES") {
-            Ok(server) => {
-                let database = format!("ledger_{}", uuid::Uuid::new_v4().simple());
-                postgres::Client::connect(&server, postgres::NoTls)
-                    .unwrap()
-                    .batch_execute(&format!("CREATE DATABASE {database}"))
-                    .unwrap();
-                format!("{server}/{database}")
-            }
-            Err(_) => "sqlite::memory:".to_owned(),
-        };
+        let url = crate::storage::fresh_postgres("ledger")
+            .unwrap_or_else(|| "sqlite::memory:".to_owned());
         let store = crate::ConfigStore::open(&url, SealingKey::new(b"test").unwrap()).unwrap();
         let who = Actor::system(OrganizationId::parse(ORGANIZATION).unwrap());
         let receiver = EnvironmentId::parse(uuid(2)).unwrap();
