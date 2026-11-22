@@ -8,10 +8,13 @@ use ployz_core::authority::{
     Cap, CapSet, GrantKind, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope, PayloadDigest,
     PlaceService, TrustedKeys, version,
 };
-use ployz_core::{Namespace, SealingPublicKey, ServiceName, ServiceVolumeReference, VolumeOrigin};
+use ployz_core::{
+    DockerVolumeName, Namespace, SealingPublicKey, ServiceName, ServiceVolumeReference,
+    VolumeOrigin,
+};
 use ployz_store::{
     EnvironmentName, EnvironmentRef, NamespaceQuery, Parent, ParentQuery, ProjectName,
-    ServicesQuery,
+    ServicesQuery, VolumesQuery,
 };
 use uuid::Uuid;
 
@@ -273,11 +276,26 @@ fn root_volume(
     {
         return Err(forged());
     }
-    mounted(spec, namespace, reference).ok_or_else(|| {
-        Error::not_found(format!(
-            "{service} in {namespace} mounts no volume {reference}."
-        ))
-    })
+    if let Some(entry) = mounted(spec, namespace, reference) {
+        return Ok(entry);
+    }
+    // A spec mounts a Volume by its ID, so a name as `volume ls` shows it resolves first.
+    let named = store
+        .read(&VolumesQuery {
+            environment: resolved.environment.clone(),
+        })?
+        .volumes
+        .into_iter()
+        .find(|listing| listing.volume.name.as_str() == reference.as_str())
+        .and_then(|listing| DockerVolumeName::for_resource(listing.volume.id.as_str()).ok())
+        .and_then(|name| ServiceVolumeReference::parse(name.as_str().to_owned()).ok());
+    named
+        .and_then(|reference| mounted(spec, namespace, &reference))
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "{service} in {namespace} mounts no volume {reference}."
+            ))
+        })
 }
 
 /// The Volume `spec` declares as `reference`, by the name it takes in `namespace`.
