@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
-import { inputSchema } from "#/modules/commands/command.server";
+import { inputSchema } from "#/modules/commands/define";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 

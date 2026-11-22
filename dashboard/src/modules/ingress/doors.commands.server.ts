@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand, refused } from "#/modules/commands/command.server";
+import { defineCommand, refused } from "#/modules/commands/define";
 import type { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { wantWords } from "#/modules/ingress/doors";
 import { requestDoorsSwitch, switchAsked } from "#/modules/ingress/doors.server";

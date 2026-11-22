@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { defineCommand, refused } from "#/modules/commands/command.server";
+import { defineCommand, refused } from "#/modules/commands/define";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { callerOrganizations } from "#/modules/identity/caller.server";

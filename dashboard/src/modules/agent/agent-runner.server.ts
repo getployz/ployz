@@ -7,7 +7,7 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
 import { carriedInto, gateOperation, onceFor, redeemApproval, redeeming, requestApproval, reviewedDiff, unheldApproval } from "#/modules/approvals/approvals.server";
-import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
+import { type Called, type Command, inputSchema } from "#/modules/commands/define";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore } from "#/modules/config-store/config-store.server";

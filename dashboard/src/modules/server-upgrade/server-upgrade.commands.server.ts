@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand } from "#/modules/commands/command.server";
+import { defineCommand } from "#/modules/commands/define";
 import { RELEASE_CHANNELS } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgradeSettings, setServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.server";
 

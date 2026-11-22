@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schedule, Schema } from "effect";
 import { isNeedsProduction, type NeedsProduction } from "#/modules/billing/billing";
-import { defineCommand, refused } from "#/modules/commands/command.server";
+import { defineCommand, refused } from "#/modules/commands/define";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
 import { causeText, observationText, uptimePercent } from "./uptime";
