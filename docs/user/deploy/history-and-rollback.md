@@ -116,6 +116,9 @@ older version fail too.
 ployz deploy api --forget-older
 ```
 
+A deploy of some services also ships each service they reference, so it forgets that
+service's older versions too, and runs the version it signed for it.
+
 - **Running containers keep running.** Forget only stops new ones. A stopped container that an
   older version made won't start again through Ployz when it needs that version's approval.
 - **An older version that reaches no data can still run.** A server runs a service with no
