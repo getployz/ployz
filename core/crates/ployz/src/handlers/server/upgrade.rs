@@ -144,10 +144,22 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
 
 #[derive(Deserialize, Serialize)]
 struct CloudUpgrade {
-    outcome: String,
+    outcome: CloudOutcome,
     from_version: Option<String>,
     target_version: Option<String>,
     message: Option<String>,
+}
+
+/// How Cloud says an upgrade ended. A word this CLI doesn't know prints back as Cloud sent
+/// it and reads as Cloud not knowing whether the Server upgraded.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CloudOutcome {
+    Succeeded,
+    Failed,
+    Interrupted,
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// An upgrade Cloud ran and the Server it ran on, as `--json` prints it.
@@ -163,7 +175,7 @@ struct CloudAttempted {
 impl CloudAttempted {
     /// Whether this Server moved to another version.
     fn upgraded(&self) -> bool {
-        self.upgrade.outcome == "succeeded"
+        matches!(self.upgrade.outcome, CloudOutcome::Succeeded)
             && self.upgrade.from_version != self.upgrade.target_version
     }
 }
@@ -313,7 +325,11 @@ fn through_cloud(
             // A Server that failed outright, with none moved before it, fails the run;
             // it is partial only after an upgrade, and uncertain while Cloud can't tell.
             let upgraded = attempts.iter().any(CloudAttempted::upgraded);
-            if matches!(upgrade.outcome.as_str(), "failed" | "interrupted") && !upgraded {
+            if matches!(
+                upgrade.outcome,
+                CloudOutcome::Failed | CloudOutcome::Interrupted
+            ) && !upgraded
+            {
                 stopped.outcome()
             } else {
                 stopped
@@ -404,28 +420,28 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
         .as_deref()
         .map(|message| format!(": {message}"))
         .unwrap_or_default();
-    let message = match upgrade.outcome.as_str() {
-        "succeeded" if upgrade.from_version == upgrade.target_version => {
+    let message = match &upgrade.outcome {
+        CloudOutcome::Succeeded if upgrade.from_version == upgrade.target_version => {
             crate::ui::stream(format_args!("Server {server} already runs {target}."));
             return None;
         }
-        "succeeded" => {
+        CloudOutcome::Succeeded => {
             crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
             return None;
         }
-        "failed" => {
+        CloudOutcome::Failed => {
             crate::ui::stream(format_args!(
                 "Server {server} failed to upgrade to {target}."
             ));
             format!("Server {server} failed to upgrade to {target}{reason}")
         }
-        "interrupted" => {
+        CloudOutcome::Interrupted => {
             crate::ui::stream(format_args!(
                 "Server {server} stopped upgrading to {target}."
             ));
             format!("The upgrade of Server {server} to {target} was interrupted{reason}")
         }
-        _ => {
+        CloudOutcome::Unknown(_) => {
             crate::ui::stream(format_args!(
                 "Cloud cannot tell whether Server {server} upgraded to {target}."
             ));
@@ -524,12 +540,7 @@ async fn run_all(
                         stage: MachineUpgradeStage::Acquiring,
                         error: reason,
                     } if reason
-                        == &format!("release selection: no such release {}", attempt.target)
-                        || reason
-                            == &format!(
-                                "release selection: download release checksums: release {} has no checksums.txt",
-                                attempt.target
-                            ) =>
+                        == &format!("release selection: no such release {}", attempt.target) =>
                     {
                         Some(Error::not_found(format!(
                             "No Ployz release {}.",
@@ -1029,34 +1040,29 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_release_is_not_found_before_any_server_changes() {
-        for reason in [
-            "release selection: no such release 9.9.9",
-            "release selection: download release checksums: release 9.9.9 has no checksums.txt",
-        ] {
-            let mut server = machine('a', 1);
-            server.name = MachineName::parse("machine-1").unwrap();
-            let mut client = Sequence {
-                outcomes: vec![MachineUpgradeOutcome::Failed {
-                    stage: ployz_core::MachineUpgradeStage::Acquiring,
-                    error: reason.into(),
-                }]
-                .into(),
-                ingress: None,
-                moved: 0,
-            };
-            let (_, outcome) = run_all(
-                &mut client,
-                &[server],
-                MachineRelease::parse("9.9.9").unwrap(),
-                "ployz server upgrade 9.9.9 machine-1".into(),
-                &CancellationToken::new(),
-            )
-            .await;
-            let error = outcome.unwrap_err();
-            assert!(error.is_outcome());
-            assert_eq!(error.report().code, RpcErrorCode::NotFound);
-            assert_eq!(error.report().message, "No Ployz release 9.9.9.");
-        }
+        let mut server = machine('a', 1);
+        server.name = MachineName::parse("machine-1").unwrap();
+        let mut client = Sequence {
+            outcomes: vec![MachineUpgradeOutcome::Failed {
+                stage: ployz_core::MachineUpgradeStage::Acquiring,
+                error: "release selection: no such release 9.9.9".into(),
+            }]
+            .into(),
+            ingress: None,
+            moved: 0,
+        };
+        let (_, outcome) = run_all(
+            &mut client,
+            &[server],
+            MachineRelease::parse("9.9.9").unwrap(),
+            "ployz server upgrade 9.9.9 machine-1".into(),
+            &CancellationToken::new(),
+        )
+        .await;
+        let error = outcome.unwrap_err();
+        assert!(error.is_outcome());
+        assert_eq!(error.report().code, RpcErrorCode::NotFound);
+        assert_eq!(error.report().message, "No Ployz release 9.9.9.");
     }
 
     #[tokio::test]
@@ -1506,7 +1512,7 @@ mod tests {
         message: Option<&str>,
     ) -> CloudUpgrade {
         CloudUpgrade {
-            outcome: outcome.into(),
+            outcome: serde_json::from_value(json!(outcome)).unwrap(),
             from_version: from.map(Into::into),
             target_version: target.map(Into::into),
             message: message.map(Into::into),
@@ -1562,8 +1568,9 @@ mod tests {
             (on("succeeded", None, Some("1.2.3")), true),
             (on("failed", Some("1.2.2"), Some("1.2.3")), false),
             (on("interrupted", Some("1.2.2"), Some("1.2.3")), false),
+            (on("rolled_back", Some("1.2.2"), Some("1.2.3")), false),
         ] {
-            assert_eq!(attempt.upgraded(), moved, "{}", attempt.upgrade.outcome);
+            assert_eq!(attempt.upgraded(), moved, "{:?}", attempt.upgrade.outcome);
         }
     }
 
@@ -1736,7 +1743,7 @@ mod tests {
                 .block_on(run_sequence(&[machine('a', 1)], vec![failed], None));
             assert!(outcome.is_err());
             let upgrade = CloudUpgrade {
-                outcome: "failed".into(),
+                outcome: CloudOutcome::Failed,
                 from_version: Some("1.2.2".into()),
                 target_version: Some("1.2.3".into()),
                 message: Some("install failed".into()),
