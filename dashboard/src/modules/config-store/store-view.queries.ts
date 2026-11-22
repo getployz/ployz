@@ -7,77 +7,10 @@ import type {
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { StoreViewName } from "#/collections/read.contract";
+import { storeViewRefreshedBy, type StoreViewName } from "./store.change-sources";
 import { readStoreViewServerFn } from "./store.functions";
 import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { usePendingMarks, showPending } from "./store-pending";
-
-/**
- * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
- * or the Organization change stream never refreshes its views.
- */
-const refreshedBy = {
-  environment: ["store_environment"],
-  diff: ["store_environment", "store_deployment"],
-  // Live and Failed follow Deployments; a check suite's verdict shows on one waiting for CI.
-  history: ["store_environment", "store_deployment", "store_check_suite"],
-  history_preview: ["store_environment", "store_deployment", "store_check_suite"],
-  plan: ["store_environment", "store_deployment"],
-  // The rule a Device or a passkey signed, beside the Saved State it approves.
-  rule: ["store_environment"],
-  // A Service's lifecycle comes from the review, which compares against what's deployed.
-  service: ["store_environment", "store_deployment"],
-  services: ["store_environment", "store_deployment"],
-  // A check suite's verdict shows on a Deployment waiting for CI, which polls nothing while it waits.
-  deployments: ["store_deployment", "store_check_suite"],
-  deployment: ["store_deployment", "store_check_suite"],
-  numbered_deployment: ["store_deployment", "store_check_suite"],
-  build_log: ["store_deployment"],
-  // Admission fixes an Environment's Namespace.
-  namespace: ["store_environment", "store_deployment"],
-  namespaces: ["store_environment", "store_deployment"],
-  sealed_names: ["store_environment"],
-  // Where a CLI write's secrets land: the Environment's Services, by ID.
-  sealing_targets: ["store_environment"],
-  // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, which
-  // change with no Store write, so a domains view also polls while one is on its way (`DOMAIN_POLL_MS`).
-  domains: ["store_environment", "store_deployment"],
-  domain: ["store_environment", "store_deployment"],
-  // Whether a Volume is deployed, and what a Deploy removes, come from Applied State.
-  volumes: ["store_environment", "store_deployment"],
-  volume: ["store_environment", "store_deployment"],
-  configs: ["store_environment", "store_deployment"],
-  config: ["store_environment", "store_deployment"],
-  removals: ["store_environment", "store_deployment"],
-  removed: ["store_environment", "store_deployment"],
-  // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
-  // request's Destination.
-  branch: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
-  // A plan reads the Environment's Working State and what it and its ancestors run.
-  branch_plan: ["store_environment", "store_deployment"],
-  build_order: ["store_organization"],
-  // Region names; the regions Servers are in come with the query, from the Runtime.
-  regions: ["store_region"],
-  new_region: ["store_region"],
-  // A Sync compares two Environments over what they last shared.
-  sync: ["store_environment", "store_deployment"],
-  // The Project names its Default Environment; a removal is a Deployment.
-  environments: ["store_project", "store_environment", "store_deployment"],
-  projects: ["store_project", "store_environment"],
-  // Removals the Store still owes: Environments marked for removal and their Deployments.
-  due: ["store_environment", "store_deployment"],
-  consented: ["store_environment", "store_deployment"],
-  // Which uploads Cloud holds still build: Deployments and each Environment's Saved State.
-  uploads: ["store_environment", "store_deployment"],
-  // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
-  pr_plans: ["store_project", "store_environment"],
-  // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
-  pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
-  // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
-  on_merge: ["store_environment", "store_pull_request"],
-  // Signed versions arrive with a Deploy and are never rewritten.
-  versions: ["store_deployment"],
-} satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
 const DOMAIN_POLL_MS = 30_000;
@@ -150,7 +83,7 @@ export function refetchStoreViews(organizationSlug: string, scope: CollectionSco
     queryKey: storeViewPrefix(organizationSlug),
     predicate: (query: Query) => {
       const config = queryOf(query);
-      return config !== null && refreshedBy[config.query].some((name) => names.includes(name));
+      return config !== null && storeViewRefreshedBy[config.query].some((name) => names.includes(name));
     },
   };
   for (const query of scope.queryClient.getQueryCache().findAll({ ...filters, fetchStatus: "fetching" })) {
