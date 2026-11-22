@@ -772,8 +772,9 @@ fn admit(
         .and_then(crate::auto_rule::opened);
     if let Some(rule) = rule.filter(|rule| {
         !rule.ended
-            && rule.source.repository_id == push.repository_id.get()
-            && rule.source.branch == push.branch.as_str()
+            && crate::auto_rule::branch(rule).is_some_and(|(repository, branch)| {
+                repository == push.repository_id && branch == push.branch
+            })
     }) {
         let target = crate::deployment::query::saved_target(
             tx,

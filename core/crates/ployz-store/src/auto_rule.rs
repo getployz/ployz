@@ -216,6 +216,15 @@ fn view_of(
     })
 }
 
+/// The repository and branch whose pushes `rule` approves; none when it names one GitHub
+/// couldn't have, so no push is its.
+pub(crate) fn branch(rule: &AutoDeployRule) -> Option<(RepositoryId, BranchName)> {
+    Some((
+        RepositoryId::parse(rule.source.repository_id).ok()?,
+        BranchName::parse(rule.source.branch.as_str()).ok()?,
+    ))
+}
+
 /// The Services a push of `rule`'s branch ships as following it: each Saved Service
 /// that tracks the branch and deploys on push, as a push's hold counts them. A
 /// Service among them the rule doesn't cover holds the push, so the view shows it too.
@@ -225,10 +234,7 @@ fn following(
     saved: &SavedEnvironmentIntent,
     rule: &AutoDeployRule,
 ) -> Result<Vec<ServiceName>, RpcError> {
-    let (Ok(repository), Ok(branch)) = (
-        RepositoryId::parse(rule.source.repository_id),
-        BranchName::parse(rule.source.branch.as_str()),
-    ) else {
+    let Some((repository, branch)) = branch(rule) else {
         return Ok(Vec::new());
     };
     let mut ships = Vec::new();
