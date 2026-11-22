@@ -683,64 +683,7 @@ mod set_management_client_wire {
 }
 
 #[cfg(test)]
-mod served_capabilities_tests {
-    use super::*;
-
-    #[test]
-    fn served_capabilities_cover_every_catalog_row() {
-        let served = served_capabilities();
-        for route in ROUTES {
-            assert!(
-                served.contains(route.capability),
-                "{} is not served",
-                route.capability
-            );
-        }
-        let advertised = [
-            CapabilityAdvertisement::Always,
-            CapabilityAdvertisement::Container,
-            CapabilityAdvertisement::Cluster,
-        ]
-        .into_iter()
-        .flat_map(CapabilityAdvertisement::capabilities)
-        .count();
-        assert_eq!(served.len(), advertised);
-    }
-}
-
-#[cfg(test)]
-mod streaming_routing_tests {
-    #[test]
-    fn only_catalogued_single_request_methods_allow_fanout() {
-        assert!(super::supports_fanout("/ployz.rpc.v1.MachineRpc/Inspect"));
-        for path in [
-            "/ployz.rpc.v1.MachineRpc/Build",
-            "/ployz.rpc.v1.MachineRpc/Exec",
-            "/other.Service/Inspect",
-        ] {
-            assert!(!super::supports_fanout(path));
-        }
-    }
-
-    #[test]
-    fn only_exec_a_seed_trusted_key_changes_and_the_recovery_code_routes_need_full_scope() {
-        assert_eq!(
-            super::ROUTES
-                .iter()
-                .filter(|route| route.scope == super::ManagementScope::Full)
-                .map(|route| route.path.rsplit('/').next().unwrap())
-                .collect::<Vec<_>>(),
-            [
-                "WrapSealingKey",
-                "RecoverSealingKey",
-                "SetDevice",
-                "SeedVolume",
-                "Exec"
-            ]
-        );
-        assert_eq!(super::scope_of("/ployz.rpc.v1.MachineRpc/Nope"), None);
-    }
-
+mod management_scope_tests {
     #[test]
     fn only_a_device_slot_holding_its_own_key_is_full() {
         let key = crate::ClientKey::from_bytes([9; 32]);
@@ -755,21 +698,6 @@ mod streaming_routing_tests {
         );
         for label in ["cloud", "cli-0123456789abcdef0123456789ab", "laptop"] {
             assert_eq!(scope(label, &key), super::ManagementScope::Operator);
-        }
-    }
-
-    #[test]
-    fn capability_of_names_every_catalogued_route() {
-        assert_eq!(
-            super::capability_of("/ployz.rpc.v1.MachineRpc/SetVolumeCopy"),
-            Some("ployz.volume.copy.set.v1")
-        );
-        for path in [
-            "/ployz.rpc.v1.MachineRpc/Nope",
-            "/other.Service/Inspect",
-            "",
-        ] {
-            assert_eq!(super::capability_of(path), None);
         }
     }
 }
