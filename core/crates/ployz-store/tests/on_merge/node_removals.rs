@@ -1470,7 +1470,8 @@ fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
         .into_iter()
         .map(|node| node.node.name().to_owned())
         .collect();
-    assert_eq!(nodes, vec!["web".to_owned(), "sentry".to_owned()]);
+    // web reads db, so db and the Volume it mounts ship with it.
+    assert_eq!(nodes, ["db", "web", "data", "sentry"]);
 }
 
 #[test]

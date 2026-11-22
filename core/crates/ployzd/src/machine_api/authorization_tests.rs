@@ -11,7 +11,7 @@ use ployz_core::authority::coverage::{CASES, Case, Expected};
 use ployz_core::authority::{Signed, Signer};
 use ployz_core::{
     DeviceKey, Machine, MachineId, MachineRpcClient, OpaquePayload, Rpc, RpcRequest, RpcResponse,
-    RpcResponseBody, op, rpc::status_details,
+    RpcResponseBody, WireGuardPublicKey, op, rpc::status_details,
 };
 use serde_json::{Value, json};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -412,9 +412,26 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::GENERATE_SEALING_KEY_CAPABILITY, _) => {
             unary::<op::GenerateSealingKey>(json!({}))
         }
-        (ployz_core::SHARE_SEALING_KEY_CAPABILITY, _) => unary::<op::ShareSealingKey>(json!({
-            "join_approval": null, "machine": peer, "public_key": machine.peer.public_key,
-        })),
+        (ployz_core::SHARE_SEALING_KEY_CAPABILITY, "no join approval, to a Member") => {
+            unary::<op::ShareSealingKey>(json!({
+                "join_approval": null, "machine": peer, "public_key": machine.peer.public_key,
+            }))
+        }
+        (ployz_core::SHARE_SEALING_KEY_CAPABILITY, _) => {
+            let stranger = Machine {
+                id: MachineId::random(),
+                public_key: WireGuardPublicKey([42; 32]),
+                ..machine.peer.clone()
+            };
+            machine
+                .replicated
+                .publish_local_machine(&stranger)
+                .await
+                .unwrap();
+            unary::<op::ShareSealingKey>(json!({
+                "join_approval": null, "machine": stranger.id, "public_key": stranger.public_key,
+            }))
+        }
         (ployz_core::INSTALL_SEALING_KEY_CAPABILITY, "sealed by an accepted Machine's key") => {
             let held = SealingKey::load(&machine.data_dir).unwrap().unwrap();
             let sealed = held
