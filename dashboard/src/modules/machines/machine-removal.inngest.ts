@@ -1,13 +1,9 @@
 import { Effect, Option, Schema } from "effect";
-import {
-  createClusterDomainSyncRequestedEvent,
-  inngestEventEnvelopeFields,
-  inngestFunctionCancelledEnvelopeSchema,
-  inngestFunctionCancelledEventType,
-  inngestFunctionFailedEnvelopeSchema,
-  machineRemoveRequestedEventType,
-} from "#/modules/inngest/events";
+import { inngestEventEnvelopeFields, inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFailedEnvelopeSchema } from "#/modules/inngest/events";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
+import { machineRemoveRequested } from "#/modules/machines/machines.events";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
+import { eventData } from "#/modules/inngest/define-event";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   cancelMachineRemoveAttemptActivity,
@@ -22,11 +18,10 @@ import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal
 import { observeOrganization } from "#/modules/volume-run/volume-run.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
-const MachineRemoveRequestedData = Schema.Struct({ attemptId: Schema.NonEmptyString });
 const MachineRemoveRequestedEnvelope = Schema.Struct({
   ...inngestEventEnvelopeFields,
-  name: Schema.Literal("machine/remove.requested"),
-  data: MachineRemoveRequestedData,
+  name: Schema.Literal(machineRemoveRequested.name),
+  data: machineRemoveRequested.schema,
 });
 const MachineRemoveFailureEnvelope = inngestFunctionFailedEnvelopeSchema(
   MachineRemoveRequestedEnvelope,
@@ -50,19 +45,11 @@ export async function executeProcessMachineRemove({
   runId: string;
   attempt: number;
 }, runEffect: EffectRunner, observe: typeof observeOrganization) {
-  const attemptId = await step.run(
-    "normalize-machine-remove-attempt-id",
-    () => {
-      const decoded = Schema.decodeUnknownOption(MachineRemoveRequestedData)(
-        event.data,
-        { onExcessProperty: "preserve" },
-      );
-      return Option.isSome(decoded) ? decoded.value.attemptId : null;
-    },
-  );
-  if (attemptId === null) {
+  const requested = eventData(machineRemoveRequested)(event);
+  if (Option.isNone(requested)) {
     return { attemptId: null, status: "invalid", skipped: true };
   }
+  const { attemptId } = requested.value;
 
   const prepared = await step.run("claim-machine-remove", () =>
     runEffect(
@@ -179,7 +166,7 @@ export async function executeProcessMachineRemove({
   // The removed Server may have been in the Cluster Domain's apex set.
   await step.sendEvent(
     "request-cluster-domain-sync",
-    createClusterDomainSyncRequestedEvent({ organizationId: attempt.organizationId }),
+    clusterDomainSyncRequested.create({ organizationId: attempt.organizationId }),
   );
   return { attemptId, status: "succeeded" as const };
 }
@@ -237,7 +224,7 @@ export const createProcessMachineRemove = (
   {
     id: PROCESS_MACHINE_REMOVE_FUNCTION_ID,
     retries: MACHINE_REMOVE_RETRIES,
-    triggers: [{ event: machineRemoveRequestedEventType }],
+    triggers: [{ event: machineRemoveRequested.eventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>
       executeProcessMachineRemoveOnFailure({ event }, runEffect),

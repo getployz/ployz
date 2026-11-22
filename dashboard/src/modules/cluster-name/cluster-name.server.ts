@@ -6,7 +6,7 @@ import { Effect, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { type ClusterNameRow, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
-import { createClusterNameRequestedEvent } from "#/modules/inngest/events";
+import { createClusterNameRequestedEvent } from "#/modules/cluster-name/cluster-name.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { organization } from "#/modules/organization/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";

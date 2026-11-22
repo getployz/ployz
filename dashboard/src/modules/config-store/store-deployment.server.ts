@@ -14,7 +14,7 @@ import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
-import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

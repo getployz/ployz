@@ -27,7 +27,7 @@ import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
+import { volumeRunRequested, volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { clusterExpectation, loadOrganizationConnections, logForeignServers } from "#/modules/runtime/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -309,7 +309,7 @@ const followSettled = (volumeName: string): StoreRefusal => ({
 export const refusedAsSettled = Schema.is(Schema.Struct({ details: Schema.Struct({ reason: Schema.Literal("follow_settled") }) }));
 
 const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
-  enqueueEvent(createVolumeRunRequestedEvent({
+  enqueueEvent(volumeRunRequested.create({
     organizationId: row.organizationId,
     environment: row.environmentId,
     volumeId: row.volumeId,
@@ -820,7 +820,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       const admitted = yield* admitOwed(inserted, input);
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
       if (inngestRunId === null) yield* enqueueRun(admitted, end === "yielded" ? taken?.kind ?? fences : undefined);
-      if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
+      if (taken !== undefined) yield* enqueueEvent(volumeRunTaken.create({ runId: taken.id }));
       return { run: volumeRunView(admitted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
     if (end !== null && round < TAKE_ROUNDS) continue;
@@ -1013,7 +1013,7 @@ const endLanesTo = Effect.fn("VolumeRun.endLanesTo")(function* (
         const [closed] = yield* drizzle.update(volumeRun).set(ended("failed", message))
           .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.current, machine.id)))
           .returning({ id: volumeRun.id });
-        if (closed !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: closed.id }));
+        if (closed !== undefined) yield* enqueueEvent(volumeRunTaken.create({ runId: closed.id }));
       }));
     }
   }

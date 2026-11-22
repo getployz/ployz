@@ -8,7 +8,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
+import { type ServerUpgradeRequestedEventData, createCliServerUpgradeRequestedEvent, serverUpgradeRequested } from "#/modules/server-upgrade/server-upgrade.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -158,7 +158,7 @@ export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function*
   input: RequestServerUpgradeInput,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
-  yield* sendInngestEvent(createServerUpgradeRequestedEvent({
+  yield* sendInngestEvent(serverUpgradeRequested.create({
     organizationId: organization.id,
     machineId: input.machineId,
     trigger: "manual",
@@ -529,7 +529,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   // The switch sends `automatic` only when it flips; an extra Rollout queues behind the Organization's one and finds
   // nothing behind, and without a founded Cluster `listServersBehind` returns [].
   if (settings.automatic === true) {
-    yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
+    yield* sendInngestEvent(serverUpgradeRequested.create({ organizationId, machineId: null, trigger: "automatic", userId: null }));
   }
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
   return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };

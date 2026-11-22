@@ -25,13 +25,10 @@ import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-com
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createClusterDomainSyncRequestedEvent,
-  createSealingKeyEnsureRequestedEvent,
-  createConfigFirstServerJoinedEvent,
-  createObservePushTargetRequestedEvent,
-  createServerEnrollmentCompletedEvent,
-} from "#/modules/inngest/events";
+import { createSealingKeyEnsureRequestedEvent, createObservePushTargetRequestedEvent } from "#/modules/inngest/events";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
+import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
+import { createServerEnrollmentCompletedEvent } from "#/modules/machines/waiting/server-enrollment.events";
 import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
@@ -1190,12 +1187,12 @@ export const completeMachineEnrollment = Effect.fn(
     }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
-    yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
+    yield* sendInngestEvent(clusterDomainSyncRequested.create({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );
     yield* recordJoined(input.token, machineId, { founder: true });
     // Its published Environments deploy to it, durably: a retried completion sends this again, and Inngest runs it once.
-    yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
+    yield* sendInngestEvent(configFirstServerJoined.create({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
     yield* reportAttemptCompleted(token.serverEnrollmentId);

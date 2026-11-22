@@ -5,11 +5,7 @@ import { Data, Effect } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createKeyedServerPolicyChangeRequestedEvent,
-  createServerPolicyChangeRequestedEvent,
-  type ServerPolicyChangeRequestedEventData,
-} from "#/modules/inngest/events";
+import { type ServerPolicyChangeRequestedEventData, createKeyedServerPolicyChangeRequestedEvent, serverPolicyChangeRequested } from "#/modules/machines/machines.events";
 import { drainActiveOn } from "#/modules/machines/server-drain.server";
 import {
   isEmptyPolicyChange,
@@ -62,7 +58,7 @@ export const requestServerPolicyChange = Effect.fn(
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   yield* sendInngestEvent(
-    createServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
+    serverPolicyChangeRequested.create({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
   );
 });
 

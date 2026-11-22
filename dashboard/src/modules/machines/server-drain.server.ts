@@ -5,7 +5,7 @@ import { Clock, Data, Effect, Option, Schedule } from "effect";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
+import { type ServerDrainRequestedEventData, serverDrainRequested } from "#/modules/machines/machines.events";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS, type LatestDrain, type RequestedServerDrain, type RequestServerDrainInput } from "#/modules/machines/server-drain";
@@ -82,7 +82,7 @@ const refused = (message: string) =>
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueDrain = (row: DrainAttemptRow) =>
-  enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
+  enqueueEvent(serverDrainRequested.create({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
  * Drain on a Server page: an owner or admin may, and confirming it is their approval, so a plan that now stops a Service

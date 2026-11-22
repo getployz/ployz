@@ -1,0 +1,74 @@
+import { Schema } from "effect";
+import { defineEvent } from "#/modules/inngest/define-event";
+
+export const DeploymentTrigger = Schema.Literals(["github", "user"]);
+export type DeploymentTrigger = typeof DeploymentTrigger.Type;
+
+/** A Config Store Deployment was admitted; Cloud's worker runs it. */
+export const configDeploymentAdmitted = defineEvent({
+  name: "config/deployment.admitted",
+  schema: Schema.Struct({
+    organizationId: Schema.String,
+    /** Deployments of one Environment run one at a time. */
+    environmentId: Schema.String,
+    deploymentId: Schema.String,
+    /** Its place in its Environment's queue: a newer Deployment has a higher number. None before it queued. */
+    number: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    trigger: Schema.optionalKey(DeploymentTrigger),
+  }),
+  id: ({ deploymentId }) => `config-deployment-admitted-${deploymentId}`,
+});
+export type ConfigDeploymentAdmittedEventData = typeof configDeploymentAdmitted.schema.Type;
+
+/** Deploy now: unkeyed, so it asks again for a queued Deployment its admission's event never ran. */
+export const createConfigDeploymentStartedEvent = (data: ConfigDeploymentAdmittedEventData) =>
+  ({ name: configDeploymentAdmitted.name, data }) as const;
+
+/** A Cloud Deploy ran: Cloud retires the old copies its run replaced. */
+export const configDeploymentRetireRequested = defineEvent({
+  name: "config/deployment.retire-requested",
+  schema: Schema.Struct({
+    organizationId: Schema.String,
+    environmentId: Schema.String,
+    deploymentId: Schema.String,
+    /** Only a Deployment with a higher number takes the cleanup over. */
+    number: Schema.NullOr(Schema.Number),
+  }),
+  id: ({ deploymentId }) => `config-deployment-retire-requested-${deploymentId}`,
+});
+
+/** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
+export const configPrCheckRequested = defineEvent({
+  name: "config/pr-check.requested",
+  schema: Schema.Struct({
+    organizationId: Schema.String,
+    repositoryId: Schema.Number,
+    number: Schema.Number,
+    /** `repositoryId:number`: one pull request's posts run one at a time. */
+    pullRequestKey: Schema.String,
+  }),
+});
+
+export const createConfigPrCheckRequestedEvent = (input: { organizationId: string; repositoryId: number; number: number }) =>
+  configPrCheckRequested.create({ ...input, pullRequestKey: `${input.repositoryId}:${input.number}` });
+
+/** The Organization's first Server joined: its published Environments deploy to it. */
+export const configFirstServerJoined = defineEvent({
+  name: "config/first-server.joined",
+  schema: Schema.Struct({
+    organizationId: Schema.String,
+    /** The founding Server: a later founding (after teardown) is its own event. */
+    machineId: Schema.String,
+  }),
+  id: ({ organizationId, machineId }) => `config-first-server-joined-${organizationId}-${machineId}`,
+});
+
+/** A Config Store write closed a Branch at once (nothing on a Server): its Store sweeps it away now. */
+export const configSweepRequested = defineEvent({
+  name: "config/sweep.requested",
+  schema: Schema.Struct({ organizationId: Schema.String }),
+});
+
+export type ConfigDeploymentRetireRequestedEventData = typeof configDeploymentRetireRequested.schema.Type;
+
+export type ConfigPrCheckRequestedEventData = typeof configPrCheckRequested.schema.Type;

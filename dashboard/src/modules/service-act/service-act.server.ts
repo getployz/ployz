@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { Operation, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
+import { type ServiceActRequestedEventData, serviceActRequested } from "#/modules/service-act/service-act.events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
@@ -79,7 +79,7 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
     requestedByUserId: caller.userId,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
-    yield* enqueueEvent(createServiceActRequestedEvent({ actId: inserted.id, organizationId: inserted.organizationId }));
+    yield* enqueueEvent(serviceActRequested.create({ actId: inserted.id, organizationId: inserted.organizationId }));
     return { ok: true, id: inserted.id } satisfies Admission;
   }
   const [replayed] = yield* drizzle.select().from(serviceAct)

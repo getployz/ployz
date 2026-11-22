@@ -1,5 +1,5 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
-import { uptimeBackfillRequestedEventType } from "#/modules/inngest/events";
+import { uptimeBackfillRequested } from "#/modules/uptime/uptime.events";
 import { pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
 import { PRUNE_BATCH_ROWS, RETAINED } from "#/modules/uptime/retention";
 import { backfillUptimeChecks } from "#/modules/uptime/uptime-sync.server";
@@ -52,7 +52,7 @@ const createBackfillUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunn
     {
       id: "uptime-backfill",
       retries: 3,
-      triggers: [{ event: uptimeBackfillRequestedEventType }],
+      triggers: [{ event: uptimeBackfillRequested.eventType }],
       concurrency: [{ limit: 1 }],
     },
     async ({ step }) => step.run("sync-every-environment", () => runEffect(backfillUptimeChecks())),

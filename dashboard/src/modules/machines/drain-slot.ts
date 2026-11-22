@@ -1,4 +1,4 @@
-import { serverDrainRequestedEvent } from "#/modules/inngest/events";
+import { serverDrainRequested } from "#/modules/machines/machines.events";
 
 /**
  * One Organization's Drain slot. A Drain takes it, and so does a Server Policy change that turns services on, so that
@@ -8,7 +8,7 @@ import { serverDrainRequestedEvent } from "#/modules/inngest/events";
  */
 export const DRAIN_SLOT = {
   scope: "env",
-  key: `event.name == "${serverDrainRequestedEvent}" || event.data.change.acceptsServices == true`
+  key: `event.name == "${serverDrainRequested.name}" || event.data.change.acceptsServices == true`
     + ` ? "server-drain-" + event.data.organizationId : "server-policy-" + event.data.machineId`,
   limit: 1,
 } as const;

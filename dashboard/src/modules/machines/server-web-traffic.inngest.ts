@@ -1,8 +1,8 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent, serverWebTrafficRequestedEventType } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/lib/schema";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
+import { serverWebTrafficRequested } from "#/modules/machines/machines.events";
 import {
   bindWebTrafficRun,
   closeStaleWebTraffic,
@@ -10,12 +10,7 @@ import {
   executeWebTrafficOnce,
 } from "#/modules/machines/server-web-traffic.server";
 import type { EffectRunner } from "#/modules/inngest/run.server";
-
-const ServerWebTrafficRequestedData = Schema.Struct({
-  attemptId: Schema.String.check(Schema.isUUID()),
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: rustMachineIdSchema,
-});
+import { eventData } from "#/modules/inngest/define-event";
 
 /**
  * One web traffic change: bind the run to its row → claim the row, ask the Engine once and record its answer. Only
@@ -26,22 +21,20 @@ export async function applyServerWebTraffic(
   { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sendEvent">; runId: string },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(ServerWebTrafficRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(serverWebTrafficRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const bound = await step.run("bind-run", () => runEffect(bindWebTrafficRun(request, runId)));
   if (bound.kind === "settled") return { attemptId: request.attemptId, state: bound.state };
   const ended = await step.run("execute-once", () => runEffect(executeWebTrafficOnce(request, runId)));
-  await step.sendEvent("sync-cluster-domain", createClusterDomainSyncRequestedEvent({ organizationId: request.organizationId }));
+  await step.sendEvent("sync-cluster-domain", clusterDomainSyncRequested.create({ organizationId: request.organizationId }));
   return ended;
 }
 
 const lifecycle = attemptLifecycle({
   run: {
     id: "apply-server-web-traffic",
-    triggers: [{ event: serverWebTrafficRequestedEventType }],
+    triggers: [{ event: serverWebTrafficRequested.eventType }],
     // The start waits for the whole Cluster to see the role, so two Servers' changes in one Organization take turns.
     concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     handler: applyServerWebTraffic,

@@ -8,7 +8,7 @@ import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
@@ -292,7 +292,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   }
   if (query.query === "domains") return evidence;
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.
-  yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
+  yield* sendInngestEvent(clusterDomainSyncRequested.create({ organizationId })).pipe(
     Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
   );
   if (cloudflare !== null || rows?.view !== "domain" || rows.domain.kind !== "custom") return evidence;

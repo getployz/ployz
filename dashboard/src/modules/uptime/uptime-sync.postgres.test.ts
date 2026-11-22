@@ -8,7 +8,8 @@ import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { configDeploymentAdmittedEvent, uptimeBackfillRequestedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
+import { uptimeBackfillRequested } from "#/modules/uptime/uptime.events";
 import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
@@ -77,7 +78,7 @@ const setup = Effect.fn(function* () {
   /** One delivery of DEPLOYED's admission; `applied` stands in for a runner that applied it. */
   const deliver = (applied: boolean) => Effect.promise(() => new InngestTestEngine({
     function: worker,
-    events: [{ name: configDeploymentAdmittedEvent, data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYED } }],
+    events: [{ name: configDeploymentAdmitted.name, data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYED } }],
     steps: [
       ...applied
         ? [
@@ -94,7 +95,7 @@ const setup = Effect.fn(function* () {
   /** One run of the backfill, as an operator sends it once after rollout. */
   const runBackfill = Effect.promise(() => new InngestTestEngine({
     function: backfill,
-    events: [{ name: uptimeBackfillRequestedEvent, data: {} }],
+    events: [{ name: uptimeBackfillRequested.name, data: {} }],
   }).execute());
   /** `program` inside one open transaction, as a sync that has not committed yet. */
   const inTransaction = <A, E>(program: Effect.Effect<A, E, Database>) =>

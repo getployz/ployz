@@ -12,9 +12,8 @@ import { createCancelStoreDeployment, createDeployToFirstServer, createRunStoreD
 import { failStoreDeploymentUnrun, recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
 import { member, user } from "#/modules/identity/tables";
-import {
-  configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent, type DeploymentTrigger, mailSendRequestedEvent,
-} from "#/modules/inngest/events";
+import { type DeploymentTrigger, configDeploymentAdmitted, configFirstServerJoined } from "#/modules/config-store/config-store.events";
+import { mailSendRequested } from "#/modules/mail/mail.events";
 import { notificationPreference } from "#/modules/notifications/tables";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { Database } from "#/server/database.server";
@@ -40,7 +39,7 @@ const here = { project: null, environment: null };
 const sentRetire = () => [{ id: "retire-old", handler: () => ({ ids: [] }) }];
 
 const admitted = (deploymentId: string, trigger?: DeploymentTrigger) => ({
-  name: configDeploymentAdmittedEvent,
+  name: configDeploymentAdmitted.name,
   data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId, trigger },
 });
 
@@ -169,7 +168,7 @@ it.live("a first Server's join deploys each published Environment once, and leav
     makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
   const joined = yield* Effect.promise(() => new InngestTestEngine({
     function: createDeployToFirstServer(new Inngest({ id: "first-server-test" }), runner),
-    events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION, machineId: "founder" })],
+    events: [configFirstServerJoined.create({ organizationId: ORGANIZATION, machineId: "founder" })],
   }).execute());
   expect(joined.result).toEqual([{ environment: "shop/production", admitted: true }]);
   const { deployments } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployments", environment: { project: "shop", environment: null }, cursor: null, limit: null }));
@@ -280,7 +279,7 @@ it.live(
       const run = (deploymentId: string, trigger?: DeploymentTrigger) =>
         Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)], steps: sentRetire() }).execute());
       const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
-        .filter((event) => event.name === mailSendRequestedEvent)
+        .filter((event) => event.name === mailSendRequested.name)
         .map((event) => ({ id: event.id, ...(event.data as { to: string; subject: string; html: string; text: string }) }));
 
       yield* admit(DEPLOYED);

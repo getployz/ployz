@@ -3,7 +3,7 @@ import { and, eq, exists, inArray, isNotNull, isNull, lt, notExists, or, sql, ty
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
-import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
+import { serverEnrollmentCancelled } from "#/modules/machines/waiting/server-enrollment.events";
 import type { MachineId } from "@ployz/sdk";
 import { decryptPairingSecret } from "#/modules/runtime/connections.server";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
@@ -175,7 +175,7 @@ export const closeServerEnrollment = Effect.fn("ServerEnrollment.closeRun")(func
 
 // Each event's outbox row stays locked until commit, so every canceller enqueues only after it holds its attempts, in id order.
 const enqueueCancels = (attemptIds: ReadonlyArray<string>) =>
-  Effect.forEach([...attemptIds].sort(), (attemptId) => enqueueEvent(createServerEnrollmentCancelEvent({ attemptId })), { discard: true });
+  Effect.forEach([...attemptIds].sort(), (attemptId) => enqueueEvent(serverEnrollmentCancelled.create({ attemptId })), { discard: true });
 
 /**
  * Cancels the open attempts among `attemptIds`: a bound attempt's run ends it, and an unbound one ends here. Spares, and

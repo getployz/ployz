@@ -11,7 +11,7 @@ import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCh
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
-import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/config-store/config-store.events";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

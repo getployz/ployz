@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
+import { serverEnrollmentRequested } from "#/modules/machines/waiting/server-enrollment.events";
 import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
 import { isDeadFoundingClaim, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { lockOrganizationEnrollment, shareOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
@@ -402,7 +402,7 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
       state,
       requestedByUserId: userId,
     });
-    yield* enqueueEvent(createServerEnrollmentRequestedEvent({ attemptId: id, organizationId }), delivery);
+    yield* enqueueEvent(serverEnrollmentRequested.create({ attemptId: id, organizationId }), delivery);
     attempts.push({ id, waitingServerId: row.waitingServerId, role: row.role, name: row.instruction.name, state });
   }
   return { attempts, skipped: plan.skipped, spread: plan.spread };

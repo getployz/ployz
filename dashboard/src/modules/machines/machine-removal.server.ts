@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import type { Departed, LocalMachineRemoved, MachineId } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
-import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
+import { machineRemoveRequested } from "#/modules/machines/machines.events";
 import type { Actor } from "#/modules/identity/actor";
 import {
   type DataLossList,
@@ -357,7 +357,7 @@ export const startMachineRemove = Effect.fn("MachineRemoval.start")(
     const { transaction } = yield* Database;
     return yield* transaction(Effect.gen(function* () {
       const requested = yield* requestMachineRemoveAttempt(input);
-      yield* enqueueEvent(createMachineRemoveRequestedEvent({ attemptId: requested.id }));
+      yield* enqueueEvent(machineRemoveRequested.create({ attemptId: requested.id }));
       return requested;
     }));
   },

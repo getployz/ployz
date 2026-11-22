@@ -10,7 +10,7 @@ import type { Polar } from "#/modules/billing/polar-provider.server";
 import { cloudStore, type CloudStore } from "#/modules/config-store/store-sdk.server";
 import type { InngestClient } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
-import type { MailSendRequestedEventData } from "#/modules/inngest/events";
+import type { MailSendRequestedEventData } from "#/modules/mail/mail.events";
 import { notificationPreference } from "#/modules/notifications/tables";
 import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { sendUptimeAlerts } from "#/modules/uptime/alert-mail.server";

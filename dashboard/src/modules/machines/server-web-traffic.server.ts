@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { createServerWebTrafficRequestedEvent, type ServerWebTrafficRequestedEventData } from "#/modules/inngest/events";
+import { type ServerWebTrafficRequestedEventData, serverWebTrafficRequested } from "#/modules/machines/machines.events";
 import { type LatestWebTraffic, type RequestedServerWebTraffic, type RequestServerWebTrafficInput, startFailure, WEB_TRAFFIC_PENDING_LIMIT_MS, WEB_TRAFFIC_RUNNING_LIMIT_MS } from "#/modules/machines/server-web-traffic";
 import { type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic-states";
 import { serverWebTrafficAttempt } from "#/modules/machines/tables";
@@ -55,7 +55,7 @@ const within = (text: string) => (text.length > MESSAGE_LIMIT ? `${text.slice(0,
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueChange = (row: WebTrafficAttemptRow) =>
-  enqueueEvent(createServerWebTrafficRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
+  enqueueEvent(serverWebTrafficRequested.create({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
  * The switch on a Server page. The admitted change's row takes the id the tab minted and is written with its run's

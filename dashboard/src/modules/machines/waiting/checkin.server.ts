@@ -10,7 +10,7 @@ import {
   type CheckinStopReason,
   type StoredReport,
 } from "#/modules/machines/waiting/checkin-wire";
-import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
+import { type ServerEnrollmentCheckinReport, createServerEnrollmentReportedEvent } from "#/modules/machines/waiting/server-enrollment.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { asStage, forwardTo, joinsSent, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";

@@ -33,7 +33,7 @@ describe("machine remove Inngest boundary", () => {
       status: "invalid",
       skipped: true,
     });
-    expect(output.ctx.step.run).toHaveBeenCalledTimes(1);
+    expect(output.ctx.step.run).not.toHaveBeenCalled();
   });
 
   it("ignores cancellation events owned by another function", async () => {
@@ -155,7 +155,7 @@ describe("machine remove Inngest boundary", () => {
 
     expect(output.result).toEqual({ attemptId, status: "superseded", skipped: true });
     const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
-    expect(steps).toEqual(["normalize-machine-remove-attempt-id", "claim-machine-remove", "observe-leaving-server", "remove-machine"]);
+    expect(steps).toEqual(["claim-machine-remove", "observe-leaving-server", "remove-machine"]);
     expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
   });
 
@@ -179,7 +179,6 @@ describe("machine remove Inngest boundary", () => {
     expect(output.result).toEqual({ attemptId, status: "succeeded" });
     const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
     expect(steps).toEqual([
-      "normalize-machine-remove-attempt-id",
       "claim-machine-remove",
       "observe-leaving-server",
       "remove-machine",

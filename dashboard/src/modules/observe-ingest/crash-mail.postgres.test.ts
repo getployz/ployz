@@ -4,7 +4,7 @@ import { Deferred, Effect, Fiber } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import type { MailSendRequestedEventData } from "#/modules/inngest/events";
+import type { MailSendRequestedEventData } from "#/modules/mail/mail.events";
 import { claimCrashMail, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
 import { crashEvent } from "#/modules/observe-ingest/tables";
 import { Database } from "#/server/database.server";

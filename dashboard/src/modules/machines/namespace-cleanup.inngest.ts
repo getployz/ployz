@@ -1,7 +1,7 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
-import { namespaceCleanupRequestedEventType } from "#/modules/inngest/events";
+import { namespaceCleanupRequested } from "#/modules/machines/machines.events";
 import {
   bindCleanupRun,
   closeCleanupRun,
@@ -9,11 +9,7 @@ import {
   executeCleanupOnce,
 } from "#/modules/machines/namespace-cleanup.server";
 import type { EffectRunner } from "#/modules/inngest/run.server";
-
-const NamespaceCleanupRequestedData = Schema.Struct({
-  cleanupId: Schema.String.check(Schema.isUUID()),
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-});
+import { eventData } from "#/modules/inngest/define-event";
 
 /**
  * One clean: bind the run to its row → claim the row, ask the Engine once and record its answer. Only the last step
@@ -23,11 +19,9 @@ export async function executeCleanNamespace(
   { event, step, runId }: { event: { data: unknown }; step: StepTools<"run">; runId: string },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(NamespaceCleanupRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(namespaceCleanupRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const bound = await step.run("bind-run", () => runEffect(bindCleanupRun(request, runId)));
   if (bound.kind === "settled") return { cleanupId: request.cleanupId, state: bound.state };
   return step.run("execute-once", () => runEffect(executeCleanupOnce(request, runId)));
@@ -36,7 +30,7 @@ export async function executeCleanNamespace(
 const lifecycle = attemptLifecycle({
   run: {
     id: "clean-namespace",
-    triggers: [{ event: namespaceCleanupRequestedEventType }],
+    triggers: [{ event: namespaceCleanupRequested.eventType }],
     handler: executeCleanNamespace,
   },
   cancelId: "cancel-namespace-cleanup",

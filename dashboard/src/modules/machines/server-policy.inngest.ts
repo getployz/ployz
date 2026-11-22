@@ -1,17 +1,10 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
+import { eventData } from "#/modules/inngest/define-event";
 import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
-import { rustMachineIdSchema } from "#/lib/schema";
-import { serverPolicyChangeRequestedEventType } from "#/modules/inngest/events";
-import { ServerPolicyChangeSchema } from "#/modules/machines/server-policy";
+import { serverPolicyChangeRequested } from "#/modules/machines/machines.events";
 import { applyServerPolicyChangeActivity } from "#/modules/machines/server-policy.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
-
-const ServerPolicyChangeRequestedData = Schema.Struct({
-  organizationId: Schema.NonEmptyString,
-  machineId: rustMachineIdSchema,
-  change: ServerPolicyChangeSchema,
-});
 
 /**
  * Apply one queued Server Policy change through the Organization Runtime.
@@ -22,14 +15,9 @@ export async function executeApplyServerPolicyChange(
   { event, step }: { event: { data: unknown }; step: StepTools<"run"> },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-server-policy-change", () => {
-    const decoded = Schema.decodeUnknownOption(ServerPolicyChangeRequestedData)(
-      event.data,
-      { onExcessProperty: "preserve" },
-    );
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: true };
+  const decoded = eventData(serverPolicyChangeRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: true };
+  const request = decoded.value;
   await step.run("update-machine", () =>
     runEffect(Effect.scoped(applyServerPolicyChangeActivity(request))),
   );
@@ -44,7 +32,7 @@ export const createApplyServerPolicyChange = (
     {
       id: "apply-server-policy-change",
       retries: 3,
-      triggers: [{ event: serverPolicyChangeRequestedEventType }],
+      triggers: [{ event: serverPolicyChangeRequested.eventType }],
       // A change that turns services on waits out its Organization's Drain; any other takes only its Server's slot.
       // Changes to one Server apply in the order they were requested.
       concurrency: [DRAIN_SLOT, { key: "event.data.machineId", limit: 1 }],

@@ -17,16 +17,8 @@ import { type Access, requireAccess } from "#/modules/organization/access.server
 import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createConfigDeploymentAdmittedEvent,
-  createConfigDeploymentStartedEvent,
-  createConfigPrCheckRequestedEvent,
-  createConfigSweepRequestedEvent,
-  createGithubBuildRunCompletedEvent,
-  createVariablesResealRequestedEvent,
-  type ConfigDeploymentAdmittedEventData,
-  type DeploymentTrigger,
-} from "#/modules/inngest/events";
+import { createGithubBuildRunCompletedEvent, createVariablesResealRequestedEvent } from "#/modules/inngest/events";
+import { type ConfigDeploymentAdmittedEventData, type DeploymentTrigger, configDeploymentAdmitted, configSweepRequested, createConfigDeploymentStartedEvent, createConfigPrCheckRequestedEvent } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
 import { installationAccess } from "#/modules/github/github-access";
@@ -113,7 +105,7 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   started: boolean,
 ) {
   for (const data of admittedEvents(organizationId, written, "user")) {
-    const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
+    const event = started ? createConfigDeploymentStartedEvent(data) : configDeploymentAdmitted.create(data);
     yield* sendInngestEvent(event).pipe(
       Effect.catchTag("InngestEventSendError", (error) =>
         Effect.logWarning("An admitted Deployment waits to be handed over again: Cloud couldn't hand it to its worker.", { data, error })),
@@ -331,7 +323,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   const removed = written.written === "deployment" ? written.remove && written.status === "applied"
     : written.written === "removal" ? written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied")
     : written.written === "synced" && written.closing;
-  if (removed) yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
+  if (removed) yield* sendInngestEvent(configSweepRequested.create({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
 });
 

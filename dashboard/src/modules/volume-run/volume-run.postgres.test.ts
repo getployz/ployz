@@ -34,7 +34,7 @@ import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { firstFrame, PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import {
@@ -4612,7 +4612,7 @@ describe("volume runs", () => {
       await fence(placed);
       const worker = createRunStoreDeployment(new Inngest({ id: "test" }), runEffect);
       const failed = () => invokeOnFailure(worker, DEPLOY, {
-        name: configDeploymentAdmittedEvent,
+        name: configDeploymentAdmitted.name,
         data: { organizationId, environmentId: "env-1", deploymentId: "d-1" },
       });
       send.mockClear();

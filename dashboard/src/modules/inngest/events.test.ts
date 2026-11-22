@@ -1,14 +1,6 @@
 import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import {
-  createMachineRemoveRequestedEvent,
-  createGithubCheckSuiteReceivedEvent,
-  createGithubPushReceivedEvent,
-  createOrganizationBillingSyncEventsFromCustomerStatePayload,
-  createOrganizationBillingSyncEventsFromSubscriptionPayload,
-  inngestEventEnvelopeFields,
-  inngestFunctionFailedEnvelopeSchema,
-} from "#/modules/inngest/events";
+import { createGithubCheckSuiteReceivedEvent, createGithubPushReceivedEvent, createOrganizationBillingSyncEventsFromCustomerStatePayload, createOrganizationBillingSyncEventsFromSubscriptionPayload, inngestEventEnvelopeFields, inngestFunctionFailedEnvelopeSchema } from "#/modules/inngest/events";
 
 describe("Inngest events", () => {
   it("decodes complete function-failed envelopes for an owned event", () => {
@@ -52,18 +44,6 @@ describe("Inngest events", () => {
         }),
       ),
     ).toBe(true);
-  });
-
-  it("creates deterministic machine remove attempts from the durable row id", () => {
-    expect(
-      createMachineRemoveRequestedEvent({
-        attemptId: "11111111-1111-4111-8111-111111111111",
-      }),
-    ).toEqual({
-      id: "machine-remove-11111111-1111-4111-8111-111111111111",
-      name: "machine/remove.requested",
-      data: { attemptId: "11111111-1111-4111-8111-111111111111" },
-    });
   });
 
   it("creates delivery-deduplicated GitHub ingestion events with authority keys", () => {

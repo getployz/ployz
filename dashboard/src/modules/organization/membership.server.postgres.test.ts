@@ -10,7 +10,7 @@ import { claimOrganization } from "#/modules/identity/claim.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
-import { serverAccessRetireRequestedEvent } from "#/modules/inngest/events";
+import { serverAccessRetireRequested } from "#/modules/machines/machines.events";
 import { removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
@@ -155,7 +155,7 @@ describe("removeMembership", () => {
     expect(await callerWith(bobs)).toBe("unauthorized");
     expect(await callerWith(adas)).toBe("owner");
     expect(await activeOrganization(bob)).toEqual({ id: OTHER, slug: "other" });
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: serverAccessRetireRequestedEvent }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: serverAccessRetireRequested.name }));
     expect(await tokenRows(ACME, bob)).toBe(0);
 
     await harness.db.insert(member).values({ userId: bob, organizationId: ACME, role: "member" });

@@ -202,7 +202,6 @@ describe("act-service", () => {
     const output = await act(admitted.id);
     expect(output.result).toEqual({ actId: admitted.id, state: "failed" });
     expect(vi.mocked(output.ctx.step.run).mock.calls.map(([id]) => id)).toEqual([
-      "normalize-request",
       "claim",
       "stop:m-alpha:web-a",
       "start:m-alpha:web-a",

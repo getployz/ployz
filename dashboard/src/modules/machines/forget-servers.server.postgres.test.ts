@@ -11,7 +11,7 @@ import { createDeployToFirstServer } from "#/modules/config-store/store-deployme
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { member, user } from "#/modules/identity/tables";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
-import { createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
+import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
@@ -178,7 +178,7 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
     const joined = yield* Effect.promise(() => new InngestTestEngine({
       function: createDeployToFirstServer(new Inngest({ id: "forget-servers-test" }), runner),
-      events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION, machineId: "1".repeat(32) })],
+      events: [configFirstServerJoined.create({ organizationId: ORGANIZATION, machineId: "1".repeat(32) })],
     }).execute());
     expect(joined.result).toEqual([{ environment: "shop/production", admitted: true }]);
   }).pipe(Effect.provide(services));

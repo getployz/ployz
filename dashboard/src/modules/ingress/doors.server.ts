@@ -38,7 +38,7 @@ import {
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
-import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
+import { type IngressDoorsRequestedEventData, ingressDoorsRequested } from "#/modules/ingress/ingress.events";
 import { observeClusterEnrollment } from "#/modules/machines/enrollment.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
@@ -262,7 +262,7 @@ export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function*
 });
 
 const enqueueSwitch = (row: AttemptRow, delivery: "await" | "detach") =>
-  enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }), delivery);
+  enqueueEvent(ingressDoorsRequested.create({ attemptId: row.id, organizationId: row.organizationId }), delivery);
 
 /**
  * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event, under the lock Cloudflare

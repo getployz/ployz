@@ -5,7 +5,7 @@ import { releaseHostedDomain, reserveHostedDomain } from "#/modules/cluster-doma
 import { organizationClusterDomain, type OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -54,7 +54,7 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
   }).onConflictDoNothing().returning();
   if (inserted) {
     // A lost request only delays the records and wildcard until the hourly sync.
-    yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
+    yield* sendInngestEvent(clusterDomainSyncRequested.create({ organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
     );
     return inserted;
@@ -80,7 +80,7 @@ export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(functio
   input: { readonly organizationSlug: string },
 ) {
   const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "org:read");
-  yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
+  yield* sendInngestEvent(clusterDomainSyncRequested.create({ organizationId: id })).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),
     )),

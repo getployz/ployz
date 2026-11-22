@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, 
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { InngestClient } from "#/modules/inngest/client";
-import type { ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
+import type { ServerUpgradeRequestedEventData } from "#/modules/server-upgrade/server-upgrade.events";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import {

@@ -18,7 +18,7 @@ import type {
 } from "#/modules/github/github-ingestion.contracts";
 import { installationAccess, organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
-import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 
 /** GitHub told Cloud something it can't use yet; the worker retries. */
 export class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly message: string }> {}

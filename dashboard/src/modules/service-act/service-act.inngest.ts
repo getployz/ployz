@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
 import { advanceProposal } from "#/modules/proposals/proposals.server";
-import { serviceActRequestedEventType } from "#/modules/inngest/events";
+import { serviceActRequested } from "#/modules/service-act/service-act.events";
 import { cameBack, rollOrder, stepsOf, takes } from "#/modules/service-act/service-act";
 import {
   actOnContainer,
@@ -12,21 +12,15 @@ import {
   recordServiceAct,
 } from "#/modules/service-act/service-act.server";
 import type { EffectRunner } from "#/modules/inngest/run.server";
-
-const ServiceActRequestedData = Schema.Struct({
-  actId: Schema.String.check(Schema.isUUID()),
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-});
+import { eventData } from "#/modules/inngest/define-event";
 
 export async function executeServiceAct(
   { event, step, runId }: { event: { data: unknown }; step: StepTools<"run">; runId: string },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(ServiceActRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(serviceActRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const claimed = await step.run("claim", () => runEffect(claimServiceAct(request, runId)));
   if (claimed.kind === "settled") return { actId: request.actId, state: claimed.state };
   const { stop, start } = stepsOf(claimed.verb);
@@ -45,7 +39,7 @@ export async function executeServiceAct(
 const lifecycle = attemptLifecycle({
   run: {
     id: "act-service",
-    triggers: [{ event: serviceActRequestedEventType }],
+    triggers: [{ event: serviceActRequested.eventType }],
     handler: executeServiceAct,
   },
   cancelId: "cancel-service-act",

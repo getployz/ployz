@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Schedule } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
-import { createNamespaceCleanupRequestedEvent, type NamespaceCleanupRequestedEventData } from "#/modules/inngest/events";
+import { type NamespaceCleanupRequestedEventData, namespaceCleanupRequested } from "#/modules/machines/machines.events";
 import { CLEANUP_PENDING_LIMIT_MS, CLEANUP_RUNNING_LIMIT_MS } from "#/modules/machines/namespace-cleanup";
 import { CLEANUP_END_CODES, type CleanupEndCode, type CleanupEndCodeWithoutMessage, type CleanupState } from "#/modules/machines/namespace-cleanup-states";
 import { namespaceCleanup } from "#/modules/machines/tables";
@@ -88,7 +88,7 @@ const endedSaying = (code: "refused" | "incomplete", message: string) => ({
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueCleanup = (row: CleanupRow) =>
-  enqueueEvent(createNamespaceCleanupRequestedEvent({ cleanupId: row.id, organizationId: row.organizationId }));
+  enqueueEvent(namespaceCleanupRequested.create({ cleanupId: row.id, organizationId: row.organizationId }));
 
 /**
  * A clean the signed-in CLI asked for, deleting exactly the Volumes it previewed, under the attempt its request admits.

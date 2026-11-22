@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createServerAccessRetireRequestedEvent } from "#/modules/inngest/events";
+import { serverAccessRetireRequested } from "#/modules/machines/machines.events";
 import { refusalOf, type Role } from "#/modules/organization/access.server";
 import { can } from "#/modules/organization/permissions";
 import { organization } from "#/modules/organization/tables";
@@ -50,7 +50,7 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
     yield* drizzle.update(session)
       .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: new Date() })
       .where(and(eq(session.userId, userId), eq(session.activeOrganizationId, organizationId)));
-    yield* afterDatabaseCommit(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
+    yield* afterDatabaseCommit(sendInngestEvent(serverAccessRetireRequested.create({})).pipe(
       Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
     ));
   }));

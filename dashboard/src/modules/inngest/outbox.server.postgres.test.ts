@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
-import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
+import { volumeRunRequested } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent, sweepOutbox } from "#/modules/inngest/outbox.server";
 import { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -10,7 +10,7 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const inngest = new Inngest({ id: "outbox-test" });
 const send = vi.spyOn(inngest, "send");
 const event = (runId: string) =>
-  createVolumeRunRequestedEvent({ organizationId: "org", environment: "env", volumeId: "vol", runId });
+  volumeRunRequested.create({ organizationId: "org", environment: "env", volumeId: "vol", runId });
 
 describe("operation outbox", () => {
   let harness: PostgresTestHarness;

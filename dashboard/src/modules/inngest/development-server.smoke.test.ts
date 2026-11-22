@@ -8,10 +8,9 @@ import { Inngest } from "inngest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRetireOld } from "#/modules/config-store/retire-old.inngest";
 import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
-import {
-  createConfigDeploymentRetireRequestedEvent, createConfigDeploymentStartedEvent, serverDrainRequestedEvent,
-  serverPolicyChangeRequestedEvent, volumeRunTakenEvent,
-} from "#/modules/inngest/events";
+import { configDeploymentRetireRequested, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
+import { serverDrainRequested, serverPolicyChangeRequested } from "#/modules/machines/machines.events";
+import { volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 
@@ -354,7 +353,7 @@ describe("Inngest development server durable smoke", () => {
     const released = new Promise<void>((resolve) => { release = resolve; });
     releaseStep = release;
     const drain = inngest.createFunction(
-      { id: "drain-slot-smoke-drain", retries: 0, triggers: [{ event: serverDrainRequestedEvent }], concurrency: [DRAIN_SLOT] },
+      { id: "drain-slot-smoke-drain", retries: 0, triggers: [{ event: serverDrainRequested.name }], concurrency: [DRAIN_SLOT] },
       async ({ event, step }) => {
         await step.run("hold-drain", async () => {
           running.add(`drain ${String(event.data["organizationId"])}`);
@@ -363,7 +362,7 @@ describe("Inngest development server durable smoke", () => {
       },
     );
     const policy = inngest.createFunction(
-      { id: "drain-slot-smoke-policy", retries: 0, triggers: [{ event: serverPolicyChangeRequestedEvent }], concurrency: [DRAIN_SLOT] },
+      { id: "drain-slot-smoke-policy", retries: 0, triggers: [{ event: serverPolicyChangeRequested.name }], concurrency: [DRAIN_SLOT] },
       async ({ event, step }) => {
         await step.run("apply-policy", () => { running.add(`policy ${String(event.data["machineId"])}`); });
       },
@@ -371,9 +370,9 @@ describe("Inngest development server durable smoke", () => {
     worker = await connect({ apps: [{ client: inngest, functions: [drain, policy] }],
       gatewayUrl: `ws://127.0.0.1:${started.gatewayPort}/v0/connect`, handleShutdownSignals: [] });
     const change = (organizationId: string, machineId: string, change: ServerPolicyChange) =>
-      inngest.send({ name: serverPolicyChangeRequestedEvent, data: { organizationId, machineId, change } });
+      inngest.send({ name: serverPolicyChangeRequested.name, data: { organizationId, machineId, change } });
 
-    await inngest.send({ name: serverDrainRequestedEvent, data: { attemptId: "a1", organizationId: "org-1", machineId: "m1" } });
+    await inngest.send({ name: serverDrainRequested.name, data: { attemptId: "a1", organizationId: "org-1", machineId: "m1" } });
     await expect.poll(() => running.has("drain org-1"), { timeout: 10_000 }).toBe(true);
 
     await change("org-1", "m1", { acceptsBuilds: false });
@@ -416,7 +415,7 @@ describe("Inngest development server durable smoke", () => {
     const taken = await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-1", runId: "taken" } });
     await inngest.send({ name: "smoke/volume-run", data: { volumeId: "vol-2", runId: "kept" } });
     await expect.poll(() => sleeping.size, { timeout: 10_000 }).toBe(2);
-    await inngest.send({ name: volumeRunTakenEvent, data: { runId: "taken" } });
+    await inngest.send({ name: volumeRunTaken.name, data: { runId: "taken" } });
     await expect.poll(() => finished.has("kept"), { timeout: 20_000 }).toBe(true);
     await vi.waitFor(async () => expect(await runStatuses(started.devPort, taken)).toEqual(["CANCELLED"]), { timeout: 10_000 });
 
@@ -449,7 +448,7 @@ describe("Inngest development server durable smoke", () => {
 
     // The real event's id, so a duplicate request for one Deployment starts no second cleanup.
     const retire = (environmentId: string, deploymentId: string, number: number) => {
-      const { id, data } = createConfigDeploymentRetireRequestedEvent({ organizationId: "org", environmentId, deploymentId, number });
+      const { id, data } = configDeploymentRetireRequested.create({ organizationId: "org", environmentId, deploymentId, number });
       return inngest.send({ id, name: "smoke/retire-old", data });
     };
     const admit = (environmentId: string, deploymentId: string, number: number | null) =>
