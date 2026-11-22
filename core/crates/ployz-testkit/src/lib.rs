@@ -1,4 +1,5 @@
-//! Docker-in-Docker support for the ignored informing cluster suite.
+//! Test support: Docker-in-Docker Clusters for the ignored informing suite, and in-process
+//! fakes of the Machine API, an ACME directory, a release key and a fleet.
 
 pub mod fake_acme;
 pub mod fake_fleet;
@@ -30,8 +31,8 @@ use thiserror::Error;
 pub use poll::{Attempt, WaitError, hold_for, poll_until};
 
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
-pub const OWNER_LABEL: &str = "dev.ployz.testkit";
-pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
+pub(crate) const OWNER_LABEL: &str = "dev.ployz.testkit";
+pub(crate) const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";
 const HOST_ENTRY_API_PORT: u16 = 51003;
 static RESERVED_PORTS: LazyLock<Mutex<BTreeSet<u16>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));

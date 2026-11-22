@@ -53,6 +53,14 @@ pub enum EndedRun<B> {
     Failed,
 }
 
+/// Why a build is passed on when a sealed value needs a newer Ployz than the runner or
+/// the grant Machine runs.
+pub const OLD_MINT_SKIPS: &str =
+    "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server";
+
+/// Why a build whose Deployment was cancelled failed.
+pub const CANCELLED: &str = "cancelled";
+
 /// Why a build failed or was passed on, as the sentence it records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Why {

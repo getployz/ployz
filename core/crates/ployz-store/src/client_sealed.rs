@@ -89,7 +89,7 @@ impl Sealer<'_> {
 }
 
 /// What a value sealed for the Service with ID `service` in `environment` binds to;
-/// None when either has no UUID.
+/// None when the Service has no UUID.
 pub(crate) fn identity(
     organization: &OrganizationId,
     environment: &EnvironmentId,
@@ -97,7 +97,7 @@ pub(crate) fn identity(
 ) -> Option<SealedIdentity> {
     Some(SealedIdentity {
         organization: organization.as_str().to_owned(),
-        environment: Uuid::parse_str(environment.as_str()).ok()?,
+        environment: environment.uuid(),
         service: Uuid::parse_str(service).ok()?,
     })
 }
@@ -195,10 +195,8 @@ pub(crate) fn accept(
     receiver: &Receiver<'_>,
     refuse: impl Fn(&str) -> RpcError,
 ) -> Result<SealedSecret, RpcError> {
-    let (Ok(environment), Ok(service)) = (
-        Uuid::parse_str(receiver.environment.as_str()),
-        Uuid::parse_str(&receiver.service.id),
-    ) else {
+    let environment = receiver.environment.uuid();
+    let Ok(service) = Uuid::parse_str(&receiver.service.id) else {
         return Err(refuse("this Service has no ID a sealed value binds to"));
     };
     if value.sealed_for != environment {

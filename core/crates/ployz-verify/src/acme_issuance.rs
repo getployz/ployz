@@ -1161,13 +1161,13 @@ impl AcmeIssuance {
             },
         );
         match stepped.issuance {
-            // `ployz_decide::issuance::step`, and the next pass starts `orderable_since` again.
+            // `ployz_decide::issuance::step` says whether the next pass keeps `orderable_since`.
             Issuance::Held(_) => {
                 if lost {
                     return None;
                 }
                 block(machine);
-                let reset = !self.broken.hold_keeps_orderable_since;
+                let reset = !(stepped.keeps_since || self.broken.hold_keeps_orderable_since);
                 machine.orderable_since = (!reset).then_some(age);
                 state.took = Some(Branch::Held {
                     who,
@@ -1175,11 +1175,13 @@ impl AcmeIssuance {
                     reset: reset && found.is_some(),
                 });
             }
-            // `ployz_decide::issuance::step`, the next pass starts `orderable_since` again, and the record
-            // (`issue_wanted`'s `Issuance::Refused` arm).
+            // `ployz_decide::issuance::step` says whether the next pass keeps `orderable_since`,
+            // and the record (`issue_wanted`'s `Issuance::Refused` arm).
             Issuance::Refused { refusal, clock } => {
                 assert_eq!(refusal, Refusal::DoesNotResolve);
-                machine.orderable_since = self.broken.refusal_keeps_orderable_since.then_some(age);
+                machine.orderable_since = (stepped.keeps_since
+                    || self.broken.refusal_keeps_orderable_since)
+                    .then_some(age);
                 block(machine);
                 let over_authority = snapshot
                     .clock()
@@ -1207,8 +1209,7 @@ impl AcmeIssuance {
                 if lost {
                     return None;
                 }
-                assert_eq!(stepped.keeps_since, found.is_some());
-                machine.orderable_since = Some(age);
+                machine.orderable_since = Some(if stepped.keeps_since { age } else { 0 });
                 let since = *machine.unblocked.get_or_insert(0);
                 let gate = Gate::of(clock, verdict);
                 state.took = Some(if let Issuance::Order(route) = issuance {

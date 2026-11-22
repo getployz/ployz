@@ -253,14 +253,14 @@ pub async fn github_check_in(
         Ok(None) => {
             session.close().await;
             let end = GithubEnd::Unstarted {
-                message: OLD_MINT_SKIPS.to_owned(),
+                message: github_build::OLD_MINT_SKIPS.to_owned(),
             };
             store_call(&store, {
                 let id = id.clone();
                 move |store| store.github_end(&id, Some(run_id), &end)
             })
             .await?;
-            return Err(RpcError::conflict(OLD_MINT_SKIPS));
+            return Err(RpcError::conflict(github_build::OLD_MINT_SKIPS));
         }
         Err(error) => {
             session.close().await;
@@ -529,9 +529,6 @@ fn claims_run(claims: &GithubClaims) -> Result<u64, RpcError> {
         .parse()
         .map_err(|_| RpcError::unauthenticated("The token names no run".to_owned()))
 }
-
-const OLD_MINT_SKIPS: &str =
-    "GitHub builds a sealed value only with an up-to-date Ployz on the runner and your server";
 
 /// The Sealed values the built Service reads, still sealed, for its Machine to open.
 fn sealed_record(
@@ -872,7 +869,7 @@ pub async fn github_cancel(
     for build in &builds {
         let (id, run_id) = (build.id.clone(), build.run.run_id);
         let end = GithubEnd::Failed {
-            message: "cancelled".to_owned(),
+            message: github_build::CANCELLED.to_owned(),
         };
         // Another step may have ended it meanwhile.
         let _ = store_call(&store, move |store| {
