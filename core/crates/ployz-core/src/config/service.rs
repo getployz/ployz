@@ -250,6 +250,17 @@ impl ServiceSource {
         }
     }
 
+    /// The image Service `service`'s build or upload will produce, before it exists:
+    /// binding replaces it with verified content.
+    #[must_use]
+    pub fn pending(service: &ServiceName) -> Self {
+        Self::Image {
+            version: 1,
+            image: crate::pending_image(service),
+            credentials: ServiceImageCredentials::None,
+        }
+    }
+
     /// Whether this builds from the Git repository `repository_id`.
     #[must_use]
     pub fn builds_repository(&self, repository_id: u64) -> bool {

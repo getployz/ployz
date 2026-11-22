@@ -191,8 +191,7 @@ pub(crate) fn removals(
         Vec::new()
     } else {
         // Deployed Volumes mean a Deployment was admitted, which fixed the Namespace.
-        let namespace: Namespace =
-            crate::deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace: Namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
         removed(&held, &target, &namespace)?
     };
     Ok(RemovalsView {

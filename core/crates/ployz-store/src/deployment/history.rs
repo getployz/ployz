@@ -403,7 +403,7 @@ pub(crate) fn settling(
     environment: &EnvironmentId,
     looked: i64,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let since = looked.min(super::now()) - SETTLING;
+    let since = looked.min(now()) - SETTLING;
     latest_where(
         tx,
         environment,

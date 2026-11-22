@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, PostedVersion, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
@@ -486,7 +485,7 @@ fn deploy(
         trusted,
     )?;
     let id = &environment.summary.id;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(
         tx,
@@ -505,12 +504,7 @@ fn deploy(
             &who.organization,
             &saved_intent,
             &landing,
-            deployment::Scope::Narrow {
-                services: &admit.services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(&admit.services, &[]),
             namespace.clone(),
             cluster_domain,
         )?),
@@ -561,10 +555,10 @@ fn deploy(
                 &who.organization,
                 &saved_intent,
                 &landing,
-                deployment::Scope::All {
-                    losses: &losses,
+                deployment::Scope {
+                    targeting: deployment::Targeting::Full { prune: prunes },
                     retire: &retire,
-                    prune: prunes,
+                    losses: &losses,
                 },
                 namespace,
                 cluster_domain,
@@ -595,18 +589,15 @@ fn deploy(
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     deployment::versions::post(tx, &summary.id, &admit.versions)?;
     // What merges landed and this Deploy ships no longer waits for a push.
-    let shipped = match admit.services.is_empty() {
-        true => Shipped::All(&saved_intent),
-        false => Shipped::Services(
-            frozen
-                .nodes
-                .iter()
-                .filter(|node| node.service().is_some())
-                .map(TargetNode::id)
-                .collect(),
-        ),
-    };
-    crate::automation::shipped_landed(tx, id, &shipped)?;
+    let shipped = frozen.targeting.as_ref().map(|_| {
+        frozen
+            .nodes
+            .iter()
+            .filter(|node| node.service().is_some())
+            .map(TargetNode::id)
+            .collect()
+    });
+    crate::automation::shipped_landed(tx, id, &saved_intent, &shipped)?;
     Ok(summary)
 }
 
@@ -675,7 +666,7 @@ fn reapply(
         .iter()
         .map(|service| crate::scope::service_name(service))
         .collect::<Result<Vec<_>, _>>()?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     let cluster_domain = trusted
         .domains
         .cluster_domain
@@ -713,7 +704,7 @@ fn reapply(
         services: saved
             .services
             .iter()
-            .filter(|service| frozen.shipped.contains(&service.config.private_dns))
+            .filter(|service| frozen.hands(service))
             .cloned()
             .collect(),
         ..saved.clone()
@@ -739,7 +730,7 @@ fn reapply(
         &frozen,
     )?;
     for service in &running {
-        pin_running_commit(tx, (id, &summary.id), service)?;
+        crate::build::pin_running(tx, (id, &summary.id), service)?;
     }
     Ok(summary)
 }
@@ -768,12 +759,7 @@ fn unchanged(
             &who.organization,
             &saved,
             landing,
-            deployment::Scope::Narrow {
-                services,
-                retire: &[],
-                losses: &[],
-                every_saved: false,
-            },
+            deployment::Scope::of(services, &[]),
             namespace.clone(),
             cluster_domain,
         )?;
@@ -805,29 +791,4 @@ fn revisions(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Revisio
     .iter()
     .map(|row| row.number(0, "revision"))
     .collect()
-}
-
-/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
-/// Deployment that put it in Applied State. A Service without a Git source has no
-/// build to pin. Builds go by the runtime name, which a rename keeps.
-fn pin_running_commit(
-    tx: &mut dyn Tx,
-    (environment, id): (&EnvironmentId, &DeploymentId),
-    service: &SavedServiceIntent,
-) -> Result<(), RpcError> {
-    tx.execute(
-        "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
-         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
-         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
-         AND b.commit_sha IS NOT NULL",
-        &[
-            id.as_str().into(),
-            environment.as_str().into(),
-            service.id.as_str().into(),
-            service.config.private_dns.as_str().into(),
-        ],
-    )
-    .map(drop)
 }

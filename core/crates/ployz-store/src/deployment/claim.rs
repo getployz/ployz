@@ -222,7 +222,7 @@ fn take(
         })
         .flatten()
         .collect();
-    let organization = build::organization(tx, &id)?;
+    let organization = organization(tx, &id)?;
     let build_order = crate::builders::order(tx, organization.as_str())?;
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     let ended_runs = ended_runs(tx, &stored.summary)?;
@@ -231,7 +231,7 @@ fn take(
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     let generation = rule
         .as_ref()
-        .and_then(|rule| rule.open().ok())
+        .and_then(crate::auto_rule::opened)
         .map(|rule| rule.generation);
     let image_tokens = match generation {
         None => BTreeMap::new(),

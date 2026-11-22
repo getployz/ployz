@@ -16,8 +16,8 @@ use std::{
 use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed,
-        Timestamp, version::Forget,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, RuleId, RuleIdentity, Signed, Timestamp,
+        version::Forget,
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};
@@ -501,7 +501,7 @@ impl ConsumptionLog {
     /// repository, branch or Namespace. Writes only when the mark rises.
     pub(crate) fn mark_rule(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let rule = rule.identity();

@@ -300,37 +300,6 @@ impl<T: Statement> Signed<T> {
         signing_input(T::PURPOSE, &self.body)
     }
 
-    /// The keys, all among `trusted`, whose signatures on this statement verify.
-    ///
-    /// # Errors
-    /// Returns [`AuthorityRefusal::Unsigned`] when there is no signature,
-    /// [`AuthorityRefusal::UnknownKey`] when one names a key not in `trusted`, and
-    /// [`AuthorityRefusal::BadSignature`] when one does not verify.
-    pub fn verified_signers(
-        &self,
-        trusted: impl IntoIterator<Item = SigningPublicKey>,
-    ) -> Result<Vec<SigningPublicKey>, AuthorityRefusal> {
-        if self.signatures.is_empty() {
-            return Err(AuthorityRefusal::Unsigned {
-                purpose: T::PURPOSE,
-            });
-        }
-        let trusted: Vec<_> = trusted.into_iter().collect();
-        let input = self.signing_input();
-        self.signatures
-            .iter()
-            .map(|signature| {
-                if !trusted.contains(&signature.key) {
-                    return Err(AuthorityRefusal::UnknownKey { key: signature.key });
-                }
-                if !signature.verifies(&input) {
-                    return Err(AuthorityRefusal::BadSignature { key: signature.key });
-                }
-                Ok(signature.key)
-            })
-            .collect()
-    }
-
     /// Who signed this statement, each checked against `trusted`: a Device or grant it
     /// trusts or, on a statement that takes one, a trusted passkey's own answer to
     /// [`Self::challenge`]. What each may approve is [`TrustedKeys::covers`]'s to say.

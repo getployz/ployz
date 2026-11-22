@@ -99,7 +99,7 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
-    let full = frozen.full;
+    let full = frozen.targeting.is_full();
     let mut nodes = frozen.nodes.clone();
     inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
@@ -112,7 +112,7 @@ pub(crate) fn admit(
     }
     let admitted_at = now();
     let run = Run {
-        prune: frozen.prune,
+        prune: frozen.targeting.prunes(),
         ..Run::default()
     };
     let (targets_text, nodes_text, run_text, credentials_text) = (
@@ -185,41 +185,43 @@ pub(crate) fn admit(
             hold.standing = hold.standing.queue(number);
             return save(tx, &mut hold);
         }
-        tx.execute(
-            &format!(
-                "INSERT INTO config_deployment \
-             (id, organization_id, environment_id, number, status, saved_revision, services, \
-              nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, push_repository_id, push_branch, push_head, listed, service_uploads) \
-             VALUES (?1, ?2, ?3, ?4, '{QUEUED}', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-              ?16, ?17, ?18, ?19, ?20)"
-            ),
+        insert(
+            tx,
             &[
-                id.as_str().into(),
-                who.organization.as_str().into(),
-                environment_id.into(),
-                numbered.into(),
-                saved,
-                targets,
-                nodes,
-                namespace,
-                run,
-                credentials,
-                upload,
-                cluster,
-                at,
-                by,
-                message,
-                push.as_ref()
-                    .and_then(|push| i64::try_from(push.repository_id.get()).ok())
-                    .into(),
-                push.as_ref().map(|push| push.branch.as_str()).into(),
-                push.as_ref().map(|push| push.head.as_str()).into(),
-                listed.into(),
-                service_uploads,
+                ("id", id.as_str().into()),
+                ("organization_id", who.organization.as_str().into()),
+                ("environment_id", environment_id.into()),
+                ("number", numbered.into()),
+                ("status", QUEUED.into()),
+                ("saved_revision", saved),
+                ("services", targets),
+                ("nodes", nodes),
+                ("namespace", namespace),
+                ("run", run),
+                ("credentials", credentials),
+                ("upload", upload),
+                ("cluster_domain", cluster),
+                ("admitted", at),
+                ("admitted_by", by),
+                ("message", message),
+                (
+                    "push_repository_id",
+                    push.as_ref()
+                        .and_then(|push| i64::try_from(push.repository_id.get()).ok())
+                        .into(),
+                ),
+                (
+                    "push_branch",
+                    push.as_ref().map(|push| push.branch.as_str()).into(),
+                ),
+                (
+                    "push_head",
+                    push.as_ref().map(|push| push.head.as_str()).into(),
+                ),
+                ("listed", listed.into()),
+                ("service_uploads", service_uploads),
             ],
         )
-        .map(|_| ())
     })?;
     Ok(load(tx, id)?.summary)
 }
@@ -471,35 +473,30 @@ pub(crate) fn hold(
         return Ok(());
     }
     supersede(tx, condition, &key)?;
-    let namespace = namespace(tx, who, environment, false)?;
+    let namespace = namespace(tx, who, environment)?;
     let deployment = DeploymentId::fresh();
     let listed = next_listed(tx, id)?;
-    tx.execute(
-        &format!(
-            "INSERT INTO config_deployment \
-         (id, organization_id, environment_id, status, saved_revision, services, nodes, \
-          namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
-          push_services, listed) \
-         VALUES (?1, ?2, ?3, '{WAITING_FOR_CI}', ?4, ?5, '[]', ?6, ?7, '{{}}', ?8, ?9, ?10, ?11, \
-          ?12, ?13)"
-        ),
+    insert(
+        tx,
         &[
-            deployment.as_str().into(),
-            who.organization.as_str().into(),
-            id.as_str().into(),
-            revision_param(saved)?.into(),
-            json_text(&services).as_str().into(),
-            namespace.as_str().into(),
-            json_text(&Run::default()).as_str().into(),
-            now().into(),
-            push.repository_id.into(),
-            push.branch.as_str().into(),
-            push.head.as_str().into(),
-            json_text(&ids).as_str().into(),
-            listed.into(),
+            ("id", deployment.as_str().into()),
+            ("organization_id", who.organization.as_str().into()),
+            ("environment_id", id.as_str().into()),
+            ("status", WAITING_FOR_CI.into()),
+            ("saved_revision", revision_param(saved)?.into()),
+            ("services", json_text(&services).as_str().into()),
+            ("nodes", "[]".into()),
+            ("namespace", namespace.as_str().into()),
+            ("run", json_text(&Run::default()).as_str().into()),
+            ("credentials", "{}".into()),
+            ("admitted", now().into()),
+            ("push_repository_id", push.repository_id.into()),
+            ("push_branch", push.branch.as_str().into()),
+            ("push_head", push.head.as_str().into()),
+            ("push_services", json_text(&ids).as_str().into()),
+            ("listed", listed.into()),
         ],
-    )?;
-    Ok(())
+    )
 }
 
 /// Supersede every Deployment of `who`'s Organization waiting for CI of a push to
@@ -651,7 +648,7 @@ pub(crate) fn lowered(
     stored: &Stored,
     saved: &SavedEnvironmentIntent,
 ) -> Result<Lowered, RpcError> {
-    let organization = crate::build::organization(tx, &stored.summary.id)?;
+    let organization = organization(tx, &stored.summary.id)?;
     lower_held(
         tx,
         &stored.summary.environment_id,

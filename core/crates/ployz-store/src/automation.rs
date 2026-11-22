@@ -767,7 +767,9 @@ fn admit(
     let names = plan.names(&selected)?;
     // A push of a live rule's branch deploys only the settings the rule approves: any
     // other Deployment would fail on every Server, so it waits for a person instead.
-    let rule = crate::auto_rule::stored(tx, id)?.and_then(|rule| rule.open().ok());
+    let rule = crate::auto_rule::stored(tx, id)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened);
     if let Some(rule) = rule.filter(|rule| {
         !rule.ended
             && rule.source.repository_id == push.repository_id.get()
@@ -780,7 +782,7 @@ fn admit(
             (&environment, &saved.intent),
             &[],
         )?;
-        let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+        let namespace = deployment::namespace(tx, who, &environment.summary)?;
         let ships: Vec<ServiceName> = selected
             .iter()
             .filter(|(_, follows)| *follows)
@@ -869,20 +871,14 @@ fn admit(
     Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
-/// What a Deployment of `environment` shipped, which landed merges stop waiting on.
-pub(crate) enum Shipped<'a> {
-    /// A full Deploy of a Saved revision: each Service it holds.
-    All(&'a SavedEnvironmentIntent),
-    /// A narrowed Deploy: these Services, by ID.
-    Services(BTreeSet<&'a str>),
-}
-
-/// Forget what landed merges changed in `environment` that a Deployment just took,
-/// `shipped`.
+/// Forget what landed merges changed in `environment` that a Deployment of Saved
+/// revision `saved` just took: each Service `saved` holds, or those `shipped` names
+/// by ID.
 pub(crate) fn shipped_landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    shipped: &Shipped<'_>,
+    saved: &SavedEnvironmentIntent,
+    shipped: &deployment::Targeting<BTreeSet<&str>>,
 ) -> Result<(), RpcError> {
     let rows = merge_deploy::of_environment(tx, environment)?;
     for row in &rows {
@@ -897,11 +893,11 @@ pub(crate) fn shipped_landed(
         match shipped {
             // Its outcome isn't known yet, so a removal stays for the next push, which
             // finds nothing left to tear down once this Deploy did.
-            Shipped::All(saved) => {
+            deployment::Targeting::Full { .. } => {
                 let kept = |id: &str| saved.services.iter().any(|service| service.id == id);
                 pending.updates.retain(|service| !kept(service));
             }
-            Shipped::Services(services) => {
+            deployment::Targeting::Named(services) => {
                 pending
                     .updates
                     .retain(|service| !services.contains(service.as_str()));
@@ -1010,7 +1006,7 @@ pub(crate) fn auto_admit(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = deployment::reserve_namespace(tx, who, &environment.summary)?;
     crate::deployment::admit::gate(
         tx,
         who,
@@ -1034,17 +1030,19 @@ pub(crate) fn auto_admit(
         &saved.intent,
         &landing,
         if full {
-            deployment::Scope::All {
-                losses: &losses,
+            deployment::Scope {
+                targeting: deployment::Targeting::Full { prune: true },
                 retire: &dropped,
-                prune: true,
+                losses: &losses,
             }
         } else {
-            deployment::Scope::Narrow {
-                services,
+            deployment::Scope {
+                targeting: deployment::Targeting::Named(deployment::Narrow {
+                    services,
+                    every_saved: true,
+                }),
                 retire,
                 losses: &losses,
-                every_saved: true,
             }
         },
         namespace,

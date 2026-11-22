@@ -887,16 +887,17 @@ impl SlotPolicy {
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
-        per_run: impl FnOnce() -> String,
+        per_run: impl FnOnce() -> CreationKey,
     ) -> SlotKey {
-        let key = match self {
+        let creation_key = match self {
             Self::BySpec => {
                 let key = crate::cluster::global_creation_key(spec);
                 // Explicit replacement can overlap even an identical spec.
-                match replacing {
+                let key = match replacing {
                     Some(old) => format!("{key}:replace:{old}"),
                     None => key,
-                }
+                };
+                CreationKey::try_from(key).expect("creation keys stay within 512 bytes")
             }
             Self::PerRun => per_run(),
         };
@@ -904,7 +905,7 @@ impl SlotPolicy {
             namespace: namespace.clone(),
             service: spec.name.clone(),
             kind,
-            creation_key: CreationKey::try_from(key).expect("creation keys stay within 512 bytes"),
+            creation_key,
         }
     }
 }

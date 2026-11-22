@@ -91,6 +91,12 @@ pub(crate) fn stored(
         .transpose()
 }
 
+/// `rule`'s terms. A kept rule that won't open counts as no rule: nothing it would
+/// allow or hold back applies.
+pub(crate) fn opened(rule: &Signed<AutoDeployRule>) -> Option<AutoDeployRule> {
+    rule.open().ok()
+}
+
 /// Keep `c.rule` as its Environment's rule. A rule for another Namespace, or one that
 /// doesn't supersede the one kept, is refused: every Machine would refuse it.
 pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<RuleView, RpcError> {
@@ -100,7 +106,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         .rule
         .open()
         .map_err(|_| error::invalid("The rule isn't a signed automatic deploy rule", json!({})))?;
-    let namespace = crate::deployment::namespace(tx, who, &environment.summary, true)?;
+    let namespace = crate::deployment::reserve_namespace(tx, who, &environment.summary)?;
     if rule.namespace != namespace {
         return Err(error::invalid(
             "The rule is for another environment's namespace",
@@ -116,7 +122,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         })?;
         crate::volume::birth::record(tx, (&id, &namespace), &saved.intent, &c.births)?;
     }
-    if let Some(kept) = stored(tx, &id)?.and_then(|kept| kept.open().ok())
+    if let Some(kept) = stored(tx, &id)?.as_ref().and_then(opened)
         && kept.rule == rule.rule
         && kept.generation >= rule.generation
     {
@@ -172,7 +178,7 @@ fn view_of(
 ) -> Result<RuleView, RpcError> {
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
-    let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
     let saved = crate::review::latest_saved(tx, id)?;
     let sources = saved
         .as_ref()
@@ -188,7 +194,7 @@ fn view_of(
         )?,
         _ => Vec::new(),
     };
-    let changed = match (rule.as_ref().and_then(|rule| rule.open().ok()), &saved) {
+    let changed = match (rule.as_ref().and_then(opened), &saved) {
         (Some(rule), Some(saved)) if !target.is_empty() => {
             let ships = following(tx, id, &saved.intent, &rule)?;
             changed(&rule, &namespace, &target, &sources, &ships)
