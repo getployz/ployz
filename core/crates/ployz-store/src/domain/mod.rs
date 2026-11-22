@@ -30,7 +30,7 @@ use crate::{Actor, Trusted};
 mod change;
 mod status;
 
-pub use change::{DomainChange, DomainEdit};
+pub use change::DomainChange;
 use status::row;
 
 /// What Cloud or the Standalone CLI observed of the public traffic, passed in-process with

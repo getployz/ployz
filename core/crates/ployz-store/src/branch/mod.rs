@@ -33,8 +33,8 @@ pub(crate) use setup::{
     setup_is_not_staged,
 };
 pub use sync::{
-    Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
-    UndoSync, Undone,
+    Mark, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced, UndoSync,
+    Undone,
 };
 pub(crate) use sync::{
     admit_secret_text, seal_secret, sealing_targets, sync, sync_view, take, undo,
