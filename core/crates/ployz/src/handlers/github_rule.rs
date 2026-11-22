@@ -218,7 +218,7 @@ pub(super) fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
 /// signed in. A key or Server Cloud gets wrong can't widen the rule: each Server admits
 /// it only when it names that Server's own Cluster key and Machine ID.
 pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
-    match approve::probe(root, &[ployz_core::SIGNED_VERSION_CAPABILITY]) {
+    match approve::probe(root, approve::Needs::Person) {
         approve::Probe::Enforcing(enforcing) => Ok(enforcing),
         approve::Probe::Off => Err(Error::coded(
             RpcErrorCode::Conflict,

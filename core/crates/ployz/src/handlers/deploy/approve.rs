@@ -12,8 +12,8 @@ use ployz_core::authority::{
 };
 use ployz_core::{
     Claim, Hint, MachineId, MachineObservation, MachineTarget, Namespace,
-    PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode, SIGNED_VERSION_CAPABILITY,
-    SealingPublicKey, ServiceName, cluster_sealing_key,
+    PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode, SCOPED_KEYS_CAPABILITY,
+    SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
 };
 use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
@@ -104,9 +104,9 @@ pub(in crate::handlers) fn sign(
     if silent {
         silent::refuse_forget(matches)?;
     }
-    let needs: &[&str] = match silent {
-        true => &[SIGNED_VERSION_CAPABILITY, PARENT_VERSIONS_CAPABILITY],
-        false => &[SIGNED_VERSION_CAPABILITY],
+    let needs = match silent {
+        true => Needs::Silent,
+        false => Needs::Person,
     };
     let (probe, plan) = std::thread::scope(|scope| {
         let probe = scope.spawn(|| probe(matches, needs));
@@ -138,7 +138,7 @@ pub(in crate::handlers) fn sign(
         }
         Probe::Enforcing(enforcing) => enforcing,
     };
-    let capability = needs.last().copied().unwrap_or(SIGNED_VERSION_CAPABILITY);
+    let capability = needs.named();
     if !enforcing.behind.outdated.is_empty() {
         return Err(outdated(matches, &enforcing.behind.outdated, capability));
     }
@@ -267,9 +267,14 @@ fn consent(
     let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         "Signing this deploy needs your yes, and there's no terminal to ask in. Run it at a \
-         terminal, or ship only new images with --image and --yes. Nothing deployed.",
+         terminal, or ship only new images. Nothing deployed.",
         json!({ "services": services }),
-    );
+    )
+    .hint(Hint::Retry(super::super::typed_with(&[
+        "--image",
+        "SERVICE=IMAGE",
+        "--yes",
+    ])));
     confirm(
         &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,
@@ -340,9 +345,49 @@ pub(in crate::handlers) enum Probe {
     Unknown,
 }
 
-/// What the Servers say about Device approval, each that enforces checked for every one
-/// of `needs`.
-pub(in crate::handlers) fn probe(matches: &ArgMatches, needs: &[&str]) -> Probe {
+/// What a deploy's signature needs of the Servers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::handlers) enum Needs {
+    /// A person's: each Server that enforces checks a signed version.
+    Person,
+    /// One with no person to ask, which signs an edit of the last version a person
+    /// approved: every Server must report that it enforces, and admit the edit.
+    Silent,
+}
+
+impl Needs {
+    fn capabilities(self) -> &'static [&'static str] {
+        match self {
+            Self::Person => &[SIGNED_VERSION_CAPABILITY],
+            Self::Silent => &[
+                SIGNED_VERSION_CAPABILITY,
+                SCOPED_KEYS_CAPABILITY,
+                PARENT_VERSIONS_CAPABILITY,
+            ],
+        }
+    }
+
+    /// The capability a refusal names.
+    fn named(self) -> &'static str {
+        match self {
+            Self::Person => SIGNED_VERSION_CAPABILITY,
+            Self::Silent => PARENT_VERSIONS_CAPABILITY,
+        }
+    }
+
+    /// Whether `machine` must hold every capability: under [`Needs::Silent`] each Server
+    /// does, since one that doesn't report enforcing can't be shown to admit the edit.
+    fn checks(self, machine: &ployz_core::Machine) -> bool {
+        match self {
+            Self::Person => machine.runtime.device_enforcement == Some(true),
+            Self::Silent => true,
+        }
+    }
+}
+
+/// What the Servers say about Device approval, each `needs` checks asked for each
+/// capability it needs.
+pub(in crate::handlers) fn probe(matches: &ArgMatches, needs: Needs) -> Probe {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
@@ -368,15 +413,16 @@ pub(in crate::handlers) fn probe(matches: &ArgMatches, needs: &[&str]) -> Probe 
     })
 }
 
-/// Each Server that enforces and was seen with no capabilities. An empty list claims
+/// Each Server `needs` checks that was seen with no capabilities. An empty list claims
 /// nothing: an older entry relays a newer peer's record without one.
-fn unclaimed(observed: &[MachineObservation], needs: &[&str]) -> BTreeSet<MachineId> {
+fn unclaimed(observed: &[MachineObservation], needs: Needs) -> BTreeSet<MachineId> {
     observed
         .iter()
         .map(|observed| &observed.machine)
         .filter(|machine| {
-            machine.runtime.device_enforcement == Some(true)
+            needs.checks(machine)
                 && needs
+                    .capabilities()
                     .iter()
                     .any(|needed| machine.runtime.claim(needed) == Claim::Unclaimed)
         })
@@ -389,12 +435,12 @@ fn unclaimed(observed: &[MachineObservation], needs: &[&str]) -> BTreeSet<Machin
 async fn asked(
     client: &Client,
     machines: &BTreeSet<MachineId>,
-    needs: &[&str],
+    needs: Needs,
 ) -> BTreeMap<MachineId, bool> {
     let asks = machines.iter().map(|machine| async move {
         let target = MachineTarget::from(machine);
         let mut holds = true;
-        for needed in needs {
+        for needed in needs.capabilities() {
             let ask = client.supports(Some(&target), needed);
             holds &= tokio::time::timeout(PROBE_TIMEOUT, ask).await.ok()?.ok()?;
         }
@@ -408,12 +454,12 @@ async fn asked(
 }
 
 /// What `observed` says about Device approval, with `answered` saying, for each Server
-/// seen with no capabilities that was asked and answered, whether it has every one of
-/// `needs`.
+/// seen with no capabilities that was asked and answered, whether it has every
+/// capability `needs` asks for.
 fn enforced(
     observed: &[MachineObservation],
     answered: &BTreeMap<MachineId, bool>,
-    needs: &[&str],
+    needs: Needs,
 ) -> Probe {
     if !observed
         .iter()
@@ -437,10 +483,15 @@ fn enforced(
         .collect();
     let mut behind = Behind::default();
     for machine in observed.iter().map(|observed| &observed.machine) {
-        if machine.runtime.device_enforcement != Some(true) {
+        if !needs.checks(machine) {
+            continue;
+        }
+        if machine.runtime.device_enforcement.is_none() {
+            behind.unverified.push(machine.name.to_string());
             continue;
         }
         let claims: Vec<Claim> = needs
+            .capabilities()
             .iter()
             .map(|needed| machine.runtime.claim(needed))
             .collect();

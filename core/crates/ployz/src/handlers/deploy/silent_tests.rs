@@ -12,7 +12,7 @@ use ployz_core::{
 use ployz_store::{Parent, TagPin};
 use serde_json::{Value, json};
 
-use super::{Child, ImageEdit, Refused, children, posted, refuse_forget};
+use super::{ImageEdit, Refused, children, posted, refuse_forget, unnamed};
 use crate::handlers::device::DeviceSigning;
 
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -102,6 +102,7 @@ fn parents(
 
 fn image(service: ServiceName, image: &str, pinned: &str) -> ImageEdit {
     ImageEdit {
+        runtime: service.clone(),
         service,
         image: image.to_owned(),
         pinned: pinned.to_owned(),
@@ -214,24 +215,54 @@ fn an_image_edit_is_signed_as_an_edit_of_the_version_a_person_approved_and_a_ser
     );
 }
 
+/// A Service `--image` doesn't name signs nothing: it ships under the versions already
+/// kept for it, which may be an earlier edit, so its plan is never compared with the
+/// version a person approved.
 #[test]
-fn a_service_with_no_image_edit_runs_what_its_parent_ran() {
+fn a_service_with_no_image_edit_signs_nothing() {
     let approved = spec(P1, "a");
+    let api = spec_of(json!({
+        "name": "api",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": "nginx:9", "pull_policy": "missing"},
+    }));
 
-    let [child]: [Child; 1] = children(
-        (&namespace(), &[spec("nginx:1", "a")]),
-        &parents(root(&approved), approved.clone()),
-        &[],
+    let signed = sign(
+        &[spec("nginx:2", "a"), api],
+        &parents(root(&approved), approved),
+        &edit_to_nginx_2(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        signed
+            .iter()
+            .map(|posted| posted.statement.open().unwrap().service)
+            .collect::<Vec<_>>(),
+        [web()]
+    );
+}
+
+/// A renamed Service keeps the name its spec runs under, so `--image` addresses it by
+/// its new name and the signer finds it by the old one.
+#[test]
+fn an_image_edit_of_a_renamed_service_signs_its_runtime_name() {
+    let approved = spec(P1, "a");
+    let edit = ImageEdit {
+        service: ServiceName::parse("frontend").unwrap(),
+        ..image(web(), "nginx:2", P2)
+    };
+
+    let [posted] = sign(
+        &[spec("nginx:2", "a")],
+        &parents(root(&approved), approved),
+        &[edit],
     )
     .unwrap()
     .try_into()
     .unwrap();
 
-    assert_eq!(
-        child.digest,
-        PayloadDigest::of(&approved, &namespace()).unwrap()
-    );
-    assert_eq!(child.pin.map(|pin| pin.image), Some(P1.to_owned()));
+    assert_eq!(posted.statement.open().unwrap().service, web());
 }
 
 #[test]
@@ -292,23 +323,72 @@ fn a_plan_with_a_change_beyond_the_image_names_the_field_and_signs_nothing() {
         Err(Refused::Differs {
             service: web(),
             field: "container.environment.MODE".to_owned(),
-            image: "nginx:2".to_owned(),
         })
     );
+}
+
+/// Cloud's plan runs another image than the one typed: the refusal never asks for the
+/// --image the person already gave.
+#[test]
+fn a_plan_that_runs_another_image_than_the_one_typed_signs_nothing() {
+    let approved = spec(P1, "a");
+
+    let refused = sign(
+        &[spec("nginx:3", "a")],
+        &parents(root(&approved), approved),
+        &edit_to_nginx_2(),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        refused,
+        Refused::Replaced {
+            service: web(),
+            planned: "nginx:3".to_owned(),
+        }
+    );
+    let error = refused.error(&deploy_matches(&["--yes", "--image", "web=nginx:2"]));
+    assert!(
+        !error.report().message.contains("--image."),
+        "{}",
+        error.report().message
+    );
+    assert!(error.hints().is_empty(), "{:?}", error.hints());
 }
 
 /// `ployz set web.image=nginx:2` then `ployz deploy --yes`: the new image is a change
 /// nobody approved, so the refusal shows the deploy that names it.
 #[test]
 fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
-    let approved = spec(P1, "a");
+    use ployz_core::config::{
+        ChangeKind, EnvironmentNodeType, ReviewLifecycleKind, ReviewNodeIdentity, RowId,
+        ServiceSettingChange,
+    };
+    let changes = [ployz_store::NodeChange {
+        node: ReviewNodeIdentity {
+            node_type: EnvironmentNodeType::Service,
+            id: "s1".to_owned(),
+        },
+        name: "web".to_owned(),
+        row: RowId::node("s1"),
+        lifecycle: ReviewLifecycleKind::Update,
+        comparison: None,
+        settings: vec![ServiceSettingChange {
+            path: "web.image".to_owned(),
+            config_name: None,
+            hostnames: None,
+            kind: ChangeKind::Update,
+            before: json!("nginx:1"),
+            after: json!("nginx:2"),
+            can_restore: true,
+            row: None,
+        }],
+        data: None,
+        restarts: Vec::new(),
+    }];
 
-    let refused = sign(
-        &[spec("nginx:2", "a")],
-        &parents(root(&approved), approved),
-        &[],
-    )
-    .unwrap_err();
+    assert_eq!(unnamed(&changes, &edit_to_nginx_2()), Ok(()));
+    let refused = unnamed(&changes, &[]).unwrap_err();
 
     let error = refused.error(&deploy_matches(&["--yes"]));
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);

@@ -5,11 +5,11 @@ use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
 use super::{
-    Behind, Enforcing, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable,
+    Behind, Enforcing, Needs, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable,
 };
 use crate::image::PinError;
 
-const SIGNED: &[&str] = &[ployz_core::SIGNED_VERSION_CAPABILITY];
+const SIGNED: Needs = Needs::Person;
 
 const PINNED: &str =
     "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -376,28 +376,40 @@ fn no_terminal_refuses_before_signing() {
     );
 }
 
-/// A silent deploy signs an edit only a Server with parent versions admits, so one that
-/// enforces without them is named to upgrade before anything is signed.
+/// A silent deploy signs an edit only a Server with scoped keys and parent versions
+/// admits, so every Server without them is named before anything is signed: one that
+/// enforces without them, one that doesn't enforce, and one that doesn't say whether it
+/// enforces.
 #[test]
-fn a_silent_deploy_names_an_enforcing_server_without_parent_versions_to_upgrade() {
+fn a_silent_deploy_names_every_server_that_cant_admit_an_edit() {
     let signed = [ployz_core::SIGNED_VERSION_CAPABILITY];
-    let both = [
+    let all = [
         ployz_core::SIGNED_VERSION_CAPABILITY,
+        ployz_core::SCOPED_KEYS_CAPABILITY,
         ployz_core::PARENT_VERSIONS_CAPABILITY,
     ];
     let servers = [
         serving(server(1, Some(true), Some(9)), &signed),
-        serving(server(2, Some(true), Some(9)), &both),
+        serving(server(2, Some(true), Some(9)), &all),
+        serving(server(3, Some(false), Some(9)), &signed),
+        serving(server(4, None, Some(9)), &all),
+        serving(server(5, Some(false), Some(9)), &all),
     ];
 
     let Probe::Enforcing(interactive) = enforced(&servers, &BTreeMap::new(), SIGNED) else {
         panic!("expected enforcing");
     };
     assert_eq!(interactive.behind, Behind::default());
-    let Probe::Enforcing(silent) = enforced(&servers, &BTreeMap::new(), &both) else {
+    let Probe::Enforcing(silent) = enforced(&servers, &BTreeMap::new(), Needs::Silent) else {
         panic!("expected enforcing");
     };
-    assert_eq!(silent.behind.outdated, vec!["machine-1".to_owned()]);
+    assert_eq!(
+        silent.behind,
+        Behind {
+            outdated: vec!["machine-1".to_owned(), "machine-3".to_owned()],
+            unverified: vec!["machine-4".to_owned()],
+        }
+    );
 }
 
 /// A person asked names each Service and the Namespace they sign for, and their no fails

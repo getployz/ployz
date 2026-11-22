@@ -174,10 +174,12 @@ pub(crate) fn post(
         }
         let text = json_text(statement)?;
         let hash = hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()));
+        let parent = body.parent.map(|parent| parent.to_string());
         tx.execute(
             "INSERT INTO config_service_version \
-             (organization_id, namespace, service, digest, statement_hash, statement, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             (organization_id, namespace, service, digest, statement_hash, statement, created_at, \
+              parent) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              ON CONFLICT (organization_id, namespace, service, digest, statement_hash) DO NOTHING",
             &[
                 organization.as_str().into(),
@@ -187,6 +189,7 @@ pub(crate) fn post(
                 hash.as_str().into(),
                 text.as_str().into(),
                 now().into(),
+                parent.as_deref().into(),
             ],
         )?;
         record.services.insert(
@@ -270,13 +273,42 @@ fn push_new(presented: &mut Vec<Signed<ServiceVersion>>, statement: Signed<Servi
 fn kept(
     tx: &mut dyn Tx,
     organization: &str,
-    (namespace, service): (&Namespace, &ServiceName),
+    service: (&Namespace, &ServiceName),
     digest: PayloadDigest,
 ) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
+    newest(tx, organization, service, digest, "")
+}
+
+/// The versions kept for `service` at `digest` that name no parent, newest first, at most
+/// as many as one request carries: those a Server can take as the parent of an edit.
+/// Edits of the same digest never crowd them out.
+fn roots(
+    tx: &mut dyn Tx,
+    organization: &str,
+    service: (&Namespace, &ServiceName),
+    digest: PayloadDigest,
+) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
+    Ok(
+        newest(tx, organization, service, digest, "AND parent IS NULL ")?
+            .into_iter()
+            .filter(|statement| statement.open().is_ok_and(|body| body.parent.is_none()))
+            .collect(),
+    )
+}
+
+fn newest(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+    digest: PayloadDigest,
+    only: &str,
+) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
     tx.query(
-        "SELECT statement FROM config_service_version \
-         WHERE organization_id = ?1 AND namespace = ?2 AND service = ?3 AND digest = ?4 \
-         ORDER BY created_at DESC, statement_hash LIMIT ?5",
+        &format!(
+            "SELECT statement FROM config_service_version \
+             WHERE organization_id = ?1 AND namespace = ?2 AND service = ?3 AND digest = ?4 \
+             {only}ORDER BY created_at DESC, statement_hash LIMIT ?5"
+        ),
         &[
             organization.into(),
             namespace.as_str().into(),
@@ -288,20 +320,6 @@ fn kept(
     .iter()
     .map(|row| row.json(0, "Signed version"))
     .collect()
-}
-
-/// The versions kept for `service` at `digest` that name no parent, newest first: those a
-/// Server can take as the parent of an edit.
-fn roots(
-    tx: &mut dyn Tx,
-    organization: &str,
-    service: (&Namespace, &ServiceName),
-    digest: PayloadDigest,
-) -> Result<Vec<Signed<ServiceVersion>>, RpcError> {
-    Ok(kept(tx, organization, service, digest)?
-        .into_iter()
-        .filter(|statement| statement.open().is_ok_and(|body| body.parent.is_none()))
-        .collect())
 }
 
 /// The last version a person approved of each of `services`, for a key that signs
@@ -342,7 +360,8 @@ pub enum Parent {
 }
 
 /// What `organization` keeps as the parent of each Service `query` names: the newest
-/// Deployment of its Environment that ran a version of it that names no parent, that
+/// Deployment of its Environment that applied, wholly or in the Service it applied, and
+/// ran a version of it that names no parent, that
 /// version, and the spec that Deployment ran it with. A Deployment whose spec no longer
 /// lowers to the digest it ran is passed over.
 ///
@@ -362,7 +381,9 @@ pub(crate) fn parents(
     let records: Vec<(DeploymentId, Record)> = tx
         .query(
             "SELECT id, ran FROM config_deployment \
-             WHERE environment_id = ?1 AND ran IS NOT NULL ORDER BY number DESC",
+             WHERE environment_id = ?1 AND ran IS NOT NULL AND (status = 'applied' OR id IN \
+             (SELECT deployment_id FROM config_applied WHERE environment_id = ?1)) \
+             ORDER BY number DESC",
             &[environment.summary.id.as_str().into()],
         )?
         .iter()

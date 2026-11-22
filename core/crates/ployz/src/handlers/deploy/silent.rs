@@ -1,10 +1,11 @@
 //! A deploy signed with no person to ask: under a CI or agent key in `PLOYZ_KEY`, or
 //! with `--yes`. Cloud relays the plan, so a key that signs it unread would sign whatever
-//! Cloud planted. Instead the signer edits the last version a person approved: it reads
-//! that version and the spec Cloud kept for it, checks the spec against the signed
-//! digest, changes only the image `--image` names, and signs only when Cloud's plan comes
-//! to the same digest. Each Server then admits the edit only beside a version a person
-//! signed with the digest it names as its parent.
+//! Cloud planted. Instead the signer edits the last version a person approved of each
+//! Service `--image` names: it reads that version and the spec Cloud kept for it, checks
+//! the spec against the signed digest, changes only the image, and signs only when Cloud's
+//! plan comes to the same digest. Each Server then admits the edit only beside a version a
+//! person signed with the digest it names as its parent. Every other Service ships under
+//! the versions already kept for it, and signs nothing new.
 
 use std::collections::BTreeMap;
 
@@ -13,11 +14,14 @@ use ployz_core::authority::{
     ApprovedChange, Mounts, PayloadDigest, ServiceVersion, SignerKey, Timestamp,
     deploy::content_addressed,
 };
+use ployz_core::config::EnvironmentNodeType;
 use ployz_core::{
     Hint, Namespace, PARENT_VERSIONS_CAPABILITY, RequestedServiceSpec, RpcErrorCode,
     SCOPED_KEYS_CAPABILITY, SealingPublicKey, ServiceName,
 };
-use ployz_store::{EnvironmentRef, Parent, ParentQuery, PlanView, PostedVersion, TagPin};
+use ployz_store::{
+    EnvironmentRef, NodeChange, Parent, ParentQuery, PlanView, PostedVersion, TagPin,
+};
 use serde_json::{Value, json};
 
 use super::super::device::DeviceSigning;
@@ -30,7 +34,10 @@ use crate::image::pin_public;
 /// content-addressed image IMAGE is pinned to.
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::handlers) struct ImageEdit {
+    /// As typed: the name Setting paths address it by.
     pub(in crate::handlers) service: ServiceName,
+    /// The name its spec runs under, which a rename leaves as it was.
+    pub(in crate::handlers) runtime: ServiceName,
     /// As typed, which the Saved State keeps.
     pub(in crate::handlers) image: String,
     pub(in crate::handlers) pinned: String,
@@ -44,7 +51,9 @@ pub(in crate::handlers) fn typed(
     matches: &ArgMatches,
 ) -> Result<Vec<(ServiceName, String)>, Error> {
     let mut typed: Vec<(ServiceName, String)> = Vec::new();
-    for edit in matches.get_many::<String>("image").into_iter().flatten() {
+    // `ployz up` shares the deploy path and takes no --image.
+    let typed_images = matches.try_get_many::<String>("image").ok().flatten();
+    for edit in typed_images.into_iter().flatten() {
         let Some((service, image)) = edit.split_once('=').filter(|(_, image)| !image.is_empty())
         else {
             return Err(Error::usage(
@@ -60,13 +69,14 @@ pub(in crate::handlers) fn typed(
     Ok(typed)
 }
 
-/// `typed`, each image pinned by its registry, all at once. An image written by digest
-/// needs no lookup.
+/// `typed`, each image pinned by its registry, all at once, with the name each Service
+/// runs under in `runtime`. An image written by digest needs no lookup.
 ///
 /// # Errors
 /// Returns why an image can't be pinned, naming the `--image` that asked for it.
 pub(in crate::handlers) fn pinned(
     typed: Vec<(ServiceName, String)>,
+    runtime: &BTreeMap<ServiceName, ServiceName>,
 ) -> Result<Vec<ImageEdit>, Error> {
     let lookups = typed.iter().map(|(_, image)| async move {
         match content_addressed(image) {
@@ -80,6 +90,7 @@ pub(in crate::handlers) fn pinned(
         .zip(found)
         .map(|((service, image), found)| match found {
             Ok(pinned) => Ok(ImageEdit {
+                runtime: runtime.get(&service).unwrap_or(&service).clone(),
                 service,
                 image,
                 pinned,
@@ -132,9 +143,13 @@ pub(in crate::handlers) fn refuse_forget(matches: &ArgMatches) -> Result<(), Err
     }
     Err(Error::coded(
         RpcErrorCode::ConfirmationRequired,
-        "--forget-older needs a terminal: --yes and CI or agent keys never forget. Nothing \
-         signed or deployed.",
-    ))
+        "--forget-older needs a terminal: --yes and CI or agent keys never forget. Run it \
+         from a terminal. Nothing signed or deployed.",
+    )
+    .hint(Hint::Next(super::super::store::next(
+        matches,
+        &["deploy", "--forget-older"],
+    ))))
 }
 
 /// Check every Server can admit a CI or agent key's edit, as Cloud's list of them says.
@@ -179,12 +194,12 @@ pub(in crate::handlers) fn servers_ready(matches: &ArgMatches) -> Result<(), Err
     Ok(())
 }
 
-/// Sign `plan`'s Services as edits of the last versions a person approved, with
-/// `signing`, changing only `edits`.
+/// Sign each Service `edits` names as an edit of the last version a person approved, with
+/// `signing`, changing only its image. `plan`'s other Services sign nothing.
 ///
 /// # Errors
-/// Refuses before signing anything, as [`children`] says, and returns the Store's error
-/// when it can't read the parents.
+/// Refuses before signing anything, as [`unnamed`] and [`children`] say, and returns the
+/// Store's error when it can't read the parents.
 pub(in crate::handlers) fn sign(
     matches: &ArgMatches,
     store: &Store,
@@ -192,12 +207,26 @@ pub(in crate::handlers) fn sign(
     edits: &[ImageEdit],
     signing: &DeviceSigning,
 ) -> Result<DeviceApproval, Error> {
-    let target = super::approve::signable(plan.target)?;
-    let parents = store.read(&ParentQuery {
-        environment: environment.clone(),
-        services: target.iter().map(|spec| spec.name.clone()).collect(),
-    })?;
-    let children = children((&plan.namespace, &target), &parents.services, edits)
+    unnamed(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
+    let named = plan.target.map(|target| {
+        target
+            .into_iter()
+            .filter(|spec| edits.iter().any(|edit| edit.runtime == spec.name))
+            .collect()
+    });
+    let target = super::approve::signable(named)?;
+    let parents = match edits.is_empty() {
+        true => BTreeMap::new(),
+        false => {
+            store
+                .read(&ParentQuery {
+                    environment: environment.clone(),
+                    services: edits.iter().map(|edit| edit.runtime.clone()).collect(),
+                })?
+                .services
+        }
+    };
+    let children = children((&plan.namespace, &target), &parents, edits)
         .map_err(|refused| refused.error(matches))?;
     let shown: Vec<RequestedServiceSpec> =
         children.iter().map(|child| child.planned.clone()).collect();
@@ -272,11 +301,13 @@ pub(super) struct Child {
     pub(super) pin: Option<TagPin>,
 }
 
-/// Why a silent deploy signs nothing.
+/// Why a silent deploy signs nothing. Each names the Service as `--image` addresses it.
 #[derive(Debug, PartialEq)]
 pub(super) enum Refused {
     /// `--image` names a Service the deploy doesn't ship.
     NotShipped(ServiceName),
+    /// The deploy ships a staged image for a Service `--image` doesn't name.
+    Unnamed { service: ServiceName, image: String },
     /// No Deployment ran a version of it a person approved; `deployed` when it runs one
     /// nobody signed.
     NoParent {
@@ -287,18 +318,47 @@ pub(super) enum Refused {
     Forged(ServiceName),
     /// Cloud's plan changes its Volumes or mounts.
     Mounts(ServiceName),
-    /// Cloud's plan of it differs from the parent with the edit at `field`.
-    Differs {
+    /// Cloud's plan runs another image than the one `--image` gave it.
+    Replaced {
         service: ServiceName,
-        field: String,
-        /// The image Cloud's plan writes for it.
-        image: String,
+        planned: String,
     },
+    /// Cloud's plan of it differs from the parent with the edit at `field`.
+    Differs { service: ServiceName, field: String },
 }
 
-/// Each Service of `target` in `namespace` as an edit of its parent in `parents`, which
-/// changes only the image `edits` names for it, when Cloud's plan of it comes to the same
-/// digest. A Service whose plan names its parent's tag runs its parent's pin.
+/// Refuse a deploy that ships a staged image `edits` doesn't name, as `changes` lists
+/// them: `ployz set web.image=…` then `ployz deploy --yes` signs nothing for web, so each
+/// Server would refuse it. Cloud can hide such a change, but never get it signed.
+///
+/// # Errors
+/// Returns [`Refused::Unnamed`] for the first such Service.
+pub(super) fn unnamed(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(), Refused> {
+    for change in changes {
+        if change.node.node_type != EnvironmentNodeType::Service
+            || edits
+                .iter()
+                .any(|edit| edit.service.as_str() == change.name)
+        {
+            continue;
+        }
+        let path = format!("{}.image", change.name);
+        let Some(staged) = change.settings.iter().find(|setting| setting.path == path) else {
+            continue;
+        };
+        let Ok(service) = ServiceName::parse(&change.name) else {
+            continue;
+        };
+        return Err(Refused::Unnamed {
+            service,
+            image: staged.after.as_str().unwrap_or("IMAGE").to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Each Service `edits` names, as an edit of its parent in `parents` that changes only its
+/// image, when Cloud's plan of it in `target` comes to the same digest.
 ///
 /// # Errors
 /// Returns the first [`Refused`], before anything is signed.
@@ -307,77 +367,60 @@ pub(super) fn children(
     parents: &BTreeMap<ServiceName, Parent>,
     edits: &[ImageEdit],
 ) -> Result<Vec<Child>, Refused> {
-    if let Some(edit) = edits
+    edits
         .iter()
-        .find(|edit| !target.iter().any(|spec| spec.name == edit.service))
-    {
-        return Err(Refused::NotShipped(edit.service.clone()));
-    }
-    target
-        .iter()
-        .map(|planned| {
-            let service = planned.name.clone();
-            let (statement, approved, parent_pin) = match parents.get(&service) {
+        .map(|edit| {
+            let named = || edit.service.clone();
+            let Some(planned) = target.iter().find(|spec| spec.name == edit.runtime) else {
+                return Err(Refused::NotShipped(named()));
+            };
+            let (statement, approved) = match parents.get(&edit.runtime) {
                 Some(Parent::Signed {
-                    statement,
-                    spec,
-                    pin,
-                }) => (statement, spec, pin),
+                    statement, spec, ..
+                }) => (statement, spec),
                 Some(Parent::Missing { deployed }) => {
                     return Err(Refused::NoParent {
-                        service,
+                        service: named(),
                         deployed: *deployed,
                     });
                 }
                 None => {
                     return Err(Refused::NoParent {
-                        service,
+                        service: named(),
                         deployed: false,
                     });
                 }
             };
             let Ok(parent) = statement.open() else {
-                return Err(Refused::Forged(service));
+                return Err(Refused::Forged(named()));
             };
-            if parent.service != service
+            if parent.service != edit.runtime
                 || PayloadDigest::of(approved, &parent.namespace).ok() != Some(parent.digest)
             {
-                return Err(Refused::Forged(service));
+                return Err(Refused::Forged(named()));
             }
-            let edit = edits.iter().find(|edit| edit.service == service);
+            if planned.container.image != edit.image {
+                return Err(Refused::Replaced {
+                    service: named(),
+                    planned: planned.container.image.clone(),
+                });
+            }
             let mut child = (**approved).clone();
-            if let Some(edit) = edit {
-                child.container.image.clone_from(&edit.pinned);
-            }
+            child.container.image.clone_from(&edit.pinned);
             let mut runs = planned.clone();
-            let pin = match edit {
-                Some(edit) if planned.container.image == edit.image => {
-                    runs.container.image.clone_from(&edit.pinned);
-                    (!content_addressed(&edit.image)).then(|| TagPin {
-                        tag: edit.image.clone(),
-                        image: edit.pinned.clone(),
-                    })
-                }
-                Some(_) => None,
-                None => parent_pin
-                    .as_ref()
-                    .filter(|pin| pin.tag == planned.container.image)
-                    .inspect(|pin| runs.container.image.clone_from(&pin.image))
-                    .cloned(),
-            };
+            runs.container.image.clone_from(&edit.pinned);
             if child.mount_graph != runs.mount_graph {
-                return Err(Refused::Mounts(service));
+                return Err(Refused::Mounts(named()));
             }
             let differs = |field: String| Refused::Differs {
-                service: service.clone(),
+                service: named(),
                 field,
-                image: planned.container.image.clone(),
             };
             if parent.namespace != *namespace {
                 return Err(differs("namespace".to_owned()));
             }
             let digest = PayloadDigest::of(&child, &parent.namespace)
-                .map_err(|_| Refused::Forged(service.clone()))?;
+                .map_err(|_| Refused::Forged(named()))?;
             if PayloadDigest::of(&runs, namespace).ok() != Some(digest) {
                 let (child, runs) = (json(&child), json(&runs));
                 return Err(differs(
@@ -385,13 +428,16 @@ pub(super) fn children(
                 ));
             }
             Ok(Child {
-                service,
+                service: edit.runtime.clone(),
                 cluster: parent.cluster,
                 namespace: parent.namespace,
                 digest,
                 parent: parent.digest,
                 planned: planned.clone(),
-                pin,
+                pin: (!content_addressed(&edit.image)).then(|| TagPin {
+                    tag: edit.image.clone(),
+                    image: edit.pinned.clone(),
+                }),
             })
         })
         .collect()
@@ -425,7 +471,13 @@ fn first_difference(left: &Value, right: &Value) -> Option<String> {
 }
 
 impl Refused {
-    fn error(self, matches: &ArgMatches) -> Error {
+    pub(super) fn error(self, matches: &ArgMatches) -> Error {
+        let from_terminal = |service: &ServiceName| {
+            Hint::Next(super::super::store::next(
+                matches,
+                &["deploy", service.as_str()],
+            ))
+        };
         match self {
             Self::NotShipped(service) => Error::detailed(
                 RpcErrorCode::InvalidArgument,
@@ -435,6 +487,18 @@ impl Refused {
                 ),
                 json!({ "service": service }),
             ),
+            Self::Unnamed { service, image } => Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "{service}'s saved image isn't in its last approved version. Name it with \
+                     --image. Nothing signed or deployed."
+                ),
+                json!({ "service": service, "image": image }),
+            )
+            .hint(Hint::Retry(super::super::typed_with(&[
+                "--image",
+                &format!("{service}={image}"),
+            ]))),
             Self::NoParent {
                 service,
                 deployed: false,
@@ -445,7 +509,8 @@ impl Refused {
                      Nothing signed or deployed."
                 ),
                 json!({ "service": service }),
-            ),
+            )
+            .hint(from_terminal(&service)),
             Self::NoParent {
                 service,
                 deployed: true,
@@ -477,31 +542,25 @@ impl Refused {
                      terminal. Nothing signed or deployed."
                 ),
                 json!({ "service": service }),
-            ),
-            Self::Differs {
-                service,
-                field,
-                image,
-            } if field.starts_with("container.image") => Error::detailed(
-                RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "{service}'s saved image isn't in its last approved version. Name it with \
-                     --image. Nothing signed or deployed."
-                ),
-                json!({ "service": service, "field": field }),
             )
-            .hint(Hint::Retry(super::super::typed_with(&[
-                "--image",
-                &format!("{service}={image}"),
-            ]))),
-            Self::Differs { service, field, .. } => Error::detailed(
+            .hint(from_terminal(&service)),
+            Self::Replaced { service, planned } => Error::detailed(
+                RpcErrorCode::Conflict,
+                format!(
+                    "Ployz Cloud's plan runs {service} from {planned}, not the image --image \
+                     gave it. Nothing signed or deployed."
+                ),
+                json!({ "service": service, "image": planned }),
+            ),
+            Self::Differs { service, field } => Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
                     "{service} changes more than its image, at {field}. Deploy it from a \
                      terminal. Nothing signed or deployed."
                 ),
                 json!({ "service": service, "field": field }),
-            ),
+            )
+            .hint(from_terminal(&service)),
         }
     }
 }

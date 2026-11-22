@@ -773,7 +773,7 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: field::PARENT,
         } => {
-            "A CI or agent key can only change a version a person approved, and this server found none it trusts. Deploy the service once from a terminal."
+            "This deploy edits an earlier version a person approved, but that version didn't arrive with it or isn't one this server trusts. Deploy the service once from a terminal."
         }
         AuthorityRefusal::Mismatch {
             field: field::FORGET_PARENT,

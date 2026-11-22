@@ -335,7 +335,7 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
-    let edits = images(matches, store, &environment)?;
+    let edits = images(matches, store, (&environment, &services))?;
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
@@ -386,22 +386,37 @@ pub(super) fn upload_and_ship(
 }
 
 /// Pin each `--image SERVICE=IMAGE`, then stage it as `ployz set SERVICE.image=IMAGE`
-/// does, so the plan the deploy signs runs it. An image that can't be pinned stages
-/// nothing.
+/// does, so the plan the deploy signs runs it. An image that can't be pinned, or names a
+/// Service a deploy of only `services` doesn't name, stages nothing.
 ///
 /// # Errors
-/// Returns a usage error for a malformed `--image`, why an image can't be pinned, and the
-/// Store's refusal of the edit.
+/// Returns a usage error for a malformed `--image`, the refusal of a Service the deploy
+/// doesn't name, why an image can't be pinned, and the Store's refusal of the edit or of
+/// reading its Services.
 fn images(
     matches: &ArgMatches,
     store: &Store,
-    environment: &EnvironmentRef,
+    (environment, services): (&EnvironmentRef, &[ServiceName]),
 ) -> Result<Vec<silent::ImageEdit>, Error> {
     let typed = silent::typed(matches)?;
     if typed.is_empty() {
         return Ok(Vec::new());
     }
-    let edits = silent::pinned(typed)?;
+    if let Some((service, _)) = typed
+        .iter()
+        .find(|(service, _)| !services.is_empty() && !services.contains(service))
+    {
+        return Err(silent::Refused::NotShipped(service.clone()).error(matches));
+    }
+    let runtime: BTreeMap<ServiceName, ServiceName> = store
+        .read(&ployz_store::ServicesQuery {
+            environment: environment.clone(),
+        })?
+        .services
+        .into_iter()
+        .map(|listing| (listing.service.name, listing.service.private_dns))
+        .collect();
+    let edits = silent::pinned(typed, &runtime)?;
     let changes = edits
         .iter()
         .map(|edit| {

@@ -336,6 +336,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0053_volume_first_copy",
         Step::Sql(include_str!("migrations/0053_volume_first_copy.sql")),
     ),
+    (
+        // The parent each signed version names, so its parentless versions are found.
+        "0054_service_version_parent",
+        Step::Sql(include_str!("migrations/0054_service_version_parent.sql")),
+    ),
 ];
 
 enum Step {

@@ -9067,7 +9067,23 @@ fn edit(
     digest: ployz_core::authority::PayloadDigest,
     parent: ployz_core::authority::PayloadDigest,
 ) -> ployz_core::authority::Signed<ployz_core::authority::ServiceVersion> {
-    use ployz_core::authority::{ServiceVersion, Signed, Signer, SignerKey, Timestamp};
+    edit_at(
+        service,
+        (digest, parent),
+        ployz_core::authority::Timestamp::now(),
+    )
+}
+
+/// As [`edit`], signed at `at`.
+fn edit_at(
+    service: &str,
+    (digest, parent): (
+        ployz_core::authority::PayloadDigest,
+        ployz_core::authority::PayloadDigest,
+    ),
+    at: ployz_core::authority::Timestamp,
+) -> ployz_core::authority::Signed<ployz_core::authority::ServiceVersion> {
+    use ployz_core::authority::{ServiceVersion, Signed, Signer, SignerKey};
     let signer = Signer::from_seed(&[8; 32]);
     Signed::sign(
         &ServiceVersion {
@@ -9076,7 +9092,7 @@ fn edit(
             namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
             service: ServiceName::parse(service).unwrap(),
             digest,
-            signed_at: Timestamp::now(),
+            signed_at: at,
             signer: SignerKey::Device(signer.public().into()),
             proposal: None,
             parent: Some(parent),
@@ -9106,6 +9122,14 @@ fn posted(
         }),
         births: Default::default(),
     }
+}
+
+/// The hash the Store keys a kept statement by.
+fn kept_hash(
+    statement: &ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>,
+) -> String {
+    let text = serde_json::to_string(statement).unwrap();
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
 }
 
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -9787,4 +9811,97 @@ fn a_runner_sends_a_ci_edit_with_the_version_a_person_approved_that_it_names() {
         Some(&ployz_store::Parent::Missing { deployed: true }),
         "api runs its tag, which nobody signed"
     );
+}
+
+#[test]
+fn edits_of_the_same_digest_never_crowd_out_the_version_a_person_approved() {
+    use ployz_core::authority::Timestamp;
+    let (store, who) = shop();
+    let web = ServiceName::parse("web").unwrap();
+    let digest = signed_spec(&store, &who, "web", P1);
+    let at = |n: u64| Timestamp::from_millis(1_700_000_000_000 + n).unwrap();
+    // The Store keeps time in seconds and orders rows kept in one second by this hash,
+    // so the root sorts after every edit kept beside it.
+    let root = (0..)
+        .map(|n| statement(("shop-production", "web"), digest, at(n)))
+        .find(|root| kept_hash(root).starts_with('f'))
+        .unwrap();
+    let root = ployz_store::PostedVersion {
+        statement: root,
+        ..posted(&store, &who, "web", P1)
+    };
+    admit_signed(&store, &who, 1, vec![root.clone()]);
+    apply(&store, 1);
+    let edits: Vec<_> = (0..)
+        .map(|n| edit_at("web", (digest, digest), at(n)))
+        .filter(|edit| kept_hash(edit) < kept_hash(&root.statement))
+        .take(ployz_core::authority::version::MAX_PRESENTED + 1)
+        .collect();
+    let last = u8::try_from(edits.len() + 1).unwrap();
+    for (n, statement) in (2..=last).zip(edits) {
+        admit_signed(
+            &store,
+            &who,
+            n,
+            vec![ployz_store::PostedVersion {
+                statement,
+                pin: root.pin.clone(),
+                births: Default::default(),
+            }],
+        );
+    }
+
+    let claimed = store.claim(&id(last), &runner("runner-a")).unwrap();
+    let versions = &claimed.ran.get(&web).unwrap().versions;
+    assert!(
+        versions.contains(&root.statement),
+        "{} sent",
+        versions.len()
+    );
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::ParentQuery {
+                environment: EnvironmentRef::default(),
+                services: vec![web.clone()],
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            view.services.get(&web),
+            Some(ployz_store::Parent::Signed { statement, .. }) if *statement == root.statement
+        ),
+        "{view:?}"
+    );
+}
+
+#[test]
+fn a_cancelled_deployment_never_becomes_the_parent_of_an_edit() {
+    let (store, who) = shop();
+    let web = ServiceName::parse("web").unwrap();
+    let applied = posted(&store, &who, "web", P1);
+    admit_signed(&store, &who, 1, vec![applied.clone()]);
+    apply(&store, 1);
+    admit_signed(&store, &who, 2, vec![posted(&store, &who, "web", P2)]);
+    cancel(&store, &who, 2).unwrap();
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::ParentQuery {
+                environment: EnvironmentRef::default(),
+                services: vec![web.clone()],
+            },
+        )
+        .unwrap();
+    let Some(ployz_store::Parent::Signed {
+        statement, spec, ..
+    }) = view.services.get(&web)
+    else {
+        panic!("{view:?}");
+    };
+    assert_eq!(statement, &applied.statement);
+    assert_eq!(spec.container.image, P1);
 }
