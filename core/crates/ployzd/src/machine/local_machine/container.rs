@@ -142,10 +142,7 @@ impl LocalMachine {
             let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
             let mut mounted = std::collections::BTreeMap::new();
@@ -912,10 +909,7 @@ impl LocalMachine {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, move |local| async move {
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             Ok(local
                 .docker()?
                 .update_placement(machine, &container_id, &spec, local.observe_storage())
@@ -1058,8 +1052,7 @@ impl LocalMachine {
             });
         }
         let record = self.record();
-        let participating = record.has_cluster_identity();
-        let Some(machine) = record.machine().filter(|_| participating) else {
+        let Some(machine) = record.cluster_machine() else {
             return Ok(EnsuredContainer::Refused {
                 now: self.container_now(&locator).await?,
                 refusal: refuse(
@@ -1722,10 +1715,7 @@ impl LocalMachine {
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
-        if !record.has_cluster_identity() {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         containers
             .lifecycle()
             .create_with_admission(

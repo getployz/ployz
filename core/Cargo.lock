@@ -4229,7 +4229,6 @@ dependencies = [
  "ipnet",
  "iroh",
  "listenfd",
- "memchr",
  "nix 0.29.0",
  "ployz",
  "ployz-build",

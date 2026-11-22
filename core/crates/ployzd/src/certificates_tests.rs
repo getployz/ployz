@@ -26,7 +26,7 @@ use super::{
 use crate::corrosion::{
     AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
     fake_cluster::FakeCluster,
-    store_tests::{corrosion_db, identity_store},
+    fake_cluster::{corrosion_db, identity_store},
 };
 
 #[test]

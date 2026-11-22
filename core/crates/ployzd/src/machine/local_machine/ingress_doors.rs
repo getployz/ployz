@@ -795,13 +795,7 @@ impl LocalMachine {
     /// The Machine may place a reserved Container now. `gate` names the role it needs.
     pub(super) fn reserved_effect(&self, gate: Gate) -> Result<(), Error> {
         let record = self.record();
-        if !matches!(
-            record.phase(),
-            ployz_core::LocalMachinePhase::Joining | ployz_core::LocalMachinePhase::Participating
-        ) {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         if gate == Gate::Ingress && !machine.accepts_ingress {
             return Err(crate::docker::Error::WorkNotAccepted.into());
         }

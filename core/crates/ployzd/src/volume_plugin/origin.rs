@@ -170,7 +170,7 @@ impl VolumeStorage {
         };
         self.set_verified(fs, Mark::Origin.name(), &record.to_string())
             .await?;
-        ployzd::faults::kill_inside("Volume.Origin.Stamped", None);
+        crate::faults::kill_inside(crate::faults::Point::Verb("Volume.Origin.Stamped"), None);
         self.clear_record(parent).await
     }
 

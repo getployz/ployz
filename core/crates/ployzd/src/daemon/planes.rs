@@ -44,9 +44,10 @@ impl Participation {
     }
 }
 
-/// A plane that needs the Cluster: `make` runs it on `input` once there is one, and
-/// a Machine with no Cluster link keeps the plane idle until the daemon shuts down.
-pub(super) async fn cluster_plane<T, Plane>(
+/// A plane this Machine may lack: `make` runs it on `input` when there is one, and
+/// without one the plane idles until the daemon shuts down. `make`, and whatever it
+/// holds, is dropped before that wait.
+pub(super) async fn optional_plane<T, Plane>(
     input: Option<T>,
     shutdown: &CancellationToken,
     make: impl FnOnce(T) -> Plane,
@@ -57,6 +58,7 @@ where
     match input {
         Some(input) => make(input).await,
         None => {
+            drop(make);
             shutdown.cancelled().await;
             Ok(())
         }
@@ -82,7 +84,7 @@ pub(super) fn serving_local(
 mod tests {
     use tokio_util::sync::CancellationToken;
 
-    use super::{Participation, cluster_plane, serving_local};
+    use super::{Participation, optional_plane, serving_local};
     use crate::{machine_api::MachineApi, test_dir::TestDir};
 
     fn gate_owner(name: &str) -> (TestDir, crate::machine::RecordOwner) {
@@ -220,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn a_plane_without_a_link_idles_until_shutdown_and_then_ends_well() {
         let shutdown = CancellationToken::new();
-        let idle = cluster_plane(None::<u8>, &shutdown, |_| async {
+        let idle = optional_plane(None::<u8>, &shutdown, |_| async {
             panic!("a plane with no input has nothing to run");
         });
         tokio::pin!(idle);
@@ -236,13 +238,13 @@ mod tests {
     #[tokio::test]
     async fn a_plane_with_a_link_runs_on_it_and_answers_with_its_result() {
         let shutdown = CancellationToken::new();
-        cluster_plane(Some(7_u8), &shutdown, |input| async move {
+        optional_plane(Some(7_u8), &shutdown, |input| async move {
             assert_eq!(input, 7);
             Ok(())
         })
         .await
         .unwrap();
-        let failed = cluster_plane(Some(()), &shutdown, |()| async {
+        let failed = optional_plane(Some(()), &shutdown, |()| async {
             Err(std::io::Error::other("the plane failed"))
         })
         .await

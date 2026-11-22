@@ -13,7 +13,7 @@ use tonic::{Response, Status};
 use super::{MachineService, local_error, respond};
 use crate::{
     docker::FloorTurn,
-    faults::{Identity, Want},
+    faults::{Identity, Point, Want},
     machine::{AdmittedSpec, CutRefusal, LocalMachineError},
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
@@ -53,7 +53,7 @@ impl MachineService {
             .lock_owned()
             .await;
         crate::faults::apply(
-            "SetVolumeCopy",
+            Point::Verb("SetVolumeCopy"),
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
         )
         .await;
@@ -120,7 +120,7 @@ impl MachineService {
             return Ok(copy);
         };
         crate::faults::apply(
-            fault_point(transition),
+            Point::Copy(transition),
             Some(Identity::new(&name, &want, r#gen)),
         )
         .await;
@@ -168,7 +168,7 @@ impl MachineService {
                 };
                 let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
                 crate::faults::kill_inside(
-                    "SetVolumeCopy.MirrorToWriter",
+                    Point::Copy(CopyTransition::MirrorToWriter),
                     Some(Identity {
                         volume: &name,
                         want: Want::Writer { at, epoch },
@@ -496,20 +496,6 @@ impl MachineService {
 }
 
 /// A delay names one cell, so a run can slow the promote without slowing every pull poll.
-fn fault_point(transition: CopyTransition) -> &'static str {
-    match transition {
-        CopyTransition::WriterToWriter => "SetVolumeCopy.WriterToWriter",
-        CopyTransition::WriterToMirror => "SetVolumeCopy.WriterToMirror",
-        CopyTransition::WriterToSnapshot => "SetVolumeCopy.WriterToSnapshot",
-        CopyTransition::WriterToForget => "SetVolumeCopy.WriterToForget",
-        CopyTransition::SeedToForget => "SetVolumeCopy.SeedToForget",
-        CopyTransition::MirrorToWriter => "SetVolumeCopy.MirrorToWriter",
-        CopyTransition::MirrorToMirror => "SetVolumeCopy.MirrorToMirror",
-        CopyTransition::MirrorToForget => "SetVolumeCopy.MirrorToForget",
-        CopyTransition::NoneToMirror => "SetVolumeCopy.NoneToMirror",
-    }
-}
-
 fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMachineError {
     refusal(
         SetVolumeCopyRefused {

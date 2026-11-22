@@ -11,7 +11,7 @@ use super::*;
 
 #[tokio::test]
 async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
-    let test = TestDir::new();
+    let test = test_dir();
     let backing = test.0.join(POOL_BACKING_FILE);
     assert!(!backing.exists());
 
@@ -41,7 +41,7 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
 
 #[tokio::test]
 async fn first_create_converges_on_usable_pool_capacity() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("pool-overhead"), "268435456\n").unwrap();
 
     assert_eq!(
@@ -57,7 +57,7 @@ async fn first_create_converges_on_usable_pool_capacity() {
 
 #[tokio::test]
 async fn additional_create_grows_the_pool_before_committing_its_bound() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     assert_eq!(
         post(
@@ -91,7 +91,7 @@ async fn additional_create_grows_the_pool_before_committing_its_bound() {
 
 #[tokio::test]
 async fn growth_retries_after_an_undersized_usable_capacity_observation() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("underclaim-growth"), "").unwrap();
 
@@ -111,7 +111,7 @@ async fn growth_retries_after_an_undersized_usable_capacity_observation() {
 
 #[tokio::test]
 async fn growth_converges_across_multiple_usable_capacity_increases() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("slow-growth"), "").unwrap();
 
@@ -137,7 +137,7 @@ async fn growth_converges_across_multiple_usable_capacity_increases() {
 
 #[tokio::test]
 async fn growth_stops_when_usable_capacity_does_not_increase() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("no-growth"), "").unwrap();
 
@@ -157,7 +157,7 @@ async fn growth_stops_when_usable_capacity_does_not_increase() {
 
 #[tokio::test]
 async fn growth_overflow_is_refused_before_mutation() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("pool-overhead"), "1\n").unwrap();
     let commands_before = fs::read_to_string(test.0.join("commands")).unwrap();
@@ -190,7 +190,7 @@ async fn growth_overflow_is_refused_before_mutation() {
 
 #[tokio::test]
 async fn four_gib_backing_with_three_and_three_quarter_gib_usable_converges() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(
         UnixListener::bind(&socket).unwrap(),
@@ -229,7 +229,7 @@ async fn four_gib_backing_with_three_and_three_quarter_gib_usable_converges() {
 
 #[tokio::test]
 async fn growth_extends_non_aligned_backing_in_whole_gibibytes() {
-    let test = TestDir::new();
+    let test = test_dir();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(
         UnixListener::bind(&socket).unwrap(),
@@ -267,7 +267,7 @@ async fn growth_extends_non_aligned_backing_in_whole_gibibytes() {
 
 #[tokio::test]
 async fn sparse_growth_is_refused_before_the_pool_or_dataset_claims_it() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("sparse"), "").unwrap();
 
@@ -287,7 +287,7 @@ async fn sparse_growth_is_refused_before_the_pool_or_dataset_claims_it() {
 
 #[tokio::test]
 async fn admission_refills_a_trimmed_backing_file_and_opts_the_pool_out_of_periodic_trim() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     let length = fs::read_to_string(test.0.join("allocated")).unwrap();
     fs::remove_file(test.0.join("trim-disabled")).unwrap();
@@ -323,7 +323,7 @@ async fn admission_refills_a_trimmed_backing_file_and_opts_the_pool_out_of_perio
 
 #[tokio::test]
 async fn growth_reserve_refusal_reports_the_shortfall_before_mutation() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("insufficient"), "").unwrap();
 
@@ -356,7 +356,7 @@ async fn growth_reserve_refusal_reports_the_shortfall_before_mutation() {
 
 #[tokio::test]
 async fn retry_claims_an_interrupted_extension_once_and_then_is_idle() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("fail-online-once"), "").unwrap();
     let request = json!({"Name":"other","Opts":{"size":"512m"}});
@@ -399,7 +399,7 @@ async fn retry_claims_an_interrupted_extension_once_and_then_is_idle() {
 
 #[tokio::test]
 async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     let other = json!({"Name":"other","Opts":{"size":"2g"}});
     assert_eq!(
@@ -463,7 +463,7 @@ pub(super) async fn start_pool_with_data(
 
 #[tokio::test]
 async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "interrupted").unwrap();
     fs::write(test.0.join("concurrent"), "").unwrap();
     let first = fake_first_pool(&test.0, 4096);
@@ -535,7 +535,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
 
 #[tokio::test]
 async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("pause-failed-volume"), "").unwrap();
     let first = fake_first_pool(&test.0, 4096);
     let second = VolumeStorage {
@@ -598,7 +598,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
 
 #[tokio::test]
 async fn valid_unimported_backing_pool_is_imported_and_reused() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
     fs::write(test.0.join("allocated"), "2147483648").unwrap();
     fs::write(test.0.join("importable"), "").unwrap();
@@ -623,7 +623,7 @@ async fn valid_unimported_backing_pool_is_imported_and_reused() {
 
 #[tokio::test]
 async fn unlabeled_stale_backing_is_replaced() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "interrupted").unwrap();
 
     assert_eq!(
@@ -639,7 +639,7 @@ async fn unlabeled_stale_backing_is_replaced() {
 
 #[tokio::test]
 async fn failed_import_preserves_the_backing_file() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
     fs::write(test.0.join("importable"), "").unwrap();
     fs::write(test.0.join("fail-import"), "").unwrap();
@@ -660,7 +660,7 @@ async fn failed_import_preserves_the_backing_file() {
 #[tokio::test]
 async fn ambiguous_or_destroyed_pool_labels_are_preserved() {
     for marker in ["foreign", "destroyed"] {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join(POOL_BACKING_FILE), "labeled Pool").unwrap();
         fs::write(test.0.join(marker), "").unwrap();
 
@@ -680,7 +680,7 @@ async fn ambiguous_or_destroyed_pool_labels_are_preserved() {
 
 #[tokio::test]
 async fn retry_after_pool_creation_completes_the_interrupted_volume() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
     fs::write(test.0.join("allocated"), "2147483648").unwrap();
     fs::write(test.0.join("pool"), "").unwrap();
@@ -706,7 +706,7 @@ async fn retry_after_pool_creation_completes_the_interrupted_volume() {
 
 #[tokio::test]
 async fn empty_existing_pool_grows_for_a_larger_first_bound() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
     fs::write(test.0.join("allocated"), "2147483648").unwrap();
     fs::write(test.0.join("pool"), "").unwrap();
@@ -723,7 +723,7 @@ async fn empty_existing_pool_grows_for_a_larger_first_bound() {
 
 #[tokio::test]
 async fn initial_capacity_uses_ten_percent_when_it_exceeds_one_gibibyte() {
-    let test = TestDir::new();
+    let test = test_dir();
 
     assert_eq!(
         create_first_volume(&test, 512, "11g").await,
@@ -738,7 +738,7 @@ async fn initial_capacity_uses_ten_percent_when_it_exceeds_one_gibibyte() {
 
 #[tokio::test]
 async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("insufficient"), "").unwrap();
 
     let response = create_first_volume(&test, 4096, "1g").await;
@@ -756,7 +756,7 @@ async fn first_create_refuses_before_mutation_when_root_reserve_would_be_broken(
 
 #[tokio::test]
 async fn first_create_rejects_sparse_allocation_without_creating_a_pool() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("sparse"), "").unwrap();
 
     let response = create_first_volume(&test, 4096, "1g").await;
@@ -769,7 +769,7 @@ async fn first_create_rejects_sparse_allocation_without_creating_a_pool() {
 
 #[tokio::test]
 async fn failed_pool_creation_removes_the_partial_pool_and_backing_file() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("fail-pool"), "").unwrap();
 
     let response = create_first_volume(&test, 4096, "1g").await;
@@ -783,7 +783,7 @@ async fn failed_pool_creation_removes_the_partial_pool_and_backing_file() {
 
 #[tokio::test]
 async fn failed_first_volume_removes_the_new_pool_and_backing_file() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("fail-volume"), "").unwrap();
 
     let response = create_first_volume(&test, 4096, "1g").await;
@@ -1050,7 +1050,7 @@ esac
         ),
         zfs: program("zfs"),
         mutation: Default::default(),
-        installation: ployzd::mutation::MutationGate::new(
+        installation: crate::mutation::MutationGate::new(
             directory.join("admission-run"),
             directory.join("admission-data"),
         ),

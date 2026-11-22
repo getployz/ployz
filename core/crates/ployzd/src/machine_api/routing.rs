@@ -38,17 +38,17 @@ enum BackendError {
     Endpoint(#[from] tonic::transport::Error),
 }
 
-pub use ployz_core::MachineSelectorError as TargetResolutionError;
-pub use ployz_core::RoutingRequest;
+use ployz_core::MachineSelectorError as TargetResolutionError;
+use ployz_core::{RoutingMetadataError, RoutingRequest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProxyRoute {
+enum ProxyRoute {
     Local,
     One(Box<Machine>),
     Many(Vec<Machine>),
 }
 
-pub fn resolve_route(
+fn resolve_route(
     request: RoutingRequest,
     visible: &[Machine],
 ) -> Result<ProxyRoute, TargetResolutionError> {
@@ -94,8 +94,6 @@ pub struct MachineProxy {
     // TODO: stale remote backends intentionally reconnect until ployzd restarts.
     remote_backends: Arc<Mutex<HashMap<ManagementAddress, Channel>>>,
     paths: crate::network::PathBook,
-    /// The Machine whose record decides what an Operator may ask of it here.
-    machine: Option<crate::machine::LocalMachine>,
 }
 
 impl MachineProxy {
@@ -113,15 +111,7 @@ impl MachineProxy {
             replicated,
             remote_backends: Arc::new(Mutex::new(HashMap::new())),
             paths: crate::network::PathBook::default(),
-            machine: None,
         }
-    }
-
-    /// Hold an Operator's calls served here to what `machine`'s record admits.
-    #[must_use]
-    pub(crate) fn for_machine(mut self, machine: crate::machine::LocalMachine) -> Self {
-        self.machine = Some(machine);
-        self
     }
 
     /// Where the router reads this Machine's path to each target, to say why one is silent.
@@ -136,20 +126,18 @@ impl MachineProxy {
         self
     }
 
-    pub async fn dispatch_with_snapshot(
+    /// Routes `request` as [`Service::call`] does, among `visible` instead of the
+    /// replicated store's Machines.
+    #[cfg(test)]
+    async fn dispatch_with_snapshot(
         &self,
         request: http::Request<Body>,
         visible: &[Machine],
     ) -> http::Response<Body> {
-        let routing =
-            match routing_from_metadata(&MetadataMap::from_headers(request.headers().clone())) {
-                Ok(routing) => routing,
-                Err(error) => {
-                    return ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
-                        .into_http();
-                }
-            };
-        self.dispatch(request, routing, visible).await
+        match routing_of(&request) {
+            Ok(routing) => self.dispatch(request, routing, visible).await,
+            Err(error) => invalid_routing(&error),
+        }
     }
 
     async fn dispatch(
@@ -479,17 +467,9 @@ impl Service<http::Request<Body>> for MachineProxy {
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
         let proxy = self.clone();
         Box::pin(async move {
-            let routing = match routing_from_metadata(&MetadataMap::from_headers(
-                request.headers().clone(),
-            )) {
+            let routing = match routing_of(&request) {
                 Ok(routing) => routing,
-                Err(error) => {
-                    return Ok(ployz_core::rpc::caused_status(
-                        tonic::Code::InvalidArgument,
-                        &error,
-                    )
-                    .into_http());
-                }
+                Err(error) => return Ok(invalid_routing(&error)),
             };
             if routing == RoutingRequest::Local {
                 return Ok(proxy.dispatch(request, routing, &[]).await);
@@ -510,6 +490,17 @@ impl Service<http::Request<Body>> for MachineProxy {
             Ok(proxy.dispatch(request, routing, &visible).await)
         })
     }
+}
+
+/// The routing `request`'s metadata asks for.
+pub(super) fn routing_of(
+    request: &http::Request<Body>,
+) -> Result<RoutingRequest, RoutingMetadataError> {
+    routing_from_metadata(&MetadataMap::from_headers(request.headers().clone()))
+}
+
+fn invalid_routing(error: &RoutingMetadataError) -> http::Response<Body> {
+    ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, error).into_http()
 }
 
 /// An Operator's call to a route the coverage table says no statement admits, refused before
