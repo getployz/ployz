@@ -251,7 +251,7 @@ impl EnrollPlan {
             destination: text("destination").map(|address| Destination {
                 address,
                 ssh_key: text("ssh-key"),
-                remote: RemoteTarget::from_matches(matches),
+                remote: super::provision::remote_target(matches),
             }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),

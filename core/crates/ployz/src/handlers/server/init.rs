@@ -57,7 +57,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let no_install = matches.get_flag("no-install");
-    let storage = crate::provisioning::resolve_storage(matches)?;
+    let storage = super::provision::resolve_storage(matches)?;
     let version = &matches
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
@@ -68,7 +68,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             if local {
                 crate::provisioning::provision_local(version, &storage).await?;
             } else {
-                crate::provisioning::provision(matches, &storage).await?;
+                super::provision::provision(matches, &storage).await?;
             }
         }
         let mut target = if !no_install {

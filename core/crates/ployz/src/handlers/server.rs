@@ -44,6 +44,7 @@ mod fence;
 pub(super) mod forget;
 mod helpers;
 pub(crate) mod init;
+pub(crate) mod provision;
 pub(super) mod reject;
 mod remove;
 mod show;

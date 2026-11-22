@@ -27,7 +27,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let pinned = helpers::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
-    let storage = crate::provisioning::resolve_storage(matches)?;
+    let storage = super::provision::resolve_storage(matches)?;
     let no_install = matches.get_flag("no-install");
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
@@ -45,7 +45,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let entry_answers = entry.answers_for_itself(&entry_id);
         require_a_pin(own_device.is_some() || entry_answers, destination)?;
         if !no_install {
-            crate::provisioning::provision(matches, &storage).await?;
+            super::provision::provision(matches, &storage).await?;
         }
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
