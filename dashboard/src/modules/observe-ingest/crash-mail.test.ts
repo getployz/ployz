@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type CrashMail, crashMail } from "#/modules/mail/templates/servers/crash";
+import { type CrashMail, crashMail } from "#/modules/observe-ingest/crash-mail";
 
 const SERVICE = "c".repeat(32);
 const MACHINE = "a".repeat(32);

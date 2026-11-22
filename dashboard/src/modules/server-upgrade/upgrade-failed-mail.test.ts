@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type UpgradeFailure, upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
+import { type UpgradeFailure, upgradeFailedMail } from "#/modules/server-upgrade/upgrade-failed-mail";
 
 const failure = (overrides: Partial<UpgradeFailure>): UpgradeFailure => ({
   machineId: "a".repeat(32), name: "web-1", fromVersion: "0.2.5", targetVersion: "0.2.6", outcome: "failed", stage: null, error: null, ...overrides,

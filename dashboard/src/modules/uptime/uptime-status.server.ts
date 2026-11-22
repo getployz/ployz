@@ -24,7 +24,8 @@ import {
   type UptimePoint,
 } from "./uptime-status";
 import { tally } from "./uptime";
-import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource, type RangeWindow, resolveRange } from "./uptime-range";
+import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource } from "./uptime-range";
+import { type RangeWindow, resolveRange } from "#/lib/time-range";
 
 const HOUR_MS = 3_600_000;
 // A probe request reads as checking until the slowest round ends: a self-host round's second probe goes 30 s after the

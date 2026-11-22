@@ -1,12 +1,12 @@
 import { Effect } from "effect";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { observeCrashReceived } from "#/modules/observe-ingest/observe.events";
-import { claimCrashMail, PRUNE_BATCH_ROWS, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
+import { pruneInBatches } from "#/modules/inngest/prune";
+import { claimCrashMail, pruneCrashEvents } from "#/modules/observe-ingest/crash-mail.server";
 import { observeServerNames } from "#/modules/server-upgrade/server-upgrade.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const MAX_CLAIMS = 3;
-const MAX_PRUNE_BATCHES = 200;
 const SERVICE_KEY = "event.data.organizationId + '/' + event.data.serviceId";
 
 const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
@@ -43,12 +43,7 @@ const createPruneCrashEvents = (inngest: PloyzInngest, runEffect: EffectRunner) 
       triggers: [{ cron: "TZ=UTC 40 3 * * *" }],
       concurrency: [{ limit: 1 }],
     },
-    async ({ step }) => {
-      for (let batch = 0; batch < MAX_PRUNE_BATCHES; batch += 1) {
-        const deleted = await step.run(`prune-${batch}`, () => runEffect(pruneCrashEvents(new Date())));
-        if (deleted < PRUNE_BATCH_ROWS) break;
-      }
-    },
+    async ({ step }) => pruneInBatches(step, "prune", () => runEffect(pruneCrashEvents(new Date()))),
   );
 
 export const createCrashMailFunctions = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => [

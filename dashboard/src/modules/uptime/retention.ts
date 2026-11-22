@@ -21,9 +21,6 @@ export const UPTIME_RETENTION = {
 /** The history a dashboard read can ask for. */
 export type UptimeSeries = Exclude<Retained, "finishedAlerts">;
 
-/** Rows per prune statement, so no delete holds a long transaction. */
-export const PRUNE_BATCH_ROWS = 5000;
-
 /** Calendar months back in UTC, with the day clamped to the month's end, as Postgres `- interval 'N months'` does. */
 function monthsBefore(at: Date, months: number) {
   const shifted = new Date(at);

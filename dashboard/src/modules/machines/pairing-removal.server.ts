@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
-import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
+import { endClusterIngress } from "#/modules/ingress/cloudflare.cluster-gone.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/runtime/connections.server";
 import { rustMachineIdSchema } from "#/lib/schema";

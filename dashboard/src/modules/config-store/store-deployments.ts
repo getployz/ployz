@@ -517,7 +517,10 @@ export function deployWarningNotices(deployment: Pick<DeploymentView, "nodes" | 
 }
 
 /** A Service's runtime name from the Engine's `namespace/name`. */
-const runtimeName = (qualified: string) => qualified.slice(qualified.indexOf("/") + 1);
+export const runtimeName = (qualified: string) => qualified.slice(qualified.indexOf("/") + 1);
+
+/** The Namespace in the Engine's `namespace/name`, or "" when it has none. */
+export const namespaceOf = (qualified: string) => qualified.slice(0, Math.max(qualified.indexOf("/"), 0));
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {

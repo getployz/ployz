@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Redacted, Schema } from "effect";
-import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/ingress/cloudflare.setup.server";
 import { CheckCloudflareInput, ListCloudflareZonesInput, SetUpCloudflareInput, SwitchDoorsInput } from "#/modules/ingress/doors";
 import { observeClusterIngress, readClusterIngress, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { requireOperator } from "#/modules/ingress/doors.access.server";

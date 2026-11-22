@@ -1,7 +1,7 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { deployFailedMail, deployWaitingMail } from "#/modules/mail/templates/deploys/deploy-failed";
+import { deployFailedMail, deployWaitingMail } from "#/modules/config-store/deploy-failed-mail";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "dep 1", environment: { id: "e", project: "shop", name: "pr 7" }, status: "failed", builds: [], nodes: [], runtime_names: {}, outcome: null, ...fields,

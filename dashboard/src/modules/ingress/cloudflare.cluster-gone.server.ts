@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, gt, inArray, lte, ne, or } from "drizzle-orm";
 import { Effect } from "effect";
-import { SETUP_STALE_MS } from "#/modules/ingress/doors";
+import { setupStaleCutoff } from "#/modules/ingress/doors";
 import { lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { Database } from "#/server/database.server";
@@ -22,7 +22,7 @@ export const endClusterIngress = Effect.fn("Cloudflare.endClusterIngress")(funct
   const { drizzle } = yield* Database;
   yield* lockIngressRows(organizationId);
   const row = eq(organizationCloudflareIngress.organizationId, organizationId);
-  const cutoff = new Date(Date.now() - SETUP_STALE_MS);
+  const cutoff = setupStaleCutoff();
   const working = and(eq(organizationCloudflareIngress.state, "setting_up"), gt(organizationCloudflareIngress.updatedAt, cutoff));
   const ended = or(ne(organizationCloudflareIngress.state, "setting_up"), lte(organizationCloudflareIngress.updatedAt, cutoff));
   yield* drizzle.delete(organizationCloudflareIngress).where(and(row, ended));

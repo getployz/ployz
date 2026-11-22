@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
+import { environmentPlace } from "#/modules/config-store/store-places.server";
 import { includesMonitoring } from "#/modules/billing/billing.server";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { AppConfig } from "#/server/config.server";
@@ -19,7 +20,7 @@ type Claimed = { id: string; organizationId: string; incidentId: string; kind: "
 
 type IncidentRow = {
   openedAt: string; closedAt: string | null; openedBy: unknown; checkName: string; checkUrl: string; serviceId: string;
-  environment: string; project: string; organizationSlug: string; organizationName: string;
+  environmentId: string; organizationSlug: string; organizationName: string;
 };
 
 const settle = (id: string, state: "sent" | "expired" | "failed" | "pending", now: Date) => Effect.gen(function* () {
@@ -35,20 +36,20 @@ const loadAlert = Effect.fn("Uptime.loadAlert")(function* (row: Claimed) {
   const { drizzle } = yield* Database;
   const [incident] = yield* drizzle.execute<IncidentRow>(sql`
     select i.opened_at as "openedAt", i.closed_at as "closedAt", i.opened_by as "openedBy", c.name as "checkName",
-           c.url as "checkUrl", c.service_id as "serviceId", e.name as environment, p.name as project,
+           c.url as "checkUrl", c.service_id as "serviceId", c.environment_id as "environmentId",
            o.slug as "organizationSlug", o.name as "organizationName"
     from uptime_incident i
       join uptime_check c on c.id = i.check_id
       join organization o on o.id = i.organization_id
-      join config_environment e on e.id = c.environment_id
-      join config_project p on p.id = e.project_id
     where i.id = ${row.incidentId}`, "objects");
   if (incident === undefined) return Option.none<UptimeAlert>();
+  const place = yield* environmentPlace(incident.environmentId);
+  if (place === null) return Option.none<UptimeAlert>();
   const evidence = Schema.decodeUnknownOption(IncidentEvidence)(incident.openedBy);
   const base = {
     organization: { slug: incident.organizationSlug, name: incident.organizationName },
-    project: incident.project,
-    environment: incident.environment,
+    project: place.project,
+    environment: place.environment,
     service: { id: incident.serviceId, name: incident.checkName },
     checkUrl: incident.checkUrl,
     incidentId: row.incidentId,

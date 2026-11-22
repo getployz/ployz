@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 import { deploymentTrouble } from "#/modules/config-store/store-deployments";
-import { deployFailedMail, deployWaitingMail } from "#/modules/mail/templates/deploys/deploy-failed";
+import { deployFailedMail, deployWaitingMail } from "#/modules/config-store/deploy-failed-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";

@@ -1,5 +1,6 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
 import { buildInterrupted, buildNodeId, heldBack, outcomeReason, waitingServices } from "#/modules/config-store/store-deployments";
+import { cloudLink } from "#/modules/mail/cloud-link";
 import type { MailContent, MailFact } from "#/modules/mail/layout";
 
 export type DeployFailedMail = {
@@ -29,9 +30,8 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
     : "It stopped before it said why.");
   const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? (sources.length === 1 ? sources[0] : undefined);
   const commit = source?.commit?.slice(0, 7);
-  const segment = (value: string) => encodeURIComponent(value);
-  const job = failedBuild ? `?job=${segment(buildNodeId(failedBuild.service))}` : "";
-  const url = `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}${job}`;
+  const job = failedBuild ? `job=${encodeURIComponent(buildNodeId(failedBuild.service))}` : undefined;
+  const url = cloudLink(origin, [organization.slug, project, environment, "deployments", deployment.id], job);
   const facts: MailFact[] = [];
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
@@ -64,7 +64,6 @@ export function deployWaitingMail({ origin, organization, deployment, sources }:
     : held === 1 ? `1 replica of ${only?.service} is` : `${held} replicas of ${only?.service} are`;
   const source = sources.length === 1 ? sources[0] : undefined;
   const commit = source?.commit?.slice(0, 7);
-  const segment = (value: string) => encodeURIComponent(value);
   const facts: MailFact[] = [];
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
@@ -79,7 +78,7 @@ export function deployWaitingMail({ origin, organization, deployment, sources }:
     paragraphs: [`${source?.branch ? `GitHub started this deploy from ${source.branch}.` : "GitHub started this deploy."} ${rest} Deploy again once the cause is fixed.`],
     action: {
       label: "View deployment",
-      url: `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}`,
+      url: cloudLink(origin, [organization.slug, project, environment, "deployments", deployment.id]),
     },
     facts,
     reason: `You're getting this as a member of ${organization.name} on Ployz.`,

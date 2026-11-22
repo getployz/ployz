@@ -11,7 +11,7 @@ import { needsProduction, type NeedsProduction } from "#/modules/billing/billing
 import { storeDeploymentsOptions } from "#/modules/config-store/store-view.queries";
 import * as servers from "#/modules/machines/use-servers";
 import type { Gap, MetricRead, ServiceHistory, ServiceOnServer, ServicePoint } from "#/modules/metrics/metrics";
-import { rangeLabel } from "#/modules/uptime/uptime-range";
+import { rangeLabel } from "#/lib/time-range";
 import type { IncidentObservation, ServiceUptime } from "#/modules/uptime/uptime-status";
 import { MonitoringTab } from "./MonitoringTab";
 

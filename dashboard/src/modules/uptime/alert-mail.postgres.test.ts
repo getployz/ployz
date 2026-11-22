@@ -11,11 +11,11 @@ import { cloudStore, type CloudStore } from "#/modules/config-store/store-sdk.se
 import type { InngestClient } from "#/modules/inngest/client";
 import { user } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";
-import type { MailSendRequestedEventData } from "#/modules/mail/mail.events";
+import type { MailMessage } from "#/modules/mail/mail.events";
 import { notificationPreference } from "#/modules/notifications/tables";
 import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { sendUptimeAlerts } from "#/modules/uptime/alert-mail.server";
-import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
+import { controlPlaneStatements } from "#/modules/uptime/incident-fence.test-fixture";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { holdProduction, hostedPolar } from "#/test/billing";
@@ -84,7 +84,7 @@ const setup = Effect.fn(function* (billing?: "free" | "production") {
   const recorded = (incident: string) => query<{ closed: boolean }>(sql`
     select closed_at is not null as closed from uptime_incident where id = ${incident}`);
   const mails = () => send.mock.calls.flatMap(([event]) => (Array.isArray(event) ? event : [event]))
-    .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
+    .map((event) => ({ id: event.id, data: event.data as MailMessage }));
   const run = (now: string) => provide(sendUptimeAlerts(new Date(now)));
   return { open, close, writtenAt, alerts, recorded, mails, run, provide, send };
 });

@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import type { DoorsState } from "#/modules/ingress/doors";
+import type { DoorsState } from "#/modules/ingress/doors.states";
 import { ingressDoorsAttempt } from "#/modules/ingress/tables";
 import { Database } from "#/server/database.server";
 

@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { type CloudflareSetup, SETUP_STALE_MS } from "#/modules/ingress/doors";
+import { type CloudflareSetup, setupIsStale } from "#/modules/ingress/doors";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { Database } from "#/server/database.server";
-import { tunnelTarget } from "./zone";
+import { tunnelTarget } from "./cloudflare.zone";
 
 /**
  * The Organization's Cloudflare tunnel and zone, or null when it never set one up. A reservation a setup left behind
@@ -22,7 +22,7 @@ export const loadCloudflareSetup = Effect.fn("Cloudflare.loadSetup")(function* (
   if (row === undefined) return null;
   const { zone, tunnelName, tunnelId, state } = row;
   if (state === "setting_up") {
-    return row.updatedAt.getTime() < Date.now() - SETUP_STALE_MS ? null : { zone, tunnelName, tunnelId: null, state } satisfies CloudflareSetup;
+    return setupIsStale(row.updatedAt) ? null : { zone, tunnelName, tunnelId: null, state } satisfies CloudflareSetup;
   }
   // The check constraint keeps a tunnel on every state past `setting_up`; a row without one is a defect.
   if (tunnelId === null) return yield* Effect.die(new Error(`Cloudflare setup of ${organizationId} is ${state} without its tunnel.`));

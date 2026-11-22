@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  causeText, chartWindow, checkState, checkSteps, failureClass, formatSpan, historyBars, incidentRange, mergePoints,
-  observationText, regionLabel, steps, tally, unreachableHost, uptimePercent, wrongPathIncident,
-} from "./uptime";
+import { causeText, chartWindow, checkState, checkSteps, failureClass, formatSpan, historyBars, incidentRange, mergePoints, observationText, regionLabel, tally, unreachableHost, uptimePercent, wrongPathIncident } from "./uptime";
+import { steps } from "#/lib/time-range";
 import { pointSource } from "./uptime-range";
 import {
   FAILURE_CLASSES, type FailureClass, type IncidentObservation, PHASES, type ServiceUptime, type UptimeCheckResult,

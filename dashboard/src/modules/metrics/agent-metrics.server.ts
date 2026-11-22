@@ -5,10 +5,9 @@ import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { serverNames } from "#/modules/operations/operation-history.server";
 import { hostHistory, serviceHistory, type CrashEvent } from "./metrics-history";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
-import { serviceVolumes } from "#/modules/config-store/store-lookup.server";
 import { silentSince, stepFor } from "./metrics-series";
 import { gapNotes, serverRows, serviceRows } from "./metrics-summary";
-import { countCrashEvents, latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows } from "./metrics-store.server";
+import { countCrashEvents, readCrashEvents, readHostReadings, readServiceReadings } from "./metrics-store.server";
 
 /** What the agent hears: the answer, or that Cloud keeps no metrics. */
 export type AgentMetrics = { readonly type: "not_configured" } | { readonly type: "answered"; readonly answer: MetricsAnswer };
@@ -51,12 +50,8 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
   const notes: string[] = [];
   let metrics: MetricsAnswer["metrics"] = [];
   if (subject.kind === "service") {
-    const [rows, volumes, latest] = yield* Effect.all([
-      readServiceRows(organizationId, range, subject.namespace, subject.service),
-      serviceVolumes(organizationId, subject.namespace, subject.service).pipe(Effect.flatMap((names) => readVolumeRows(organizationId, range, names))),
-      latestReading(organizationId, { namespace: subject.namespace, service: subject.service }, window.from),
-    ]);
-    const history = serviceHistory([...rows, ...volumes], crashes, reading);
+    const { rows, latest } = yield* readServiceReadings(organizationId, range, subject.namespace, subject.service);
+    const history = serviceHistory(rows, crashes, reading);
     const charts = serviceMetrics({ type: "history", window, at: now, history }, new Map());
     const silent = latest === null ? undefined : silentSince(latest, window, now);
     metrics = serviceRows(charts, window.to, silent !== undefined);
@@ -64,11 +59,7 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
     notes.push(...gapNotes(charts.allGaps));
   } else {
     const machine = subject.server.machine;
-    const [rows, disk, latest] = yield* Effect.all([
-      readHostRows(organizationId, range, machine),
-      readDiskRows(organizationId, range, machine),
-      latestReading(organizationId, { machine }, Math.min(window.from, now - 60_000)),
-    ]);
+    const { rows, disk, latest } = yield* readHostReadings(organizationId, range, machine, now);
     const silent = latest === null ? undefined : silentSince(latest, window, now);
     if (rows.length === 0 && disk.length === 0 && (latest === null || silent !== undefined)) {
       notes.push(`${subject.server.name} isn’t sending metrics.`);

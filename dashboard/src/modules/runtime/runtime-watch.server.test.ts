@@ -1,9 +1,7 @@
-import type { RuntimeWatchView, ServiceId } from "@ployz/sdk";
+import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Result } from "effect";
-import { Inngest } from "inngest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { InngestClient } from "#/modules/inngest/client";
 import {
   OrganizationRuntime,
   type OrganizationRuntimeService,
@@ -18,7 +16,6 @@ import {
   openRuntimeWatchForOrganization,
 } from "#/modules/runtime/runtime-watch.server";
 import {
-  runtimeWatchContainerFixture,
   runtimeWatchFrameFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import {
@@ -29,9 +26,6 @@ import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { testConfigLayer } from "#/test/config-environment";
 
-const inngest = new Inngest({ id: "runtime-watch-test" });
-const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-beforeEach(() => { send.mockClear(); });
 
 function unusedRuntime() {
   return asTestDouble<OrganizationRuntimeService>()({
@@ -47,7 +41,6 @@ describe("openRuntimeWatch", () => {
           request: new Request("http://localhost/api/runtime/events"),
           organizationSlug: "acme",
         }).pipe(
-          Effect.provideService(InngestClient, inngest),
           Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             Auth,
@@ -76,7 +69,6 @@ describe("openRuntimeWatchForOrganization", () => {
           request: new Request("http://localhost/api/runtime/events"),
           organizationId: "org-1",
         }).pipe(
-          Effect.provideService(InngestClient, inngest),
           Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
@@ -103,7 +95,6 @@ describe("openRuntimeWatchForOrganization", () => {
           request,
           organizationId: "org-1",
         }).pipe(
-          Effect.provideService(InngestClient, inngest),
           Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
@@ -140,58 +131,12 @@ describe("openRuntimeWatchForOrganization", () => {
     expect(frames).toEqual([frame]);
   });
 
-  it("asks for a Cluster Domain sync each time the Machines running the Ingress Proxy change", async () => {
-    const ingress = (...machines: string[]) => runtimeWatchFrameFixture({
-      services: [{
-        identity: "ployz-system/ingress",
-        service_id: "i".repeat(32) as ServiceId,
-        containers: machines.map((machine) => runtimeWatchContainerFixture(machine, `ingress-${machine}`)),
-        hook_containers: [],
-      }],
-    });
-    const watch = await Effect.runPromise(
-      openRuntimeWatchForOrganization({
-        request: new Request("http://localhost/api/runtime/events"),
-        organizationId: "org-1",
-      }).pipe(
-        Effect.provideService(InngestClient, inngest),
-        Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
-        Effect.provideService(
-          OrganizationRuntime,
-          asTestDouble<OrganizationRuntimeService>()({
-            open: () => Effect.succeed({
-              status: "connected" as const,
-              connected: asTestDouble<PloyzSession>()({
-                watch: () => Effect.succeed((async function* () {
-                  yield ingress("m1", "m2");
-                  yield ingress("m2", "m1");
-                  yield ingress("m2");
-                  yield ingress("m2");
-                  yield ingress("m1", "m2");
-                })()),
-              }),
-            }),
-          }),
-        ),
-      ),
-    );
-    if (watch.status !== "connected") throw new Error("expected a connected watch");
-
-    let frames = 0;
-    for await (const _ of watch.frames) frames += 1;
-
-    expect(frames).toBe(5);
-    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
-    expect(send).toHaveBeenCalledWith({ name: "cluster-domain/sync.requested", data: { organizationId: "org-1" } });
-  });
-
   it("surfaces runtime establishment failures", async () => {
     const failure = await Effect.runPromise(
       openRuntimeWatchForOrganization({
         request: new Request("http://localhost/api/runtime/events"),
         organizationId: "org-1",
       }).pipe(
-        Effect.provideService(InngestClient, inngest),
         Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
         Effect.provideService(
           OrganizationRuntime,
@@ -219,7 +164,6 @@ describe("openRuntimeWatchForOrganization", () => {
           request: new Request("http://localhost/api/runtime/events"),
           organizationId: "org-1",
         }).pipe(
-          Effect.provideService(InngestClient, inngest),
           Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
           Effect.provideService(
             OrganizationRuntime,
@@ -249,7 +193,6 @@ describe("openRuntimeWatchForOrganization", () => {
         request: new Request("http://localhost/api/runtime/events"),
         organizationId: "org-1",
       }).pipe(
-        Effect.provideService(InngestClient, inngest),
         Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
         Effect.provideService(
           OrganizationRuntime,

@@ -1,9 +1,9 @@
 import { Effect, Option } from "effect";
 import { NonRetriableError, RetryAfterError } from "inngest";
-import { sendInngestEvent, type PloyzInngest, type StepTools } from "#/modules/inngest/client";
+import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { eventData } from "#/modules/inngest/define-event";
-import { createMailSendRequestedEvent, mailSendRequested } from "#/modules/mail/mail.events";
-import { sendMail, type MailMessage, type MailSendError } from "#/modules/mail/mailer.server";
+import { mailSendRequested } from "#/modules/mail/mail.events";
+import { sendMail, type MailSendError } from "#/modules/mail/mailer.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 export const SEND_MAIL_RETRIES = 5;
@@ -44,6 +44,3 @@ export const createSendMail = (inngest: PloyzInngest, runEffect: EffectRunner = 
     },
     async ({ event, step, attempt }) => executeSendMail({ event, step, attempt }, runEffect),
   );
-
-export const queueMail = (message: MailMessage, key: string) =>
-  sendInngestEvent(createMailSendRequestedEvent(message, key));
