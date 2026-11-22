@@ -8,7 +8,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as writes from "#/modules/config-store/store-write";
 import * as views from "#/modules/config-store/store-view.queries";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useRemoveStoreService } from "./useDeleteService";
+import { useRemoveStoreService } from "./useRemoveStoreService";
 
 const environment = { project: "shop", environment: "production" };
 const service: ServiceListing = { source: "image", change: null, template: { id: "postgres", version: 1 }, id: "db", row: "db:node" as RowId, name: "db", private_dns: "db" };

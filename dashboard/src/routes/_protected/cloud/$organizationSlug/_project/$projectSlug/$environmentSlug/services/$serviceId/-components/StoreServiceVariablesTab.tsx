@@ -22,7 +22,6 @@ import {
   type SealedControls,
   type VariableAddInput,
 } from "#/components/variables/variables-panel";
-import type { VariableMetadataPatch } from "#/components/variables/variable-row";
 import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modules/variables/variables";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
@@ -63,7 +62,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       }}
       onCreateVariable={({ key, value, sealed, exported }) => writer.create(key, value, sealed, exported)}
       onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
-      onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
+      onSetExported={(variable, exported) => writer.export(variable.key, exported)}
       onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
       onNeverSync={(variable, marked) => writer.neverSync(variable.key, marked)}
       onRename={(variable, to, updateReferences) => writer.rename(variable.key, to, updateReferences)}
@@ -74,7 +73,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, referrersOf, sealing,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onSetExported, onApplyRaw, onNeverSync, onRename, referrersOf, sealing,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -84,7 +83,7 @@ function ServiceVariablesView({
   serviceNames: readonly string[];
   onCreateVariable: (input: VariableAddInput) => Write;
   onSealVariable: (variable: PlainVariableRecord) => Write;
-  onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
+  onSetExported: (variable: VariableRecord, exported: boolean) => void;
   onApplyRaw: (diff: RawEditorDiff) => Write;
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
@@ -101,7 +100,7 @@ function ServiceVariablesView({
         countNoun="Service Variable"
         onCreateVariable={onCreateVariable}
         onSealVariable={onSealVariable}
-        onUpdateMetadata={onUpdateMetadata}
+        onSetExported={onSetExported}
         onNeverSync={onNeverSync}
         onRename={onRename}
         referrersOf={referrersOf}
