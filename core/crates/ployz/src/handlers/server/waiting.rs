@@ -167,8 +167,29 @@ pub(super) struct Enrolling {
     pub(super) id: String,
     pub(super) waiting_server_id: String,
     pub(super) name: String,
-    state: String,
+    state: State,
     stage: Option<String>,
+}
+
+/// Where Cloud says an enroll attempt is.
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum State {
+    AwaitingFounder,
+    Instructed,
+    Running,
+    Joined,
+    Failed,
+    Cancelled,
+    #[serde(other)]
+    Unknown,
+}
+
+impl State {
+    /// Whether the attempt may still act: a state this CLI doesn't know counts as open.
+    pub(super) fn open(&self) -> bool {
+        !matches!(self, State::Joined | State::Failed | State::Cancelled)
+    }
 }
 
 impl Enrolling {
@@ -187,7 +208,7 @@ pub(super) async fn enrolling(credential: &Credential) -> Result<Vec<Enrolling>,
         cloud::account::refusable(credential, Method::GET, "enrollments", None).await?;
     Ok(enrollments
         .into_iter()
-        .filter(|attempt| !matches!(attempt.state.as_str(), "joined" | "failed" | "cancelled"))
+        .filter(|attempt| attempt.state.open())
         .collect())
 }
 
