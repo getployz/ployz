@@ -8,7 +8,7 @@ import { asTestDouble } from "#/lib/test-double";
 import * as runtime from "#/providers/runtime-provider";
 import * as uptime from "#/modules/uptime/uptime.queries";
 import * as views from "#/modules/config-store/store-view.queries";
-import * as removal from "../../services/$serviceId/-components/useRemoveStoreService";
+import * as removal from "../../_canvas/services/$serviceId/-components/useRemoveStoreService";
 import * as trouble from "./use-container-trouble";
 import { StoreServiceCard } from "./StoreServiceNode";
 

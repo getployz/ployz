@@ -4,7 +4,7 @@ import { Effect, Option, Schema } from "effect";
 import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
 import { DashboardPage } from "#/components/dashboard-page";
-import { ServerStatusLabel } from "#/components/server-status-label";
+import { ServerStatusLabel } from "./-components/server-status-label";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";

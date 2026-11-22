@@ -6,7 +6,7 @@ import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { useRemoveStoreService } from "../../services/$serviceId/-components/useRemoveStoreService";
+import { useRemoveStoreService } from "../../_canvas/services/$serviceId/-components/useRemoveStoreService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { PickedNode } from "./PickableNode";

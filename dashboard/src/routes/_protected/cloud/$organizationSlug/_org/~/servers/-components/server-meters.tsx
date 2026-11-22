@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { MetricMeter } from "#/components/metric-meter";
+import { MetricMeter } from "./metric-meter";
 import { serverMetrics } from "#/modules/metrics/metrics-model";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import type { ServerListItem } from "#/modules/machines/use-servers";

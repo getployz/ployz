@@ -3,7 +3,7 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { DnsNameHint } from "#/components/dns-name-hint";
+import { DnsNameHint } from "../dns-name-hint";
 import { dnsName } from "#/utils/dns-name";
 
 /** `onCreate` rejects once its failure has been shown (the Store writer toasts a refusal), so the dialog stays open to try again. */

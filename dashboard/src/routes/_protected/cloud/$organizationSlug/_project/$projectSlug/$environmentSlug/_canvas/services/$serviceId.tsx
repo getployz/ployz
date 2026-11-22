@@ -5,8 +5,8 @@ import {
   CanvasInspectorError,
   CanvasInspectorPending,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
-import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
-import { StoreServiceDrawer } from "../../services/$serviceId/-components/StoreServiceDrawer";
+import { serviceSearchSchema } from "./$serviceId/-components/service-pages";
+import { StoreServiceDrawer } from "./$serviceId/-components/StoreServiceDrawer";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { serviceUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 
