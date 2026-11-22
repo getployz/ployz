@@ -1,8 +1,15 @@
 import { queryOptions, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
 import { can, type Permission } from "#/modules/organization/permissions";
+import { defineChange } from "#/collections/change-log/declare";
 
 export const membersKey = (organizationSlug: string) => ["organization-members", organizationSlug] as const;
+
+export const membersChange = defineChange({
+  name: "members",
+  sources: ["member", "invitation"],
+  invalidate: (organizationSlug, scope) => void scope.queryClient.invalidateQueries({ queryKey: membersKey(organizationSlug) }),
+});
 
 /** The Organization's members and its pending invites. */
 export function organizationMembersQueryOptions(organizationSlug: string) {

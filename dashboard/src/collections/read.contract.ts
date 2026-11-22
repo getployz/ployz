@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import { namesOf, orgChanges, orgCollections } from "./registry";
+import { storeViewNames } from "#/modules/config-store/store.change-sources";
 
 /**
  * An Organization's id and an xid8 horizon from its change log: every change before it has been read. A cursor read
@@ -6,10 +8,7 @@ import { Schema } from "effect";
  */
 export const changeCursorSchema = Schema.String.check(Schema.isMaxLength(64));
 
-export const collectionNames = [
-  "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
-  "organization_support_access", "organization_cluster_name",
-] as const;
+export const collectionNames = namesOf(orgCollections);
 
 export const collectionReadInput = Schema.Struct({
   table: Schema.Literals(collectionNames),
@@ -21,15 +20,12 @@ export const collectionReadInput = Schema.Struct({
 export type CollectionReadInput = typeof collectionReadInput.Type;
 export type CollectionName = CollectionReadInput["table"];
 
-/** The Config Store's table families: each refreshes the Store views its tables back (`store-view.queries.ts`). */
-export const storeViewNames = ["store_project", "store_environment", "store_deployment", "store_organization", "store_pull_request", "store_check_suite", "store_region"] as const;
-export type StoreViewName = (typeof storeViewNames)[number];
-
 /**
- * What a change stream event names: an Org Store collection, `organization` for the organization state read,
- * `server_upgrade` for the Servers' latest Upgrade attempts, or a Config Store table family.
+ * What a change stream event names: an Org Store collection, another change a feature declares (`organization` for
+ * the organization state read, `server_upgrade` for the Servers' latest Upgrade attempts), or a Config Store table
+ * family, each of which refreshes the Store views its tables back.
  */
-export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", "server_drain", "server_web_traffic", "cluster_ingress", "volume_run", "service_act", "volume_placement", "members", ...storeViewNames]);
+export const changeNameSchema = Schema.Literals([...collectionNames, ...namesOf(orgChanges), ...storeViewNames]);
 export type ChangeName = typeof changeNameSchema.Type;
 
 /** A collection read. `full` replaces every row; otherwise drop `deleted`, then upsert `rows`. `cursor` is the next `since`. */

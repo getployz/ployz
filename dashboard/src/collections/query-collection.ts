@@ -49,6 +49,7 @@ function trackRequestCollection<C extends Pick<Collection<object>, "cleanup">>(q
 export function endRequestCollections(queryClient: QueryClient) {
   const collections = requestCollections.get(queryClient);
   requestCollections.delete(queryClient);
+  // A request is over: a collection that fails to clean up has nothing left to report to.
   for (const collection of collections ?? []) void collection.cleanup({ dependents: true }).catch(() => {});
 }
 
@@ -73,6 +74,7 @@ function withRecovery<T extends object, C extends Pick<Collection<T>, "status" |
       do {
         // Subscribing to a failed Collection reads its ended run, so it holds only onto a read already running.
         if (!hold && fetching()) hold = collection.subscribeChanges(() => {});
+        // Only waiting for the read to settle; a failure shows in `collection.status`.
         await input.queryClient.getQueryCache().get(queryHash)?.promise?.catch(() => {});
         // A refetch's caller settles in the microtasks after its read, and a reload before then cancels it.
         await new Promise((resolve) => setTimeout(resolve));
@@ -87,6 +89,7 @@ function withRecovery<T extends object, C extends Pick<Collection<T>, "status" |
   let watching: (() => void) | undefined;
   const watch = () => input.queryClient.getQueryCache().subscribe((event) => {
     if (event.type !== "updated" || event.action.type !== "success" || event.query.queryHash !== queryHash) return;
+    // A failed recovery leaves the collection in error, where the gate and the next change surface it.
     if (collection.status === "error") void recover().catch(() => {});
   });
   const arm = () => collection.on("status:change", ({ status }) => {

@@ -1,6 +1,6 @@
 import { environmentManager, type FetchInfiniteQueryOptions, type FetchQueryOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { notFound } from "@tanstack/react-router";
-import type { CollectionScope } from "./scope";
+import { scopeOf as scopeOfSession, type CollectionScope } from "./scope";
 import { orgStoreOptions } from "./org-store";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import type { EnvironmentRef } from "@ployz/sdk";
@@ -19,7 +19,7 @@ type RouteDataContext = {
 };
 
 function scopeOf(context: RouteDataContext): CollectionScope {
-  return { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
+  return scopeOfSession(context.queryClient, context.session);
 }
 
 export async function requireOrganization(context: RouteDataContext, organizationSlug: string) {
@@ -61,6 +61,7 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
   const ready = context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scopeOf(context)));
   // The shell's content gate owns client pending and error state.
   if (environmentManager.isServer()) await ready;
+  // The gate reads the failed collection and shows the retry; an unhandled rejection here would only add noise.
   else void ready.catch(() => {});
 }
 
@@ -125,6 +126,7 @@ export async function prefetchStoreConfig(context: RouteDataContext, organizatio
   const ready = context.queryClient.ensureQueryData(storeViewOptions(organizationSlug, scope, configsQuery(environment))).then((result) => {
     const config = result.ok ? result.value.configs.find((candidate) => candidate.id === resourceId) : undefined;
     return config && context.queryClient.prefetchQuery(storeViewOptions(organizationSlug, scope, configQuery(environment, `@${config.id}`)));
+  // The drawer fetches the same reads itself when this prefetch fails.
   }).catch(() => {});
   if (environmentManager.isServer()) await ready;
 }

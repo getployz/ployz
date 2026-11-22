@@ -1,49 +1,19 @@
-import * as EffectRecord from "effect/Record";
-import type { ChangeName, StoreViewName } from "./read.contract";
+import { orgChanges, orgCollections } from "./registry";
+import { changeNameSchema, type ChangeName } from "./read.contract";
 import type { ChangeSource } from "#/collections/change-log/change-log.sources";
+import { storeTablesOf } from "#/modules/config-store/store.change-sources";
 
 /**
- * The Config Store's table families, shaped like `changeNameSources`: a family's first source is its key table and
- * every other source logs that table's key, so a logged key names the Project, Environment or Deployment whose views
- * changed. A created or deleted row is one a view gains or drops. Which views each family refreshes is
- * `refreshedBy` in `store-view.queries.ts`.
+ * The source tables a change stream name reads: an Org Store collection, another change a feature declares, or a
+ * Config Store table family. A collection's first source is its key table: its rows are keyed by the key that table
+ * logs, and every other source logs that same key through a foreign key to it.
  */
-export const storeViewSources = {
-  store_project: ["config_project", "config_pr_plan"],
-  store_environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied", "config_registry_credential", "config_service_policy", "config_environment_branch", "config_sync_base", "config_never_sync", "config_sync_arrival", "config_proposal", "config_merge_value", "config_pr_environment"],
-  store_deployment: ["config_deployment", "config_build", "config_deployment_row"],
-  store_organization: ["config_build_order"],
-  store_pull_request: ["config_pull_request"],
-  // Keyed by Organization: a suite names a commit, and every Deployment waiting for it rereads.
-  store_check_suite: ["config_check_suite"],
-  store_region: ["config_region_name"],
-} satisfies Record<StoreViewName, readonly [ChangeSource, ...ChangeSource[]]>;
+export function sourcesOf(name: ChangeName): readonly ChangeSource[] {
+  const declared = [...orgCollections, ...orgChanges].find((declaration) => declaration.name === name);
+  return declared?.sources ?? storeTablesOf(name);
+}
 
-/**
- * The source tables each change stream name reads: an Org Store collection, `organization`, or a Config Store table
- * family. A collection's first source is its key table: its rows are keyed by the key that table logs, and every other
- * source logs that same key through a foreign key to it.
- */
-export const changeNameSources = {
-  organization: ["organization"],
-  environment_canvas_node_position: ["environment_canvas_node_position"],
-  organization_enrollment: ["organization_pairing"],
-  organization_cluster_domain: ["organization_cluster_domain"],
-  organization_cluster_name: ["organization_cluster_name"],
-  organization_server_upgrades: ["organization_server_upgrades"],
-  organization_support_access: ["organization_support_access"],
-  server_upgrade: ["server_upgrade_attempt"],
-  server_drain: ["server_drain_attempt"],
-  server_web_traffic: ["server_web_traffic_attempt"],
-  cluster_ingress: ["organization_cloudflare_ingress", "ingress_doors_attempt"],
-  volume_run: ["volume_run"],
-  service_act: ["service_act"],
-  volume_placement: ["volume_placement"],
-  members: ["member", "invitation"],
-  ...storeViewSources,
-} satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
-
-export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
-  const tables = new Set(sourceTables);
-  return EffectRecord.keys(changeNameSources).filter((name) => changeNameSources[name].some((table) => tables.has(table)));
+export function collectionsOf(sourceTables: Iterable<string>) {
+  const tables = new Set<string>(sourceTables);
+  return changeNameSchema.literals.filter((name) => sourcesOf(name).some((table) => tables.has(table)));
 }

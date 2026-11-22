@@ -1,49 +1,45 @@
+import type { OrgCollection } from "./change-log/declare";
 import type { CollectionName, CollectionRead } from "./read.contract";
-import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
-import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
-import type { ClusterNameRow } from "#/modules/cluster-name/cluster-name";
-import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
-import type { SupportAccessRow } from "#/modules/support-access/support-access";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
-import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
-import type { environmentCanvasNodePosition } from "#/modules/canvas/tables";
-import { canvasPositionKey } from "#/modules/canvas/canvas-positions";
-
-type CanvasPositionRow = typeof environmentCanvasNodePosition.$inferSelect;
+import { cachedByCollectionScope, collectionKey, type CollectionScope } from "#/collections/scope";
+import { canvasPositions } from "#/modules/canvas/canvas.collection";
+import { clusterDomain } from "#/modules/cluster-domain/cluster-domain.collection";
+import { clusterName } from "#/modules/cluster-name/cluster-name.collection";
+import { organizationEnrollment } from "#/modules/machines/enrollment.collection";
+import { serverUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.collection";
+import { supportAccess } from "#/modules/support-access/support-access.collection";
 
 /** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
-function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
+function changeCollection<Name extends CollectionName, Row extends object>(declaration: OrgCollection<Name, Row>) {
+  const table: CollectionName = declaration.name;
   return cachedByCollectionScope((organizationSlug, scope) => createChangeCollection<Row>({
     queryClient: scope.queryClient,
-    queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug, table],
-    getKey,
+    queryKey: collectionKey(scope, organizationSlug, table),
+    getKey: declaration.key,
     read: async ({ signal, since }) => {
-      // SAFETY: each owner below pairs its literal allowlisted table with that table's database row type.
+      // SAFETY: each declaration pairs its allowlisted table name with the row type its projection reads.
       return await readCollectionServerFn({ data: { table, organizationSlug, userId: scope.userId, since }, signal }) as CollectionRead<Row>;
     },
   }));
 }
 
-export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>("environment_canvas_node_position", canvasPositionKey);
-export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
-export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
-/** The Organization's Cluster Name as Cloud keeps it: no row reads as the default, or unset on a Cluster founded before names. */
-export const getClusterNameCollection = changeCollection<ClusterNameRow>("organization_cluster_name", (row) => row.id);
-/** The Organization's Server upgrade settings: no row reads as the defaults. */
-export const getServerUpgradeSettingsCollection = changeCollection<ServerUpgradeSettingsRow>("organization_server_upgrades", (row) => row.id);
-/** Whether the Organization lets Ployz support open it: no row reads as off. */
-export const getSupportAccessCollection = changeCollection<SupportAccessRow>("organization_support_access", (row) => row.id);
+export const getCanvasPositionsCollection = changeCollection(canvasPositions);
+export const getOrganizationEnrollmentCollection = changeCollection(organizationEnrollment);
+export const getClusterDomainCollection = changeCollection(clusterDomain);
+export const getClusterNameCollection = changeCollection(clusterName);
+export const getServerUpgradeSettingsCollection = changeCollection(serverUpgradeSettings);
+export const getSupportAccessCollection = changeCollection(supportAccess);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
  * Not a `get*Collection` export, so the Org Store gate doesn't count it twice.
  */
 export const orgStoreTables = {
-  environment_canvas_node_position: getCanvasPositionsCollection,
-  organization_enrollment: getOrganizationEnrollmentCollection,
-  organization_cluster_domain: getClusterDomainCollection,
-  organization_cluster_name: getClusterNameCollection,
-  organization_server_upgrades: getServerUpgradeSettingsCollection,
-  organization_support_access: getSupportAccessCollection,
+  [canvasPositions.name]: getCanvasPositionsCollection,
+  [organizationEnrollment.name]: getOrganizationEnrollmentCollection,
+  [clusterDomain.name]: getClusterDomainCollection,
+  [clusterName.name]: getClusterNameCollection,
+  [serverUpgradeSettings.name]: getServerUpgradeSettingsCollection,
+  [supportAccess.name]: getSupportAccessCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;
