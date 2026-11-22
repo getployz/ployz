@@ -1,3 +1,4 @@
+import { serverLink } from "#/modules/mail/cloud-link";
 import type { MailContent } from "#/modules/mail/layout";
 import type { FinalOutcome } from "#/modules/server-upgrade/server-upgrade";
 
@@ -53,8 +54,8 @@ export function upgradeFailedMail({ organization, failures, origin }: UpgradeFai
     title: `${servers} ${ended}`,
     paragraphs: [[`Ployz stopped the automatic upgrade in ${organization.name}.`, skip].filter((line) => line !== null).join(" ")],
     action: one
-      ? { label: "View server", url: `${origin}/cloud/${organization.slug}/~/servers/${first.machineId}` }
-      : { label: "View servers", url: `${origin}/cloud/${organization.slug}/~/servers` },
+      ? { label: "View server", url: serverLink(origin, organization.slug, first.machineId) }
+      : { label: "View servers", url: serverLink(origin, organization.slug) },
     facts: failures.map((failure) => ({ label: failure.name, value: whereLeft(failure) })),
     reason: `You're getting this as a member of ${organization.name} on Ployz.`,
   };

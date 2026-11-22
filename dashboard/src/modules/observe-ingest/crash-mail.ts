@@ -1,3 +1,4 @@
+import { cloudLink, serverLink, unescaped } from "#/modules/mail/cloud-link";
 import type { MailContent } from "#/modules/mail/layout";
 
 export type CrashPlace = { readonly project: string; readonly environment: string; readonly serviceId: string };
@@ -28,10 +29,10 @@ export function crashMail({ organization, service, place, count, last, origin }:
   const { server } = last;
   const how = ended(last);
   const action = place === null
-    ? { label: "View server", url: `${origin}/cloud/${organization.slug}/~/servers/${server.machineId}` }
+    ? { label: "View server", url: serverLink(origin, organization.slug, server.machineId) }
     : {
         label: "View service",
-        url: `${origin}/cloud/${organization.slug}/${encodeURIComponent(place.project)}/${encodeURIComponent(place.environment)}/services/${encodeURIComponent(place.serviceId)}?tab=monitoring`,
+        url: cloudLink(origin, [unescaped(organization.slug), place.project, place.environment, unescaped("services"), place.serviceId], "tab=monitoring"),
       };
   const facts = [
     ...(where === null ? [] : [{ label: "Environment", value: where }]),

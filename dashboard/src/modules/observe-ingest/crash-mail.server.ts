@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { crashMail, type CrashPlace } from "#/modules/mail/templates/servers/crash";
+import { crashMail, type CrashPlace } from "#/modules/observe-ingest/crash-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

@@ -4,7 +4,7 @@ import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { StepTools } from "#/modules/inngest/client";
 import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import { serverUpgradeRequested } from "#/modules/server-upgrade/server-upgrade.events";
-import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
+import { upgradeFailedMail } from "#/modules/server-upgrade/upgrade-failed-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { machineUpgradeAttemptId } from "#/modules/runtime/ployz.server";
 import { type FinalOutcome, type ReleaseChannel } from "#/modules/server-upgrade/server-upgrade";

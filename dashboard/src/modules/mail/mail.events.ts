@@ -15,7 +15,7 @@ export const mailSendRequested = defineEvent({
 });
 
 /** The key names what this mail is for: queueing it again sends one mail. */
-export const createMailSendRequestedEvent = (message: typeof mailSendRequested.schema.Type, key: string) =>
+export const createMailSendRequestedEvent = (message: MailMessage, key: string) =>
   ({ id: `mail-${key}`, ...mailSendRequested.create(message) }) as const;
 
-export type MailSendRequestedEventData = typeof mailSendRequested.schema.Type;
+export type MailMessage = typeof mailSendRequested.schema.Type;

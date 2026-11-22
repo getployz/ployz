@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type InviteMail, inviteMail } from "#/modules/mail/templates/organizations/invite";
+import { type InviteMail, inviteMail } from "#/modules/organization/invite-mail";
 
 const invite = (overrides: Partial<InviteMail>): InviteMail => ({
   to: "bob@example.test",

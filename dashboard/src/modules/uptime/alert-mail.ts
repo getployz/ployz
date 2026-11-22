@@ -1,4 +1,5 @@
 import { STATUS_CODES } from "node:http";
+import { cloudLink, unescaped } from "#/modules/mail/cloud-link";
 import type { MailContent } from "#/modules/mail/layout";
 import { failureClass, incidentRange } from "./uptime";
 import { instantEdge } from "./uptime-range";
@@ -54,7 +55,6 @@ function duration(ms: number): string {
 
 /** The service's Monitoring tab, zoomed on the incident as the tab zooms one, and left open-ended while it lasts. */
 function incidentLink(origin: string, alert: UptimeAlert, now: Date): string {
-  const base = `${origin}/cloud/${alert.organization.slug}/${encodeURIComponent(alert.project)}/${encodeURIComponent(alert.environment)}`;
   const search = new URLSearchParams({ tab: "monitoring" });
   if (alert.kind === "opened") {
     search.set("from", instantEdge(alert.openedAt.getTime() - 3_600_000));
@@ -64,7 +64,7 @@ function incidentLink(origin: string, alert: UptimeAlert, now: Date): string {
     search.set("from", instantEdge(range.from));
     search.set("to", instantEdge(range.to));
   }
-  return `${base}/services/${encodeURIComponent(alert.service.id)}?${search.toString()}`;
+  return cloudLink(origin, [unescaped(alert.organization.slug), alert.project, alert.environment, unescaped("services"), alert.service.id], search.toString());
 }
 
 /** The down or recovered email for `alert`, without its unsubscribe link, which each recipient gets their own of. */
