@@ -57,22 +57,12 @@ async fn observe<T>(
 /// evidence a Deploy that removes deployed Volumes is admitted with. A check that
 /// fails names each of `connections`' Servers unanswered, and says whether none
 /// could be reached or one answered with an error, naming that one only once its
-/// daemon confirmed which Server it is.
+/// daemon confirmed which Server it is. With `expect`, only through an entry of its
+/// Cluster.
 ///
 /// # Errors
 /// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_volumes(
-    connections: Vec<Connection>,
-    sought: Vec<ployz_core::DockerVolumeName>,
-) -> Result<VolumeObservation, RpcError> {
-    observe_volumes_expecting(connections, sought, None).await
-}
-
-/// [`observe_volumes`] through an entry of `expect`'s Cluster only, when given.
-///
-/// # Errors
-/// As [`observe_volumes`].
-pub async fn observe_volumes_expecting(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
     expect: Option<ClusterExpectation>,
@@ -90,21 +80,11 @@ pub async fn observe_volumes_expecting(
 /// Which Services run on `connections`' Servers, by Namespace: the evidence a full
 /// Deploy's prune is admitted with, naming each Service it removes. A check that
 /// fails names each of `connections`' Servers unanswered and says why, as
-/// [`observe_volumes`] does.
+/// [`observe_volumes`] does. With `expect`, only through an entry of its Cluster.
 ///
 /// # Errors
 /// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_running(
-    connections: Vec<Connection>,
-) -> Result<ployz_store::RunningObservation, RpcError> {
-    observe_running_expecting(connections, None).await
-}
-
-/// [`observe_running`] through an entry of `expect`'s Cluster only, when given.
-///
-/// # Errors
-/// As [`observe_running`].
-pub async fn observe_running_expecting(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<ployz_store::RunningObservation, RpcError> {

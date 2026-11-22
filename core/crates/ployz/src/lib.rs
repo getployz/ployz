@@ -38,7 +38,6 @@ pub mod sdk;
 mod sealed_compat;
 pub mod sealing_backfill;
 mod sealing_pin;
-pub(crate) mod service;
 mod setup_report;
 mod setup_retry;
 pub mod ui;

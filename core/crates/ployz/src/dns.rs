@@ -156,8 +156,12 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     cluster_domain: Option<&IngressHost>,
 ) -> Vec<IngressDnsWarning> {
     let targets = ingress_targets_from_ports(ports);
-    let Ok(probe) = HostnameProbe::new(Duration::from_secs(2)) else {
-        return Vec::new();
+    let probe = match HostnameProbe::new(Duration::from_secs(2)) {
+        Ok(probe) => probe,
+        Err(error) => {
+            tracing::warn!(%error, "could not build the hostname probe, so no Ingress Hostname was checked");
+            return Vec::new();
+        }
     };
     let mut verdicts = Vec::with_capacity(targets.len());
     for (hostname, mentions_certificates) in targets {

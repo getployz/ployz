@@ -3,8 +3,6 @@ use ployz_store::ReviewVersion;
 
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
-pub(crate) mod metrics;
-
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
 /// from the cache beside the config. Completion and `--help` read this; a refresh
@@ -50,11 +48,11 @@ pub(crate) fn compiled() -> Command {
 }
 
 pub(crate) fn base(command: Command, about: &'static str) -> Command {
-    command.about(about).args(connection_args(true))
+    command.about(about).args(connection_args())
 }
 
-pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
-    let mut args = vec![
+fn connection_args() -> [Arg; 4] {
+    [
         value("connect", None)
             .env(env::CONNECT)
             .help("Reach the Servers through this connection instead of Cloud or a context")
@@ -74,15 +72,10 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
             .hide(true)
             .global(true),
-    ];
-    if include_context {
-        args.push(
-            value("context", Some('c'))
-                .env(env::CONTEXT)
-                .help("Act through this local context instead of the current one"),
-        );
-    }
-    args
+        value("context", Some('c'))
+            .env(env::CONTEXT)
+            .help("Act through this local context instead of the current one"),
+    ]
 }
 
 /// The subcommand words of `matches`, `server add`.
