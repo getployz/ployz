@@ -672,7 +672,6 @@ pub(super) fn lower(
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
-    // Only the Services this Deployment starts must fit a Container's environment.
     for service in &saved.services {
         if (!narrowed || targeted.contains(&service.id.as_str()))
             && let Some(env) = resolved.env.get(&service.id)
@@ -684,7 +683,6 @@ pub(super) fn lower(
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
-            // A targeted Deployment builds only the Git Services it targets.
             CompiledNodeConfig::Service(config)
                 if narrowed
                     && matches!(config.settings.source, ServiceSource::Git { .. })
@@ -706,7 +704,6 @@ pub(super) fn lower(
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
         .collect();
-    // Empty reconciles the whole Namespace; names deploy only those Services.
     let selected = if narrowed {
         saved
             .services
@@ -724,7 +721,6 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
-    // Each warning with the Services whose Deploy it concerns.
     let mut warnings: Vec<(Vec<&ServiceName>, DeploymentWarning)> = snapshots
         .iter()
         .filter_map(|(config, snapshot)| {
