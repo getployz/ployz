@@ -4,7 +4,6 @@ import { asTestDouble } from "#/lib/test-double";
 import { rowId } from "#/test/ids";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
-import type { MachineId } from "@ployz/sdk";
 import type { MirrorCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { arrivingNodes, buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
 
