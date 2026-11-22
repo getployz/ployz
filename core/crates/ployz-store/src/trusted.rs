@@ -11,6 +11,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::command::{Answer, Touched};
 use crate::domain::DomainEvidence;
 use crate::followup::FollowUp;
 use crate::git::AuthorizedRepository;
@@ -267,20 +268,32 @@ impl Trusted {
         }
     }
 
+    /// Refuse `answer` unless every Environment it touched is this token's. One that
+    /// names none is refused too: what touched no Environment belongs to none of them.
     pub(crate) fn refuse_written_outside_environments(
         &self,
         tx: &mut dyn Tx,
-        written: &crate::Written,
+        answer: &impl Answer,
     ) -> Result<(), RpcError> {
         let Some(allowed) = &self.environments else {
             return Ok(());
         };
-        let mut names = Vec::new();
-        wrote(tx, written, &mut names)?;
-        if !names.is_empty() && names.iter().all(|name| allowed.contains(name)) {
-            return Ok(());
+        let touched = answer.touched();
+        if touched.is_empty() {
+            return Err(outside(allowed));
         }
-        Err(outside(allowed))
+        for touched in touched {
+            let name = match touched {
+                Touched::Config(id) | Touched::Protection(id) => {
+                    crate::scope::load_by_id(tx, id)?.summary.name
+                }
+                Touched::Closed(name) => name.clone(),
+            };
+            if !allowed.contains(&name) {
+                return Err(outside(allowed));
+            }
+        }
+        Ok(())
     }
 
     /// Refuse a write to Environment `name` outside this token's Environments before
@@ -298,36 +311,6 @@ fn outside(allowed: &BTreeSet<EnvironmentName>) -> RpcError {
         format!("This token can deploy only to {}.", listed(allowed)),
         serde_json::json!({ "environments": allowed }),
     )
-}
-
-/// Every Environment `written` wrote, by name: each command's in a Batch, the Branch a
-/// Sync closed as well as the one it staged into, and the one a protection write
-/// changed, which writes no config. A closed Branch may be gone already, so a Sync
-/// names both from what it answered.
-fn wrote(
-    tx: &mut dyn Tx,
-    written: &crate::Written,
-    names: &mut Vec<EnvironmentName>,
-) -> Result<(), RpcError> {
-    if let crate::Written::Batch(batched) = written {
-        for each in &batched.results {
-            wrote(tx, each, names)?;
-        }
-    } else if let crate::Written::Synced(synced) = written {
-        names.push(synced.into.name.clone());
-        if synced.closing {
-            names.push(synced.from.name.clone());
-        }
-    } else if let crate::Written::Protected(protected) = written {
-        names.push(
-            crate::scope::load_by_id(tx, &protected.environment)?
-                .summary
-                .name,
-        );
-    } else if let Some(id) = written.environment() {
-        names.push(crate::scope::load_by_id(tx, id)?.summary.name);
-    }
-    Ok(())
 }
 
 fn listed(names: &BTreeSet<EnvironmentName>) -> String {
