@@ -20,6 +20,7 @@ import { SupportStaff, supportStaffOf } from "#/modules/organization/access.serv
 import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { provideServerAccess } from "#/modules/machines/server-access.server";
 import { requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import { OrganizationRuntime, type ConnectedRuntimeClient, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { testConfigLayer } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
@@ -37,6 +38,12 @@ const inngest = asTestDouble<Inngest>()({
     sent.push(event.name);
     return { ids: [] };
   },
+});
+
+/** A Cluster whose first report never arrives. */
+const silentCluster = asTestDouble<OrganizationRuntimeService>()({
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({ watchFirstFrame: () => Effect.succeed(null) }) }),
 });
 
 type Gated = (actor: Actor) => Effect.Effect<unknown, unknown, never>;
@@ -69,8 +76,8 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
     startServerEnrollment(actor, { organizationSlug: SLUG, ids: [MISSING], storage: { kind: "none" } } as never) as never, "Validation: Pick the first server: it sets up the cluster the rest join.", []],
   ["cancelServerEnrollment", (actor) => cancelServerEnrollment(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such enrollment.", []],
   ["deleteCopy", (actor) =>
-    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE },
-      () => Effect.fail("unreachable")) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
+    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE }).pipe(
+      Effect.provideService(OrganizationRuntime, silentCluster)) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
   ["server_upgrade_policy_set", (actor) => runCommand(caller(actor.userId), "server_upgrade_policy_set", { automatic: true }, { approvalId: null, key: null }) as never, JSON.stringify({ ok: true, output: { channel: "stable", automatic: true } }), ["server/upgrade.requested"]],
 ];
 

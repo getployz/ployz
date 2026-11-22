@@ -1,5 +1,4 @@
 import type { MachineId, MachineName } from "@ployz/sdk";
-import { Schema } from "effect";
 import { type Heard, STALE_AFTER_MS } from "#/modules/volume-run/volume-run";
 import { formatRelativeTime } from "#/utils/relative-time";
 
@@ -145,9 +144,3 @@ export function traySpeech(copies: VolumeCopies): TraySpeech | null {
   return null;
 }
 
-/** Sync now: one incremental send to a Volume's mirror. */
-export const RefreshMirrorInput = Schema.Struct({
-  organizationSlug: Schema.NonEmptyString,
-  volumeId: Schema.NonEmptyString,
-  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
-});

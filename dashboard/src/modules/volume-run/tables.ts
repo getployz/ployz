@@ -1,5 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
+import { VOLUME_RUN_MESSAGE_LIMIT } from "#/modules/volume-run/volume-run";
 import {
   bigint,
   boolean,
@@ -7,7 +8,6 @@ import {
   index,
   jsonb,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -71,32 +71,6 @@ export const volumeRun = pgTable(
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),
     check("volume_run_phase_check", sql`${table.phase} in (${sqlStringLiterals(VOLUME_RUN_PHASES)})`),
-    check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and 1024`),
+    check("volume_run_message_check", sql`${table.message} is null or length(${table.message}) between 1 and ${sql.raw(String(VOLUME_RUN_MESSAGE_LIMIT))}`),
   ],
-);
-
-/**
- * What the mirror syncs saw of one mirror. The last pull that landed and the last that failed are kept apart, so a newer
- * success never hides an older failure; `matchedAt` is the newest time the mirror held the writer's data as of: a sync
- * that found it at the writer's newest, or the taking of a snapshot it landed.
- */
-export const volumeMirrorStatus = pgTable(
-  "volume_mirror_status",
-  {
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    volumeId: text("volume_id").notNull(),
-    machineId: text("machine_id").notNull().$type<MachineId>(),
-    okAt: timestamp("ok_at", { mode: "date", withTimezone: true }),
-    okSnapshot: text("ok_snapshot"),
-    matchedAt: timestamp("matched_at", { mode: "date", withTimezone: true }),
-    failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
-    failedSnapshot: text("failed_snapshot"),
-    failure: text("failure"),
-    /** Unused: the Mirror approvals Cloud kept for this Mirror. */
-    approvals: jsonb("approvals"),
-    updatedAt,
-  },
-  (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],
 );

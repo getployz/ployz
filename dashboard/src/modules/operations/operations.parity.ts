@@ -10,9 +10,9 @@ import { RegionSchema } from "#/modules/machines/server-regions";
 import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
-import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
 import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
+import { VolumeInput } from "#/modules/volume-run/volume-run";
 
 /** How one surface carries an option: the field (or fields, together) that holds it, or why it has none. */
 type Carried = { readonly via: string | readonly [string, ...string[]] } | { readonly omitted: string };
@@ -237,7 +237,7 @@ export const OPERATION_PARITY = {
       },
       ui: {
         fn: "refreshMirrorServerFn",
-        input: RefreshMirrorInput,
+        input: VolumeInput,
         options: {
           volume: { via: "volumeId" },
           environment: { via: "environment" },

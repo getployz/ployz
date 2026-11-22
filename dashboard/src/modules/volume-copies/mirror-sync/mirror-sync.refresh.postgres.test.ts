@@ -11,13 +11,12 @@ import { loadOrganizationConnections } from "#/modules/runtime/connections.serve
 import { clusterRead, makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules/volume-copies/volume-copies.refresh.server";
-import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
-import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
+import { stampPlacements, writePlacement } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
-import { type CopyAnswer } from "#/modules/volume-run/volume-run.cluster.server";
+import { type CopyAnswer, type VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
-import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
+import { answeringWith, clusterShowing, COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -31,21 +30,30 @@ const web = (name: string) => name.padEnd(32, "0") as MachineId;
 const inngest = new Inngest({ id: "volume-copies-refresh-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
+type Ask = (typeof VolumeCluster.Service)["ask"];
+/** The Servers the Cluster reports, each on a daemon that runs placement. */
+const SERVERS = ["web-1", "web-2", "web-3"];
+
 const SNAPSHOT = { copy: { ...COPIES.writer, newest: { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 } } };
 // The SDK's own 10s timeout on a target Machine's RPC: no Machine sent it.
 const TIMED_OUT = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null, unanswered: true });
 
 describe("Refresh now", () => {
   let harness: PostgresTestHarness;
-  let blockers: string[];
+  let runtime = clusterShowing(SERVERS);
   // Runs at each Volume read, so a test can act between Refresh's mirror check and its request.
   let between: (() => Promise<void>) | null;
   let members: Member[];
   let asked: WantedCopy["kind"][];
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
+  /** Runs `operation` with `members` answering for the Servers, and `cluster` saying anything else they answer. */
+  const run = <A, E>(
+    operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>,
+    cluster: Partial<typeof VolumeCluster.Service> = {},
+  ) => harness.runEffect(operation.pipe(
+    answeringWith({ inspect: () => Effect.succeed(members), observe: () => Effect.succeed(members), ...cluster }),
     Effect.provideService(InngestClient, inngest),
-    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
+    Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string }) => {
@@ -60,12 +68,12 @@ describe("Refresh now", () => {
       })),
     }),
   ));
-  const ask: CopyAsk = (_asker, _machine, _expect, want: WantedCopy) => {
+  const ask: Ask = (_asker, _machine, _expect, want: WantedCopy) => {
     asked.push(want.kind);
     const newest = { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 };
     return Effect.succeed<CopyAnswer>(want.kind === "snapshot" ? { ok: true, copy: { ...COPIES.writer, newest } } : { ok: true, copy: COPIES.pulling });
   };
-  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), ask));
+  const refresh = () => run(refreshMirror(caller, environment, volumeId), { ask });
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
   // The real askCopy, over a session to a paired Cluster whose SetVolumeCopy answers `answer`. `connecting` runs at each connect.
   const pairedCluster = async (answer: (want: WantedCopy) => Promise<{ readonly copy: VolumeCopy }>, connecting = () => {}) => {
@@ -93,12 +101,12 @@ describe("Refresh now", () => {
     })));
   };
   const refreshOn = (cluster: Layer.Layer<OrganizationRuntime>) =>
-    refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members)).pipe(Effect.provide(cluster));
+    refreshMirror(caller, environment, volumeId).pipe(answeringWith({ inspect: () => Effect.succeed(members), observe: () => Effect.succeed(members) }), Effect.provide(cluster));
 
   beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
-    blockers = [];
+    runtime = clusterShowing(SERVERS);
     between = null;
     asked = [];
     members = [member("web-1", "writer"), member("web-2", "mirror")];
@@ -122,10 +130,10 @@ describe("Refresh now", () => {
   });
 
   it("refuses when the mirror refuses the pull, so no success is reported for a pull that never started", async () => {
-    const mismatch: CopyAsk = (asker, machine, expect, want) => want.kind === "mirror"
+    const mismatch: Ask = (asker, machine, expect, want) => want.kind === "mirror"
       ? Effect.succeed<CopyAnswer>({ ok: false, reason: "mismatch", copy: COPIES.mirror, message: "data-web-2 changed" })
       : ask(asker, machine, expect, want);
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), mismatch)))
+    expect(await run(refreshMirror(caller, environment, volumeId), { ask: mismatch }))
       .toEqual({ ok: false, refusal: { code: "conflict", message: "data-web-2 refused the pull: data-web-2 changed", details: null } });
   });
 
@@ -138,14 +146,14 @@ describe("Refresh now", () => {
   });
 
   it("leaves a Volume a Deploy is moving to that Deploy", async () => {
-    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+    await run(writePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "skipped data: A Deploy is moving this Volume. Wait for it to finish." } });
     expect(asked).toEqual([]);
   });
 
   it("refuses when a Deploy stamps the Volume while the sync reads it", async () => {
-    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+    await run(writePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
     between = async () => { await run(stampPlacements(organizationId, [volumeId], "dep-1")); };
     expect(await refresh()).toMatchObject({ ok: false, refusal: { message: "skipped data: A Deploy is moving this Volume. Wait for it to finish." } });
     expect(asked).toEqual([]);
@@ -158,7 +166,7 @@ describe("Refresh now", () => {
   });
 
   it("refuses when the Servers can't say where the Volume's copies are", async () => {
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail(new Error("down")), () => Effect.fail(new Error("down")), ask)))
+    expect(await run(refreshMirror(caller, environment, volumeId), { ask, inspect: () => Effect.fail(new Error("down")), observe: () => Effect.fail(new Error("down")) }))
       .toMatchObject({ ok: false, refusal: { code: "unanswered" } });
   });
 
@@ -172,7 +180,8 @@ describe("Refresh now", () => {
     members = [member("web-1", "writer"), unlisted];
     const waiting = { ok: false, refusal: { code: "unanswered", message: "Waiting for every server's report", details: null } };
     expect(await refresh()).toEqual(waiting);
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
+    runtime = clusterShowing(null);
+    expect(await refresh())
       .toEqual(waiting);
     expect(asked).toEqual([]);
   });
@@ -182,7 +191,8 @@ describe("Refresh now", () => {
     members = [member("web-1", "writer"), { machine: { id: web("web-2"), name: "web-2" }, answered: false, lack }];
     const lacks = { ok: false, refusal: { code: "unsupported", message: lack, details: null } };
     expect(await refresh()).toEqual(lacks);
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
+    runtime = clusterShowing(null);
+    expect(await refresh())
       .toEqual(lacks);
     members = [...members, member("web-3", "unanswered")];
     expect(await refresh()).toEqual(lacks);
@@ -205,7 +215,7 @@ describe("Refresh now", () => {
       return `data refresh is covered by move run ${move.run.id}`;
     }],
     ["a Deploy is moving the Volume", async () => {
-      await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+      await run(writePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
       await run(stampPlacements(organizationId, [volumeId], "dep-1"));
       return "skipped data: A Deploy is moving this Volume. Wait for it to finish.";
     }],
@@ -221,7 +231,8 @@ describe("Refresh now", () => {
 
   it("names the silent Server when the runtime can't say which Servers answer", async () => {
     members = [member("web-1", "writer"), member("web-2", "unanswered")];
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
+    runtime = clusterShowing(null);
+    expect(await refresh())
       .toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
   });
 
@@ -235,7 +246,7 @@ describe("Refresh now", () => {
   });
 
   it("refuses while a Server with storage runs an older daemon", async () => {
-    blockers = ["db-old"];
+    runtime = clusterShowing(SERVERS, [{ name: "db-old", capabilities: [] }]);
     expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "upgrade_required", details: { servers: ["db-old"] } } });
   });
 
@@ -245,7 +256,7 @@ describe("Refresh now", () => {
       values ($1, $2, $3, now(), 'w-1-3', 'old', now())`, [organizationId, volumeId, web("web-2")]);
     const holder = await harness.pool.connect();
     await holder.query(`begin; select * from volume_mirror_status for update`);
-    const silent: CopyAsk = (asker, machine, expect, want) => want.kind === "mirror"
+    const silent: Ask = (asker, machine, expect, want) => want.kind === "mirror"
       ? Effect.sync(() => asked.push(want.kind)).pipe(Effect.andThen(clusterRead(Effect.never)))
       : ask(asker, machine, expect, want);
     const waitFor = (check: () => Promise<boolean> | boolean) => Effect.promise(() => vi.waitFor(async () => {
@@ -253,7 +264,7 @@ describe("Refresh now", () => {
     }, { timeout: 10_000 }));
 
     const answer = await run(Effect.gen(function* () {
-      const fiber = yield* Effect.forkDetach(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), silent));
+      const fiber = yield* Effect.forkDetach(refreshMirror(caller, environment, volumeId).pipe(answeringWith({ ask: silent })));
       yield* waitFor(async () => (await harness.pool.query(`select 1 from pg_stat_activity where wait_event_type = 'Lock'`)).rowCount === 1);
       yield* TestClock.adjust(2 * SYNC_CLUSTER_BUDGET_MS);
       yield* Effect.promise(() => holder.query(`commit`));

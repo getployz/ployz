@@ -8,10 +8,11 @@ import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
-import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
-import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
-import { type MachineRef, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { volumeMirrorStatus } from "#/modules/volume-copies/mirror-sync/tables";
+import { volumeRun } from "#/modules/volume-run/tables";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, unheardOf } from "#/modules/volume-run/volume-run";
+import { type CopyAnswer, DRAIN_MS, SwitchAttemptError, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
+import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -53,8 +54,6 @@ export type PullFailure = { readonly mirror: string; readonly target: string; re
 
 export type MirrorSyncAnswer = { readonly reported: readonly PullFailure[]; readonly sync: MirrorSync; readonly lines: readonly string[] };
 
-export type MemberObserver = (organizationId: string, dockerVolume: string) => ReturnType<typeof observeVolumeMembers>;
-export type CopyAsk = typeof askCopy;
 
 type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
@@ -204,7 +203,8 @@ const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
  * one. With a lane open it says why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the
  * pull, without waiting for it.
  */
-const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume, observe: MemberObserver, ask: CopyAsk) {
+const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume) {
+  const { observe, ask } = yield* VolumeCluster;
   const { drizzle } = yield* Database;
   const answer = answerFor(organizationId, volume);
   const reported: PullFailure[] = [];
@@ -358,8 +358,8 @@ const syncHolders = Semaphore.makeUnsafe(2);
  * One sync of a Volume at a time, and none waits: one started while another runs skips, so it never snapshots past a pull
  * the running one just handed off.
  */
-export const syncMirrors = (organizationId: string, volume: SyncedVolume, observe: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy) =>
-  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume, observe, ask)).pipe(Effect.flatMap(Option.match({
+export const syncMirrors = (organizationId: string, volume: SyncedVolume) =>
+  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume)).pipe(Effect.flatMap(Option.match({
     onSome: Effect.succeed,
     onNone: () => answerFor(organizationId, volume)([], { kind: "running" }),
   })));

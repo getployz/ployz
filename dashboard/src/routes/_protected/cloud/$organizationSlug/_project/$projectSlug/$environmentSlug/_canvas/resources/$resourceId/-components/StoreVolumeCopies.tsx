@@ -22,9 +22,9 @@ import {
   cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
-import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
-import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
-import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
+import { useRefreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.hooks";
+import { useVolumeCopiesOf } from "#/modules/volume-copies/volume-copies.hooks";
+import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/mirror-sync/mirror-sync.words";
 import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/runtime/daemon-release";
 import { appliedMirrors, editPlacement, observePlacement, type Placement, type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement } from "#/modules/volume-placement/volume-placement";
 import { lossMoment } from "#/utils/relative-time";
@@ -57,8 +57,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const inFlight = useInFlightDeployments(organizationSlug, environment);
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
-  const copies = members === undefined ? null
-    : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
+  const copies = useVolumeCopiesOf(organizationSlug, environment, [volume], [volume.id]).get(volume.id) ?? null;
   const accepting = placementServers(lens.machines);
   const moveTo = moveServers(lens.machines);
   const floorless = new Set(lens.machines.filter((machine) => serverSupports(machine, requirements.volumeFloor) === false).map((machine) => machine.id));

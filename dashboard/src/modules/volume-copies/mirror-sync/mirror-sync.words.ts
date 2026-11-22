@@ -1,5 +1,5 @@
 import { formatRelativeTime } from "#/utils/relative-time";
-import { isStale, type MirrorCopy } from "./volume-copies";
+import { isStale, type MirrorCopy } from "#/modules/volume-copies/volume-copies";
 
 /** The cron's cadence: a mirror round every 15 minutes. */
 export const MIRROR_ROUND_MINUTES = 15;

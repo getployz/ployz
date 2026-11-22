@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DestructiveEffect, EnvironmentRef, MachineId, MachineName, VolumeKind } from "@ployz/sdk";
+import type { DestructiveEffect, EnvironmentRef, MachineId, VolumeKind } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -18,7 +18,7 @@ import { newestGuid, type Planned, planForwardRelease, type Refusal, type Refusa
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
@@ -47,7 +47,6 @@ type RunBase = {
 /** Plain JSON: Inngest memoizes step output as JSON. */
 export type RunContext = RunBase & VolumeLaneInput;
 
-export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 
 export const OBSERVE_TIMEOUT = "10 seconds";
 
@@ -505,23 +504,38 @@ export type VolumeRunPlan =
 export const unanswered = serversUnanswered("unavailable");
 
 /**
- * Why a born Volume can't go to `to`: its Ployz, or the Ployz of a Server that holds a copy now, can't check where a
- * copy's data began. A Server the frame doesn't know refuses too. Null when every one can.
+ * Which of `servers` can't hold a born Volume: their Ployz, or the Ployz of a Server that holds a copy of `dockerVolume`
+ * now, can't check where a copy's data began. A Server the frame doesn't know is named by its id. `named` is a Server
+ * the caller names rather than knows by id; one the frame lacks is no Server of this cluster.
  */
-export const originRefusal = Effect.fn("VolumeRun.originRefusal")(function* (
-  organizationId: string, volume: { readonly volumeName: string; readonly dockerVolume: string }, to: VolumeRunArgs["mirror"],
+export const readOrigins = Effect.fn("VolumeRun.readOrigins")(function* (
+  organizationId: string, dockerVolume: string | null, servers: readonly string[], named: VolumeRunArgs["mirror"] | null = null,
 ) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  if (frame === null) return unanswered;
+  if (frame === null) return { kind: "unanswered" } as const;
   const machines = frameServers(frame);
-  const target = machines.find((machine) => to.machine === undefined ? machine.name === to.to : machine.id === to.machine);
-  if (target === undefined) {
-    return { code: "invalid_argument", message: `${to.to} is not a Server of this cluster`, details: null } satisfies StoreRefusal;
-  }
-  const holders = frame.volumes.filter((entry) => entry.id.name === volume.dockerVolume).map((entry) => entry.id.machine_id);
-  const blockers = originBlockers(machines, [target.id, ...holders]);
-  if (blockers.length === 0) return null;
-  return { code: "upgrade_required", message: originUpgradeMessage(volume.volumeName, blockers), details: { servers: blockers } } satisfies StoreRefusal;
+  const target = named === null ? undefined : machines.find((machine) => named.machine === undefined ? machine.name === named.to : machine.id === named.machine);
+  if (named !== null && target === undefined) return { kind: "unknown", server: named.to } as const;
+  const holders = frame.volumes.filter((entry) => entry.id.name === dockerVolume).map((entry) => entry.id.machine_id);
+  return { kind: "read", blockers: originBlockers(machines, [...target === undefined ? [] : [target.id], ...servers, ...holders]) } as const;
+});
+
+/**
+ * Why a born Volume can't be held by `servers`, as `readOrigins` finds it, in the words of a refusal. `unanswered` is the
+ * refusal while no Server answers. Null when every one can.
+ */
+export const originRefusal = Effect.fn("VolumeRun.originRefusal")(function* (
+  organizationId: string,
+  volume: { readonly volumeName: string; readonly dockerVolume: string | null },
+  servers: readonly string[],
+  unanswered: StoreRefusal,
+  named: VolumeRunArgs["mirror"] | null = null,
+) {
+  const origins = yield* readOrigins(organizationId, volume.dockerVolume, servers, named);
+  if (origins.kind === "unanswered") return unanswered;
+  if (origins.kind === "unknown") return { code: "invalid_argument", message: `${origins.server} is not a Server of this cluster`, details: null } satisfies StoreRefusal;
+  if (origins.blockers.length === 0) return null;
+  return { code: "upgrade_required", message: originUpgradeMessage(volume.volumeName, origins.blockers), details: { servers: origins.blockers } } satisfies StoreRefusal;
 });
 
 /**
@@ -613,7 +627,7 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
   if ((input.kind === "mirror" || input.kind === "move") && born) {
-    const refusal = yield* originRefusal(caller.organizationId, volume, input.args);
+    const refusal = yield* originRefusal(caller.organizationId, volume, [], unanswered, input.args);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
   const resolved = input.kind === "delete_mirror" && input.args.slot !== null && input.args.machine === undefined

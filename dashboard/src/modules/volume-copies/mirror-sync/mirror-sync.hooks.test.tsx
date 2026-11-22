@@ -4,8 +4,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
-import * as functions from "./volume-copies.functions";
-import { useRefreshMirror } from "./volume-copies.hooks";
+import * as functions from "./mirror-sync.functions";
+import { useRefreshMirror } from "./mirror-sync.hooks";
 
 afterEach(() => vi.restoreAllMocks());
 

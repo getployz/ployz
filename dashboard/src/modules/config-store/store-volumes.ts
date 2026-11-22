@@ -38,7 +38,7 @@ export function createVolumeCommand(id: string, environment: EnvironmentRef, nam
   return { command: "create_volume", id, environment, name, storage, mounts: [] };
 }
 
-const GB = 1_000_000_000;
+export const GB = 1_000_000_000;
 
 /** A new Volume's managed limit in GB, as the Store defaults one (`VolumeKind::provisioned_default`). */
 export const DEFAULT_VOLUME_GB = "5";

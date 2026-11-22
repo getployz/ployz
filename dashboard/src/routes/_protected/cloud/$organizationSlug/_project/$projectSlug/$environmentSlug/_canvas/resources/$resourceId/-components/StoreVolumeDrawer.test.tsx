@@ -21,7 +21,7 @@ import * as copies from "./StoreVolumeCopies";
 import { StoreVolumeDrawer } from "./StoreVolumeDrawer";
 import { volumeSearchSchema } from "./volume-pages";
 import * as runs from "#/modules/volume-run/volume-run.functions";
-import type { Holder } from "#/modules/volume-run/resize-check";
+import type { CopyHolder } from "#/modules/volume-run/resize-check";
 import type { VolumeRunView } from "#/modules/volume-run/volume-run";
 import { run } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -148,7 +148,7 @@ it.each([
 
 const GB = 1_000_000_000;
 const SIZE = ["ployz.volume.size.set.v1"];
-const holders = (fsn2: readonly string[] = SIZE): Holder[] => [
+const holders = (fsn2: readonly string[] = SIZE): CopyHolder[] => [
   { id: "1".repeat(32) as MachineId, name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB },
   { id: "2".repeat(32) as MachineId, name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB },
 ];

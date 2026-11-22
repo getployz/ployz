@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
-import type { MirrorCopy } from "./volume-copies";
-import { mirrorLast, skippedWords } from "./volume-copies.refresh";
+import type { MirrorCopy } from "#/modules/volume-copies/volume-copies";
+import { mirrorLast, skippedWords } from "./mirror-sync.words";
 
 const now = new Date("2026-10-12T16:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);

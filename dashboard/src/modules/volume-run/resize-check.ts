@@ -1,22 +1,20 @@
 import type { MachineId } from "@ployz/sdk";
 import { Schema } from "effect";
-import { gigabytes } from "#/modules/config-store/store-volumes";
+import { GB, gigabytes } from "#/modules/config-store/store-volumes";
 import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { listNames } from "#/lib/plural";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
-import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
+import { observePlacement } from "#/modules/volume-placement/volume-placement";
 import { type Bytes, gb, RESIZE_ORDER } from "#/modules/volume-run/resize";
-import { type Member } from "#/modules/volume-run/volume-run";
+import { type Member, VolumeInput } from "#/modules/volume-run/volume-run";
 import { parseDockerVolumeName } from "#/modules/runtime/naming";
-
-const GB = 1_000_000_000;
 
 /**
  * A Server holding a copy, with what its machine record says and the bound its copy holds there; null fields are a
  * record or a bound Cloud hasn't seen.
  */
-export type Holder = {
+export type CopyHolder = {
   readonly id: MachineId;
   readonly name: string;
   readonly role: "primary" | "mirror" | "old_copy";
@@ -31,7 +29,7 @@ export type ResizeAsk = {
   readonly recorded: Bytes;
   readonly working: Bytes;
   readonly requested: Bytes;
-  readonly holders: readonly Holder[] | null;
+  readonly holders: readonly CopyHolder[] | null;
 };
 
 export type ResizeVerdict =
@@ -42,8 +40,8 @@ export type ResizeVerdict =
   /** `copies` is every copy the run grows, primary first, or null before the Servers answer. */
   | { readonly kind: "grow"; readonly from: Bytes; readonly to: Bytes; readonly copies: readonly Copy[] | null };
 
-type Copy = Pick<Holder, "name" | "role">;
-const READING_ORDER: readonly Holder["role"][] = ["primary", "mirror", "old_copy"];
+type Copy = Pick<CopyHolder, "name" | "role">;
+const READING_ORDER: readonly CopyHolder["role"][] = ["primary", "mirror", "old_copy"];
 
 export function checkResize({ volume, recorded, working, requested, holders }: ResizeAsk): ResizeVerdict {
   if (requested < recorded) return { kind: "refused", message: `${volume} is deployed at ${gb(recorded)}; this panel can't shrink it. Use ployz volume set ${volume} --size ${gigabytes(requested)}.` };
@@ -63,7 +61,7 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
   if (lacking.length > 0) return { kind: "refused", message: `Growing needs a newer Ployz on ${lacking.map((holder) => holder.name).join(", ")}.` };
 
   const growing = READING_ORDER.flatMap((role) => holders.filter((holder) => holder.role === role));
-  const lacksFromItsBound = (holder: Holder) => Math.max(0, requested - (holder.boundBytes ?? recorded));
+  const lacksFromItsBound = (holder: CopyHolder) => Math.max(0, requested - (holder.boundBytes ?? recorded));
   const [short] = growing.flatMap((holder) =>
     holder.committableBytes !== null && lacksFromItsBound(holder) > holder.committableBytes ? [{ name: holder.name, room: holder.committableBytes }] : []);
   if (short !== undefined) {
@@ -75,10 +73,10 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
 
 /** The copies of `volumeId` the Servers report, each with its machine record and its bound. Null until both are known. */
 export function holdersOf(volumeId: string, members: readonly Member[] | undefined, machines: readonly RuntimeMachineRecord[] | null,
-  copies: readonly RuntimeVolumeCopy[]): readonly Holder[] | null {
+  copies: readonly RuntimeVolumeCopy[]): readonly CopyHolder[] | null {
   if (members === undefined || machines === null) return null;
   const observed = observePlacement(members);
-  const holder = (server: { readonly id: MachineId; readonly name: string }, role: Holder["role"]): Holder => {
+  const holder = (server: { readonly id: MachineId; readonly name: string }, role: CopyHolder["role"]): CopyHolder => {
     const machine = machines.find((candidate) => candidate.id === server.id);
     const copy = copies.find((candidate) => candidate.machineId === server.id && parseDockerVolumeName(candidate.name)?.volumeId === volumeId);
     return {
