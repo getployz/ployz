@@ -5,9 +5,9 @@ import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { listNames } from "#/lib/plural";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
-import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
+import { observePlacement } from "#/modules/volume-placement/volume-placement";
 import { type Bytes, gb, RESIZE_ORDER } from "#/modules/volume-run/resize";
-import { type Member } from "#/modules/volume-run/volume-run";
+import { type Member, VolumeInput } from "#/modules/volume-run/volume-run";
 import { parseDockerVolumeName } from "#/modules/runtime/naming";
 
 /**

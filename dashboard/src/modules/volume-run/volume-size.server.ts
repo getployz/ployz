@@ -6,8 +6,9 @@ import type { StoreRefusal, StoreRefused } from "#/lib/refusal";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome, type Unheld } from "#/modules/volume-run/resize";
-import { type MachineRef, openSession, requireOwner, type RunContext } from "#/modules/volume-run/volume-run.rows.server";
+import { openSession, requireOwner, type RunContext } from "#/modules/volume-run/volume-run.rows.server";
 import { SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { type MachineRef } from "#/modules/volume-run/volume-run";
 
 /**
  * The refusal a `SetVolumeSizeRefused` carries in `RpcError.details`. `reason` is read as a plain string so a reason

@@ -1,5 +1,17 @@
 import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
+import { Schema } from "effect";
 import type { VolumeRunState, VolumeRunRequestKind, VolumeRunKind } from "#/modules/volume-run/volume-run-states";
+
+export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
+
+/** A Volume of an Organization, as every volume server function names it. */
+export const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });
+
+/** A Volume of an Environment: what the server functions that read or change its copies take. */
+export const VolumeInput = Schema.Struct({
+  ...VolumeRef.fields,
+  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+});
 
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 

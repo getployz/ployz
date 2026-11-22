@@ -1,6 +1,6 @@
-import type { ChangeKind, MachineId, MachineName, SlotRole, VolumeCopy } from "@ployz/sdk";
+import type { ChangeKind, MachineId, SlotRole, VolumeCopy } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import { STALE_AFTER_MS } from "#/modules/volume-run/volume-run";
+import { type MachineRef, STALE_AFTER_MS, VolumeInput } from "#/modules/volume-run/volume-run";
 import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/run-words";
 import { rustMachineIdSchema } from "#/lib/schema";
@@ -8,7 +8,6 @@ import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { type AnsweredMember, heardFrom, type Member, needsFloor, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf } from "#/modules/volume-run/volume-run";
 import { parseDockerVolumeName } from "#/modules/runtime/naming";
 
-export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
 
 /**
@@ -689,12 +688,6 @@ export function storageStep(deploymentId: string, rows: readonly PlacementRow[],
   const run = runs.find((candidate) => taken.has(candidate.volume_id));
   return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }
-
-export const VolumeInput = Schema.Struct({
-  organizationSlug: Schema.NonEmptyString,
-  volumeId: Schema.NonEmptyString,
-  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
-});
 
 /** Restores a snapshot into the Volume: `at` is the restore point's time in Unix seconds. */
 export const StageRestoreInput = Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number });

@@ -9,17 +9,11 @@ import { getVolumeRun, isVolumeOwed, listActiveVolumeRuns } from "#/modules/volu
 import { inspectVolumeCopies } from "#/modules/volume-run/volume-run.cluster.server";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-
-const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });
-
-const VolumeCopiesInput = Schema.Struct({
-  ...VolumeRef.fields,
-  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
-});
+import { VolumeInput, VolumeRef } from "#/modules/volume-run/volume-run";
 
 export const inspectVolumeCopiesServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(VolumeCopiesInput))
+  .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => inspectVolumeCopies(organization.id, data.environment, data.volumeId)),
   )));

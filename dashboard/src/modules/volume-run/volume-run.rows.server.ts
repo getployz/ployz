@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DestructiveEffect, EnvironmentRef, MachineId, MachineName, VolumeKind } from "@ployz/sdk";
+import type { DestructiveEffect, EnvironmentRef, MachineId, VolumeKind } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -18,7 +18,7 @@ import { newestGuid, type Planned, planForwardRelease, type Refusal, type Refusa
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
@@ -46,7 +46,6 @@ type RunBase = {
 /** Plain JSON: Inngest memoizes step output as JSON. */
 export type RunContext = RunBase & VolumeLaneInput;
 
-export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 
 export const OBSERVE_TIMEOUT = "10 seconds";
 

@@ -6,9 +6,10 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import { SEED_OFF } from "#/modules/volume-run/plan";
-import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
+import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { VolumeInput } from "#/modules/volume-run/volume-run";
 
 const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
 const Machine = rustMachineIdSchema;

@@ -10,9 +10,9 @@ import { deployClaim } from "#/modules/volume-placement/volume-placement.server"
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus } from "#/modules/volume-copies/mirror-sync/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { type CopyAnswer, DRAIN_MS, SwitchAttemptError, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
-import { type MachineRef, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
