@@ -617,18 +617,12 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let _ = std::fs::remove_dir_all(target_dir);
 }
 
-async fn eventually<F, Fut>(mut done: F) -> Result<(), tokio::time::error::Elapsed>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !done().await {
-            // real-wait: polls the fake Cluster store over its HTTP API, which signals no
-            // row write.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
+async fn eventually(done: impl AsyncFnMut() -> bool) -> Result<(), ployz_testkit::WaitError> {
+    ployz_testkit::poll_until(
+        std::time::Duration::from_secs(5),
+        "the fake Cluster store row",
+        done,
+    )
     .await
 }
 

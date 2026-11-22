@@ -2241,15 +2241,10 @@ async fn wait_until(predicate: impl Fn() -> bool) {
     .await;
 }
 
-async fn eventually(stuck: &str, mut done: impl AsyncFnMut() -> bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !done().await {
-            // real-wait: the daemon serves over real sockets on a multi-thread runtime; no in-process event exposes this state.
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect(stuck);
+async fn eventually(stuck: &str, done: impl AsyncFnMut() -> bool) {
+    ployz_testkit::poll_until(Duration::from_secs(10), stuck, done)
+        .await
+        .unwrap();
 }
 
 struct RequestGate {

@@ -348,11 +348,9 @@ fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Hand
 }
 
 async fn eventually(mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while !check() {
-        assert!(Instant::now() < deadline, "condition never held");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    ployz_testkit::poll_until(PATIENCE, "condition never held", async || check())
+        .await
+        .unwrap();
 }
 
 /// A family the host lacks counts as free, so an IPv4-only host still finds a port.
