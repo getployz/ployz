@@ -9,7 +9,7 @@ import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement
 import { drainView, type DrainView, stuckMessage } from "./server-drain-view";
 import { requestServerDrainServerFn } from "./server-drain.functions";
 import { serverDrains } from "./server-drain.queries";
-import { usePendingAttempt } from "./use-pending-attempt";
+import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 
 export type ServerDrain = {
   readonly view: DrainView;
@@ -32,7 +32,10 @@ export function useServerDrain(
   const queryClient = useQueryClient();
   const { servers: latest } = serverDrains.useLatest(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
-  const [requested, setRequested] = usePendingAttempt<string>(latest[server.id]?.attemptId, (attemptId) => attemptId);
+  const [requested, setRequested] = usePendingAttempt<string, string | undefined>(
+    latest[server.id]?.attemptId,
+    (attemptId, latestId) => latestId === attemptId,
+  );
   const [open, setOpen] = useState(false);
 
   const stageOff = () => {

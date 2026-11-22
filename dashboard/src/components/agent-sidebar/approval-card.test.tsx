@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/approvals/approvals.functions";
 import { ApprovalCard } from "./approval-card";
-import type { ApprovalView } from "./approvals.queries";
+import type { ApprovalView } from "#/modules/approvals/approvals.queries";
 
 const decide = vi.spyOn(functions, "decideApprovalServerFn");
 afterEach(() => { cleanup(); decide.mockReset(); });

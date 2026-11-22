@@ -19,6 +19,7 @@ export function useSyncBillingAfterCheckout(organizationSlug: string, checkoutId
       .then((active) => {
         if (active) toast.success("Your cluster is in production. Thanks for supporting Ployz!");
       })
+      // A failed sync only skips the toast: the refetches below read the subscription the webhook lands.
       .catch(() => undefined)
       .finally(() => {
         void queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });

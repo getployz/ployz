@@ -16,14 +16,11 @@ import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.
 import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
 import { refused, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
-import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { type AgentCaller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
-
-/** A Caller acting through an agent: the sidebar, or a remote MCP client. */
-export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
 
 /**
  * One tool call. `key` admits it once; `approvalId` is the approval a retry carries; `page` is where it runs; `origin`

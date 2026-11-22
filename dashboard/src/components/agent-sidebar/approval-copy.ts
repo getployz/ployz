@@ -1,6 +1,6 @@
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
 import { type ApprovalReview, approvalSubject, asksForAuthKey, losesVolumeAccess, prunes, rollsBack, shutsDownAgain } from "#/modules/approvals/approvals";
-import type { ApprovalView } from "./approvals.queries";
+import type { ApprovalView } from "#/modules/approvals/approvals.queries";
 
 /** The badge of an approval whose command alone says what it does. */
 const BADGE = new Map([

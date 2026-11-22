@@ -2,7 +2,8 @@ import { PostHogMCP } from "@posthog/mcp";
 import { Effect } from "effect";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { type AgentCaller, INTENT_REFUSAL, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { INTENT_REFUSAL, runAgentCall } from "#/modules/agent/agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 import { type AgentCallReport, type AgentSurface, McpAnalytics, type McpAnalyticsService, recordAgentCall, sessionIdOf } from "#/modules/agent/agent-calls.server";
 
 type Sent = { readonly event: string; readonly distinctId: string | undefined; readonly properties: Readonly<Record<string, string | number | boolean | null | ReadonlyArray<string>>> };

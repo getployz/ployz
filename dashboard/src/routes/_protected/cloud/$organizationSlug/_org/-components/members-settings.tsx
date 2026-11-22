@@ -26,13 +26,10 @@ import { toErrorMessage } from "#/lib/error-message";
 import { inviteMemberServerFn } from "#/modules/organization/members.functions";
 import { organizationMembersQueryOptions, useMemberWrites } from "#/modules/organization/members.queries";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
-import { can } from "#/modules/organization/permissions";
+import { assignableRoles, can, type InviteRole, type MemberRole } from "#/modules/organization/permissions";
 import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
-type Role = "owner" | "admin" | "member";
-type InviteRole = Exclude<Role, "owner">;
-
-const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
+const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<MemberRole, string>;
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
 
@@ -47,7 +44,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
 
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
   const manager = yourRole !== null && can(yourRole, "members:manage");
-  const roles: readonly Role[] = yourRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+  const roles = yourRole === null ? [] : assignableRoles(yourRole);
   const memberNames = distinctNames(data.members.map((row) => [row.name, row.email]));
 
   return (
@@ -55,7 +52,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
       <SettingsSection id="members" title="Members">
         <SettingsList label="Members">
           {data.members.map((row, index) => {
-            const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
+            const editable = manager && !row.you && roles.includes(row.role);
             const name = memberNames[index] ?? row.name;
             return (
               <SettingsListItem

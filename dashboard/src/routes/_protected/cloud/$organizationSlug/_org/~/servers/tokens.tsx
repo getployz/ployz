@@ -5,7 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#
 import { useRevokeFleetToken } from "#/modules/machines/waiting/use-waiting";
 import { fleetTokensQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { prefetchRemote } from "#/collections/route-data";
-import { AddServersDialog } from "./-components/add-servers-dialog";
+import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import { TokenRow } from "./-components/token-row";
 
 export const Route = createFileRoute(

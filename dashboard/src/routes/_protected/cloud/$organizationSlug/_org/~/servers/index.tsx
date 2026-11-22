@@ -10,7 +10,7 @@ import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/mod
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
 import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
-import { AddServersDialog } from "./-components/add-servers-dialog";
+import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRun } from "./-components/first-run-card";
 import { FirstTunnelStatus } from "./-components/first-tunnel";

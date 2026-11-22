@@ -5,7 +5,8 @@ import { type CallToolResult, createMcpHandler, fromJsonSchema, type JsonSchemaV
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";

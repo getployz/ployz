@@ -17,7 +17,7 @@ import {
 } from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { serverWebTraffic } from "./server-web-traffic.queries";
-import { usePendingAttempt } from "./use-pending-attempt";
+import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 
 export type ServerWebTraffic = {
   readonly view: WebTrafficView;
@@ -50,9 +50,9 @@ export function useServerWebTraffic(
   const { lensStatus, published, incompleteIds } = useRuntimeStatus();
   const { runtime: ingress } = useRuntimeService(INGRESS);
   const own = latest[server.id] ?? null;
-  const [requested, setRequested] = usePendingAttempt<{ readonly id: string; readonly want: WebTrafficWant }>(
+  const [requested, setRequested] = usePendingAttempt<{ readonly id: string; readonly want: WebTrafficWant }, string | undefined>(
     own?.attemptId,
-    ({ id }) => id,
+    ({ id }, latestId) => latestId === id,
   );
   const [open, setOpen] = useState(false);
   const [settledId, setSettledId] = useState<string | null>(null);
