@@ -451,7 +451,7 @@ pub(crate) fn remove(
     let id = scope::environment(tx, who, &request.environment)?
         .summary
         .id;
-    scope::lock_project(tx, &id)?;
+    scope::lock_project_of(tx, &id)?;
     let mut into = scope::lock_id(tx, who, &id)?;
     // Absent is the answer a retried Remove gets, whatever the version.
     let Some(proposal) = by_id(tx, &id, &request.proposal)? else {
@@ -803,7 +803,7 @@ pub(crate) fn undo(
         row.parse::<EnvironmentId>(0, "proposal")?,
         row.parse::<ProposalId>(1, "proposal")?,
     );
-    scope::lock_project(tx, &receiver)?;
+    scope::lock_project_of(tx, &receiver)?;
     let mut into = scope::lock_id(tx, who, &receiver)?;
     let Some(proposal) = by_id(tx, &receiver, &id)? else {
         return Ok(None);

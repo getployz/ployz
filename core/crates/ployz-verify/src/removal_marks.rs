@@ -27,7 +27,7 @@
 //!   `Applied`; a cancelling one ends `Applied` when its run succeeded, or
 //!   `Cancelled` when it failed (`end`).
 //!
-//! READ COMMITTED (storage/pg.rs `begin`): a statement reads the rows committed when
+//! READ COMMITTED (`ployz_store::storage::pg::begin`): a statement reads the rows committed when
 //! it runs, a row update waits for the transaction holding the row and then applies
 //! to what it committed, and a copy a transaction read earlier stays as it was.
 //! SQLite (storage/sqlite.rs `transaction`) takes the write lock at BEGIN, so there
@@ -85,9 +85,9 @@ impl Actor {
 enum Step {
     /// `mark::live` (removal/mark.rs): every `removing` mark, read under no lock.
     ReadLive,
-    /// `lock_project` (removal/mod.rs): `UPDATE config_project SET name = name`.
+    /// `ployz_store::scope::lock_project`: `UPDATE config_project SET name = name`.
     LockProject,
-    /// `scope::lock_all` (scope.rs): `UPDATE config_environment SET working_revision
+    /// `ployz_store::scope::lock_all`: `UPDATE config_environment SET working_revision
     /// = working_revision WHERE id = ?`, which waits for whoever holds the row.
     LockEnvironment,
     /// `scope::owned` or `scope::load` after the lock: fails once the row is gone.
@@ -286,7 +286,7 @@ impl State {
 /// Which Store adapter runs the transactions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Backend {
-    /// Statements interleave; row locks wait (storage/pg.rs).
+    /// Statements interleave; row locks wait (`ployz_store::storage::pg`).
     Postgres,
     /// Each write transaction runs whole (storage/sqlite.rs).
     Sqlite,
@@ -698,19 +698,21 @@ fn reads_as(
         Step::ReadLive => {
             "mark::live reads every `removing` mark, under no lock (removal/due.rs sweep)"
         }
-        Step::LockProject => "lock_project updates the Project row (removal/mod.rs cancel_removal)",
+        Step::LockProject => {
+            "scope::lock_project updates the Project row (removal::cancel_removal)"
+        }
         Step::LockEnvironment => {
-            "scope::lock_all updates the Environment row, waiting for its holder (scope.rs)"
+            "scope::lock_all updates the Environment row, waiting for its holder"
         }
         Step::LoadEnvironment => match actor {
             Actor::Sweep | Actor::Close => {
-                "scope::lock_id loads the Environment with owned after the lock, or the write fails (scope.rs)"
+                "scope::lock_id loads the Environment with owned after the lock, or the write fails"
             }
             Actor::Cancel if broken.cancel_locks_no_environment => {
-                "scope::environment loads the Environment, unlocked, or the write fails (scope.rs)"
+                "scope::environment loads the Environment, unlocked, or the write fails"
             }
             Actor::Cancel => {
-                "scope::lock loads the Environment with load after the lock, or the write fails (scope.rs)"
+                "scope::lock loads the Environment with load after the lock, or the write fails"
             }
         },
         Step::ReadMark => "mark::of reads the mark under the locks (removal/mark.rs)",

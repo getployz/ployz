@@ -606,11 +606,20 @@ pub(crate) fn lock_all(
     Ok(())
 }
 
-/// Lock the Project of Environment `id`: every write that touches more than one
-/// Environment takes it first.
+/// Lock Project `id`, serialising the writes in it that take this lock. A writer
+/// takes it before any Environment lock.
 // ponytail: this serialises multi-Environment writes within a Project; go back to
 // ID-ordered lock_all if throughput matters.
-pub(crate) fn lock_project(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
+pub(crate) fn lock_project(tx: &mut dyn Tx, id: &ProjectId) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_project SET name = name WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    Ok(())
+}
+
+/// Lock the Project of Environment `id`, as [`lock_project`] does.
+pub(crate) fn lock_project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_project SET name = name \
          WHERE id = (SELECT project_id FROM config_environment WHERE id = ?1)",
@@ -629,18 +638,26 @@ pub(crate) fn lock_id(
     owned(tx, who, id)
 }
 
-/// Load Environments `a` and `b` of `who`'s Organization, in that order; with
-/// `lock`, lock both first, in ID order.
+/// Load Environments `a` and `b` of `who`'s Organization, in that order, without
+/// locking them.
 pub(crate) fn load_pair(
     tx: &mut dyn Tx,
     who: &Actor,
     (a, b): (&EnvironmentId, &EnvironmentId),
-    lock: bool,
 ) -> Result<(Environment, Environment), RpcError> {
-    if lock {
-        lock_all(tx, [a.clone(), b.clone()])?;
-    }
     Ok((owned(tx, who, a)?, owned(tx, who, b)?))
+}
+
+/// Lock the Project of `a`, then `a` and `b` in ID order, and load them as
+/// [`load_pair`] does.
+pub(crate) fn lock_pair(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (a, b): (&EnvironmentId, &EnvironmentId),
+) -> Result<(Environment, Environment), RpcError> {
+    lock_project_of(tx, a)?;
+    lock_all(tx, [a.clone(), b.clone()])?;
+    load_pair(tx, who, (a, b))
 }
 
 /// Load Environment `id` of `who`'s Organization without locking it.
