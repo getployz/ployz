@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
     sync::Arc,
 };
 
@@ -750,7 +749,7 @@ impl MachineRpc for MachineService {
             self.at(&request),
             request.into_inner(),
             self.builds.clone(),
-            containers.sealing_key_dir().map(Path::to_owned),
+            containers.sealing().clone(),
         )))
     }
 
@@ -1042,11 +1041,8 @@ impl MachineRpc for MachineService {
                 }
             }
         };
-        let key_dir = self
-            .containers()
-            .ok()
-            .and_then(|containers| containers.sealing_key_dir());
-        let mint = match Mint::check_admitted(request, key_dir, minter) {
+        let sealing = self.containers().ok().map(ContainerRuntime::sealing);
+        let mint = match Mint::check_admitted(request, sealing, minter) {
             Ok(mint) => mint,
             Err(refused) => return respond(refused),
         };

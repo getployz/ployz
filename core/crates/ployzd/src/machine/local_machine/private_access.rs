@@ -235,7 +235,8 @@ impl LocalMachine {
                 .sealed_auth_key
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             Some((sealed, key, self.cluster_network().await?))
         } else {
@@ -328,7 +329,8 @@ impl LocalMachine {
                 return Ok(None);
             };
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             let state = containers
                 .machine_files().keep_private_access_state()

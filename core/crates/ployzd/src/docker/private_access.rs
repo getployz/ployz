@@ -5,13 +5,9 @@ use ployz_core::labels;
 
 use bollard::query_parameters::LogsOptionsBuilder;
 use futures_util::StreamExt;
-use ployz_core::{
-    Ciphertext, ContainerId, ContainerKind, ContainerObservation, MachineId, QualifiedService,
-};
-use zeroize::Zeroizing;
+use ployz_core::{ContainerId, ContainerKind, ContainerObservation, MachineId, QualifiedService};
 
 use super::{ContainerRuntime, Error};
-use crate::sealed_env::{self, OpenError};
 
 impl super::LocalDocker {
     async fn router_containers(&self) -> Result<Vec<ContainerId>, Error> {
@@ -30,32 +26,6 @@ impl super::LocalDocker {
 }
 
 impl ContainerRuntime {
-    /// Open `sealed` with this Machine's Sealing Key.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`OpenError`] when the key is missing or the auth key was sealed
-    /// for another Cluster or purpose.
-    pub(crate) fn open_private_access_key(
-        &self,
-        sealed: &Ciphertext,
-    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-        sealed_env::open_private_access_key(sealed, self.sealing_key_dir())
-    }
-
-    /// Open `sealed` with this Machine's Sealing Key.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`OpenError`] when the key is missing or the token was sealed for
-    /// another Cluster.
-    pub(crate) fn open_tunnel_token(
-        &self,
-        sealed: &Ciphertext,
-    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-        sealed_env::open_tunnel_token(sealed, self.sealing_key_dir())
-    }
-
     /// Every Private Access router here that Docker still has and whose spec is
     /// stored, newest last.
     pub(crate) async fn routers(

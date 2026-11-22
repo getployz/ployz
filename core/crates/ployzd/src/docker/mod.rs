@@ -46,7 +46,7 @@ use ployz_core::labels::{self, LabelError, LabelMap, ServiceLabels};
 use std::{
     collections::{BTreeMap, HashMap},
     net::{Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -67,6 +67,7 @@ use tokio::sync::{Mutex, watch};
 
 use crate::observe::collector::Collector;
 use crate::sealed_compat::LogStore;
+use crate::sealed_env::SealingKeyStore;
 use checks::CheckRecords;
 use error::docker_error;
 pub(crate) use error::{Status, classify};
@@ -371,7 +372,7 @@ pub struct ContainerRuntime {
 /// What the builders set, which the handles are assembled from.
 #[derive(Clone)]
 struct Settings {
-    sealing_key_dir: Option<PathBuf>,
+    sealing: SealingKeyStore,
     /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
     machine_root: PathBuf,
     log_store: LogStore,
@@ -387,7 +388,7 @@ pub struct Observation {
     specs: MachineSpecStore,
     standing: Standing,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
-    sealing_key_dir: Option<PathBuf>,
+    sealing: SealingKeyStore,
 }
 
 impl ContainerRuntime {
@@ -397,7 +398,7 @@ impl ContainerRuntime {
             docker,
             specs,
             Settings {
-                sealing_key_dir: None,
+                sealing: SealingKeyStore::default(),
                 machine_root: PathBuf::from("/"),
                 log_store: LogStore::default(),
                 sink: None,
@@ -414,7 +415,7 @@ impl ContainerRuntime {
             specs: specs.clone(),
             standing: standing.clone(),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
-            sealing_key_dir: settings.sealing_key_dir.clone(),
+            sealing: settings.sealing.clone(),
         };
         let images = Images::new(docker.clone());
         let volumes = Volumes::new(docker.clone());
@@ -493,7 +494,7 @@ impl ContainerRuntime {
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
     #[must_use]
     pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
-        self.configured(|settings| settings.sealing_key_dir = Some(data_dir))
+        self.configured(|settings| settings.sealing = SealingKeyStore::at(data_dir))
     }
 
     /// Runs the Collector of this Machine's logs, which reads the Sealing Key and the
@@ -558,8 +559,9 @@ impl ContainerRuntime {
         self.docker.bridge_capacity().await
     }
 
-    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
-        self.observation.sealing_key_dir()
+    /// The Sealing Key this Machine opens Sealed values with.
+    pub(crate) fn sealing(&self) -> &SealingKeyStore {
+        self.observation.sealing()
     }
 
     /// The secret files this Machine keeps for the Containers that mount them.
@@ -584,8 +586,8 @@ impl Observation {
             .forget(container_id);
     }
 
-    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
-        self.sealing_key_dir.as_deref()
+    pub(crate) fn sealing(&self) -> &SealingKeyStore {
+        &self.sealing
     }
 
     pub(super) async fn ensure_managed(
@@ -924,7 +926,7 @@ impl Observation {
                 crate::sealed_env::record_from_label(
                     labels.get(labels::SEALED_ENV).map(String::as_str),
                 ),
-                self.sealing_key_dir(),
+                self.sealing(),
             )
         });
         if kind == ContainerKind::ServiceContainer
@@ -1782,7 +1784,7 @@ mod tests {
             &namespace,
             &spec,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
@@ -1803,7 +1805,7 @@ mod tests {
                 &namespace,
                 &other,
                 &create::CreationNetwork::Bridge,
-                None,
+                &crate::sealed_env::SealingKeyStore::default(),
                 &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
             ),
             Err(Error::NotAdmitted)
@@ -1855,7 +1857,7 @@ mod tests {
             &namespace,
             &spec,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
@@ -1928,7 +1930,7 @@ mod tests {
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(
                 &ployz_core::Namespace::parse("app").unwrap(),
                 &spec,
@@ -1966,7 +1968,7 @@ mod tests {
                 namespace,
                 &spec,
                 &create::CreationNetwork::Bridge,
-                None,
+                &crate::sealed_env::SealingKeyStore::default(),
                 &crate::machine::AdmittedSpec::test_signed(namespace, &spec),
             )
             .unwrap();
@@ -2031,7 +2033,7 @@ mod tests {
             &Namespace::system(),
             &spec,
             &create::CreationNetwork::Holder(holder),
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &spec),
         )
         .unwrap();
@@ -2053,7 +2055,7 @@ mod tests {
             &Namespace::system(),
             &specs.holder,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &specs.holder),
         )
         .unwrap();
@@ -2085,7 +2087,7 @@ mod tests {
                 namespace,
                 &caddy,
                 &create::CreationNetwork::Bridge,
-                None,
+                &crate::sealed_env::SealingKeyStore::default(),
                 &crate::machine::AdmittedSpec::test_signed(namespace, &caddy),
             )
             .unwrap();
@@ -2117,7 +2119,7 @@ mod tests {
             &ingress.namespace,
             &holder,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(&ingress.namespace, &holder),
         )
         .unwrap();
@@ -2175,7 +2177,7 @@ mod tests {
                     &namespace,
                     &spec(ports.clone()),
                     &create::CreationNetwork::Bridge,
-                    None,
+                    &crate::sealed_env::SealingKeyStore::default(),
                     &crate::machine::AdmittedSpec::test_signed(&namespace, &spec(ports.clone())),
                 )
                 .unwrap();
@@ -2241,7 +2243,7 @@ mod tests {
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
             &create::CreationNetwork::Bridge,
-            None,
+            &crate::sealed_env::SealingKeyStore::default(),
             &crate::machine::AdmittedSpec::test_signed(
                 &ployz_core::Namespace::parse("app").unwrap(),
                 &spec,

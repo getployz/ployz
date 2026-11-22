@@ -570,7 +570,7 @@ impl Lifecycle {
             namespace,
             spec,
             &network,
-            self.observation.sealing_key_dir(),
+            self.observation.sealing(),
             &creating.admitted,
         )?;
         create::ingress_sysctls(

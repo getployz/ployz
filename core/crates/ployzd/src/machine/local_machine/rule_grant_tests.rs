@@ -310,7 +310,7 @@ async fn a_valid_token_mints_and_its_secrets_open_only_for_the_build() {
             sealed: Some(fixture.record()),
             rule: Some(grant),
         },
-        Some(&fixture.sealing.dir.0),
+        Some(&fixture.sealing.store()),
         Minter::Rule(admitted),
     );
     assert!(mint.is_ok(), "{:?}", mint.err());

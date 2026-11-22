@@ -419,7 +419,8 @@ impl LocalMachine {
                 .ok_or(Error::TunnelTokenMissing)?;
             let containers = self.docker()?;
             let token = containers
-                .open_tunnel_token(sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::IngressTunnel, sealed)
                 .map_err(Error::TunnelToken)?;
             (Some(sealed), Some(token))
         } else {
@@ -499,7 +500,8 @@ impl LocalMachine {
             }
             if let Some(sealed) = &held.sealed {
                 let token = containers
-                    .open_tunnel_token(sealed)
+                    .sealing()
+                .open_platform(ployz_core::PlatformPurpose::IngressTunnel, sealed)
                     .map_err(Error::TunnelToken)?;
                 containers
                     .machine_files().write_tunnel_token(&token)

@@ -2,7 +2,6 @@ use ployz_core::labels::{self, Stamp};
 use std::{
     collections::{BTreeSet, HashMap},
     net::IpAddr,
-    path::Path,
 };
 
 use bollard::models::{
@@ -20,7 +19,7 @@ use ployz_core::{
 use super::{Error, doors::Door};
 
 mod healthcheck;
-use crate::{machine::AdmittedSpec, sealed_env};
+use crate::{machine::AdmittedSpec, sealed_env::SealingKeyStore};
 pub(super) use healthcheck::{docker_healthcheck, effective_healthcheck};
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
@@ -117,7 +116,7 @@ pub(super) fn container_create_body(
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     network: &CreationNetwork,
-    sealing_key_dir: Option<&Path>,
+    sealing: &SealingKeyStore,
     admitted: &AdmittedSpec,
 ) -> Result<ContainerCreateBody, Error> {
     if !admitted.covers(namespace, spec) {
@@ -138,12 +137,7 @@ pub(super) fn container_create_body(
         environment.insert("PLOYZ_HOOK_PRE_DEPLOY".into(), "true".into());
     }
     environment.insert("PLOYZ_MACHINE_ID".into(), machine_id.to_string().into());
-    let opened = sealed_env::open(
-        environment,
-        container.sealed_identity.as_ref(),
-        sealing_key_dir,
-        admitted,
-    )?;
+    let opened = sealing.open_env(environment, container.sealed_identity.as_ref(), admitted)?;
     let mut labels: HashMap<_, _> = container
         .labels
         .as_map()

@@ -20,7 +20,7 @@ use super::{ContainerRuntime, docker_error};
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
-use crate::sealed_env::{self, Unseal as _};
+use crate::sealed_env;
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
@@ -180,8 +180,9 @@ impl ContainerRuntime {
         .map_err(|error| docker_status(error.into()))?;
         let mut source = self.raw_logs(container_id.as_str(), options)?;
         if let Some(record) = record {
-            let secrets = record
-                .secrets(self.sealing_key_dir())
+            let secrets = self
+                .sealing()
+                .secrets(&record)
                 .map_err(|error| docker_status(error.into()))?;
             source = sealed_env::scrub_source(source, SealedForms::compile(&secrets));
         }
