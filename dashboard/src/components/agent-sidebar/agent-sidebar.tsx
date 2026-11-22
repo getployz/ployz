@@ -2,6 +2,7 @@ import { useEffect, useState, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SparklesIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
+import { readStored, writeStored } from "#/hooks/use-stored-state";
 import type { PageContext } from "#/modules/agent/page-context";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -27,7 +28,7 @@ export function AgentButton({ organizationSlug, chat, onChat }: {
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
   const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
   const waiting = chat === undefined ? (pending?.filter(waitsOnYou).length ?? 0) + (proposals?.length ?? 0) : 0;
-  const toggle = () => onChat(chat === undefined ? localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID() : undefined);
+  const toggle = () => onChat(chat === undefined ? readStored(threadKey(organizationSlug)) ?? crypto.randomUUID() : undefined);
   const waitingLabel = `${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting`;
   return (
     <>
@@ -64,7 +65,7 @@ export function AgentColumn({ organizationSlug, collectionScope, page, chat, onC
 
   useEffect(() => {
     if (chat === undefined) return;
-    localStorage.setItem(threadKey(organizationSlug), chat);
+    writeStored(threadKey(organizationSlug), chat);
     void loadPanel().then((panel) => setAgentPanel(() => panel));
   }, [organizationSlug, chat]);
 

@@ -34,6 +34,10 @@ export function renderPageContext(context: PageContext): string {
 
 export const isPageContext = (text: string) => text.startsWith(TAG);
 
+/** What the member typed among a message's `parts`, without the page block Cloud put before it. */
+export const typedText = (parts: ReadonlyArray<{ type: string; content?: unknown }>, separator = "") =>
+  parts.flatMap((part) => part.type === "text" && typeof part.content === "string" && !isPageContext(part.content) ? [part.content] : []).join(separator);
+
 /** The block a member message opens with, if any. */
 export function pageContextOf(message: ModelMessage): string | undefined {
   if (message.role !== "user" || !Array.isArray(message.content)) return undefined;
