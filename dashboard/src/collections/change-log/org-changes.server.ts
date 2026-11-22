@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { collectionsOf } from "#/collections/change-sources";
-import { OrganizationChangeLogFailure, readChangeWindow } from "#/modules/organization/change-log.server";
+import { OrganizationChangeLogFailure, readChangeWindow } from "#/collections/change-log/change-log.server";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 

@@ -1,9 +1,16 @@
 import { queryOptions, skipToken, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import type { ChannelPointer } from "./server-upgrade";
 import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn } from "./server-upgrade.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** Each Server's latest attempts; the change stream's `server_upgrade` invalidates this root. */
 export const serverUpgradeKeys = { all: ["server-upgrade"] as const };
+
+export const serverUpgradeChange = defineChange({
+  name: "server_upgrade",
+  sources: ["server_upgrade_attempt"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: serverUpgradeKeys.all }),
+});
 /** The Release Channel pointers: their own root, so an attempt changing doesn't refetch them. */
 const channelReleaseKeys = { all: ["channel-release"] as const };
 

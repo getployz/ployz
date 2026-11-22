@@ -1,39 +1,4 @@
-/**
- * The Config Store's organization-owned tables, keyed by the scope whose views a change invalidates. The Store
- * creates them when Cloud first opens it, so Cloud attaches their triggers then (see config-store.server.ts).
- * The Organization column is text there, because the Store's SQL also runs on SQLite.
- */
-export const storeChangeSources = {
-  config_project: { key: ["id"] },
-  config_environment: { key: ["id"] },
-  config_node_introduction: { key: ["environment_id"] },
-  config_saved: { key: ["environment_id"] },
-  config_namespace: { key: ["environment_id"] },
-  config_deployment: { key: ["id"] },
-  config_build: { key: ["deployment_id"] },
-  config_deployment_row: { key: ["deployment_id"] },
-  config_applied: { key: ["environment_id"] },
-  config_registry_credential: { key: ["environment_id"] },
-  config_service_policy: { key: ["environment_id"] },
-  config_environment_branch: { key: ["environment_id"] },
-  config_sync_base: { key: ["environment_id"] },
-  config_never_sync: { key: ["environment_id"] },
-  // ponytail: logs the receiver only; another tab on the sender sees what it synced once the sender changes too.
-  config_sync_arrival: { key: ["environment_id"] },
-  config_proposal: { key: ["environment_id"] },
-  config_merge_value: { key: ["environment_id"] },
-  // No family: Cloud never reads a merge's deferred deploy; the next push to the branch does.
-  config_merge_deploy: { key: ["environment_id"] },
-  // No family: a receipt outlives its Environments and no view reads it.
-  config_sync_receipt: { key: ["environment_id"] },
-  config_build_order: { key: ["organization_id"] },
-  config_region_name: { key: ["organization_id"] },
-  config_pr_plan: { key: ["project_id"] },
-  config_pr_environment: { key: ["environment_id"] },
-  config_pull_request: { key: ["repository_id", "number"] },
-  // A suite's verdict shows on every Deployment waiting for its commit, which polls nothing while it waits.
-  config_check_suite: { key: ["organization_id"] },
-} satisfies Record<string, { key: readonly string[] }>;
+import { storeChangeSources } from "#/modules/config-store/store.change-sources";
 
 /**
  * Every organization-owned table: the column naming its Organization (`organization_id` unless given)

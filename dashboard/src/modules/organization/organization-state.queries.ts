@@ -1,12 +1,19 @@
 import { toast } from "sonner";
 import { environmentManager, queryOptions, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
 import { getOrganizationStateServerFn, syncOrganizationSlugServerFn } from "./organization-state.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 export const organizationKeys = {
   all: ["organization"] as const,
   state: (organizationSlug?: string | null) =>
     [...organizationKeys.all, organizationSlug ?? null, "state"] as const,
 };
+
+export const organizationChange = defineChange({
+  name: "organization",
+  sources: ["organization"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+});
 
 export function organizationStateQueryOptions(organizationSlug?: string | null) {
   return queryOptions({

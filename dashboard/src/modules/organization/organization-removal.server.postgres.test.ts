@@ -3,14 +3,13 @@ import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
-import { currentChangeCursor } from "#/modules/organization/change-log.server";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
-import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { CloudStore, openCloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, session, user } from "#/modules/identity/tables";
+import { Auth, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
 import { requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { removeOrganization, removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
@@ -238,14 +237,11 @@ describe("removeOrganization", () => {
     const [jo] = (await harness.db.insert(user).values({ email: "jo@example.test", name: "Jo" }).returning({ id: user.id })).map((row) => row.id) as [string];
     await harness.db.insert(organization).values({ id: KETTLE, name: "Kettle", slug: "kettle" });
     await harness.db.insert(member).values({ userId: jo, organizationId: KETTLE, role: "owner" });
-    const response = await handleOrgChangesRequest(new Request("http://localhost/api/org/changes?organizationSlug=kettle"), "kettle", {
-      authorize: (slug) => harness.runEffect(requireAccess({ userId: jo }, slug, "org:read").pipe(
-        Effect.map((access) => ({ organizationId: access.organization.id })),
-        Effect.provideService(SupportStaff, supportStaffOf([])),
-      )),
-      currentCursor: () => harness.runEffect(currentChangeCursor()),
-      readChanges: (input) => harness.runEffect(readOrganizationChanges(input)),
-    });
+    const signedIn = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(asTestDouble<AuthSession>()({ user: { id: jo } })) });
+    const response = await harness.runEffect(handleOrgChangesRequest(new Request("http://localhost/api/org/changes?organizationSlug=kettle"), "kettle").pipe(
+      Effect.provideService(Auth, signedIn),
+      Effect.provideService(SupportStaff, supportStaffOf([])),
+    ));
     expect(response.status).toBe(200);
     const reader = response.body?.getReader();
     const ended = (async () => {

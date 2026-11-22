@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { type ConfigStore, openConfigStore, RpcError } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Redacted, Semaphore } from "effect";
-import { storeChangeSources } from "#/modules/organization/change-log.sources";
+import { storeChangeSources } from "./store.change-sources";
 import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";

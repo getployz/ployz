@@ -1,9 +1,16 @@
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import type { DoorsWant } from "./doors";
 import { observeClusterIngressServerFn, readClusterIngressServerFn, reviewDoorsSwitchServerFn } from "./doors.functions";
+import { defineChange } from "#/collections/change-log/declare";
 
 /** The Cluster's ingress; the change stream's `cluster_ingress` invalidates this root. */
 export const clusterIngressKeys = { all: ["cluster-ingress"] as const };
+
+export const clusterIngressChange = defineChange({
+  name: "cluster_ingress",
+  sources: ["organization_cloudflare_ingress", "ingress_doors_attempt"],
+  invalidate: (_slug, scope) => void scope.queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all }),
+});
 
 /**
  * Where the Cluster's names come from and the latest switch. The change stream refetches it when a row changes; a

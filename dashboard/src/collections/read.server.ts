@@ -3,17 +3,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect } from "effect";
-import { changeNameSources } from "./change-sources";
+import { projections } from "./registry.server";
 import type { CollectionRead, CollectionReadInput } from "./read.contract";
-import * as tables from "#/db/schema";
 import type { Actor } from "#/modules/identity/actor";
-import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
-import { changeSources } from "#/modules/organization/change-log.sources";
-import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
-import type { ClusterNameRow } from "#/modules/cluster-name/cluster-name";
-import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
-import type { SupportAccessRow } from "#/modules/support-access/support-access";
-import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
+import { changeSources } from "#/collections/change-log/change-log.sources";
+import { readChangeWindow, type OrganizationChangeLogFailure } from "#/collections/change-log/change-log.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 
@@ -42,66 +36,22 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       ? new CollectionReadDenied({ message: "Organization not found." })
       : new CollectionReadFailure({ cause })),
   );
-  const database = yield* Database;
+  const projection = projections[data.table];
   // `keys` narrows a read to the rows its change window names, by the key its key table logs.
   const readRows = (keys?: string[]) => Effect.gen(function* () {
-    const keyColumns = changeSources[changeNameSources[data.table][0]].key;
+    const keyColumns = changeSources[projection.sources[0]].key;
     const scoped = (table: PgTable & { organizationId: AnyPgColumn }) => and(
       eq(table.organizationId, organization.id),
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),
     );
-    switch (data.table) {
-      case "environment_canvas_node_position":
-        return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
-          .where(scoped(tables.environmentCanvasNodePosition));
-      case "organization_enrollment": {
-        // The pairing row holds the encrypted pairing secret; expose only the derived status.
-        const pairings = yield* database.drizzle.select({
-          id: tables.organizationPairing.organizationId,
-          founderMachineId: tables.organizationPairing.founderMachineId,
-        }).from(tables.organizationPairing).where(scoped(tables.organizationPairing));
-        return pairings.map((row): OrganizationEnrollmentRow => ({ id: row.id, status: pairingEnrollmentStatus(row.founderMachineId) }));
-      }
-      case "organization_cluster_domain": {
-        // The token and certificate key stay on the server.
-        const domain = tables.organizationClusterDomain;
-        const rows: ClusterDomainRow[] = yield* database.drizzle.select({
-          id: domain.organizationId, name: domain.name, recordsSyncedAt: domain.recordsSyncedAt, traffic: domain.traffic,
-          certificateNotAfter: domain.certificateNotAfter, checkedAt: domain.checkedAt,
-        }).from(domain).where(scoped(domain));
-        return rows;
-      }
-      case "organization_cluster_name": {
-        const cluster = tables.organizationClusterName;
-        const rows: ClusterNameRow[] = yield* database.drizzle.select({
-          id: cluster.organizationId, name: cluster.name, appliedName: cluster.appliedName, refusal: cluster.refusal,
-        }).from(cluster).where(scoped(cluster));
-        return rows;
-      }
-      case "organization_server_upgrades": {
-        const settings = tables.organizationServerUpgrades;
-        const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({
-          id: settings.organizationId, automatic: settings.automatic, channel: settings.channel, approval: settings.channelApproval,
-        })
-          .from(settings).where(scoped(settings));
-        return rows;
-      }
-      case "organization_support_access": {
-        const support = tables.organizationSupportAccess;
-        const rows: SupportAccessRow[] = yield* database.drizzle.select({
-          id: support.organizationId, allowed: support.allowed, variables: support.variables, configs: support.configs, logs: support.logs,
-        })
-          .from(support).where(scoped(support));
-        return rows;
-      }
-    }
+    return yield* projection.project(scoped);
   });
   type Row = Effect.Success<ReturnType<typeof readRows>>[number];
   const issued = CURSOR.exec(data.since ?? "");
   const since = issued?.[1] === organization.id ? issued[2] : undefined;
   const read = Effect.gen(function* (): Effect.fn.Return<CollectionRead<Row>, EffectDrizzleQueryError | OrganizationChangeLogFailure, Database> {
     // The window is read before the rows, so the rows are at least as new as its cursor.
-    const window = yield* readChangeWindow({ organizationId: organization.id, since, sourceTables: changeNameSources[data.table] });
+    const window = yield* readChangeWindow({ organizationId: organization.id, since, sourceTables: projection.sources });
     const cursor = `${organization.id}.${window.cursor}`;
     if (window.kind === "full") return { full: true, rows: yield* readRows(), cursor };
     // Deleted keys are re-read too: a key a filtered read shares with another user's row

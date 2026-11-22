@@ -25,7 +25,7 @@ import {
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createClusterNameFunctions } from "#/modules/cluster-name/cluster-name.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
-import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createPruneOrganizationChangeLog } from "#/collections/change-log/change-log.inngest";
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import {
   createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
