@@ -412,7 +412,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.authority.key-prior.v1",
-        "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, so `ployz key` checks for it on every Server first",
+        "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, and a `remove_grant` for its unknown kind, so `ployz key` checks for it on every Server first",
     ),
     (
         "ployz.metrics.live.v1",

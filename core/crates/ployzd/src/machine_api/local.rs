@@ -1684,7 +1684,8 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::AmbiguousCode(_)
         | StoreError::GrantKind { .. }
         | StoreError::GrantHeld(_)
-        | StoreError::GrantMoved(_) => RpcErrorCode::Conflict,
+        | StoreError::GrantMoved(_)
+        | StoreError::NotGrant(_) => RpcErrorCode::Conflict,
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

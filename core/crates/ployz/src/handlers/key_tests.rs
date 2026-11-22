@@ -10,7 +10,7 @@ use ployz_store::Running;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::rotate::verified;
+use super::rotate::{Applied, verified};
 use super::wanted::Wanted;
 use super::{Ask, Consent, Contents, consent};
 
@@ -160,7 +160,7 @@ fn a_rotation_carries_only_versions_that_check_under_the_old_key() {
         versions: vec![statement],
     };
     let carried = verified(
-        (&old, None),
+        (&old, &Applied::default()),
         &namespace("app-prod"),
         &web(),
         &running(version_by(&ci(), &spec())),
@@ -177,7 +177,7 @@ fn a_rotation_carries_only_versions_that_check_under_the_old_key() {
         "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222".to_owned();
     for statement in [version_by(&forger, &spec()), version_by(&ci(), &other)] {
         let refused = verified(
-            (&old, None),
+            (&old, &Applied::default()),
             &namespace("app-prod"),
             &web(),
             &running(statement),
@@ -187,26 +187,21 @@ fn a_rotation_carries_only_versions_that_check_under_the_old_key() {
     }
 }
 
-/// A rotation that stopped after its redeploy runs again: what runs carries both keys'
-/// versions now, so nothing is redeployed a second time.
+/// A rotation's redeploy failed after it posted the new key's signature, so the
+/// Containers still run admitted under the old key alone. Run again, it redeploys the
+/// Service, and skips it only once its own redeploy applied that spec.
 #[test]
-fn a_rotation_run_again_skips_what_the_new_key_already_signed() {
+fn a_rotation_run_again_redeploys_until_its_own_redeploy_applied() {
     let old = TrustedGrant {
         grant: production_grant(),
         approved_by: PasskeyApprover::Unknown,
     };
     let fresh = Signer::from_seed(&[4; 32]);
-    let new = TrustedGrant {
-        grant: Grant {
-            key: fresh.public(),
-            ..production_grant()
-        },
-        approved_by: PasskeyApprover::Unknown,
-    };
+    let carried = version_by(&ci(), &spec()).open().unwrap();
     let resigned = Signed::sign(
         &ServiceVersion {
             signer: SignerKey::Device(DeviceKey::from(fresh.public())),
-            ..version_by(&ci(), &spec()).open().unwrap()
+            ..carried.clone()
         },
         &fresh,
     )
@@ -216,8 +211,22 @@ fn a_rotation_run_again_skips_what_the_new_key_already_signed() {
         pin: None,
         versions: vec![resigned, version_by(&ci(), &spec())],
     };
+    let carries = |applied: &Applied| {
+        verified((&old, applied), &namespace("app-prod"), &web(), &running).unwrap()
+    };
 
-    let carried = verified((&old, Some(&new)), &namespace("app-prod"), &web(), &running);
+    let mut applied = Applied::default();
+    assert_eq!(carries(&applied), Some(carried.clone()), "failed redeploy");
 
-    assert_eq!(carried.unwrap(), None);
+    let mut elsewhere = carried.clone();
+    elsewhere.digest = PayloadDigest::from_bytes([8; 32]);
+    applied.add(&elsewhere);
+    assert_eq!(
+        carries(&applied),
+        Some(carried.clone()),
+        "another spec applied"
+    );
+
+    applied.add(&carried);
+    assert_eq!(carries(&applied), None, "its own redeploy applied");
 }

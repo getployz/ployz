@@ -105,6 +105,10 @@ impl LocalMachine {
                             let removed = store.remove_key(key)?;
                             Ok(removal(key.code(), removed, by))
                         }
+                        SetDeviceRequest::RemoveGrant { key, retired } => {
+                            let removed = store.remove_grant(key, retired)?;
+                            Ok(removal(key.code(), removed, by))
+                        }
                     }
                 })
                 .await?
@@ -1118,6 +1122,109 @@ mod tests {
             grant_of(&local, old).map(|(scope, _)| scope),
             Some(scope(&wide))
         );
+    }
+
+    /// A rotation read both grants, then another person narrowed the old key before its
+    /// removal arrived. Retiring the old key then would leave the new key with the wider
+    /// grant, so the removal is refused and the old key keeps the narrowed grant.
+    #[tokio::test]
+    async fn retiring_a_rotated_key_after_a_narrowing_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let read = minutes_ago(3);
+        let old = ci_signer().public();
+        local
+            .key_step(trust_step_at(
+                &local,
+                (ci_key(old, &["staging", "prod"]), None),
+                read,
+            ))
+            .await
+            .unwrap();
+        let new = Signer::from_seed(&[13; 32]).public();
+        let replaced = minutes_ago(2);
+        local
+            .key_step(trust_step_at(
+                &local,
+                (
+                    ci_key(new, &["staging", "prod"]),
+                    Some(Prior::Replace {
+                        key: old,
+                        issued_at: read,
+                    }),
+                ),
+                replaced,
+            ))
+            .await
+            .unwrap();
+        let retire = |issued_at| SetDeviceRequest::RemoveGrant {
+            key: old,
+            retired: Some(ployz_core::Retired {
+                issued_at,
+                by: new,
+                by_issued_at: replaced,
+            }),
+        };
+
+        let narrowed = ci_key(old, &["staging"]);
+        let at = minutes_ago(1);
+        local
+            .key_step(trust_step_at(
+                &local,
+                (narrowed.clone(), Some(Prior::Edit { issued_at: read })),
+                at,
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            local.set_device(retire(read)).await,
+            Err(Error::Store(StoreError::GrantMoved(code))) if code == old.code()
+        ));
+        assert_eq!(grant_of(&local, old), Some((scope(&narrowed), at)));
+
+        assert_eq!(
+            local.set_device(retire(at)).await.unwrap(),
+            DeviceSet::Removed { code: old.code() }
+        );
+        assert_eq!(grant_of(&local, old), None);
+        assert_eq!(local.record().removed_grants(), [old]);
+    }
+
+    /// `ployz key rm` names a Device's key, read from a Server that holds it as a grant
+    /// nowhere: the Server that trusts it as a Device, or removed it as one, keeps it.
+    #[tokio::test]
+    async fn removing_a_grant_never_removes_a_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let device = Signer::from_seed(&[14; 32]).public();
+        local
+            .set_device(SetDeviceRequest::Approve { key: device.into() })
+            .await
+            .unwrap();
+        let remove = || SetDeviceRequest::RemoveGrant {
+            key: device,
+            retired: None,
+        };
+
+        assert!(matches!(
+            local.set_device(remove()).await,
+            Err(Error::Store(StoreError::NotGrant(code))) if code == device.code()
+        ));
+        assert!(local.record().devices().any(|held| held == device.into()));
+
+        local
+            .set_device(SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            local.set_device(remove()).await.unwrap(),
+            DeviceSet::NotPresent {
+                code: device.code()
+            }
+        );
+        assert!(local.record().removed_grants().is_empty());
     }
 
     #[tokio::test]

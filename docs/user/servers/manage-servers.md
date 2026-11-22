@@ -380,12 +380,17 @@ image, when it was signed and its digest, and asks. Then it gives every server t
 prints the new `PLOYZ_KEY=...`, redeploys those services under the new key and follows each
 deploy to the end. It removes the old key only once every deploy applied on every server and each
 server still holds both keys as the rotation left them. Until then the old key keeps working. If
-it stops before that, run the same command again: it carries on with the same new key and skips
-services it already redeployed. If someone changed the key's scope while it ran, it stops and
-says so; check `ployz key ls` and run it again.
+it stops before that, run the same command again on the same computer: it carries on with the
+same new key, skips services whose redeploy applied on every server, and redeploys the rest. If
+someone changed the key's scope while it ran, it stops and says so; check `ployz key ls` and run
+it again. If the scope changed on a server just as the rotation removed the old key there, that
+server keeps the old key and the command names it and exits 3; match the new key's scope with
+`ployz key scope`, then run `ployz key rm` on the old one.
 
 `ployz key rm <code>` removes only CI and agent keys. It refuses a device's or passkey's code;
-remove those with `ployz device rm`.
+remove those with `ployz device rm`. Each server checks this too, so a server that holds the
+code as a device refuses the removal. If no server that answered holds the key, but some didn't
+answer, it names those servers, removes nothing and exits 3.
 
 If a key leaks, run `ployz key rm <code>`, then deploy from a terminal. Don't rotate a leaked
 key: a rotation signs again whatever the old key deployed, including anything someone shipped

@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 use clap::{Arg, ArgGroup, ArgMatches, Command};
 use ployz_core::authority::{
     GRANT_MOVED, Grant, GrantKind, GrantVolume, KeyChange, KeyKind, KeyName, KeyPlace, KeyPlaces,
-    KeyRef, KeyScope, NewKey, Prior, SigningPublicKey, Timestamp,
+    KeyScope, NewKey, Prior, SigningPublicKey, Timestamp,
 };
 use ployz_core::{
-    CheckCode, DeviceCode, DeviceKey, DeviceSet, Hint, InspectRequest, KEY_STEP_CAPABILITY,
-    MachineFailure, MachineId, MachineTarget, RpcError, RpcErrorCode, SCOPED_KEYS_CAPABILITY,
-    SetDeviceRequest, op,
+    CheckCode, DeviceCode, DeviceKey, DeviceSet, Hint, InspectRequest, KEY_PRIOR_CAPABILITY,
+    KEY_STEP_CAPABILITY, MachineFailure, MachineId, MachineTarget, Retired, RpcError, RpcErrorCode,
+    SCOPED_KEYS_CAPABILITY, SetDeviceRequest, op,
 };
 use serde::Serialize;
 
@@ -818,18 +818,32 @@ fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
 }
 
 /// Stop trusting a CI or agent key on every Member, by its full key. A code that names a
-/// Device or passkey is refused: `ployz device rm` removes those.
+/// Device or passkey is refused: `ployz device rm` removes those. Each Member refuses
+/// the removal itself where the key is a Device.
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
         let reach = Reach::every_member(&mut client).await?;
-        let (seen, _) = reach
+        let (seen, unread) = reach
             .fan_out(|machine_id| seen_on(client.clone(), machine_id, code))
             .await;
-        let key = grant_key(code, &seen)?;
-        let (removed, gaps) = remove_everywhere(&client, &reach, key).await;
+        let unread = reach.named(unread);
+        let Some(key) = grant_key(code, &seen)? else {
+            if unread.is_complete() {
+                return Err(Error::not_found(format!(
+                    "No server holds a CI or agent key {code}. Nothing was removed."
+                ))
+                .hint(Hint::Next("ployz key ls".to_owned())));
+            }
+            return ui::finish_fanout("servers", &None::<Vec<Answer>>, &unread, || {
+                ui::note(format_args!(
+                    "No server that answered holds a CI or agent key {code}. Nothing was removed."
+                ));
+            });
+        };
+        let (removed, gaps) = remove_everywhere(&client, &reach, key, &Removal::Grant).await;
         let servers = answered(&reach, removed);
         ui::finish_fanout("servers", &servers, &gaps, || ui::rows(&results(&servers)))
     })
@@ -871,25 +885,28 @@ async fn seen_on(
         .map(|trusted| trusted.grant.key)
         .filter(|key| key.code() == code);
     // A key removed for good stays named in full, so a run again reaches the Members the
-    // first missed.
+    // first missed. Only one removed as a CI or agent key counts: a Device's, or one
+    // removed before Members kept which, is no evidence of a grant.
     let removed = details
-        .removed_keys
+        .removed_grants
         .iter()
-        .filter_map(|removed| match removed {
-            KeyRef::Signing { key } if key.code() == code => Some(SigningPublicKey::from(*key)),
-            KeyRef::Signing { .. } | KeyRef::Passkey { .. } => None,
-        });
+        .copied()
+        .filter(|key| key.code() == code);
     Ok(Some(Seen {
         keys: held.chain(removed).collect(),
         personal,
     }))
 }
 
-/// The one CI or agent key the Members name under `code`.
+/// The one CI or agent key the Members that answered name under `code`, `None` when they
+/// name none.
 ///
 /// # Errors
-/// Refuses a Device's or passkey's code, a code no Member names, and one naming two keys.
-fn grant_key(code: DeviceCode, seen: &[(MachineId, Seen)]) -> Result<SigningPublicKey, Error> {
+/// Refuses a Device's or passkey's code, and one naming two keys.
+fn grant_key(
+    code: DeviceCode,
+    seen: &[(MachineId, Seen)],
+) -> Result<Option<SigningPublicKey>, Error> {
     if seen.iter().any(|(_, seen)| seen.personal) {
         return Err(Error::conflict(format!(
             "{code} is a device or passkey, not a CI or agent key. Nothing was removed."
@@ -903,25 +920,39 @@ fn grant_key(code: DeviceCode, seen: &[(MachineId, Seen)]) -> Result<SigningPubl
         }
     }
     match keys.as_slice() {
-        [key] => Ok(*key),
-        [] => Err(Error::not_found(format!(
-            "No server holds a CI or agent key {code}. Nothing was removed."
-        ))
-        .hint(Hint::Next("ployz key ls".to_owned()))),
+        [] => Ok(None),
+        [key] => Ok(Some(*key)),
         _ => Err(Error::conflict(format!(
             "Code {code} names more than one key on your servers. Nothing was removed."
         ))),
     }
 }
 
-/// Remove `key` for good on every Member `reach` covers.
+/// What a removal of a CI or agent key asks of each Member.
+pub(super) enum Removal {
+    /// Remove it wherever it isn't a Device.
+    Grant,
+    /// Retire a rotated key, on each Member only while both grants are as the rotation
+    /// read them there. A Member with no entry is left as it is.
+    Rotated(BTreeMap<MachineId, Retired>),
+}
+
+/// Remove `key` for good on every Member `reach` covers, as `removal` asks. A Member too
+/// old to refuse a Device's key is left out.
 pub(super) async fn remove_everywhere(
     client: &Client,
     reach: &Reach,
     key: SigningPublicKey,
+    removal: &Removal,
 ) -> (Vec<(MachineId, DeviceSet)>, Gaps) {
     let (answers, gaps) = reach
-        .fan_out(|machine_id| remove_on(client.clone(), machine_id, key))
+        .fan_out(|machine_id| {
+            let retired = match removal {
+                Removal::Grant => Some(None),
+                Removal::Rotated(read) => read.get(&machine_id).copied().map(Some),
+            };
+            remove_on(client.clone(), machine_id, key, retired)
+        })
         .await;
     (answers, reach.named(gaps))
 }
@@ -930,10 +961,14 @@ async fn remove_on(
     client: Client,
     machine_id: MachineId,
     key: SigningPublicKey,
+    retired: Option<Option<Retired>>,
 ) -> Result<Option<DeviceSet>, RpcError> {
+    let Some(retired) = retired else {
+        return Ok(None);
+    };
     let target = MachineTarget::from(&machine_id);
     if !client
-        .supports(Some(&target), KEY_STEP_CAPABILITY)
+        .supports(Some(&target), KEY_PRIOR_CAPABILITY)
         .await
         .map_err(crate::connect::rpc_error)?
     {
@@ -941,9 +976,7 @@ async fn remove_on(
     }
     client
         .call_shared::<op::SetDevice>(
-            SetDeviceRequest::RemoveKey {
-                key: KeyRef::Signing { key: key.into() },
-            },
+            SetDeviceRequest::RemoveGrant { key, retired },
             Call::once().to(&target),
         )
         .await

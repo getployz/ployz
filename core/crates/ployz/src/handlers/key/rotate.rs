@@ -4,7 +4,8 @@
 //! the old key, shown, signed again under the new key and redeployed, so nothing stays
 //! admitted under the old key. The old key is removed only once each redeploy applied
 //! with no gaps and a fresh read finds both grants as this run left them. The new key
-//! waits beside the config until then, so a run that stops resumes with it.
+//! waits beside the config until then, with the Services its redeploys applied, so a run
+//! that stops resumes with it and redeploys the rest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufWriter;
@@ -15,20 +16,20 @@ use ployz_core::authority::{
     Approver, KeyChange, KeyKind, KeyMember, PayloadDigest, Prior, ServiceVersion, Signed,
     SignerKey, SigningPublicKey, Timestamp, TrustedGrant, TrustedKeys,
 };
-use ployz_core::{DeviceCode, DeviceKey, MachineId, Namespace, ServiceName};
+use ployz_core::{DeviceCode, DeviceKey, MachineId, Namespace, Retired, ServiceName};
 use ployz_store::{
     Admit, Deploy, DeploymentId, EnvironmentRef, NamespaceQuery, NamespacesQuery, PlanQuery,
     PostedVersion, Running, RunningQuery, TagPin,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::super::device::{DeviceSigning, key};
 use super::super::store::{Store, mint, store};
 use super::super::{Error, config_path, deploy, leaf_matches, route, runtime};
 use super::members::{Bundle, Member, Roster};
 use super::{
-    Contents, LEAKED, code_arg, context, grant_moved, new_key, own_signing, remove_everywhere,
-    results, typed_code,
+    Contents, LEAKED, Removal, code_arg, context, grant_moved, new_key, own_signing,
+    remove_everywhere, results, typed_code,
 };
 use crate::cli::base;
 use crate::ui;
@@ -63,8 +64,10 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     let seed = pending_key(&pending)?;
     let new = SigningPublicKey::from(key::public(&seed));
     let old = source(&roster, code)?;
-    let Replacement { missing, installed } = replacement(&roster, &old, new)?;
-    let carried = carried(&store, &old.grant, installed.as_ref())?;
+    let missing = replacement(&roster, &old, new)?;
+    let applied_path = pending.with_extension(format!("{}.applied", new.code()));
+    let mut applied = Applied::load(&applied_path)?;
+    let carried = carried(&store, &old.grant, &applied)?;
     show(&old.grant, new, &carried, &roster);
     ui::confirm(
         &format!("Rotate key {code} to {}?", new.code()),
@@ -140,12 +143,21 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
                 )
             })?;
         deployments.extend(redeploy(leaf, &store, environment, &resigner, events)?);
+        for service in &environment.services {
+            applied.add(&service.version);
+        }
+        applied.save(&applied_path)?;
     }
     let now = runtime.block_on(Roster::read(&mut client))?;
     now.require_all()?;
-    unmoved(&now, &old, new)?;
-    let (removed, gaps) =
-        runtime.block_on(remove_everywhere(&client, &now.reach, old.grant.grant.key));
+    let retired = unmoved(&now, &old, new)?;
+    let (removed, gaps) = runtime.block_on(remove_everywhere(
+        &client,
+        &now.reach,
+        old.grant.grant.key,
+        &Removal::Rotated(retired),
+    ));
+    let moved = gaps.failures.iter().any(grant_moved);
     let rotated = Rotated {
         old: code,
         new: new.code(),
@@ -153,14 +165,27 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
         removed: super::answered(&now.reach, removed),
     };
     if gaps.is_complete() {
-        std::fs::remove_file(&pending).map_err(|source| key::KeyError::Write {
-            path: pending.clone(),
-            source,
-        })?;
+        for path in [&applied_path, &pending] {
+            match std::fs::remove_file(path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(key::KeyError::Write {
+                        path: path.clone(),
+                        source: error,
+                    }
+                    .into());
+                }
+                _ => {}
+            }
+        }
     }
     ui::finish_fanout("rotated", &rotated, &gaps, || {
         ui::stream(format_args!("Rotated key {code} to {}.", rotated.new));
-        if !gaps.is_complete() {
+        if moved {
+            ui::note(format_args!(
+                "Key {code} or {} changed on a server while this ran, so that server still trusts the old key. Check ployz key ls, match the new key's scope with ployz key scope {}, then run ployz key rm {code}.",
+                rotated.new, rotated.new
+            ));
+        } else if !gaps.is_complete() {
             ui::note(format_args!(
                 "Run ployz key rm {code} once those servers answer, so none of them trusts the old key."
             ));
@@ -244,18 +269,9 @@ fn source(roster: &Roster, code: DeviceCode) -> Result<Source, Error> {
     })
 }
 
-/// Where the new key stands on the Members.
-struct Replacement {
-    /// The Members that don't hold it yet, each with when its copy of the old grant was
-    /// issued.
-    missing: Vec<(KeyMember, Timestamp)>,
-    /// Its grant, where a Member holds it.
-    installed: Option<TrustedGrant>,
-}
-
-/// Where the new key stands on each Member.
-/// A Member that holds a key under the new code holds the new key itself, with what the
-/// old one gives, or the rotation stops.
+/// The Members that don't hold the new key yet, each with when its copy of the old grant
+/// was issued. A Member that holds a key under the new code holds the new key itself,
+/// with what the old one gives, or the rotation stops.
 ///
 /// # Errors
 /// Refuses when a Member holds another key under the new code, or the new key with
@@ -264,15 +280,12 @@ fn replacement(
     roster: &Roster,
     old: &Source,
     new: SigningPublicKey,
-) -> Result<Replacement, Error> {
+) -> Result<Vec<(KeyMember, Timestamp)>, Error> {
     let mut missing = Vec::new();
-    let mut installed = None;
     for member in &roster.members {
         match member.grant(new.code()) {
             None => missing.extend(old.read.get(&member.key.id).map(|read| (member.key, *read))),
-            Some(held) if replaces(held, &old.grant, new) => {
-                installed.get_or_insert_with(|| held.clone());
-            }
+            Some(held) if replaces(held, &old.grant, new) => {}
             Some(_) => {
                 return Err(Error::conflict(format!(
                     "{} holds the new key {} with another scope than key {}. Make them match with ployz key scope, then run this again. Nothing changed.",
@@ -283,7 +296,7 @@ fn replacement(
             }
         }
     }
-    Ok(Replacement { missing, installed })
+    Ok(missing)
 }
 
 /// Whether `held` is the new key `new` with what `old` gives.
@@ -295,26 +308,41 @@ fn replaces(held: &TrustedGrant, old: &TrustedGrant, new: SigningPublicKey) -> b
 
 /// Refuse to remove the old key unless every Member still holds it as this run read it,
 /// and holds the new key with what it gives: a scope change made while this ran would
-/// otherwise be lost, or the new key would keep a grant the old one no longer has.
+/// otherwise be lost, or the new key would keep a grant the old one no longer has. Each
+/// Member's removal carries both grants as read here, so one that moves after this read
+/// is refused there.
 ///
 /// # Errors
 /// Returns `conflict` naming the first Member where either grant moved.
-fn unmoved(now: &Roster, old: &Source, new: SigningPublicKey) -> Result<(), Error> {
+fn unmoved(
+    now: &Roster,
+    old: &Source,
+    new: SigningPublicKey,
+) -> Result<BTreeMap<MachineId, Retired>, Error> {
     let code = old.grant.grant.key.code();
+    let mut retired = BTreeMap::new();
     for member in &now.members {
-        let kept = member.grant(code).is_some_and(|held| {
+        let kept = member.grant(code).filter(|held| {
             held.grant.key == old.grant.grant.key
                 && old.read.get(&member.key.id) == Some(&held.grant.issued_at)
                 && Contents::of(&held.grant) == Contents::of(&old.grant.grant)
         });
         let taken = member
             .grant(new.code())
-            .is_some_and(|held| replaces(held, &old.grant, new));
-        if !kept || !taken {
+            .filter(|held| replaces(held, &old.grant, new));
+        let (Some(kept), Some(taken)) = (kept, taken) else {
             return Err(moved(member, code));
-        }
+        };
+        retired.insert(
+            member.key.id,
+            Retired {
+                issued_at: kept.grant.issued_at,
+                by: new,
+                by_issued_at: taken.grant.issued_at,
+            },
+        );
     }
-    Ok(())
+    Ok(retired)
 }
 
 fn moved(member: &Member, code: DeviceCode) -> Error {
@@ -342,17 +370,13 @@ pub(super) struct CarriedVersion {
 }
 
 /// What the old key signed that runs now, in each place its grant names, checked here.
-/// A Service whose running version the new key, as `installed` holds it, already signed
-/// is carried already.
+/// A Service this rotation's own redeploy `applied` at the spec it runs now is carried
+/// already.
 ///
 /// # Errors
 /// Returns the Store's refusal, and refuses the whole rotation when any version naming
 /// the old key doesn't check under it.
-fn carried(
-    store: &Store,
-    old: &TrustedGrant,
-    installed: Option<&TrustedGrant>,
-) -> Result<Vec<Carried>, Error> {
+fn carried(store: &Store, old: &TrustedGrant, applied: &Applied) -> Result<Vec<Carried>, Error> {
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let mut wanted: BTreeMap<Namespace, Option<BTreeSet<ServiceName>>> = BTreeMap::new();
     match &old.grant.scope.places {
@@ -404,8 +428,7 @@ fn carried(
         })?;
         let mut versions = Vec::new();
         for (runtime, ran) in &running.services {
-            let Some(version) = verified((old, installed), &running.namespace, runtime, ran)?
-            else {
+            let Some(version) = verified((old, applied), &running.namespace, runtime, ran)? else {
                 continue;
             };
             let authored = runtime_names
@@ -432,17 +455,21 @@ fn carried(
 
 /// The newest version of `runtime` the old key signed for what runs, checked under the
 /// old key alone and against the spec it runs; `None` when the old key signed none, or
-/// the new key, as it is installed, signed it too.
+/// this rotation's redeploy `applied` that spec already. A version the new key signed
+/// proves nothing: a redeploy posts it before it runs, so a failed one leaves it too.
 ///
 /// # Errors
 /// Refuses when a version naming the old key doesn't check.
 pub(super) fn verified(
-    (old, installed): (&TrustedGrant, Option<&TrustedGrant>),
+    (old, applied): (&TrustedGrant, &Applied),
     namespace: &Namespace,
     runtime: &ServiceName,
     ran: &Running,
 ) -> Result<Option<ServiceVersion>, Error> {
     let digest = PayloadDigest::of(&ran.spec, namespace).ok();
+    if digest.is_some_and(|digest| applied.holds(namespace, runtime, digest)) {
+        return Ok(None);
+    }
     let signed_by = |grant: &TrustedGrant, statement: &Signed<ServiceVersion>| {
         let only = TrustedKeys::new([], [], [grant.clone()]);
         statement.open().is_ok_and(|version| {
@@ -454,14 +481,6 @@ pub(super) fn verified(
             .approvers(&only)
             .is_ok_and(|by| by == [Approver::Signing(grant.grant.key)])
     };
-    if let Some(new) = installed
-        && ran
-            .versions
-            .iter()
-            .any(|statement| signed_by(new, statement))
-    {
-        return Ok(None);
-    }
     let signer = SignerKey::Device(DeviceKey::from(old.grant.key));
     for statement in &ran.versions {
         let Ok(version) = statement.open() else {
@@ -479,6 +498,61 @@ pub(super) fn verified(
         return Ok(Some(version));
     }
     Ok(None)
+}
+
+/// The Services this rotation's own redeploys applied on every server with no gaps, each
+/// at the digest it ran. Kept beside the new key, under its code, so a run again with
+/// the same key skips only these.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(super) struct Applied {
+    services: Vec<(Namespace, ServiceName, PayloadDigest)>,
+}
+
+impl Applied {
+    /// What `path` keeps, or nothing. One that doesn't read only makes this run redeploy
+    /// again.
+    fn load(path: &Path) -> Result<Self, Error> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(source) => Err(key::KeyError::Read {
+                path: path.to_owned(),
+                source,
+            }
+            .into()),
+        }
+    }
+
+    fn save(&self, path: &Path) -> Result<(), Error> {
+        let bytes = serde_json::to_vec(self).expect("names and digests serialize");
+        std::fs::write(path, bytes).map_err(|source| {
+            key::KeyError::Write {
+                path: path.to_owned(),
+                source,
+            }
+            .into()
+        })
+    }
+
+    /// Keep that a redeploy of `version` applied.
+    pub(super) fn add(&mut self, version: &ServiceVersion) {
+        self.services.push((
+            version.namespace.clone(),
+            version.service.clone(),
+            version.digest,
+        ));
+    }
+
+    pub(super) fn holds(
+        &self,
+        namespace: &Namespace,
+        service: &ServiceName,
+        digest: PayloadDigest,
+    ) -> bool {
+        self.services
+            .iter()
+            .any(|(kept, named, ran)| kept == namespace && named == service && *ran == digest)
+    }
 }
 
 /// Say what the rotation carries before the person confirms it.

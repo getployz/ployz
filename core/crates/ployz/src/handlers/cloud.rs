@@ -1439,6 +1439,7 @@ mod tests {
         let details = MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: fallback.id,
             phase: LocalMachinePhase::Participating,
             public_key: fallback.public_key,
@@ -1517,6 +1518,7 @@ mod tests {
             let details = MachineDetails {
                 devices: Vec::new(),
                 removed_keys: Vec::new(),
+                removed_grants: Vec::new(),
                 id: machine.id,
                 phase: LocalMachinePhase::Participating,
                 public_key: machine.public_key,
@@ -1638,6 +1640,7 @@ mod tests {
         let details = MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: machine.id,
             phase: LocalMachinePhase::Participating,
             public_key: machine.public_key,
@@ -1819,6 +1822,7 @@ mod tests {
             let details = MachineDetails {
                 devices: Vec::new(),
                 removed_keys: Vec::new(),
+                removed_grants: Vec::new(),
                 id: machine.id,
                 phase: LocalMachinePhase::Uninitialized,
                 public_key: machine.public_key,
@@ -1977,6 +1981,7 @@ mod tests {
         let details = |phase| MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: listed.id,
             phase,
             public_key: listed.public_key,
@@ -2056,6 +2061,7 @@ mod tests {
             let details = MachineDetails {
                 devices: Vec::new(),
                 removed_keys: Vec::new(),
+                removed_grants: Vec::new(),
                 id: assigned.id,
                 phase: LocalMachinePhase::Participating,
                 machine: Some(assigned.clone()),
@@ -2152,6 +2158,7 @@ mod tests {
         let details = |phase, machine: Option<&Machine>| MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: assigned.id,
             phase,
             public_key: assigned.public_key,

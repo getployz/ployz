@@ -217,6 +217,10 @@ pub struct LocalMachineRecord {
     /// trusted here again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     removed_keys: Vec<ployz_core::authority::KeyRef>,
+    /// The keys of `removed_keys` removed as a CI or agent key, so another Member's removal
+    /// can tell them from a Device. A key removed before this was kept is in neither.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removed_grants: Vec<ployz_core::authority::SigningPublicKey>,
     /// Members this Machine saw removed: by a Forget it ran, or by its store showing their
     /// row deleted, never by their absence. Never shrinks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -370,6 +374,12 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {
         &self.removed_keys
+    }
+
+    /// The keys this Machine removed for good as CI or agent keys.
+    #[must_use]
+    pub fn removed_grants(&self) -> &[ployz_core::authority::SigningPublicKey] {
+        &self.removed_grants
     }
 
     /// Whether this Machine removed `key` for good.
@@ -725,6 +735,7 @@ impl LocalMachineRecord {
             membership_cluster: None,
             enrollment: None,
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             removed_members: Vec::new(),
         }
     }

@@ -780,6 +780,7 @@ impl Fleet {
                     MachineDetails {
                         devices: Vec::new(),
                         removed_keys: Vec::new(),
+                        removed_grants: Vec::new(),
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
                         public_key: record.public_key,

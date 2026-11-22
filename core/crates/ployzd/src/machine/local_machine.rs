@@ -788,6 +788,7 @@ impl LocalMachine {
             management_clients: record.management_clients().cloned().collect(),
             devices: record.devices().collect(),
             removed_keys: record.removed_keys().to_vec(),
+            removed_grants: record.removed_grants().to_vec(),
             passkeys: record.passkeys().to_vec(),
             grants: record.grants().to_vec(),
             founding: record.founding(),

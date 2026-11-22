@@ -1037,6 +1037,7 @@ impl FakeMachine for DeployService {
         encoded(RpcResponse::from(MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id: machine_id,
             phase: LocalMachinePhase::Participating,
             machine: record,

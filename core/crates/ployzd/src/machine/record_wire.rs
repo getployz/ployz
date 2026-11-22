@@ -50,6 +50,8 @@ pub(super) struct LocalMachineRecordWire {
     #[serde(default)]
     removed_keys: Vec<ployz_core::authority::KeyRef>,
     #[serde(default)]
+    removed_grants: Vec<ployz_core::authority::SigningPublicKey>,
+    #[serde(default)]
     removed_members: Vec<super::RemovedMember>,
 }
 
@@ -74,6 +76,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
         record.removed_keys = wire.removed_keys;
+        record.removed_grants = wire.removed_grants;
         record.removed_members = wire.removed_members;
         Ok(record)
     }

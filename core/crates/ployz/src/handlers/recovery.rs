@@ -624,6 +624,7 @@ mod tests {
         ployz_core::MachineDetails {
             devices: Vec::new(),
             removed_keys: Vec::new(),
+            removed_grants: Vec::new(),
             id,
             public_key: ployz_core::WireGuardPublicKey([3; 32]),
             machine: None,

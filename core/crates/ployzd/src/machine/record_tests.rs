@@ -287,6 +287,7 @@ fn resetting_keeps_every_field_but_the_body() {
         passkeys,
         grants,
         removed_keys,
+        removed_grants,
         removed_members,
         membership_cluster,
         enrollment,
@@ -307,6 +308,7 @@ fn resetting_keeps_every_field_but_the_body() {
         passkeys: kept_passkeys,
         grants: kept_grants,
         removed_keys: kept_removed_keys,
+        removed_grants: kept_removed_grants,
         removed_members: kept_removed_members,
         membership_cluster: kept_cluster,
         enrollment: kept_enrollment,
@@ -331,6 +333,7 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_passkeys, passkeys);
     assert_eq!(kept_grants, grants);
     assert_eq!(kept_removed_keys, removed_keys);
+    assert_eq!(kept_removed_grants, removed_grants);
     assert_eq!(kept_removed_members, removed_members);
     assert_eq!(kept_cluster, membership_cluster);
     assert_eq!(kept_enrollment, enrollment);

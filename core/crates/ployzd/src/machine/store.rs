@@ -11,8 +11,9 @@ use std::{
 use ployz_core::{
     ClientKey, DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine,
     MachineId, MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel,
-    PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
-    apply_machine_update, authority::KeyRef,
+    PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, Retired,
+    SelectedEndpoint, apply_machine_update,
+    authority::{KeyRef, SigningPublicKey},
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -932,6 +933,50 @@ impl LocalMachineStore {
     /// Machine trusts, which alone change keys, and a storage error if the updated record
     /// cannot be saved atomically.
     pub fn remove_key(&mut self, key: KeyRef) -> Result<bool, StoreError> {
+        self.remove(key, false)
+    }
+
+    /// Stop trusting the CI or agent key `key` for good, as [`Self::remove_key`] does, and
+    /// keep that it was removed as one. With `retired`, only while `key` holds the grant
+    /// issued when the rotation read it and the new key holds its grant beside it, checked
+    /// in the same write, so a change made after that read never lands only to be lost.
+    /// A key a removal from before typed tombstones already removed stays as it is.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::NotGrant`] when `key` is a Device here,
+    /// [`StoreError::GrantMoved`] when either grant `retired` names isn't the one held
+    /// here, and what [`Self::remove_key`] returns.
+    pub fn remove_grant(
+        &mut self,
+        key: SigningPublicKey,
+        retired: Option<Retired>,
+    ) -> Result<bool, StoreError> {
+        let removed = KeyRef::Signing { key: key.into() };
+        if self.record.devices().any(|device| device == key.into()) {
+            return Err(StoreError::NotGrant(key.code()));
+        }
+        let issued = |key: SigningPublicKey| {
+            self.record
+                .grants
+                .iter()
+                .find(|held| held.grant.key == key)
+                .map(|held| held.grant.issued_at)
+        };
+        if let Some(retired) = retired {
+            if issued(key) != Some(retired.issued_at) {
+                return Err(StoreError::GrantMoved(key.code()));
+            }
+            if retired.by == key || issued(retired.by) != Some(retired.by_issued_at) {
+                return Err(StoreError::GrantMoved(retired.by.code()));
+            }
+        }
+        if self.record.removes_key(&removed) && !self.record.removed_grants.contains(&key) {
+            return Ok(false);
+        }
+        self.remove(removed, true)
+    }
+
+    fn remove(&mut self, key: KeyRef, grant: bool) -> Result<bool, StoreError> {
         let trusted = self.record.trusted_keys();
         let holds = |held: &ployz_core::authority::TrustedKey| match (key, held) {
             (KeyRef::Signing { key }, _) => held.signing_key() == Some(key.into()),
@@ -953,7 +998,12 @@ impl LocalMachineStore {
             }
             match key {
                 KeyRef::Signing { key } => {
-                    record.grants.retain(|held| held.grant.key != key.into());
+                    let signing = SigningPublicKey::from(key);
+                    let granted = record.grants.iter().any(|held| held.grant.key == signing);
+                    if (grant || granted) && !record.removed_grants.contains(&signing) {
+                        record.removed_grants.push(signing);
+                    }
+                    record.grants.retain(|held| held.grant.key != signing);
                     let label = key.label();
                     if let Some(was) = record
                         .management_clients
@@ -1379,6 +1429,8 @@ pub enum StoreError {
         "Key {0} changed on this Server while this ran. Nothing changed here. Run the command again."
     )]
     GrantMoved(DeviceCode),
+    #[error("Key {0} is a device on this Server, not a CI or agent key. Nothing changed here.")]
+    NotGrant(DeviceCode),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]
