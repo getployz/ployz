@@ -207,7 +207,6 @@ mod tests {
         assert!(marker.to_string().contains("output dropped"), "{marker}");
         assert!(size > 0);
         assert!(budget.frame(output("more\n"), &buffered).is_none());
-        // Structured state always passes.
         let (_, step) = budget
             .frame(
                 Progress::Build(Build::Step(ployz_build::BuildStep::default())),
