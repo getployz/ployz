@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon, UnplugIcon } from "lucide-react";
@@ -10,15 +11,12 @@ import { ForgetServersDialog } from "../../../-components/forget-servers-dialog"
 import {
   enqueueMachineRemoveServerFn,
   forgetServerServerFn,
-  getMachineRemoveAttemptServerFn,
   loadMachineDataLossServerFn,
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
-import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { LostVolumeName } from "#/modules/machines/server-operations.server";
 import { removedToast } from "./removed-toast";
-import { removalFailureMessage } from "#/modules/machines/machine-removal";
-import { type MachineRemoveResult } from "#/modules/machines/machine-removal-states";
+import { waitForMachineRemoveAttempt } from "#/modules/machines/machine-removal.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import { RowWarning } from "#/components/settings/row-warning";
@@ -30,39 +28,6 @@ import { useClusterReleased } from "#/providers/runtime-provider";
 /** Each lost Docker volume by Docker name, and the name Cloud found for it. */
 const lostVolumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) =>
   rust.map(({ id }) => ({ docker: id.name, name: names.find(({ docker }) => docker === id.name)?.name ?? id.name }));
-
-/** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
-async function waitForMachineRemoveAttempt(
-  organizationSlug: string,
-  name: string,
-  attemptId: string,
-  stopped: () => boolean,
-): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
-  for (;;) {
-    if (stopped()) return "aborted";
-    const attempt = await getMachineRemoveAttemptServerFn({
-      data: { organizationSlug, attemptId },
-    });
-    if (stopped()) return "aborted";
-    switch (attempt.state) {
-      case "pending":
-      case "running":
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        continue;
-      case "succeeded":
-        return attempt.result;
-      case "missing_identities":
-        return { missing: attempt.missingIdentities };
-      case "failed":
-      case "cancelled":
-        throw new Error(removalFailureMessage(name, attempt));
-      default: {
-        const _exhaustive: never = attempt;
-        throw new Error(`Unhandled machine remove attempt: ${_exhaustive}`);
-      }
-    }
-  }
-}
 
 /** Each lost Docker volume by the name Cloud found for it; one found since, by its Docker name. */
 const volumes = (rust: DataLossList["rust"], names: readonly LostVolumeName[]) => rust.map(({ id }): DeletionItem => {
@@ -84,6 +49,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   hint: ReactNode;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const markHere = useStillHere();
   const clusterReleased = useClusterReleased();
@@ -142,7 +108,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             // not the mount: this section unmounts once the Server leaves the runtime, and that user should still land on Servers.
             const stillHere = markHere();
             const queued = await enqueueMachineRemoveServerFn({ data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities } });
-            const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, queued.id,
+            const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, machine.name, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if ("release" in result) {
@@ -189,6 +155,7 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
  */
 function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const markHere = useStillHere();
   const [open, setOpen] = useState(false);
 
@@ -202,7 +169,7 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
   const forget = async () => {
     const stillHere = markHere();
     const answer = await forgetServerServerFn({ data: { organizationSlug, machineId: machine.id, requestId: crypto.randomUUID() } });
-    const result = await waitForMachineRemoveAttempt(organizationSlug, machine.name, answer.id, () => !stillHere());
+    const result = await waitForMachineRemoveAttempt(queryClient, organizationSlug, machine.name, answer.id, () => !stillHere());
     if (result === "aborted") return;
     if ("missing" in result) throw new Error(`${machine.name} changed while it was being forgotten. Try again.`);
     toast(`${machine.name} forgotten`);

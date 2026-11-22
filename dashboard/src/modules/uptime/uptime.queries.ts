@@ -17,10 +17,13 @@ export function useUptimeEnabled(organizationSlug: string) {
   return useQuery({ ...organizationStateQueryOptions(organizationSlug), staleTime: Infinity, select: (state) => state.uptimeEnabled }).data ?? false;
 }
 
+/** The prefix of every uptime read, for a screen that must refetch them all. */
+export const uptimeKeys = { all: ["uptime"] as const };
+
 /** Every check in the Environment, and when its open incident opened, or that the Organization needs Production to see them. */
 export function environmentUptimeQueryOptions(scope: UptimeScope) {
   return queryOptions({
-    queryKey: ["uptime", scope.environmentId, "checks"] as const,
+    queryKey: [...uptimeKeys.all, scope.environmentId, "checks"] as const,
     queryFn: () => readEnvironmentUptimeServerFn({ data: scope }),
     staleTime: 30_000,
     // The checker writes without a Cloud write to invalidate on.
@@ -31,7 +34,7 @@ export function environmentUptimeQueryOptions(scope: UptimeScope) {
 /** One Service's status, uptime, response time and incidents over `range`, null without a check, or that the Organization needs Production to see it. */
 export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: TimeRange) {
   return queryOptions({
-    queryKey: ["uptime", scope.environmentId, serviceId, range.from, range.to] as const,
+    queryKey: [...uptimeKeys.all, scope.environmentId, serviceId, range.from, range.to] as const,
     queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, from: range.from, to: range.to } }),
     staleTime: 30_000,
     // A requested probe answers within seconds, and its round can open or close an incident just after.
@@ -49,7 +52,7 @@ export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string,
  */
 export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
   const queryClient = useQueryClient();
-  const serviceKey = ["uptime", scope.environmentId, serviceId] as const;
+  const serviceKey = [...uptimeKeys.all, scope.environmentId, serviceId] as const;
   return useMutation({
     mutationFn: () => requestUptimeProbeServerFn({ data: { ...scope, serviceId } }),
     onMutate: async () => {
@@ -67,7 +70,7 @@ export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
       toast.error(toErrorMessage(error, "Could not check now"));
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["uptime", scope.environmentId] });
+      void queryClient.invalidateQueries({ queryKey: [...uptimeKeys.all, scope.environmentId] });
     },
   });
 }

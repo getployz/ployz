@@ -6,7 +6,9 @@ import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.ser
 import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { type EnrollmentStage } from "#/modules/machines/waiting/enrollment-states";
 
-const BOX_RECT = { width: 0, height: 520 };
+export const ROW_PX = 52;
+export const VISIBLE_ROWS = 10;
+const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";
 export const STAGES = {
   installing: "Installing", storage: "Setting up storage", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live",
@@ -29,12 +31,12 @@ export function enrollingRows(attempts: readonly ServerEnrollmentView[]) {
 export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }: { attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
   const rows = enrollingRows(attempts);
   const scroller = useRef<HTMLDivElement>(null);
-  const height = Math.min(rows.length, 10) * 52;
+  const height = Math.min(rows.length, VISIBLE_ROWS) * ROW_PX;
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
     getItemKey: (index) => rows[index]?.id ?? index,
-    estimateSize: () => 52,
+    estimateSize: () => ROW_PX,
     initialRect: BOX_RECT,
     observeElementRect: (_, report) => report(BOX_RECT),
     overscan: 2,
@@ -53,7 +55,7 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }:
         <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
           {["", "Name", "Stage", "Steps", "Detail", "Action"].map((name, i) => <span role="columnheader" key={i}>{name}</span>)}
         </div>
-        <div ref={scroller} role="rowgroup" data-slot="enrolling-box" className="overflow-y-auto" style={{ height, maxHeight: 520 }}>
+        <div ref={scroller} role="rowgroup" data-slot="enrolling-box" className="overflow-y-auto" style={{ height, maxHeight: ROW_PX * VISIBLE_ROWS }}>
           {padTop > 0 ? <div role="presentation" style={{ height: padTop }} /> : null}
           {items.map((item) => {
             const row = rows[item.index];
@@ -61,7 +63,7 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }:
             const joined = row.state === "joined";
             const stage = enrollmentStage(row);
             const step = ENROLLMENT_STAGES.indexOf(ENROLLMENT_STAGES.find((value) => value === row.stage) ?? "installing");
-            return <div key={row.id} role="row" aria-rowindex={item.index + 2} data-enrollment-id={row.id} className={cn(GRID, "border-t")} style={{ height: 52 }}>
+            return <div key={row.id} role="row" aria-rowindex={item.index + 2} data-enrollment-id={row.id} className={cn(GRID, "border-t")} style={{ height: ROW_PX }}>
               <span role="cell" aria-hidden="true" className={cn("size-2 rounded-full", joined ? "bg-success" : "bg-muted-foreground")} />
               <span role="cell" className="truncate font-medium">{row.name}{row.role === "founder" && !joined ? <span className="text-muted-foreground"> · first</span> : null}</span>
               <span role="cell" className={cn("truncate", joined ? "text-success" : "text-muted-foreground")}>{stage}</span>

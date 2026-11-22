@@ -13,7 +13,8 @@ import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.ser
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { clientWithRole, expectGate, ROLE_STATES, seedRole } from "#/test/your-role";
 import { EnrollSheet } from "./enroll-sheet";
-import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
+import { ROW_PX, VISIBLE_ROWS } from "./enrolling-list";
+import { IntakeTray, WaitingList } from "./waiting-list";
 
 let probe: ReturnType<typeof stubProbe>;
 let reject: ReturnType<typeof stubReject>;

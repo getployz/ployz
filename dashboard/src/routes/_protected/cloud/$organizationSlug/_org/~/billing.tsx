@@ -20,6 +20,8 @@ import {
   syncBillingAfterCheckoutServerFn,
 } from "#/modules/billing/billing.functions";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
+import { uptimeKeys } from "#/modules/uptime/uptime.queries";
+import { analyticsKeys } from "#/modules/web-analytics/ui/analytics.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { requireBilling } from "#/modules/organization/organization.route-data";
 
@@ -92,7 +94,7 @@ function RouteComponent() {
       .finally(() => {
         void queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });
         // Production opens uptime and analytics, which may hold the answer that asked for it.
-        for (const key of ["uptime", "analytics", "analytics-requests"]) void queryClient.invalidateQueries({ queryKey: [key] });
+        for (const queryKey of [uptimeKeys.all, analyticsKeys.all, analyticsKeys.requests]) void queryClient.invalidateQueries({ queryKey });
       });
   }, [checkoutId]);
 

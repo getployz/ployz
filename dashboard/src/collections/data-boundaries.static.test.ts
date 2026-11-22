@@ -102,6 +102,7 @@ const NETWORK_FILES = {
 const ON_DEMAND_READS = {
   logHistoryStatusQueryOptions: "the Logs view reads it once mounted and polls it, and a log line never waits on it",
   logHistoryServicesQueryOptions: "the Logs view reads it once the Environment's history is on, and the picker shows the loaded Services until it lands",
+  machineRemoveAttemptQueryOptions: "named by the attempt the user's confirmed Remove or Forget just queued, known only once the Servers take it",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
