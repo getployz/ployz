@@ -6,14 +6,11 @@ import { runtimeMembershipDigest } from "#/modules/machines/departed-servers";
 import { recordDepartedServers } from "#/modules/machines/departed-servers.server";
 import { recordMachineNames } from "#/modules/machines/machine-names.server";
 import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
-import type { FrameRecord } from "#/modules/runtime/organization-runtime.server";
+import { type FrameRecord, makeOrganizationRuntimeLive, runtimeNamesDigest } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const SEALING_ENSURE_TIMEOUT = "10 seconds";
-
-export const runtimeNamesDigest = (frame: RuntimeWatchView) =>
-  JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
 
 export const runtimeSealingDigest = (frame: RuntimeWatchView) =>
   JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.runtime.sealing?.kind ?? null]));
@@ -58,3 +55,6 @@ export const runtimeFrameRecords = Effect.gen(function* () {
   };
   return [names, sealing, departed] as const;
 });
+
+/** The Organization Runtime, recording from each frame what Machines keeps of it. */
+export const OrganizationRuntimeLive = makeOrganizationRuntimeLive(runtimeFrameRecords);

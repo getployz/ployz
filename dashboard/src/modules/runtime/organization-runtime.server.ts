@@ -10,7 +10,6 @@ import {
   loadOrganizationConnections,
   logForeignServers,
 } from "#/modules/runtime/connections.server";
-import { runtimeFrameRecords, runtimeNamesDigest } from "#/modules/runtime/runtime-frame-record.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -155,6 +154,9 @@ export type FrameRecord = {
 /** How long an asked frame waits before it is written again, doubling each time the same frame asks again, up to the ceiling. */
 export const FRAME_REASK_MS = 60_000;
 export const FRAME_REASK_CEILING_MS = 3_600_000;
+
+export const runtimeNamesDigest = (frame: RuntimeWatchView) =>
+  JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
 
 export const settledByName: FrameRecord = { digest: runtimeNamesDigest, write: () => Effect.succeed("settled") };
 
@@ -379,7 +381,8 @@ export function makeOrganizationRuntimeLayer(
   );
 }
 
-export const OrganizationRuntimeLive = Layer.unwrap(
+/** The Organization Runtime keeping what each of `frameRecords` keeps from the frames its sessions read. */
+export const makeOrganizationRuntimeLive = <R>(frameRecords: Effect.Effect<readonly FrameRecord[], never, R>) => Layer.unwrap(
   Effect.gen(function* () {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
@@ -397,7 +400,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
           Effect.provideService(Database, database),
         ),
       },
-      yield* runtimeFrameRecords,
+      yield* frameRecords,
     );
   }),
 );
