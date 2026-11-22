@@ -17,7 +17,7 @@ use ployz_core::authority::{
     Approver, KeyChange, KeyKind, KeyMember, PayloadDigest, Prior, ServiceVersion, Signed,
     SignerKey, SigningPublicKey, Timestamp, TrustedGrant, TrustedKeys,
 };
-use ployz_core::{DeviceCode, DeviceKey, MachineId, Namespace, Retired, ServiceName};
+use ployz_core::{DeviceCode, DeviceKey, Hint, MachineId, Namespace, Retired, ServiceName};
 use ployz_store::{
     Admit, Deploy, DeploymentId, EnvironmentRef, NamespaceQuery, NamespacesQuery, PlanQuery,
     PostedVersion, Running, RunningQuery, TagPin,
@@ -128,6 +128,9 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
             });
         }
     }
+    // Nothing drives this connection while the redeploys run, which can take minutes on
+    // this current-thread runtime, so the retirement opens its own.
+    drop(client);
     ui::stream(format_args!("PLOYZ_KEY={}", hex::encode(seed)));
     ui::note("Replace the old PLOYZ_KEY with this one where the key deploys from.");
     let resigner = DeviceSigning::from_seed(&seed);
@@ -186,8 +189,20 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
         })?;
         return Err(Error::partial());
     }
-    let now = runtime.block_on(Roster::read(&mut client))?;
-    now.require_all()?;
+    let still_works = |error: Error| {
+        error
+            .context(format!(
+                "Couldn't remove key {code} once its redeploys applied, so the old key still works."
+            ))
+            .hint(Hint::Retry(format!("ployz key rotate {code}")))
+    };
+    let mut client = runtime
+        .block_on(route::connect_full(leaf, context(leaf)))
+        .map_err(still_works)?;
+    let now = runtime
+        .block_on(Roster::read(&mut client))
+        .map_err(still_works)?;
+    now.require_all().map_err(still_works)?;
     let retired = unmoved(&now, &old, new)?;
     let (removed, gaps) = runtime.block_on(remove_everywhere(
         &client,
@@ -214,7 +229,7 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
             ));
         } else if !gaps.is_complete() {
             ui::note(format_args!(
-                "Run ployz key rm {code} once those servers answer, so none of them trusts the old key."
+                "The old key still works on those servers. Run ployz key rm {code} once they answer."
             ));
         }
     })
