@@ -42,7 +42,7 @@ pub(crate) fn internal(message: impl Into<String>) -> RpcError {
 
 /// The closest of `options` to a mistyped `input`, if any is close: same letters
 /// ignoring case and `-`/`_`, or a small edit distance. Never applied, only suggested.
-pub(crate) fn did_you_mean<'a>(
+pub fn did_you_mean<'a>(
     input: &str,
     options: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {

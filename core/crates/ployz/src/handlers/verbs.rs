@@ -2,8 +2,8 @@
 //! to know before calling it. `VERBS` is the only list.
 
 use clap::Command;
+use ployz_agent_tools::ToolId;
 use ployz_store::Permission;
-use ployz_store::tools::ToolId;
 use serde::Serialize;
 
 #[cfg(feature = "verify-faults")]
@@ -1220,7 +1220,7 @@ fn insert(
 
 #[cfg(test)]
 mod tests {
-    use ployz_store::docs::{self, Lookup};
+    use ployz_agent_tools::docs::{self, Lookup};
     use ployz_store::{Claim, Command};
 
     use super::*;

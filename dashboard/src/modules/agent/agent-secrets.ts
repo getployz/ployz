@@ -33,7 +33,7 @@ export function holdsSecretText(value: JsonValue | undefined): boolean {
   return Object.entries(asRecord(value) ?? {}).some(([field, inner]) => (field === "secret" && anyText(inner)) || holdsSecretText(inner));
 }
 
-/** A secret's value as the Rust Service tool finds one in what it sets (`tools/service.rs` `secret_value`). */
+/** A secret's value as the Rust Service tool finds one in what it sets (`ployz-agent-tools/src/service.rs` `secret_value`). */
 const suppliesSecret = (value: JsonValue | undefined) => holdsText(value) || holdsCredential(value);
 
 /** The Setting path of the first secret value `change` supplies, as `SERVICE.env.KEY`. */

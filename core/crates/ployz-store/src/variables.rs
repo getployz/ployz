@@ -764,7 +764,7 @@ pub(crate) fn unset(
 /// Whether `value` holds a secret's plain text: text anywhere under a `secret`
 /// field, whatever its other fields and however deep, whether or not [`set`] takes
 /// it.
-pub(crate) fn holds_secret_text(value: &Value) -> bool {
+pub fn holds_secret_text(value: &Value) -> bool {
     match value {
         Value::Object(fields) => fields.iter().any(|(field, value)| {
             (field == "secret" && holds_text(value)) || holds_secret_text(value)

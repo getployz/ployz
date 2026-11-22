@@ -1,8 +1,8 @@
 //! What a failed run found on its Servers, which a Failure carries and prints after the
 //! outer command adds its context.
 
+use ployz_agent_tools::LogText;
 use ployz_core::{MachineId, QualifiedService, ServiceName};
-use ployz_store::tools::LogText;
 
 /// Additional execution evidence printed only after the outer command adds context.
 #[derive(Debug, Default)]

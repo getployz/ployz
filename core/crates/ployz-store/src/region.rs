@@ -28,13 +28,13 @@ pub fn region_key(value: impl Into<String>) -> Result<ployz_core::Region, RpcErr
 }
 
 /// A region key a request carries, refused with what a key is.
-pub(crate) fn deserialize_key<'de, D: Deserializer<'de>>(
+pub fn deserialize_key<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<ployz_core::Region, D::Error> {
     region_key(String::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
-pub(crate) fn deserialize_optional_key<'de, D: Deserializer<'de>>(
+pub fn deserialize_optional_key<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<ployz_core::Region>, D::Error> {
     Option::<String>::deserialize(deserializer)?

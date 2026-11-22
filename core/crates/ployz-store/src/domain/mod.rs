@@ -280,7 +280,8 @@ pub enum DomainName {
 
 impl Domain {
     /// Whether users mean it by `name`: its hostname, or a generated domain's prefix.
-    pub(crate) fn is_named(&self, name: &str) -> bool {
+    #[must_use]
+    pub fn is_named(&self, name: &str) -> bool {
         let name = crate::id::normalize_hostname(name.to_owned());
         match &self.name {
             DomainName::Generated { prefix, hostname } => {

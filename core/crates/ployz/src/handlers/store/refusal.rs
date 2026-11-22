@@ -1,8 +1,8 @@
 //! How a Store refusal becomes this command's failure, and the retry line it names.
 
 use clap::ArgMatches;
+use ployz_agent_tools::Confirmation;
 use ployz_core::{Hint, RpcErrorCode};
-use ployz_store::tools::Confirmation;
 
 use super::super::Error;
 use super::{Store, next};

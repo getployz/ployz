@@ -1,0 +1,168 @@
+//! What every act shares: resolving a Server by name, running the act, and
+//! waiting on its run.
+
+use serde_json::{Value, json};
+
+use super::ToolId;
+use super::cloud::{Operation, OperationsAnswer, ServerReport, ServerState, ServersAnswer};
+use super::machine::{Cx, Stop};
+use super::refusal::{Call, Refusal};
+use super::step::{
+    Action, Ask, CloudQuery, DashboardPage, Fix, OperationsQuery, RequestKey, ServerName, Subject,
+};
+use ployz_core::{RpcError, RpcErrorCode};
+use ployz_store::did_you_mean;
+
+/// The ask for every Server.
+pub(crate) const fn servers() -> Ask {
+    Ask::Cloud(CloudQuery::Servers { only: None })
+}
+
+/// The region a new Environment starts in, as Ployz Cloud's Servers answer says it: the Engine's
+/// one rule for the Cluster's first Server. A local Store has no Servers to ask, and an answer
+/// Cloud can't give pins nothing, as the CLI's does when a Server goes unobserved.
+pub(crate) fn new_environment_region(cx: &mut Cx<'_>) -> Result<Option<ployz_core::Region>, Stop> {
+    if cx.is_local() {
+        return Ok(None);
+    }
+    let answer = cx.read(vec![servers()])?.into_iter().next();
+    Ok(answer
+        .and_then(Result::ok)
+        .and_then(|value| serde_json::from_value::<ServersAnswer>(value).ok())
+        .and_then(|answer| answer.new_environment_region))
+}
+
+/// `server_show` for one Server, or every one.
+pub(crate) fn server_show(server: Option<&ServerName>) -> Call {
+    let input = match server {
+        Some(server) => json!({ "server": server.as_str() }),
+        None => json!({}),
+    };
+    Call::to(ToolId::ServerShow, input)
+}
+
+/// The Servers a name is checked against. Unread because no Server answers, the
+/// refusal says the name went unchecked. With no Servers at all, Cloud's `conflict`
+/// refusal already says so and passes through unchanged.
+pub(crate) fn roster(
+    cx: &Cx<'_>,
+    answer: Option<Result<Value, RpcError>>,
+) -> Result<ServersAnswer, Stop> {
+    cx.cloud(answer).map_err(|stop| match stop {
+        Stop::Refuse(mut refusal) if refusal.code == RpcErrorCode::Unavailable => {
+            refusal.message = format!("Can't check that name. {}", refusal.message);
+            Stop::Refuse(refusal)
+        }
+        stop @ (Stop::Step(..) | Stop::Refuse(_)) => stop,
+    })
+}
+
+/// The one Server `name` names. With `answering`, a Server that did not answer
+/// is refused before anything is asked of it.
+pub(crate) fn resolve<'a>(
+    answer: &'a ServersAnswer,
+    name: &ServerName,
+    field: &str,
+    answering: bool,
+) -> Result<&'a ServerReport, Stop> {
+    let names = || answer.servers.iter().map(|server| server.name.as_str());
+    let mut matches = answer.servers.iter().filter(|server| server.name == *name);
+    let Some(found) = matches.next() else {
+        return Err(Refusal::not_found("No server by that name")
+            .with_did_you_mean(did_you_mean(name.as_str(), names()))
+            .with_valid(names())
+            .with_next(server_show(None))
+            .into());
+    };
+    if matches.next().is_some() {
+        return Err(Refusal::new(
+            RpcErrorCode::Ambiguous,
+            "More than one server has that name; rename one in the dashboard",
+        )
+        .with_valid(names())
+        .with_next(server_show(None))
+        .with_fix(&Fix::OpenDashboard {
+            page: DashboardPage::Servers,
+        })
+        .into());
+    }
+    let silent = answer.seen.unanswered.contains(name) || found.state == ServerState::Offline;
+    if answering && silent {
+        let mut refusal = Refusal::new(
+            RpcErrorCode::Unavailable,
+            "That server did not answer, so nothing was asked of it",
+        );
+        refusal.field = Some(field.to_owned());
+        return Err(refusal
+            .with_next(server_show(Some(name)))
+            .with_fix(&Fix::ConnectServers)
+            .into());
+    }
+    Ok(found)
+}
+
+/// One act and where its result says it ran.
+pub(crate) struct Run {
+    pub(crate) at: String,
+    pub(crate) action: Action,
+    pub(crate) subject: Subject,
+    /// The read that shows the subject now.
+    pub(crate) read: Call,
+}
+
+/// Run the call's act, then wait on its run within `wait_seconds`.
+pub(crate) fn operate(
+    cx: &mut Cx<'_>,
+    run: Run,
+    key: Option<RequestKey>,
+    wait_seconds: u32,
+) -> Result<Value, Stop> {
+    let operation = cx.act(run.action, key, run.read.clone())?;
+    let operation = cx.follow(
+        wait_seconds,
+        operation,
+        |operation| {
+            Ok((!operation.state.ended()).then(|| {
+                Ask::Cloud(CloudQuery::Operations(OperationsQuery {
+                    subject: run.subject.clone(),
+                    attempt: Some(operation.attempt),
+                    limit: 1,
+                }))
+            }))
+        },
+        |cx, operation, answer| {
+            let page = cx.cloud::<OperationsAnswer>(answer)?;
+            Ok(page.operations.into_iter().next().unwrap_or(operation))
+        },
+    )?;
+    Ok(json!({
+        "at": run.at,
+        "run": operation.run,
+        "state": operation.state,
+        "reason": operation.reason,
+        "servers": operation.servers,
+        "kept": operation.kept,
+        "unanswered": operation.unanswered,
+        "next": run.read,
+    }))
+}
+
+/// An operation as a read lists it: what was asked and how it ended.
+pub(crate) fn latest(operation: &Operation) -> Value {
+    json!({
+        "run": operation.run,
+        "state": operation.state,
+        "requested_at": operation.requested_at,
+        "ended_at": operation.ended_at,
+        "reason": operation.reason,
+    })
+}
+
+/// The latest operation on `subject`.
+pub(crate) fn operations(subject: Subject, limit: u8) -> Ask {
+    Ask::Cloud(CloudQuery::Operations(OperationsQuery {
+        subject,
+        attempt: None,
+        limit,
+    }))
+}
