@@ -2,12 +2,12 @@ import "@tanstack/react-start/server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
-import { member, organizationToken, session, user } from "#/modules/identity/tables";
+import { organizationToken, session, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { serverAccessRetireRequested } from "#/modules/machines/machines.events";
 import { refusalOf, type Role } from "#/modules/organization/access.server";
 import { can } from "#/modules/organization/permissions";
-import { organization } from "#/modules/organization/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 

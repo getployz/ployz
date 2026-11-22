@@ -8,7 +8,8 @@ import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/co
 import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { resolveCaller } from "#/modules/identity/caller.server";
-import { member, session as sessionTable } from "#/modules/identity/tables";
+import { session as sessionTable } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";

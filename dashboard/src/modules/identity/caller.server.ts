@@ -3,12 +3,12 @@ import { and, arrayContains, eq, exists, gt, isNull, notExists, or, type SQL, sq
 import { Cause, Context, Effect, Exit, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent, oauthConsentSession } from "#/modules/identity/oauth-tables";
-import { member, organizationToken, session } from "#/modules/identity/tables";
+import { organizationToken, session } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import type { Caller, TokenKind } from "#/modules/identity/actor";
-import { tokenRuns } from "#/modules/identity/claim-required.server";
+import { tokenRuns } from "#/modules/sandbox/claim-required.server";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { organization } from "#/modules/organization/tables";
 import { Auth } from "#/modules/identity/auth.server";
 import { bearerToken } from "#/server/bearer";
 import { Database } from "#/server/database.server";

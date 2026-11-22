@@ -46,7 +46,7 @@ import { createSendMail } from "#/modules/mail/mail.inngest";
 import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/web-analytics.inngest";
 import { createDeliverPushTargets } from "#/modules/observe-ingest/push-target.inngest";
-import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
+import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/sandbox/teardown.inngest";
 import type { PolarConfiguration } from "#/server/config.server";
 
 /** Every function the worker registers. A new function goes here, and nowhere else. */

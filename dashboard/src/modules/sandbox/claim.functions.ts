@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { deleteCookie, getCookie, getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
-import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/identity/claim.server";
-import { CLAIM_SIGN_IN_COOKIE, startedClaimSignIn } from "#/modules/identity/claim-sign-in.server";
+import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/sandbox/claim.server";
+import { CLAIM_SIGN_IN_COOKIE, startedClaimSignIn } from "#/modules/sandbox/claim-sign-in.server";
 import { Auth } from "#/modules/identity/auth.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 

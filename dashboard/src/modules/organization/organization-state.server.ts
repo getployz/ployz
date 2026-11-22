@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor, SessionActor } from "#/modules/identity/actor";
-import { invitation, member, session, user } from "#/modules/identity/tables";
+import { session, user } from "#/modules/identity/tables";
+import { invitation, member, organization } from "#/modules/organization/tables";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { billingEnabled } from "#/server/capabilities.server";
 import { AppConfig } from "#/server/config.server";
@@ -17,7 +18,6 @@ import {
   type RenameOrganization,
   type SyncOrganizationSlug,
 } from "./organization-state";
-import { organization } from "./tables";
 
 export const getOrganizationSlugById = Effect.fn(
   "Organization.getOrganizationSlugById",

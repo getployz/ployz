@@ -15,7 +15,7 @@ import { countOrganizationMachines } from "#/modules/runtime/connections.server"
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor } from "#/modules/identity/actor";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { user } from "#/modules/identity/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

@@ -3,8 +3,8 @@ import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { member, organizationToken, user } from "#/modules/identity/tables";
-import { organization } from "#/modules/organization/tables";
+import { organizationToken, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 

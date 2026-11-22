@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { deviceCode, member, verification } from "#/modules/identity/tables";
+import { deviceCode, verification } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 
 const bindingIdentifier = (code: string) => `device-organization:${code}`;

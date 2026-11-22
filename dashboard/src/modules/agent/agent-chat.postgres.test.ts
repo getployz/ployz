@@ -15,7 +15,8 @@ import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/mod
 import { approvalBadge } from "#/modules/approvals/approvals";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/modules/identity/auth.server";

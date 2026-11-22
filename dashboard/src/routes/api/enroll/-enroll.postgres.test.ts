@@ -5,7 +5,7 @@ import type { JsonValue } from "#/db/schema";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
-import { member } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { machineEnrollmentToken } from "#/modules/machines/tables";

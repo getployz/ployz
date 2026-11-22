@@ -1,13 +1,13 @@
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { member, session, user } from "#/modules/identity/tables";
+import { session, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { CreateOrganization, RenameOrganization } from "./organization-state";
 import { createOrganization, renameOrganization } from "./organization-state.server";
-import { organization } from "./tables";
 
 let harness: PostgresTestHarness;
 let actor: string;

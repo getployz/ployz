@@ -12,7 +12,7 @@ import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
 import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
-import { claimUrlFor } from "#/modules/identity/claim-required.server";
+import { claimUrlFor } from "#/modules/sandbox/claim-required.server";
 import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { MCP_SCOPES, mcpEndpoints } from "#/modules/agent/mcp-auth.server";

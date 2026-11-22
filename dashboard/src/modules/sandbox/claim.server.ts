@@ -5,14 +5,13 @@ import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Actor, SessionActor } from "#/modules/identity/actor";
-import { claimSecretFor, hashClaimSecret, tokenRuns } from "#/modules/identity/claim-required.server";
-import { takeClaimSignInOrganization } from "#/modules/identity/claim-sign-in.server";
-import { member, organizationToken, user } from "#/modules/identity/tables";
+import { claimSecretFor, hashClaimSecret, tokenRuns } from "#/modules/sandbox/claim-required.server";
+import { takeClaimSignInOrganization } from "#/modules/sandbox/claim-sign-in.server";
+import { organizationToken, user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { countOrganizationMachines } from "#/modules/runtime/connections.server";
-import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
-import { fleetToken, serverEnrollment } from "#/modules/machines/waiting/tables";
+import { reassignUserMachines } from "#/modules/machines/organization-machines.server";
 import { openOrganizationInSession } from "#/modules/organization/organization-state.server";
-import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
@@ -131,16 +130,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
     yield* drizzle.update(organizationToken)
       .set({ userId: actor.userId, expiresAt: new Date(Date.now() + CLAIMED_TOKEN_TTL_MS) })
       .where(and(eq(organizationToken.organizationId, id), inArray(organizationToken.userId, anonymousIds)));
-    yield* drizzle.update(serverAccess).set({ userId: actor.userId })
-      .where(and(eq(serverAccess.organizationId, id), inArray(serverAccess.userId, anonymousIds)));
-    yield* drizzle.update(machineRemoveAttempt).set({ requestedByUserId: actor.userId })
-      .where(inArray(machineRemoveAttempt.requestedByUserId, anonymousIds));
-    yield* drizzle.update(machineEnrollmentToken).set({ createdByUserId: actor.userId })
-      .where(inArray(machineEnrollmentToken.createdByUserId, anonymousIds));
-    yield* drizzle.update(fleetToken).set({ createdByUserId: actor.userId })
-      .where(inArray(fleetToken.createdByUserId, anonymousIds));
-    yield* drizzle.update(serverEnrollment).set({ requestedByUserId: actor.userId })
-      .where(inArray(serverEnrollment.requestedByUserId, anonymousIds));
+    yield* reassignUserMachines(id, anonymousIds, actor.userId);
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));
     yield* openOrganizationInSession(actor, id, found.slug);
     yield* removeSignInOrganization(actor, id, secret);

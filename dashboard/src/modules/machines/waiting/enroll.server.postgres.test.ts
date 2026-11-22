@@ -26,7 +26,7 @@ import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
-import { removeOrganization } from "#/modules/organization/organization-removal.server";
+import { removeOrganization } from "#/modules/organization-teardown/organization-removal.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";

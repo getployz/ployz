@@ -5,7 +5,7 @@ import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.
 import { createDrainServer } from "#/modules/machines/server-drain.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/web-analytics.inngest";
-import { createScheduleAnonymousSweep } from "#/modules/anonymous/teardown.inngest";
+import { createScheduleAnonymousSweep } from "#/modules/sandbox/teardown.inngest";
 import { createWorkerFunctions } from "#/worker/functions";
 
 const PINNED_POLICIES = [

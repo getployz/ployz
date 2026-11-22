@@ -9,7 +9,7 @@ import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domai
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";

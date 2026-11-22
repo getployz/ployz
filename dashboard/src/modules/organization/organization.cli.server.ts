@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { callerOrganizations } from "#/modules/identity/caller.server";
-import { removeOrganization } from "#/modules/organization/organization-removal.server";
+import { removeOrganization } from "#/modules/organization-teardown/organization-removal.server";
 import { CreateOrganization } from "#/modules/organization/organization-state";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { approvalCarried, decodeBody, gated, type CliRoutes } from "#/server/cli-call";

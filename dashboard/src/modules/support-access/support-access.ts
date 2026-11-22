@@ -1,7 +1,5 @@
 import { Schema } from "effect";
-
-/** What Ployz support may read inside an Organization beyond its shape. Each is off until a member turns it on. */
-export type SupportShows = { readonly variables: boolean; readonly configs: boolean; readonly logs: boolean };
+import type { SupportShows } from "#/modules/organization/permissions";
 
 export const SUPPORT_SHOWS_NONE: SupportShows = { variables: false, configs: false, logs: false };
 

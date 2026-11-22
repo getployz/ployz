@@ -1,3 +1,6 @@
+/** What Ployz support may read inside an Organization beyond its shape. Each is off until a member turns it on. */
+export type SupportShows = { readonly variables: boolean; readonly configs: boolean; readonly logs: boolean };
+
 /** Support is Ployz staff acting in an Organization that allows support. */
 export type PermissionRole = "owner" | "admin" | "member" | "support";
 

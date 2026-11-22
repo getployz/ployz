@@ -5,7 +5,7 @@ import type { PageContext } from "#/modules/agent/page-context";
 import { agentPersistence } from "#/modules/agent/persistence.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { member } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { handleAgentChat } from "#/routes/api/agent/$organizationSlug/-chat.handler";
 import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";

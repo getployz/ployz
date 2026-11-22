@@ -7,7 +7,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners, sealedNames, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/runtime/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";

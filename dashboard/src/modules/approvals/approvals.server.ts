@@ -25,7 +25,7 @@ import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.co
 import { type Actor, type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { beyondEnvironments, lacks, refusalOf } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
-import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
+import { isOwnedOnlyByAgents } from "#/modules/sandbox/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";

@@ -4,7 +4,7 @@ import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { signOutSessionAgents, transactionWithAgentGrants } from "#/modules/identity/session-agents.server";
 import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
