@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { type NeedsProduction, needsProduction } from "#/modules/billing/billing";
-import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "../local-time";
+import { addDays, dayStart, HOUR_MS, hourStart, localDay, nextHourStart } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
 import type { RouteRow } from "../requests/routes";
 
@@ -27,17 +27,6 @@ export function customDays(spec: RangeSpec) {
 }
 
 export const isRangeSpec = (spec: string) => PRESET_RANGES.some((preset) => preset.spec === spec) || customDays(spec) !== null;
-
-const QUARTER_HOUR_MS = 900_000;
-
-/** The next site-local hour boundary after `now`'s hour. Across a half-hour offset change that boundary is 30 minutes away, not an hour. */
-function nextHourStart(timezone: string, now: number) {
-  const start = hourStart(timezone, new Date(now)).getTime();
-  for (let at = start + QUARTER_HOUR_MS; ; at += QUARTER_HOUR_MS) {
-    const next = hourStart(timezone, new Date(at));
-    if (next.getTime() > start) return next;
-  }
-}
 
 export type ResolvedRange = { readonly range: Range; readonly interval: Interval };
 
