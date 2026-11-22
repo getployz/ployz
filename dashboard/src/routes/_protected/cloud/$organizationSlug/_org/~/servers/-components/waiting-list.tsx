@@ -12,8 +12,8 @@ import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollingList, enrollingRows } from "./enrolling-list";
-import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
+import { EnrollingList, enrollingRows, ROW_PX, VISIBLE_ROWS } from "./enrolling-list";
+import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "#/modules/machines/waiting/use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   hostnameOrIpMatcher,
@@ -29,10 +29,8 @@ import {
 
 const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView[]; now: number }>({ servers: [], now: 0 });
 
-export const ROW_PX = 52;
 // Below sm a row stacks its specs under the name, so it needs a third line.
 const STACKED_ROW_PX = 72;
-export const VISIBLE_ROWS = 10;
 const GRID = "grid grid-cols-[20px_minmax(0,1fr)_auto] content-center items-center gap-x-3 gap-y-0.5 px-3 sm:grid-cols-[20px_minmax(0,1fr)_150px_170px_200px]";
 
 /** The readiness mix, in the order a server moves through it, with the colour of its bar segment. */

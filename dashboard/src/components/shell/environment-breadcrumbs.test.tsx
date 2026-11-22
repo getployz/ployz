@@ -5,6 +5,7 @@ import type { ConfigQuery, ConfigView, EnvironmentListing } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider, useParams } from "@tanstack/react-router";
 import { environmentsQuery, projectsQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
+import * as functions from "#/modules/config-store/store.functions";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
 
 beforeEach(() => {
@@ -12,7 +13,7 @@ beforeEach(() => {
   vi.stubGlobal("scrollTo", () => {});
   Element.prototype.scrollIntoView ??= () => {};
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function TopBar() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ strict: false });
@@ -24,7 +25,7 @@ function TopBar() {
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
   ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, protections: 0, ...extra });
 
-async function renderAt(path: string) {
+async function renderAt(path: string, options: { environmentsFail?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const seed = (query: ConfigQuery, value: ConfigView) =>
     queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", query], { ok: true, value });
@@ -32,7 +33,8 @@ async function renderAt(path: string) {
     { id: "store", name: "store", default_environment: "production", environments: ["fix-web", "pr-142", "pr-146", "production", "staging"] },
     { id: "docs", name: "docs", default_environment: "preview", environments: ["preview", "production"] },
   ] });
-  seed(environmentsQuery("store"), { view: "environments", project: { id: "store", name: "store" }, environments: [
+  if (options.environmentsFail) queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", environmentsQuery("store")], { ok: false, refusal: { code: "unavailable", message: "no", details: null } });
+  else seed(environmentsQuery("store"), { view: "environments", project: { id: "store", name: "store" }, environments: [
     listing("fix-web", { parent: "production" }),
     listing("pr-142", { parent: "staging", removal: { kind: "deployment", id: "d", number: 3, status: "running", saved: 0, services: [], ships: [], runner: null, upload: null, remove: true, admitted_by: null, admitted_at: 0, started_at: null, ended_at: null, message: null, push: null, ci: null, held: false, environment_id: "pr-142", in_flight: true, outcome: null } }),
     listing("pr-146", { parent: "production", merged: true }),
@@ -161,4 +163,13 @@ it("marks a Protected Environment beside its crumb, and no other", async () => {
   fireEvent.click(await screen.findByRole("option", { name: "staging" }));
   await screen.findByRole("button", { name: "Environment: staging" });
   expect(screen.queryByText("Protected")).toBeNull();
+});
+
+it("offers a retry in the Environment switcher when its Store read failed, and lists them once it answers", async () => {
+  // SAFETY: the mock answers the one read this test makes.
+  vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: { view: "environments", project: { id: "store", name: "store" }, environments: [listing("production", { default: true }), listing("staging")] } } as never);
+  await using _app = await renderAt("/cloud/acme/store/production/logs", { environmentsFail: true });
+  fireEvent.click(screen.getByRole("button", { name: "Environment: production" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Could not load projects. Retry" }));
+  expect(await screen.findByRole("option", { name: "staging" })).toBeTruthy();
 });

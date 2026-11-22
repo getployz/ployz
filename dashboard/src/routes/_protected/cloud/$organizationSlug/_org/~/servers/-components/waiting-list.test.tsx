@@ -8,12 +8,13 @@ import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire
 import type { WaitingServerStatus, WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
-import { ENROLL_REFUSED, PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
+import { ENROLL_REFUSED, PROBE_RETRY_MS, PROBE_SETTLE_MS } from "#/modules/machines/waiting/use-waiting";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { clientWithRole, expectGate, ROLE_STATES, seedRole } from "#/test/your-role";
 import { EnrollSheet } from "./enroll-sheet";
-import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
+import { ROW_PX, VISIBLE_ROWS } from "./enrolling-list";
+import { IntakeTray, WaitingList } from "./waiting-list";
 
 let probe: ReturnType<typeof stubProbe>;
 let reject: ReturnType<typeof stubReject>;

@@ -102,6 +102,7 @@ const NETWORK_FILES = {
 const ON_DEMAND_READS = {
   logHistoryStatusQueryOptions: "the Logs view reads it once mounted and polls it, and a log line never waits on it",
   logHistoryServicesQueryOptions: "the Logs view reads it once the Environment's history is on, and the picker shows the loaded Services until it lands",
+  machineRemoveAttemptQueryOptions: "named by the attempt the user's confirmed Remove or Forget just queued, known only once the Servers take it",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
@@ -155,6 +156,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "components/shell/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
+  "modules/ingress/cloudflare-setup.client.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
