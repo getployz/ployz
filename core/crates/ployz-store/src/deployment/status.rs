@@ -45,7 +45,6 @@ impl DeploymentStatus {
 
 pub(crate) const WAITING_FOR_CI: &str = DeploymentStatus::WaitingForCi.as_str();
 pub(crate) const QUEUED: &str = DeploymentStatus::Queued.as_str();
-pub(crate) const SUPERSEDED: &str = DeploymentStatus::Superseded.as_str();
 pub(crate) const RUNNING: &str = DeploymentStatus::Running.as_str();
 pub(crate) const APPLIED: &str = DeploymentStatus::Applied.as_str();
 pub(crate) const FAILED: &str = DeploymentStatus::Failed.as_str();

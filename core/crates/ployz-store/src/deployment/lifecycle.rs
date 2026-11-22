@@ -114,7 +114,7 @@ pub(crate) fn admit(
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
     let keeps_holds = held || matches!(admission, Admission::Beside(_));
-    queue(tx, environment, keeps_holds, |tx, number| {
+    queue(tx, environment, (id, keeps_holds), |tx, number| {
         let frozen_columns: [crate::storage::Param<'_>; 12] = [
             revision_param(saved)?.into(),
             targets_text.as_str().into(),
@@ -143,41 +143,37 @@ pub(crate) fn admit(
             message,
             service_uploads,
         ] = frozen_columns;
-        let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
+        let numbered = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
         // Number and list position are both one past the last, taken at the same
         // moment under the lock: among numbered Deployments the list runs in number
         // order. A promoted hold moves to the top of the list for it.
         let listed = next_listed(tx, environment)?;
         if held {
-            return tx
-                .execute(
-                    &format!(
-                        "UPDATE config_deployment SET status = '{QUEUED}', number = ?13, \
-                     listed = ?14, \
-                     saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
-                     credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
-                     admitted_by = ?11, message = ?12, service_uploads = ?15 \
-                     WHERE id = ?1 AND status = '{WAITING_FOR_CI}'"
-                    ),
-                    &[
-                        id.as_str().into(),
-                        saved,
-                        targets,
-                        nodes,
-                        namespace,
-                        run,
-                        credentials,
-                        upload,
-                        cluster,
-                        at,
-                        by,
-                        message,
-                        number.into(),
-                        listed.into(),
-                        service_uploads,
-                    ],
-                )
-                .map(|_| ());
+            tx.execute(
+                "UPDATE config_deployment SET listed = ?13, \
+                 saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
+                 credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
+                 admitted_by = ?11, message = ?12, service_uploads = ?14 WHERE id = ?1",
+                &[
+                    id.as_str().into(),
+                    saved,
+                    targets,
+                    nodes,
+                    namespace,
+                    run,
+                    credentials,
+                    upload,
+                    cluster,
+                    at,
+                    by,
+                    message,
+                    listed.into(),
+                    service_uploads,
+                ],
+            )?;
+            let mut hold = load(tx, id)?;
+            hold.standing = hold.standing.queue(number);
+            return save(tx, &mut hold);
         }
         tx.execute(
             &format!(
@@ -192,7 +188,7 @@ pub(crate) fn admit(
                 id.as_str().into(),
                 who.organization.as_str().into(),
                 environment_id.into(),
-                number.into(),
+                numbered.into(),
                 saved,
                 targets,
                 nodes,
@@ -361,40 +357,43 @@ pub(super) fn inherit(
     Ok(())
 }
 
-/// Queue a Deployment of `environment`, written by `insert` with the next number.
+/// Queue Deployment `id` of `environment`, written by `insert` with the next number.
 /// It supersedes the queued one, if any, and every one waiting for CI unless
-/// `keeps_holds`. Each superseded one ends now. The superseded queued one leaves
-/// flight, so the sealed values only it kept in History go once the new one holds
-/// its revision.
+/// `keeps_holds`. They are superseded after `insert`, so the sealed values only the
+/// queued one kept in History go once `id` holds its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    keeps_holds: bool,
+    (id, keeps_holds): (&DeploymentId, bool),
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
-    let now = now();
-    let superseded = tx.execute(
-        &format!(
-            "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?2 \
-         WHERE environment_id = ?1 AND status = '{QUEUED}'"
-        ),
-        &[environment.as_str().into(), now.into()],
-    )?;
-    if !keeps_holds {
-        tx.execute(
-            &format!(
-                "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?2 \
-             WHERE environment_id = ?1 AND status = '{WAITING_FOR_CI}'"
-            ),
-            &[environment.as_str().into(), now.into()],
-        )?;
-    }
     let number = next_number(tx, environment)?;
     insert(tx, number)?;
-    if superseded > 0 {
-        crate::seal_scrub::history::scrub_sealed(tx, environment)?;
-    }
+    let replaced = match keeps_holds {
+        true => format!("status = '{QUEUED}'"),
+        false => format!("status IN ('{QUEUED}', '{WAITING_FOR_CI}')"),
+    };
+    supersede(
+        tx,
+        &format!("environment_id = ?1 AND id <> ?2 AND {replaced}"),
+        &[environment.as_str().into(), id.as_str().into()],
+    )?;
     Ok(number)
+}
+
+/// Supersede now every Deployment `condition` selects: a newer admission replaces
+/// each one queued or waiting for CI.
+fn supersede(
+    tx: &mut dyn Tx,
+    condition: &str,
+    params: &[crate::storage::Param<'_>],
+) -> Result<(), RpcError> {
+    let now = now();
+    for mut stored in load_where(tx, condition, params)? {
+        stored.standing = stored.standing.supersede(now);
+        save(tx, &mut stored)?;
+    }
+    Ok(())
 }
 
 /// The list position the next Deployment of `environment` takes: one past the
@@ -445,11 +444,12 @@ pub(crate) fn hold(
         push.repository_id.into(),
         push.branch.as_str().into(),
     ];
+    let condition = &format!(
+        "environment_id = ?1 AND push_repository_id = ?2 AND push_branch = ?3 \
+         AND status = '{WAITING_FOR_CI}'"
+    );
     let held = tx.query(
-        &format!(
-            "SELECT push_head FROM config_deployment WHERE environment_id = ?1 \
-         AND push_repository_id = ?2 AND push_branch = ?3 AND status = '{WAITING_FOR_CI}'"
-        ),
+        &format!("SELECT push_head FROM config_deployment WHERE {condition}"),
         &key,
     )?;
     if held
@@ -460,17 +460,7 @@ pub(crate) fn hold(
     {
         return Ok(());
     }
-    let [environment_param, repository_param, branch_param] = key;
-    tx.execute(
-        &format!("UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?4 WHERE environment_id = ?1 \
-         AND push_repository_id = ?2 AND push_branch = ?3 AND status = '{WAITING_FOR_CI}'"),
-        &[
-            environment_param,
-            repository_param,
-            branch_param,
-            now().into(),
-        ],
-    )?;
+    supersede(tx, condition, &key)?;
     let namespace = namespace(tx, who, environment, false)?;
     let deployment = DeploymentId::fresh();
     let listed = next_listed(tx, id)?;
@@ -534,26 +524,20 @@ pub(crate) fn supersede_held(
         return Ok(());
     }
     scope::lock_all(tx, environments)?;
-    let [organization, repository, branch, head] = params;
-    tx.execute(
-        &format!(
-            "UPDATE config_deployment SET status = '{SUPERSEDED}', ended = ?5 WHERE {condition}"
-        ),
-        &[organization, repository, branch, head, now().into()],
-    )?;
-    Ok(())
+    supersede(tx, condition, &params)
 }
 
 /// Cancel every Deployment of `environment` waiting for CI: it is going away. The
 /// caller holds its lock.
 pub(crate) fn cancel_held_in(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        &format!(
-            "UPDATE config_deployment SET status = '{CANCELLED}', ended = ?2 \
-         WHERE environment_id = ?1 AND status = '{WAITING_FOR_CI}'"
-        ),
-        &[environment.as_str().into(), now().into()],
+    let held = load_where(
+        tx,
+        &format!("environment_id = ?1 AND status = '{WAITING_FOR_CI}'"),
+        &[environment.as_str().into()],
     )?;
+    for stored in held {
+        cancel_hold(tx, stored, None)?;
+    }
     Ok(())
 }
 
@@ -564,19 +548,31 @@ pub(crate) fn cancel_held(
     id: &DeploymentId,
     reason: String,
 ) -> Result<(), RpcError> {
-    let mut stored = locked(tx, id)?;
+    let stored = locked(tx, id)?;
     if stored.summary.status != DeploymentStatus::WaitingForCi {
         return Ok(());
     }
-    let outcome = Outcome::NotExecuted {
-        reason,
-        cause: Vec::new(),
-        needs_upload: Vec::new(),
-        same_again: false,
-    };
+    cancel_hold(tx, stored, Some(reason))
+}
+
+/// Cancel `stored`, waiting for CI, now: with `reason` as its Not Executed outcome,
+/// or no outcome when none.
+fn cancel_hold(
+    tx: &mut dyn Tx,
+    mut stored: Stored,
+    reason: Option<String>,
+) -> Result<(), RpcError> {
     stored.standing = stored.standing.cancel(now());
-    stored.summary.outcome = Some(outcome.clone());
-    stored.run.outcome = Some(outcome);
+    if let Some(reason) = reason {
+        let outcome = Outcome::NotExecuted {
+            reason,
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+            same_again: false,
+        };
+        stored.summary.outcome = Some(outcome.clone());
+        stored.run.outcome = Some(outcome);
+    }
     save(tx, &mut stored)
 }
 
