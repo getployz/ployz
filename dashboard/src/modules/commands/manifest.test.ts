@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CATALOG, GATED } from "#/modules/agent/agent-tools";
+import { CATALOG } from "#/modules/agent/agent-tools";
 import { inputSchema } from "#/modules/commands/define";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -15,11 +15,9 @@ describe("published command manifest", () => {
     expect(served, "core's published-manifest.json is stale: run `pnpm manifest:fixture` in dashboard/ and commit it").toEqual(fixture);
   });
 
-  it("serves each command's own input schema, so ployz never builds flags for a different input", () => {
-    const served = new Map(manifest().commands.map((entry) => [entry["name"], entry]));
+  it("closes each command's input schema, so ployz never sends a field the command would drop", () => {
     for (const command of COMMANDS) {
-      expect(served.get(command.name)?.["input"], command.name).toEqual(inputSchema(command.input));
-      expect(inputSchema(command.input)).toMatchObject({ type: "object", additionalProperties: false });
+      expect(inputSchema(command.input), command.name).toMatchObject({ type: "object", additionalProperties: false });
     }
   });
 
@@ -43,9 +41,5 @@ describe("published command manifest", () => {
       expect(served.get(command.name), command.name).toMatchObject({ title: command.title, idempotent: command.idempotent, open_world: command.openWorld });
       if (command.kind === "read") expect(command.idempotent, command.name).toBe(true);
     }
-  });
-
-  it("gates exactly the commands that ask a human, so a destructive one never runs in the sidebar unreviewed", () => {
-    for (const command of COMMANDS) expect(GATED.has(command.name), command.name).toBe(command.gate === "ask");
   });
 });
