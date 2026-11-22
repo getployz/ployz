@@ -27,6 +27,8 @@ use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
+/// The Cluster network a founding Server takes when `--network` gives none.
+pub(super) const CLUSTER_NETWORK: &str = "10.210.0.0/16";
 
 #[path = "enroll_waiting.rs"]
 mod waiting;
@@ -70,7 +72,7 @@ pub(crate) fn command(command: Command) -> Command {
     )
     .arg(
         value("network", None)
-            .default_value("10.210.0.0/16")
+            .default_value(CLUSTER_NETWORK)
             .value_parser(clap::value_parser!(Ipv4Net))
             .help("Cluster network, when this Server founds the Cluster"),
     )
@@ -457,13 +459,13 @@ pub(crate) fn engine_view(root: &ArgMatches) -> String {
         Ok((policy, name, cluster, shaping.storage(), request))
     })()
     .map_err(|error| format!("{error} {:?}", error.hints()));
-    let reach = plan.reach();
+    let reach = leaf_matches(root);
     let text = |id: &str| reach.get_one::<String>(id).cloned();
     format!(
         "{parsed:?} {:?} {:?}",
         (
             plan.destination().map(str::to_owned),
-            plan.ssh_key().map(str::to_owned),
+            text("ssh-key"),
             plan.no_install(),
             shaping.reset(),
             shaping.yes(),

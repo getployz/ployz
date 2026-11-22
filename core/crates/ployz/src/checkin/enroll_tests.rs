@@ -1646,3 +1646,139 @@ async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes
         }
     }
 }
+
+fn equivalence_view(plan: &crate::handlers::server::EnrollPlan) -> String {
+    let shaping = plan.shaping();
+    let parsed = (|| -> Result<_, crate::handlers::Error> {
+        let policy = shaping.policy()?;
+        let name = shaping.name()?;
+        let cluster = shaping.cluster_name()?;
+        let request = shaping.token_request()?;
+        Ok((policy, name, cluster, shaping.storage(), request))
+    })()
+    .map_err(|error| format!("{error} {:?}", error.hints()));
+    let reach = plan.reach();
+    format!(
+        "{parsed:?} {:?} {:?}",
+        (
+            plan.destination(),
+            plan.no_install(),
+            shaping.reset(),
+            shaping.yes(),
+            shaping.ingress_closed(),
+            plan.shows_recovery_code(),
+        ),
+        (
+            shaping.wg_mtu(),
+            shaping.network(),
+            shaping.version(),
+            reach.config(),
+            reach.connect(),
+            reach.ssh_timeout(),
+        )
+    )
+}
+
+#[test]
+fn equivalence_the_typed_plan_matches_the_clap_plan() {
+    let with = |change: &dyn Fn(&mut EnrollInstruction)| {
+        let mut instruction = odd_instruction();
+        change(&mut instruction);
+        instruction
+    };
+    let zfs = |device: Option<&str>| EnrollStorage::Zfs {
+        device: device.map(str::to_owned),
+    };
+    let mut corpus: Vec<EnrollInstruction> = vec![odd_instruction()];
+    for device in [
+        None,
+        Some("/dev/disk/by-id/spare"),
+        Some(""),
+        Some("-x"),
+        Some("-"),
+        Some("--"),
+        Some("relative"),
+        Some("/dev/x y"),
+        Some("/dev/a,b"),
+        Some("/dev/-x"),
+        Some("zfs:/dev/x"),
+    ] {
+        corpus.push(with(&|i| i.storage = zfs(device)));
+    }
+    for name in [
+        "", "-x", "-", "--", "-1", "--x=y", "--yes", "web 1", "a=b", "a,b", "Web-1", "web-1-",
+        " web", "é", "x-",
+    ] {
+        corpus.push(with(&|i| i.name = name.to_owned()));
+    }
+    for cluster in ["acme", "-x", "-", "--", "A B", "", "--yes", "a,b"] {
+        corpus.push(with(&|i| {
+            i.founding_cluster_name = Some(cluster.to_owned())
+        }));
+    }
+    for labels in [
+        &[("tier", "edge"), ("zone", "a=b")][..],
+        &[("a", "b,c")],
+        &[("Bad Key", "v")],
+        &[("k=x", "v")],
+        &[("-x", "v")],
+        &[("-", "v")],
+        &[("", "v")],
+        &[("", "-v")],
+        &[("a", "")],
+        &[("a", "-v")],
+        &[("a", ",")],
+        &[("a", "b,")],
+        &[("x,y", "v")],
+        &[("region", "fsn")],
+        &[("region", "FSN")],
+        &[("region", "-x")],
+        &[("a", "1"), ("b", "2"), ("c", "3")],
+    ] {
+        corpus.push(with(&|i| i.policy.labels = labelled(labels)));
+    }
+    for accepts in 0..8u8 {
+        corpus.push(with(&|i| {
+            i.policy.accepts_builds = accepts & 1 != 0;
+            i.policy.accepts_services = accepts & 2 != 0;
+            i.policy.accepts_ingress = accepts & 4 != 0;
+        }));
+    }
+    corpus.push(with(&|i| i.founding_ingress_closed = true));
+    corpus.push(with(&|i| {
+        i.founding_ingress_closed = true;
+        i.founding_cluster_name = Some("acme".to_owned());
+        i.storage = zfs(Some("/dev/sdb"));
+        i.policy.labels = labelled(&[("tier", "edge"), ("region", "fsn")]);
+        i.name = String::new();
+    }));
+    let mut refused = 0;
+    for instruction in &corpus {
+        for home_set in [true, false] {
+            let old = plan_from_instruction(instruction, "https://cloud.example", home_set);
+            let config = if home_set {
+                crate::context::expand_home(Path::new(
+                    &std::env::var(crate::env::CONFIG)
+                        .unwrap_or_else(|_| crate::context::default_config_path()),
+                ))
+            } else {
+                std::path::PathBuf::from(ROOT_CONFIG)
+            };
+            let new = crate::handlers::server::EnrollPlan::from_instruction(instruction, config);
+            match (old, new) {
+                (Ok(old), Ok(new)) => assert_eq!(
+                    equivalence_view(&old),
+                    equivalence_view(&new),
+                    "{instruction:?} home {home_set}"
+                ),
+                (Err(_), Err(_)) => refused += 1,
+                (old, new) => panic!(
+                    "{instruction:?} home {home_set}: old {:?}, new {:?}",
+                    old.err(),
+                    new.err()
+                ),
+            }
+        }
+    }
+    println!("{} instructions, {refused} refusals", corpus.len() * 2);
+}
