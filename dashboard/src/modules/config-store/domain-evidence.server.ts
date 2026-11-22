@@ -231,7 +231,6 @@ export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* 
   return { target: cloudflare.target, reached: Arr.getSomes(answers) } satisfies TunnelEvidence;
 });
 
-/** The custom hostnames a domains or domain view lists. */
 const customHostnamesOf = (view: Extract<ConfigView, { view: "domains" | "domain" }>) =>
   (view.view === "domains" ? view.domains : [view.domain]).flatMap((domain) => domain.kind === "custom" ? [String(domain.hostname)] : []);
 

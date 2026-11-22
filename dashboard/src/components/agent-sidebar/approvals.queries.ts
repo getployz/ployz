@@ -43,7 +43,6 @@ export function approvalOptions(organizationSlug: string, id: string) {
   });
 }
 
-/** Approve exactly the digest shown, or deny with a reason, as the CLI does. */
 export const decideApproval = approvals.decide;
 
 export const landDecision = approvals.land;

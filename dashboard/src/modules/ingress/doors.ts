@@ -202,7 +202,6 @@ export function switchProgress(change: LatestDoorsChange | null): { readonly lab
   }
 }
 
-/** How many of `servers` hold `door` open. */
 export const holdingCount = (servers: ClusterIngressObservation["servers"], door: DoorName) => servers.filter((server) => server.doors.includes(door)).length;
 
 /**

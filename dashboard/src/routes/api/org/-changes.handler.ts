@@ -8,12 +8,10 @@ import { isClientDisconnect } from "#/server/public-error";
 
 const POLL_INTERVAL = "250 millis";
 
-/** A failed read ends the stream: a client that disconnected mid-read is routine, anything else is logged. */
 const noChanges = (cause: Cause.Cause<unknown>) =>
   (isClientDisconnect(cause) ? Effect.logDebug : Effect.logError)("Organization change log read failed.", cause).pipe(Effect.as(null));
 
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
-/** What the stream says from `start` on: each poll names the collections changed since the last one. */
 const changeEvents = (organizationId: string, start: string) =>
   Stream.paginate({ since: start, first: true }, ({ since, first }) => Effect.gen(function* () {
     if (!first) yield* Effect.sleep(POLL_INTERVAL);

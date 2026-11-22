@@ -45,7 +45,6 @@ export function streamRemote(context: RouteDataContext, ...reads: Array<Pick<Fet
   for (const options of reads) void context.queryClient.prefetchQuery(options);
 }
 
-/** `prefetchRemote` for a paged read: its first page. */
 export async function prefetchRemotePages<T, K extends QueryKey, P>(context: RouteDataContext, options: FetchInfiniteQueryOptions<T, Error, T, K, P>) {
   const ready = context.queryClient.prefetchInfiniteQuery(options);
   if (environmentManager.isServer()) await ready;

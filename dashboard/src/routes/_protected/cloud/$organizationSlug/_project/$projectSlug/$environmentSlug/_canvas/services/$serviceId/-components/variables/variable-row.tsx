@@ -32,9 +32,7 @@ export function VariableRow({
   valueTargets?: ReferenceTarget[];
   /** Seals a plain variable's value, or sets a sealed one's, in the background. */
   onSealVariable: (variable: PlainVariableRecord) => Write;
-  /** Marks the variable exported, or stops exporting it. */
   onSetExported: (variable: VariableRecord, exported: boolean) => void;
-  /** Marks the variable Never sync, or syncs it again. */
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   /** With `updateReferences`, the variables using it switch to the new name too. */
   onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;

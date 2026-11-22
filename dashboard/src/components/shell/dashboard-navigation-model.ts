@@ -37,7 +37,7 @@ export const ORGANIZATION_SETTINGS_SECTIONS = [
 ] as const;
 export type OrganizationSettingsSection = (typeof ORGANIZATION_SETTINGS_SECTIONS)[number]["id"];
 
-/** An Environment's five places, in rail order. Architecture is its canvas. */
+/** Architecture is the Environment's canvas. */
 const environmentPlaceOrder = ["architecture", "deployments", "logs", "analytics", "settings"] as const;
 type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
 const environmentPlaces = {
@@ -68,7 +68,6 @@ const environmentPlaces = {
   },
 } satisfies Record<EnvironmentPlace, Destination>;
 
-/** The organization's three places, in rail order. */
 const organizationPlaceOrder = ["projects", "servers", "organization-settings"] as const;
 type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "integrations" | "billing" | "account";
 const organizationDestinations = {

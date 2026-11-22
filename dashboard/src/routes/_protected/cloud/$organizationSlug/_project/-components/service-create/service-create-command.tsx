@@ -202,7 +202,6 @@ function useServiceCreateActions({
     setPanel({ kind: nextPanel });
   }
 
-  /** Runs one command from click until navigation lands; its failure shows in the alert. */
   async function whileCreating(action: () => Promise<void>) {
     if (creatingRef.current) return;
     creatingRef.current = true;
@@ -262,7 +261,6 @@ function useServiceCreateActions({
     });
   }
 
-  /** Creates a Service here, or as the first in a new Project named after `source`. */
   const createInTarget = (
     source: NewServiceSource | undefined,
     kind: "service" | "database",

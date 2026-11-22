@@ -90,6 +90,7 @@ export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubIns
     const runs = yield* drizzle.select({ deploymentId: deploymentRun.deploymentId }).from(deploymentRun)
       .where(eq(deploymentRun.organizationId, organizationId));
     for (const { deploymentId } of runs) {
+      // A Deployment or build the Store no longer has has no GitHub run to stop.
       const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
         Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
       for (const build of view?.builds ?? []) {

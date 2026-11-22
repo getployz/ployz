@@ -137,10 +137,8 @@ export const machineRemoveAttempt = pgTable(
 
 /**
  * One Drain Cloud ran, or was asked to run, on one Server: history, read server-side as the latest per Server, never
- * into the Org Store. The click writes the row (`pending`) under the id the tab minted, so the one-active guard answers
- * the click and every tab sees it through the change stream; the run binds itself to it, claims it (`running`) right
- * before it asks the Engine, and ends it with the Engine's report (`finished`) or without one, under an end code whose
- * state `DRAIN_END_CODES` names.
+ * into the Org Store. The click writes the row under the id the tab minted, so the one-active guard answers the click
+ * and every tab sees it through the change stream. Its states are `DRAIN_STATES`.
  */
 export const serverDrainAttempt = pgTable(
   "server_drain_attempt",
@@ -171,7 +169,6 @@ export const serverDrainAttempt = pgTable(
     approvalIndex("server_drain_attempt", table.approvalId),
     check("server_drain_attempt_targets_check", sql`${table.targets} is null or jsonb_typeof(${table.targets}) = 'array'`),
     machineIdCheck("server_drain_attempt", table.machineId),
-    // Each end code ends in exactly its state.
     endCodeCheck("server_drain_attempt", table, DRAIN_END_CODES),
     check(
       "server_drain_attempt_refusal_check",
@@ -201,9 +198,8 @@ export const serverDrainAttempt = pgTable(
 
 /**
  * One web traffic change Cloud applied, or was asked to apply, to one Server: history, read server-side as the latest
- * per Server, never into the Org Store. The flip writes the row (`pending`) under the id the tab minted, so the
- * one-active guard answers the flip and every tab sees it through the change stream; the run binds itself to it,
- * claims it (`running`) right before it asks the Engine, and ends it `finished` or `failed` with why.
+ * per Server, never into the Org Store. The flip writes the row under the id the tab minted, so the one-active guard
+ * answers the flip and every tab sees it through the change stream. Its states are `WEB_TRAFFIC_STATES`.
  */
 export const serverWebTrafficAttempt = pgTable(
   "server_web_traffic_attempt",
@@ -241,9 +237,8 @@ export const serverWebTrafficAttempt = pgTable(
 );
 
 /**
- * One clean of a Namespace no Environment owns, asked for from the CLI. The request writes it `pending` with the Volumes
- * the caller confirmed; the run claims it `running` right before it asks the Engine, and ends it `finished` with the
- * Volumes removed, or under an end code whose state `CLEANUP_END_CODES` names.
+ * One clean of a Namespace no Environment owns, asked for from the CLI, deleting exactly the Volumes the caller
+ * confirmed. Its states are `CLEANUP_STATES`.
  */
 export const namespaceCleanup = pgTable(
   "namespace_cleanup",

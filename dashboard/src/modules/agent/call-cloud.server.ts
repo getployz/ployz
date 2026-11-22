@@ -159,7 +159,6 @@ const readableNamespaces = Effect.fn("CallCloud.readableNamespaces")(function* (
   return { readable: owned.filter((row) => unheld(caller, permission, row.environment) === null).map((row) => row.namespace) } as const;
 });
 
-/** Read `query` from the runtime as `caller` may with `permission`, among `readableNamespaces`. */
 const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
   caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null,
   { organizationWide = false, sealed = null }: { readonly organizationWide?: boolean; readonly sealed?: ReadonlyArray<string> | null } = {},

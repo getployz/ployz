@@ -50,6 +50,7 @@ export const observeOrganization = Effect.fn("VolumeRun.observeOrganization")(fu
 export const observeOrganizationCopies: CopyObserver = (organizationId) =>
   observeOrganization(organizationId).pipe(
     Effect.map((observed) => observed.copies),
+    // An unpaired Cluster has no Servers to ask, so it reports no copies to clean up.
     Effect.catchTag("ClusterNotPaired", () => Effect.succeed([])),
   );
 

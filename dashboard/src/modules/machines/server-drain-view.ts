@@ -6,9 +6,7 @@ import { listNames } from "#/lib/plural";
 
 export type DrainTone = "moved" | "stopped" | "stayed" | "failed" | "neutral";
 
-/** One Service's line in the inline result. */
 export type DrainRow = {
-  /** The Qualified Service. */
   readonly key: string;
   readonly name: string;
   readonly namespace: string | null;
@@ -189,7 +187,6 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
   }
 }
 
-/** Whether every old container a leftover had here stopped. */
 const leftoverStopped = (ends: ReadonlyArray<OldCopyEnd>) => ends.every((end) => end.kind === "stopped");
 
 /** What an old container still running here means; null once every one stopped. */
@@ -287,7 +284,6 @@ export function endWords(code: Exclude<DrainEndCode, "cancelled">): string {
   return DRAIN_END_WORDS[code].ui;
 }
 
-/** A Service running here as the page lists it. */
 type RunningService = {
   readonly identity: string;
   readonly name: string;
@@ -317,7 +313,6 @@ const names = (services: ReadonlyArray<{ readonly name: string }>) => [...new Se
 
 /** One Service in the confirm dialog. `stays` says why a Drain won't move it, when the page knows; null means it moves. */
 export type DrainDialogRow = {
-  /** The Qualified Service. */
   readonly key: string;
   readonly name: string;
   readonly namespace: string | null;
@@ -361,7 +356,6 @@ export function drainLeftRows(running: readonly RunningService[], strays: Readon
   }));
 }
 
-/** What the Remove server row says about what still runs here. */
 export type RemoveHint =
   | { readonly kind: "none"; readonly unowned: readonly string[] }
   /** Drain first: it would move them. */

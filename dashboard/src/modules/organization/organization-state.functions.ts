@@ -19,18 +19,15 @@ export const syncOrganizationSlugServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(SyncOrganizationSlug))
   .handler(({ context, data }) => runActor(context, syncOrganizationSlug(context.actor, data)));
 
-/** Opens the actor's first Organization, or creates one: for a session that acts in none. */
 export const openOrCreateOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .handler(({ context }) => runActor(context, openOrCreateOrganization(context.actor)));
 
-/** Creates an Organization the actor owns and opens it for their sessions. Returns its slug. */
 export const createOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .validator(strictValidator(CreateOrganization))
   .handler(({ context, data }) => runActor(context, createOrganization(context.actor, data)));
 
-/** Renames an Organization; its slug stays. Owners and admins only. */
 export const renameOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .validator(strictValidator(RenameOrganization))

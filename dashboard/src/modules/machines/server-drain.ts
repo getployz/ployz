@@ -35,7 +35,6 @@ export type LatestDrain =
   | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport }
   | EndedDrain;
 
-/** The Drain a request admitted. */
 export type RequestedServerDrain = { readonly drain: LatestDrain };
 
 /** Every Server's latest Drain, by Machine ID; a Server never drained has none. */

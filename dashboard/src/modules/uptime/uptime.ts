@@ -42,7 +42,6 @@ export function unreachableHost(checks: readonly EnvironmentUptimeCheck[], servi
 /** "99.98%": floored, so a failure never reads as 100%. Null when no probe counted. */
 export const uptimePercent = (fraction: number | null) => fraction === null ? null : `${Math.floor(fraction * 10_000) / 100}%`;
 
-/** The FAILURE_CLASSES a failing observation lands in. */
 export function failureClass(observation: Pick<IncidentObservation, "status" | "error" | "failedPhase">): FailureClass {
   if (observation.status !== 0) return "status";
   if (observation.error === "timed_out") return "timeout";
@@ -99,7 +98,6 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
   return { from: to - length, to };
 }
 
-/** A number for each of `keys`. */
 export function tally<K extends string>(keys: readonly K[], value: (key: K) => number): Record<K, number> {
   // SAFETY: the entries hold exactly one value for each of `keys`.
   return Object.fromEntries(keys.map((key) => [key, value(key)])) as Record<K, number>;

@@ -25,7 +25,6 @@ export function accountSessionsRead(scope: CollectionScope) {
   };
 }
 
-/** The signed-in user's sign-in methods. */
 export function linkedAccountsRead(scope: CollectionScope) {
   return {
     queryKey: ["collections", scope.sessionId, scope.userId, "linked_accounts"],
@@ -34,7 +33,6 @@ export function linkedAccountsRead(scope: CollectionScope) {
   };
 }
 
-/** The agents the signed-in user connected on /connect that can still act. */
 export function connectedAgentsRead(scope: CollectionScope) {
   return {
     queryKey: ["collections", scope.sessionId, scope.userId, "connected_agents"],

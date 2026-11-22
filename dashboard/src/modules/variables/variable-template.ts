@@ -19,7 +19,6 @@ export const SLUG_SRC = "[A-Za-z0-9][A-Za-z0-9_-]*";
 
 const DELETED_SRC = `<deleted(?: (?:${SLUG_SRC}(?:#[1-9][0-9]*)?|#[0-9a-f]{8}))?>`;
 
-// Anchored matcher for a single `${{ [slug.]KEY }}` token at the start of a string.
 const TOKEN_AT_START = new RegExp(
   `^\\$\\{\\{\\s*(?:(${SLUG_SRC}|${DELETED_SRC})\\.)?(${KEY_SRC})\\s*\\}\\}`,
 );
@@ -43,7 +42,6 @@ export type CaretToken = {
 
 const DELETED_REF = new RegExp(`(?<!\\$)\\$\\{\\{\\s*${DELETED_SRC}\\.`);
 
-/** Whether a rendered display value references a producer that was deleted. */
 export function referencesDeletedOwner(displayValue: string): boolean {
   return DELETED_REF.test(displayValue);
 }
@@ -74,7 +72,6 @@ export function parseDisplayToParts(
   };
 
   while (i < text.length) {
-    // Escaped literal `$${{` -> `${{`.
     if (text.startsWith("$${{", i)) {
       pending += "${{";
       i += 4;
@@ -102,7 +99,6 @@ export function parseDisplayToParts(
         i += raw.length;
         continue;
       }
-      // Malformed `${{` — treat as literal text.
       pending += "${{";
       i += 3;
       continue;
@@ -123,11 +119,9 @@ export function parseDisplayToParts(
 export function caretToken(text: string, caret: number): CaretToken | null {
   const open = text.lastIndexOf("${{", caret);
   if (open === -1) return null;
-  // Escaped `$${{` is not an active token.
   if (open >= 1 && text[open - 1] === "$") return null;
 
   const inner = text.slice(open + 3, caret);
-  // A closed token (`}}` before the caret) means we're past it.
   if (inner.includes("}}")) return null;
 
   const body = inner.replace(/^\s+/, "");
@@ -141,13 +135,11 @@ export function caretToken(text: string, caret: number): CaretToken | null {
     query = body.slice(dot + 1);
     if (!new RegExp(`^${SLUG_SRC}$`).test(ownerSlug)) return null;
   }
-  // Reject anything that can't be part of a key prefix (e.g. spaces, `}`).
   if (query !== "" && !/^[A-Za-z0-9_]*$/.test(query)) return null;
 
   return { start: open, end: caret, query, ownerSlug };
 }
 
-/** Build the display token a picked autocomplete item should insert. */
 export function buildRefToken(input: {
   ownerSlug: string | null;
   key: string;

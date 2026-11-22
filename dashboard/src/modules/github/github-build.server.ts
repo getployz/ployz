@@ -101,7 +101,6 @@ export const findGithubPushRun = Effect.fn("Github.findPushRun")(function* (inpu
 
 export type GithubRunRef = { access: GithubAccess; fullName: string; runId: number };
 
-/** Cancel a build run. A run that already finished can't be cancelled; that's fine. */
 export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: GithubRunRef) {
   const repository = yield* repositoryNamed(input.access, input.fullName);
   yield* (yield* GithubAuthority).cancelBuild({ ...repository, runId: input.runId });
@@ -116,7 +115,6 @@ export const rerunGithubRun = Effect.fn("Github.rerunRun")(function* (input: { a
   yield* (yield* GithubAuthority).rerunBuild({ ...repository, runId: input.runId });
 });
 
-/** Whether a build run has completed, whatever its conclusion. */
 export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (input: GithubRunRef) {
   const repository = yield* repositoryNamed(input.access, input.fullName);
   const run = yield* (yield* GithubAuthority).buildRun({ ...repository, runId: input.runId });

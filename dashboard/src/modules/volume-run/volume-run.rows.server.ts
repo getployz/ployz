@@ -165,6 +165,7 @@ const currentVolumeName = Effect.fn("VolumeRun.currentVolumeName")(function* (ru
   if (owned === undefined) return run.volumeName;
   const named = yield* readStore(run.organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } }).pipe(
     Effect.map(({ volumes }) => volumes.find((volume) => volume.id === parsed.volumeId)?.name),
+    // The Environment went between the two reads: the run keeps the name it recorded.
     Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
   );
   return named ?? run.volumeName;
@@ -217,7 +218,6 @@ export const commitment = (volumeId: string, organizationId?: string) => newestM
 /** The commitment, its row held until the transaction ends. */
 const commitmentHeldAgainstRemoval = (volumeId: string) => newestMeaningful(volumeId, undefined, true);
 
-/** Each of the Environment's Volumes whose committed Move is still owed its finish. */
 export const owedCommitments = Effect.fn("VolumeRun.owedCommitments")(function* (organizationId: string, environmentId: string) {
   const { drizzle } = yield* Database;
   const newest = yield* drizzle.selectDistinctOn([volumeRun.volumeId]).from(volumeRun)
@@ -273,7 +273,6 @@ const followSettled = (volumeName: string): StoreRefusal => ({
   details: { reason: "follow_settled" },
 });
 
-/** Whether a Deploy's release was refused because the commitment it followed had settled. */
 export const refusedAsSettled = Schema.is(Schema.Struct({ details: Schema.Struct({ reason: Schema.Literal("follow_settled") }) }));
 
 export const enqueueRun = (row: VolumeRunRow, took?: VolumeRunKind) =>
@@ -496,7 +495,6 @@ export type ClusterPlan =
   | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly guard: OperationAsked | null; readonly input: PlanRequest }
   | { readonly ok: false; readonly refusal: StoreRefusal; readonly effects?: readonly DestructiveEffect[] };
 
-/** A plan as `planVolumeRun` answers it, naming the Environment the Volume is in. */
 export type VolumeRunPlan =
   | (Extract<ClusterPlan, { ok: true }> & { readonly environment: { readonly project: string; readonly name: string } })
   | Extract<ClusterPlan, { ok: false }>;
@@ -834,7 +832,6 @@ export const isVolumeOwed = Effect.fn("VolumeRun.isOwed")(function* (organizatio
   return owed !== null;
 });
 
-/** Every run in progress across the organization's Volumes, for the canvas trays. */
 export const listActiveVolumeRuns = Effect.fn("VolumeRun.listActive")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumeRun)
