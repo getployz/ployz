@@ -73,7 +73,7 @@ fn located(config: PathBuf) -> Locate {
         let scope = match &store {
             StoreAt::Local => super::link::scope_from_env(&config)?,
             StoreAt::Cloud { organization } => {
-                super::link::scope_from_env_in(&config, organization.as_str())?
+                crate::scope::Scope::from_env()?.linked_in(&config, organization.as_str())?
             }
         };
         let at = scope.at();

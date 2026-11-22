@@ -16,6 +16,14 @@ use super::{
 use crate::cloud::http::{self, Effect, Reply, Via};
 use crate::cloud::login::LoginError;
 
+/// The Organization of the hidden in-process Store.
+pub(crate) const LOCAL_ORGANIZATION: &str = "local";
+
+/// Whether commands use the hidden in-process Store (`PLOYZ_STORE`).
+pub(crate) fn local_mode() -> bool {
+    std::env::var_os(crate::env::STORE).is_some()
+}
+
 /// A route under `/api/config` that takes a JSON body.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Operation {

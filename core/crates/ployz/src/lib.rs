@@ -33,6 +33,7 @@ pub mod operator;
 pub(crate) mod private_access;
 mod provisioning;
 mod published;
+mod scope;
 pub mod sdk;
 mod sealed_compat;
 pub mod sealing_backfill;
