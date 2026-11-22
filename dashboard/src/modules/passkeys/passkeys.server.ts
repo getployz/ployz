@@ -131,7 +131,7 @@ export type PasskeyApproval =
   | null;
 
 /** What one Server says of a passkey; `unanswered` when Cloud couldn't read it. */
-export type ServerTrust = { readonly server: string; readonly approval: PasskeyApproval | "unanswered" };
+type ServerTrust = { readonly server: string; readonly approval: PasskeyApproval | "unanswered" };
 
 /**
  * The passkeys this person added in the Organization, newest first, each with what every Server says about it. Cloud's

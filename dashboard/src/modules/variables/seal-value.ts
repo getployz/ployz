@@ -80,18 +80,17 @@ export async function sealValue(
 const PLATFORM_SEALED_INFO = "ployz-platform-sealed-v1";
 
 /**
- * `plaintext` sealed for `purpose` to the Cluster whose identity is `keys.publicKey`, under `keys.sealTo`, as
- * ployz-core's `seal_platform` does: base64 of the encapsulated key followed by the ciphertext. `sealTo` is the
- * Cluster's recipient key once it activated, its identity before. It opens for that purpose on that Cluster only.
+ * `plaintext` sealed for `purpose` to the Cluster whose identity is `publicKey`, as ployz-core's `seal_platform` does:
+ * base64 of the encapsulated key followed by the ciphertext. It opens for that purpose on that Cluster only.
  */
 export async function sealPlatform(
-  keys: { readonly publicKey: string; readonly sealTo: string },
+  publicKey: string,
   purpose: "private-access",
   plaintext: string,
 ): Promise<string> {
   const hpke = await warmSealing();
-  const cluster = fromBase64(keys.publicKey);
-  const recipientPublicKey = await hpke.kem.deserializePublicKey(fromBase64(keys.sealTo));
+  const cluster = fromBase64(publicKey);
+  const recipientPublicKey = await hpke.kem.deserializePublicKey(fromBase64(publicKey));
   const { enc, ct } = await hpke.seal(
     { recipientPublicKey, info: encoder.encode(PLATFORM_SEALED_INFO) },
     encoder.encode(plaintext),

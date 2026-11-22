@@ -52,8 +52,6 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-export const manages = (caller: Caller) => callerCan(caller, "members:manage");
-
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
 const refuse = (code: string, message: string, details: JsonValue = null) => new StoreRefused({ code, message, details });
@@ -63,7 +61,7 @@ const refuse = (code: string, message: string, details: JsonValue = null) => new
  * caller manages members, and unless they are an owner when `touchesOwner` says the change makes or removes one.
  */
 const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: Role) => boolean) {
-  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
+  if (!callerCan(caller, "members:manage")) return yield* refuse("forbidden", refusalOf("members:manage"));
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();
   const named = members.filter((row) => (wanted.includes("@") ? row.email : row.name.trim()).toLowerCase() === wanted);
@@ -77,7 +75,7 @@ const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector
 });
 
 const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {
-  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
+  if (!callerCan(caller, "members:manage")) return yield* refuse("forbidden", refusalOf("members:manage"));
   const wanted = selector.trim();
   const invites = yield* listPendingInvites(caller.organization.id);
   const found = invites.find((row) => row.id === wanted) ?? invites.find((row) => row.email === wanted.toLowerCase());
@@ -136,7 +134,7 @@ export const orgMemberInvite = defineCommand({
   output: Invited,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", refusalOf("members:manage"));
+    if (!callerCan(caller, "members:manage")) return refused("forbidden", refusalOf("members:manage"));
     const config = yield* AppConfig;
     const invite = yield* createInvite(caller.organization.id, caller.userId, { email: input.email ?? null, role: input.role ?? "member" });
     const link = new URL(`/invite/${invite.token}`, config.app.url).toString();
@@ -249,7 +247,7 @@ export const orgInviteLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Invite),
   render: "table",
-  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", refusalOf("members:manage"))) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
+  run: (caller) => !callerCan(caller, "members:manage") ? Effect.succeed(refused("forbidden", refusalOf("members:manage"))) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
     ok: true,
     output: invites.map((row) => ({
       id: row.id,

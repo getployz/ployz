@@ -8,18 +8,18 @@ import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server
 
 /**
  * The key a client seals an Organization's Sealed values to, once its Cluster has one. `publicKey` is the Cluster's
- * identity, which sealed values bind to, and `sealTo` is the same key.
+ * identity, which sealed values bind to and which they are sealed to.
  */
 export type ClusterSealing =
   | { readonly state: "no_server"; readonly awaitsRecovery?: true }
-  | { readonly state: "ready"; readonly publicKey: SealingPublicKey; readonly sealTo: SealingPublicKey };
+  | { readonly state: "ready"; readonly publicKey: SealingPublicKey };
 
 /** The Cluster's Sealing public key, or no server while it has no current pairing or none of its Servers has reported one. */
 export const readClusterSealing = Effect.fn("ClusterSealing.read")(function* (organizationId: string) {
   const generation = yield* currentGeneration(organizationId);
   const publicKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
   if (generation === null || publicKey === undefined) return { state: "no_server" } satisfies ClusterSealing;
-  return { state: "ready", publicKey, sealTo: publicKey } satisfies ClusterSealing;
+  return { state: "ready", publicKey } satisfies ClusterSealing;
 });
 
 /**

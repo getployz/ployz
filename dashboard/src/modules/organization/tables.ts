@@ -27,7 +27,7 @@ export const organization = pgTable(
   (table) => [unique().on(table.slug)],
 );
 
-export const organizationSelectSchema = createSelectSchema(organization, {
+const organizationSelectSchema = createSelectSchema(organization, {
   name: requiredTrimmedString,
   slug: requiredTrimmedString,
 });

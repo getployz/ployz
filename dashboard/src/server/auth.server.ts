@@ -50,7 +50,7 @@ import {
 import {
   getOrganizationSlugById,
   handleSessionCreated,
-  handleUserCreated,
+  ensurePersonalOrganizationForUser,
 } from "#/modules/organization/organization-state.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
@@ -448,7 +448,7 @@ const makeAuth = Effect.gen(function* () {
                 onSome: (claim) => claim.claimSecretHash,
               })
               : null;
-            await runHook(handleUserCreated(createdUser).pipe(
+            await runHook(ensurePersonalOrganizationForUser(createdUser).pipe(
               Effect.tap((organizationId) => bindClaimSignInOrganization(createdUser.id, organizationId, claimSecretHash)),
               Effect.andThen(recordSignUp(createdUser)),
             ));
