@@ -1,10 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import type { MachineId } from "@ployz/sdk";
+import { INGRESS_VERIFY_PATH } from "@ployz/sdk/cloud-contract";
 
 const PROBE_TIMEOUT_MS = 5_000;
-/** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
-const INGRESS_VERIFY_PATH = "/.ployz-verify";
 
 /** Who answers on port 80: Ployz with the Machine id, something else, or nothing within five seconds. */
 export type IngressAnswer = "ployz" | "taken" | "closed";

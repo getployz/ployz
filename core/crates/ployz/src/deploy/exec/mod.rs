@@ -7,10 +7,10 @@ use futures_util::{
 };
 use ployz_core::{
     AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerUpdateOperation, ContainerWant, CopyRotation, DependencyHealthFailure, DeployEvent,
-    DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort, FailedOperation,
-    HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId, Namespace,
-    OperationPhase, PortPublication, PullPolicy, QualifiedService, RegistryAuth,
+    ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
+    DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
+    FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
+    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService, RegistryAuth,
     RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
     ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
@@ -179,13 +179,19 @@ impl From<ExecutionError> for OperationFailure {
 /// operation of the same run names the same slot, so a lost reply never doubles a
 /// Container; another run or another plan names another slot.
 pub(super) struct Slots<'a> {
-    plan: String,
+    run: &'a DeploymentLogId,
+    /// Of the plan's operations, so another plan of the same run names other slots.
+    digest: String,
     namespace: &'a Namespace,
 }
 
 impl<'a> Slots<'a> {
     /// `run` names the attempt: Cloud's deployment id, or a fresh id per CLI run.
-    pub(super) fn new(run: &str, namespace: &'a Namespace, operations: &[DeployOperation]) -> Self {
+    pub(super) fn new(
+        run: &'a DeploymentLogId,
+        namespace: &'a Namespace,
+        operations: &[DeployOperation],
+    ) -> Self {
         let digest = Sha256::digest(
             serde_json::to_vec(operations).expect("a Deploy Plan serializes to JSON"),
         );
@@ -195,7 +201,8 @@ impl<'a> Slots<'a> {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         Self {
-            plan: format!("{run}:{digest}"),
+            run,
+            digest,
             namespace,
         }
     }
@@ -208,7 +215,7 @@ impl<'a> Slots<'a> {
         replacing: Option<ContainerId>,
     ) -> SlotKey {
         SlotPolicy::of(kind, &spec.mode).slot(self.namespace, kind, spec, replacing, || {
-            format!("{}:{index}", self.plan)
+            CreationKey::for_slot(self.run, &self.digest, index)
         })
     }
 }
@@ -222,7 +229,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
-    let slots = Slots::new(run.as_str(), &plan.namespace, operations);
+    let slots = Slots::new(run, &plan.namespace, operations);
     let progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
     let client = RestartTolerant::new(client, cancellation);

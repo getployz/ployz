@@ -9,6 +9,7 @@ use super::{
     trusted_key::TrustedKeys,
 };
 use crate::SealingPublicKey;
+use crate::authority::MismatchField;
 
 /// The approver among `approvers` that signs as `signer`.
 ///
@@ -22,7 +23,7 @@ pub(super) fn the_signer(
         .into_iter()
         .find(|approver| approver.signs_as(signer))
         .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
+            field: MismatchField::Signer,
         })
 }
 
@@ -62,7 +63,7 @@ fn open_alone<T: StepBody>(
     };
     if body.place().is_some() {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
+            field: MismatchField::Proposal,
         });
     }
     let by = the_signer(approvers, body.signer())?;
@@ -84,7 +85,7 @@ pub(super) fn open_one_shot<T: StepBody>(
 ) -> Result<(T, Approver, SealingPublicKey), AuthorityRefusal> {
     if step.proposal.is_none() {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
+            field: MismatchField::Proposal,
         });
     }
     let opened = open_approval(step, trusted, cluster)?;

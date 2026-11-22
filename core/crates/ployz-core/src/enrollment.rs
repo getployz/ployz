@@ -118,6 +118,10 @@ pub enum EnrollmentError {
     Exhausted,
 }
 
+/// The Cluster network a founding Machine takes when its founder names none.
+pub const DEFAULT_CLUSTER_NETWORK: Ipv4Net =
+    Ipv4Net::new_assert(std::net::Ipv4Addr::new(10, 210, 0, 0), 16);
+
 /// Select a /24 using observed and pending claims.
 ///
 /// # Errors

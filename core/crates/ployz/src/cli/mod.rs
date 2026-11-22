@@ -94,6 +94,15 @@ pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
     ))
 }
 
+/// What a command dials Servers with, under its `--ssh-timeout`.
+pub(crate) fn connector(
+    matches: &clap::ArgMatches,
+) -> std::sync::Arc<crate::connect::SystemConnector> {
+    std::sync::Arc::new(
+        crate::connect::SystemConnector::default().with_ssh_timeout(ssh_timeout(matches)),
+    )
+}
+
 pub(crate) fn value(name: &'static str, short: Option<char>) -> Arg {
     let arg = Arg::new(name).long(name).action(ArgAction::Set);
     match short {

@@ -15,7 +15,7 @@ use super::{
     canonical::{self, Timestamp},
     keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
     open::the_signer,
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
@@ -184,7 +184,7 @@ pub fn verify(
             let approvers = signed.approvers(facts.trusted)?;
             if signed.proposal.is_some() {
                 return Err(AuthorityRefusal::Mismatch {
-                    field: "a proposal",
+                    field: MismatchField::Proposal,
                 });
             }
             the_signer(approvers, body.signer)?
@@ -192,7 +192,7 @@ pub fn verify(
     };
     if !by.signs_as(body.signer) {
         return Err(AuthorityRefusal::Mismatch {
-            field: "the signer",
+            field: MismatchField::Signer,
         });
     }
     // This approval never rides `open_approval`, so it asks its approver here: a router
@@ -201,9 +201,9 @@ pub fn verify(
     facts.trusted.covers(&by, Ask::PrivateAccess)?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
     first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
+        (MismatchField::Cluster, body.cluster == cluster),
         (
-            "an auth key",
+            MismatchField::AuthKey,
             body.auth_key == AuthKeyDigest::of(facts.sealed),
         ),
     ])?;

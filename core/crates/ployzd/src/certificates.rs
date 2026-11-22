@@ -551,10 +551,15 @@ async fn issue_wanted(
             Issuance::Refused { refusal, clock } if records_refusal(rank) => {
                 let reason = refusal_reason(hostname, refusal, &cluster);
                 let tried = row.and_then(CertificateRow::material);
-                match store
-                    .record_certificate_failure(hostname, tried, reason, clock)
-                    .await
-                {
+                let recorded = match tried {
+                    Some(tried) => {
+                        store
+                            .record_renewal_failure(hostname, tried, reason, clock)
+                            .await
+                    }
+                    None => store.record_order_failure(hostname, reason, clock).await,
+                };
+                match recorded {
                     Ok(write) => note_failure_write(
                         hostname,
                         write,
@@ -606,15 +611,16 @@ async fn issue_wanted(
                 let tried = rows
                     .get(hostname.as_str())
                     .and_then(CertificateRow::material);
-                match store
-                    .record_certificate_failure(
-                        hostname,
-                        tried,
-                        ployz_core::error_chain::inline(&error),
-                        clock,
-                    )
-                    .await
-                {
+                let reason = ployz_core::error_chain::inline(&error);
+                let recorded = match tried {
+                    Some(tried) => {
+                        store
+                            .record_renewal_failure(hostname, tried, reason, clock)
+                            .await
+                    }
+                    None => store.record_order_failure(hostname, reason, clock).await,
+                };
+                match recorded {
                     Ok(write) => note_failure_write(
                         hostname,
                         write,

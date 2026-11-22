@@ -47,10 +47,9 @@ impl Backend {
         let Self::Cloud(runtime, credential) = self else {
             return Ok(None);
         };
-        let answer = runtime.block_on(cloud::account::config_store_if_routed(
+        let answer = runtime.block_on(cloud::account::sealing(
             credential,
             cloud::http::Via::Cli,
-            "sealing",
             query,
         ))?;
         // A Cloud without the route predates sealing on the client, as one answering Off does.

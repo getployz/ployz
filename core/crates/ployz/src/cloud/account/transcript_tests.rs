@@ -227,18 +227,36 @@ async fn run(entry: Entry, credential: &Credential, store: &CredentialStore) -> 
             .await,
         ),
         Entry::ConfigRead => shown(
-            config_store::<serde_json::Value>(credential, Via::Cli, "read", &body, None).await,
+            config_store::<serde_json::Value>(credential, Via::Cli, Operation::Read, &body, None)
+                .await,
         ),
         Entry::ConfigWrite => shown(
-            config_store::<serde_json::Value>(credential, Via::Agent, "write", &body, Some("ap1"))
-                .await,
+            config_store::<serde_json::Value>(
+                credential,
+                Via::Agent,
+                Operation::Write,
+                &body,
+                Some("ap1"),
+            )
+            .await,
         ),
         Entry::ConfigIfRoutedRead => shown(
-            config_store_if_routed::<serde_json::Value>(credential, Via::Cli, "read", &body).await,
+            config_store_if_routed::<serde_json::Value>(
+                credential,
+                Via::Cli,
+                Operation::Read,
+                &body,
+            )
+            .await,
         ),
         Entry::ConfigIfRoutedWrite => shown(
-            config_store_if_routed::<serde_json::Value>(credential, Via::Agent, "write", &body)
-                .await,
+            config_store_if_routed::<serde_json::Value>(
+                credential,
+                Via::Agent,
+                Operation::Write,
+                &body,
+            )
+            .await,
         ),
         Entry::ServerAccess => shown(server_access(credential).await),
         Entry::Upload => shown(upload(credential, "d1", b"source".to_vec()).await),

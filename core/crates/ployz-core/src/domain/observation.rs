@@ -382,8 +382,7 @@ impl ContainerObservationParts {
     #[must_use]
     pub fn made_under(&self, run: &DeploymentLogId) -> bool {
         self.creation_key()
-            .and_then(|key| key.strip_prefix(run.as_str()))
-            .is_some_and(|slot| slot.starts_with(':'))
+            .is_some_and(|key| crate::CreationKey::made_under(key, run))
     }
 }
 

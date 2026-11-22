@@ -185,11 +185,12 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         }
         let closed = matches.get_flag("ingress-closed");
         let incomplete = |error: crate::failure::Failure| {
-            ingress_incomplete(
+            super::ingress_incomplete(
+                "Server initialized",
                 super::super::ingress_hints(error, |args| {
                     super::super::recovery_command(matches, &context_name, args)
                 }),
-                ingress_recovery.clone(),
+                Hint::Next(ingress_recovery.clone()),
             )
         };
         if closed {
@@ -248,13 +249,6 @@ fn unnamed_founding() -> Error {
         "--cluster-name",
         "<name>",
     ])))
-}
-
-/// The initial Server is committed but its Ingress Proxy deploy failed.
-pub(crate) fn ingress_incomplete(error: Error, next: String) -> Error {
-    let headline =
-        super::super::ingress_headline("Server initialized; ingress deployment incomplete", &error);
-    error.context(headline).hint(Hint::Next(next))
 }
 
 #[cfg(test)]

@@ -1155,6 +1155,30 @@ impl DeployWarning {
         )
     }
 
+    /// The copy cleanup left running: its Service, Container, Machine and why.
+    #[must_use]
+    pub fn left_running(&self) -> Option<(&QualifiedService, &ContainerId, &str, &str)> {
+        match self {
+            Self::LeftRunning {
+                service,
+                container_id,
+                machine,
+                reason,
+            } => Some((service, container_id, machine, reason)),
+            Self::StorageHeadroom { .. }
+            | Self::UnbudgetedDiskUsage
+            | Self::ObservationFailed { .. }
+            | Self::ObservationOmitted { .. }
+            | Self::StorageObservationUnknown { .. }
+            | Self::IngressHostname { .. }
+            | Self::ObserverRelativeHostnameConflict
+            | Self::SkippedDependencyHealth { .. }
+            | Self::ImagePortMismatch { .. }
+            | Self::MixedAfterReturn { .. }
+            | Self::NotInStore { .. } => None,
+        }
+    }
+
     /// A relevant, independently evidenced gap. Legacy and generic warnings have none.
     #[must_use]
     pub fn observation_gap(&self) -> Option<(MachineId, &ObservationGap)> {

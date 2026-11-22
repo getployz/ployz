@@ -263,7 +263,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         return edit(
-            matches,
+            root,
             vec![Change::Patch {
                 path: SettingPath::parse(&service)?,
                 value,

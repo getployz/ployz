@@ -40,7 +40,9 @@ pub(crate) use servers::{
     ForgetCheck, ObservedServer, Release, ServerAccess, ServersForgotten, check_forget_servers,
     follow_removal, forget_servers, server_access, start_forget, start_removal,
 };
-pub(crate) use store::{config_store, config_store_if_routed, upload};
+pub(crate) use store::{LOCAL_ORGANIZATION, StoreClient, local_mode, sealing, upload};
+#[cfg(test)]
+use store::{Operation, config_store, config_store_if_routed};
 pub(crate) use token::{
     CredentialKind, PresetKind, Removed, ServerClears, TokenKind, TokenPreset, credential_id,
     credentials, new_token, remove_token,

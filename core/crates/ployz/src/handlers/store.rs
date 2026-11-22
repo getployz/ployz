@@ -1,96 +1,47 @@
 //! The Config Store access every authoring command shares: which Store, which
 //! Organization, the `--project`/`--env` scope, and IDs for creates.
 
+mod args;
+mod hints;
+mod refusal;
+mod render;
 mod sealing;
 
-use clap::{Arg, ArgMatches};
-use ployz_core::{Region, RpcErrorCode};
+pub(crate) use args::{
+    environment, named_environment, project, project_arg, scoped, service_name, service_names,
+    volume_name, volume_names,
+};
+pub(crate) use hints::{broken_line, fix_broken, next};
+pub(crate) use refusal::{Refusal, with_next, with_refresh_hint};
+pub(crate) use render::{
+    DomainLine, changed, config_field_changed, domain_changes, domain_list, plain, shown, valued,
+    word,
+};
+
+use clap::ArgMatches;
+use futures_util::FutureExt as _;
+use ployz_core::Region;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
-use unicode_segmentation::UnicodeSegmentation as _;
-use unicode_width::UnicodeWidthStr as _;
 
-use ployz_store::tools::Confirmation;
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit, Edited,
-    EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
-    ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep,
-    SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId, Publish, Published, Removal,
+    RemovalsQuery, Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, VolumeObservation,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::approval::{self, Asked};
-use crate::cli::value;
 use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::account::{Credential, StoreCallError, StoreClient};
+pub(crate) use crate::cloud::account::{LOCAL_ORGANIZATION, local_mode};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::env;
 use ployz_core::Hint;
 
-impl From<StoreCallError> for Error {
-    fn from(error: StoreCallError) -> Self {
-        match error {
-            StoreCallError::Refused(mut error) => {
-                // A stale review hands back the whole fresh one; a retry needs only its version.
-                if error.code == RpcErrorCode::Conflict
-                    && let Some(diff) = error.details.get_mut("diff")
-                    && let Some(version) = diff.get("version").cloned()
-                {
-                    *diff = serde_json::json!({ "version": version });
-                }
-                error.into()
-            }
-            StoreCallError::Cloud(error) => error.into(),
-            StoreCallError::Stopped(failure) => failure,
-        }
-    }
-}
-
 /// How long a read of the Servers waits on them before it reads them as unobserved.
 const OBSERVE_SERVERS_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The Organization of the hidden in-process Store.
-pub(super) const LOCAL_ORGANIZATION: &str = "local";
-
-/// `--project`: which Project a command addresses.
-pub(crate) fn project_arg() -> Arg {
-    value("project", None)
-        .env(env::PROJECT)
-        .help("Project [default: the only Project]")
-}
-
-/// `--project` and `--env`, which every Environment-scoped command takes.
-pub(crate) fn scoped(command: clap::Command) -> clap::Command {
-    command.arg(project_arg()).arg(
-        value("env", None)
-            .env(env::ENVIRONMENT)
-            .help("Environment [default: the Project's Default Environment]"),
-    )
-}
-
-/// The Project a command addresses: `--project`, `PLOYZ_PROJECT`, else the directory link.
-pub(crate) fn project(matches: &ArgMatches) -> Result<Option<ProjectName>, Error> {
-    Ok(super::link::scope(matches)?.at().project)
-}
-
-/// The Environment a command addresses: flags, environment variables, else the directory link.
-pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error> {
-    Ok(super::link::scope(matches)?.at())
-}
-
-/// The Environment the required argument `arg` names, in the Project a command addresses.
-pub(crate) fn named_environment(
-    matches: &ArgMatches,
-    arg: &str,
-) -> Result<(EnvironmentName, EnvironmentRef), Error> {
-    let name = EnvironmentName::parse(required(matches, arg)?)?;
-    let at = EnvironmentRef {
-        project: project(matches)?,
-        environment: Some(name.clone()),
-    };
-    Ok((name, at))
-}
 
 /// Where the Config Store is: Cloud's over HTTPS, as `PLOYZ_TOKEN` or this device's
 /// sign-in, or the hidden in-process SQLite Store when `PLOYZ_STORE` is set.
@@ -100,6 +51,24 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
+    /// The client for this Store, as this CLI.
+    fn client(&self) -> StoreClient<'_> {
+        match self {
+            Self::Local(store, who) => StoreClient::Local(store, who),
+            Self::Cloud(_, credential) => StoreClient::Cloud(credential, cloud::http::Via::Cli),
+        }
+    }
+
+    /// Run one of [`Self::client`]'s calls to its end.
+    fn call<T>(&self, call: impl std::future::Future<Output = T>) -> T {
+        match self {
+            Self::Local(..) => call
+                .now_or_never()
+                .expect("the in-process Store answers without awaiting"),
+            Self::Cloud(runtime, _) => runtime.block_on(call),
+        }
+    }
+
     /// Answer `query`: a Store query payload, read as its own view.
     pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
         self.read_seen(query, &Trusted::default())
@@ -107,70 +76,30 @@ impl Backend {
 
     /// [`Self::read`] with what this CLI observed; Cloud gathers its own.
     fn read_seen<Q: Ask>(&self, query: &Q, seen: &Trusted) -> Result<Q::View, StoreCallError> {
-        match self {
-            Self::Local(store, who) => store
-                .read_trusted(who, query, seen)
-                .map_err(StoreCallError::Refused),
-            Self::Cloud(runtime, credential) => {
-                let view: View = runtime.block_on(cloud::account::config_store(
-                    credential,
-                    cloud::http::Via::Cli,
-                    "read",
-                    &query.to_query(),
-                    None,
-                ))?;
-                Q::view(view).map_err(StoreCallError::Refused)
-            }
-        }
+        self.call(self.client().read(query, seen))
     }
 
     /// [`Self::read`] once, giving up on Cloud after `limit`: `None` when it doesn't answer.
     pub(crate) fn read_within<Q: Ask>(&self, query: &Q, limit: Duration) -> Option<Q::View> {
         match self {
             Self::Local(..) => self.read(query).ok(),
-            Self::Cloud(runtime, credential) => {
-                let view: View = runtime
-                    .block_on(async {
-                        tokio::time::timeout(
-                            limit,
-                            cloud::account::config_store(
-                                credential,
-                                cloud::http::Via::Cli,
-                                "read",
-                                &query.to_query(),
-                                None,
-                            ),
-                        )
+            Self::Cloud(runtime, _) => runtime
+                .block_on(async {
+                    tokio::time::timeout(limit, self.client().read(query, &Trusted::default()))
                         .await
-                    })
-                    .ok()?
-                    .ok()?;
-                Q::view(view).ok()
-            }
+                })
+                .ok()?
+                .ok(),
         }
     }
 
     fn write<C: Tell>(
         &self,
         command: &C,
-        trusted: Trusted,
+        trusted: &Trusted,
         approval: Option<&str>,
     ) -> Result<C::Written, StoreCallError> {
-        match self {
-            Self::Local(store, who) => store
-                .write_trusted(who, command, &trusted)
-                .map_err(StoreCallError::Refused),
-            Self::Cloud(runtime, credential) => {
-                let written: Written = runtime.block_on(cloud::account::config_store(
-                    credential,
-                    cloud::http::Via::Cli,
-                    "write",
-                    &command.to_command(),
-                    approval,
-                ))?;
-                C::written(written).map_err(StoreCallError::Refused)
-            }
-        }
+        self.call(self.client().write(command, trusted, approval))
     }
 }
 
@@ -286,10 +215,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         loop {
-            let refused = match self
-                .backend
-                .write(command, trusted.clone(), approval.as_deref())
-            {
+            let refused = match self.backend.write(command, trusted, approval.as_deref()) {
                 Err(StoreCallError::Refused(refused)) => refused,
                 Err(StoreCallError::Cloud(error @ LoginError::Unanswered { .. })) => {
                     let check = check.map(|check| Hint::Inspect(next(self.matches, check)));
@@ -416,6 +342,17 @@ impl<'m> Store<'m> {
             .map(String::as_str)
     }
 
+    /// Reach this Store's Cluster: the in-process Store's through `--connect` or the
+    /// context, never Cloud's Server Access, whose Cluster isn't this Store's; Cloud's
+    /// through this credential's Server Access.
+    async fn cluster(&self) -> Result<crate::connect::Client, Error> {
+        let context = self.context();
+        match &self.backend {
+            Backend::Local(..) => super::connect_context(self.matches, context).await,
+            Backend::Cloud(..) => super::route::connect(self.matches, context).await,
+        }
+    }
+
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
     /// Deploy, removal or rollback. A Cluster this can't reach is a failed
     /// observation that says why, so the Store refuses with it.
@@ -436,10 +373,7 @@ impl<'m> Store<'m> {
         if sought.is_empty() {
             return Ok(None);
         }
-        let context = self.context();
-        let Ok(runtime) = runtime() else {
-            return Ok(None);
-        };
+        let runtime = runtime().map_err(StoreCallError::Stopped)?;
         // The endpoint names the refusal only while no Server is known.
         let endpoint = self
             .matches
@@ -448,7 +382,7 @@ impl<'m> Store<'m> {
             .flatten()
             .cloned();
         runtime.block_on(async {
-            let mut client = match super::route::connect(self.matches, context).await {
+            let mut client = match self.cluster().await {
                 Ok(client) => client,
                 Err(error)
                     if matches!(
@@ -480,16 +414,10 @@ impl<'m> Store<'m> {
         })
     }
 
+    /// One Runtime Watch frame of this Store's Cluster; none when it isn't reached in time.
     fn observe_frame(&self) -> Option<ployz_core::RuntimeWatchFrame> {
         let runtime = runtime().ok()?;
-        let context = self.context();
-        let observe = async {
-            let client = match &self.backend {
-                Backend::Local(..) => super::connect_context(self.matches, context).await,
-                Backend::Cloud(..) => super::route::connect(self.matches, context).await,
-            };
-            client.ok()?.runtime_frame().await.ok()
-        };
+        let observe = async { self.cluster().await.ok()?.runtime_frame().await.ok() };
         runtime
             .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await })
             .ok()?
@@ -515,27 +443,12 @@ impl<'m> Store<'m> {
         Region::of_first_server(ployz_core::JoinedServer::all(&frame))
     }
 
-    /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the
-    /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
-    /// this can't reach leave the certificates unobserved. DNS failures reach a status
+    /// The in-process Store's Servers' certificates, ingress Servers and their addresses.
+    /// Servers this can't reach leave the certificates unobserved. DNS failures reach a status
     /// through the certificate attempts that met them.
     fn observe_domains(&self) -> DomainEvidence {
         let mut evidence = DomainEvidence::default();
-        let Ok(runtime) = runtime() else {
-            return evidence;
-        };
-        let context = self.context();
-        let observe = async {
-            super::connect_context(self.matches, context)
-                .await
-                .ok()?
-                .runtime_frame()
-                .await
-                .ok()
-        };
-        let frame = runtime
-            .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await });
-        if let Ok(Some(frame)) = frame {
+        if let Some(frame) = self.observe_frame() {
             let ingress = frame
                 .machines
                 .iter()
@@ -593,234 +506,6 @@ impl<'m> Store<'m> {
             Backend::Cloud(..) => None,
         }
     }
-
-    /// This command's failure for a Store error: an ambiguous Project is fixed by
-    /// linking this directory to one, after which the same command runs as typed.
-    pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
-        let Refusal {
-            mut error,
-            mut hint,
-        } = with_next(
-            error,
-            |refusal| {
-                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
-            },
-            || next(self.matches, &["link", "--project", "PROJECT"]),
-        );
-        if let (None, StoreCallError::Refused(refused)) = (&hint, &mut error)
-            && let Some(asked) = Asked::of(refused)
-        {
-            if self.secrets {
-                refused.message = format!(
-                    "{}. --approval can't go with --value, so the retry reads each --value \
-                     from stdin again and asks for a new approval. To finish in one run, run \
-                     it without --json: it waits for the approval.",
-                    refused.message.trim_end_matches('.')
-                );
-            }
-            hint = Some(Hint::Retry(self.approving(&asked.id)));
-        }
-        Error::from(error).hint(hint)
-    }
-
-    /// This command again with its [`Self::args`] and `extra`, in the same Project
-    /// and Environment, with the same Ployz config.
-    pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = super::config_flag(self.matches)
-            .into_iter()
-            .flatten()
-            .collect();
-        words.extend(self.words.iter().map(String::as_str));
-        words.extend(extra);
-        next(self.matches, &words)
-    }
-
-    /// This command's failure for a Store error; a refusal to delete Volume data
-    /// names this command again accepting each Volume it lists, at the version it
-    /// reviewed.
-    pub(crate) fn accepting(&self, error: impl Into<Refusal>) -> Error {
-        let refusal = match error.into() {
-            Refusal {
-                error: StoreCallError::Refused(error),
-                ..
-            } if error.code == RpcErrorCode::ConfirmationRequired => {
-                let carried = self.carried();
-                let confirmation = Confirmation::of(&error.details);
-                let mut accept: Vec<String> = Vec::new();
-                for name in accepted_names(&confirmation) {
-                    if !accept.contains(&name) {
-                        accept.push(name);
-                    }
-                }
-                let version = confirmation.version;
-                let retry = self.retry(Carried {
-                    accept,
-                    version: version.or(carried.version),
-                    ..carried
-                });
-                Refusal {
-                    error: StoreCallError::Refused(error),
-                    hint: Some(Hint::Retry(retry)),
-                }
-            }
-            refusal => refusal,
-        };
-        self.fail(refusal)
-    }
-
-    /// A deploy's refusal about the review it named. A conflict handing back the
-    /// fresh review (`details.diff`) names this command again at its version,
-    /// without the Volume losses accepted at the stale one: what the fresh review
-    /// deletes is for its own refusal to name. When the fresh review's loss
-    /// (`details.volume_loss`) is only of Volumes this command already accepts, it
-    /// names them again at the version binding that loss, so the line goes
-    /// through in one step. Any other conflict names `read`, as
-    /// [`with_refresh_hint`] does. A refusal to delete data that this command
-    /// already accepts each Volume of is about its version, and says so; a deploy's
-    /// loss refusal says nothing but what it deletes, which the retry line names.
-    pub(crate) fn at_review(&self, error: impl Into<Refusal>, read: &str) -> Refusal {
-        let mut refusal = error.into();
-        if let StoreCallError::Refused(error) = &mut refusal.error
-            && error.code == RpcErrorCode::ConfirmationRequired
-        {
-            let carried = self.carried();
-            let asked = Confirmation::of(&error.details);
-            let accept = accepted_names(&asked);
-            if let (Some(typed), Some(bound)) = (&carried.version, &asked.version)
-                && typed != bound
-                && !accept.is_empty()
-                && accept.iter().all(|name| carried.accept.contains(name))
-            {
-                error.message = format!(
-                    "{} {typed} doesn't cover the data this deletes. Retry with the version \
-                     below",
-                    self.version_flag().1
-                );
-            }
-        }
-        let carried = self.carried();
-        let next = match &refusal.error {
-            StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => {
-                let loss = error
-                    .details
-                    .get("volume_loss")
-                    .map(Confirmation::of)
-                    .unwrap_or_default();
-                let accept = accepted_names(&loss);
-                match loss.version {
-                    Some(bound)
-                        if !accept.is_empty()
-                            && accept.iter().all(|name| carried.accept.contains(name)) =>
-                    {
-                        Some((bound, accept))
-                    }
-                    Some(_) | None => error
-                        .details
-                        .pointer("/diff/version")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|version| (version.to_owned(), Vec::new())),
-                }
-            }
-            StoreCallError::Refused(_) | StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => {
-                None
-            }
-        };
-        if let (Some((_, accept)), StoreCallError::Refused(error)) = (&next, &mut refusal.error)
-            && !accept.is_empty()
-        {
-            error.message = format!(
-                "{}. The command below still accepts deleting the data of {}.",
-                error.message.trim_end_matches('.'),
-                accept.join(", ")
-            );
-        }
-        match next {
-            Some((version, accept)) => with_next(
-                refusal,
-                |_| true,
-                || {
-                    self.retry(Carried {
-                        accept,
-                        version: Some(version),
-                        ..carried
-                    })
-                },
-            ),
-            None => with_refresh_hint(refusal, self.matches, read),
-        }
-    }
-
-    /// This command again with approval `id`; a run that gives secrets on stdin asks
-    /// for a new approval instead, so its retry names each `--value` row and no approval.
-    fn approving(&self, id: &str) -> String {
-        if self.secrets {
-            return self.retry(self.carried());
-        }
-        self.retry(Carried {
-            approval: Some(id.to_owned()),
-            ..self.carried()
-        })
-    }
-
-    /// The flag this command passes a reviewed version with: `discard`'s and
-    /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
-    /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
-    fn version_flag(&self) -> (&'static str, &'static str) {
-        let takes_version = super::takes_value(self.words.iter().map(String::as_str), "version");
-        if takes_version {
-            ("version", "--version")
-        } else {
-            ("expect-version", "--expect-version")
-        }
-    }
-
-    fn carried(&self) -> Carried {
-        let one = |id| {
-            self.matches
-                .try_get_one::<String>(id)
-                .ok()
-                .flatten()
-                .cloned()
-        };
-        Carried {
-            accept: super::string_values(self.matches, "accept-volume-loss"),
-            version: one(self.version_flag().0),
-            approval: one("approval"),
-        }
-    }
-
-    fn retry(&self, carried: Carried) -> String {
-        let mut extra = Vec::new();
-        for name in &carried.accept {
-            extra.extend(["--accept-volume-loss", name.as_str()]);
-        }
-        if let Some(version) = &carried.version {
-            extra.extend([self.version_flag().1, version.as_str()]);
-        }
-        if let Some(approval) = &carried.approval {
-            extra.extend(["--approval", approval.as_str()]);
-        }
-        self.again(&extra)
-    }
-}
-
-/// The Volume names a refusal's `accept` lists, flat or by Environment: every string
-/// of a list, whatever else it holds.
-fn accepted_names(confirmation: &Confirmation) -> Vec<String> {
-    let names = |list: &serde_json::Value| {
-        list.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|name| name.as_str().map(str::to_owned))
-            .collect::<Vec<_>>()
-    };
-    match &confirmation.written_accept {
-        Some(serde_json::Value::Object(by_environment)) => {
-            by_environment.values().flat_map(names).collect()
-        }
-        Some(list) => names(list),
-        None => Vec::new(),
-    }
 }
 
 pub(crate) fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
@@ -836,12 +521,6 @@ pub(crate) fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::
             &Trusted::default(),
         )
         .map(drop)
-}
-
-struct Carried {
-    accept: Vec<String>,
-    version: Option<String>,
-    approval: Option<String>,
 }
 
 /// The Config Store `root`'s command reads and writes.
@@ -865,11 +544,6 @@ pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store<'_>>, Error> {
         words,
         secrets: false,
     }))
-}
-
-/// Whether commands use the hidden in-process Store (`PLOYZ_STORE`).
-pub(crate) fn local_mode() -> bool {
-    std::env::var_os(env::STORE).is_some()
 }
 
 /// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
@@ -936,7 +610,7 @@ pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
             &who,
             &ployz_store::CreateProject {
                 id: ployz_store::ProjectId::parse(mint()).unwrap(),
-                name: ProjectName::parse("shop").unwrap(),
+                name: ployz_store::ProjectName::parse("shop").unwrap(),
                 default_environment: ployz_store::EnvironmentId::parse(mint()).unwrap(),
                 region: None,
             },
@@ -974,607 +648,11 @@ pub(crate) fn mint() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// `ployz WORDS…` in the same Project and Environment as this command.
-pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
-    let mut next = vec!["ployz".to_owned()];
-    next.extend(words.iter().map(|word| (*word).to_owned()));
-    for flag in ["project", "env"] {
-        // Not every command takes both flags (`env new` has no `--env`).
-        if let Ok(Some(value)) = matches.try_get_one::<String>(flag) {
-            next.extend([format!("--{flag}"), value.clone()]);
-        }
-    }
-    shell_words::join(next)
-}
-
-/// The command that points `reference` at something there: a new value for its
-/// variable, or a new copy of its Config file.
-pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenReference) -> String {
-    match &reference.at {
-        ployz_store::ReferenceAt::Variable { service, variable } => next(
-            matches,
-            &["set", &format!("{service}.env.{variable}=VALUE")],
-        ),
-        ployz_store::ReferenceAt::File { config, file } => next(
-            matches,
-            &[
-                "config",
-                "put",
-                config.as_str(),
-                file.as_str(),
-                "--from",
-                "PATH",
-            ],
-        ),
-    }
-}
-
-/// A broken reference and its fix as a stream line, the name escaped and the fix pasteable.
-pub(crate) fn broken_line(
-    matches: &ArgMatches,
-    reference: &ployz_store::BrokenReference,
-) -> String {
-    format!(
-        "{}; deploys skip it until you change it: {}",
-        crate::ui::escaped(&reference.to_string()),
-        crate::ui::pasteable(&fix_broken(matches, reference))
-    )
-}
-
-/// A Store error and the hint this command adds to it.
-pub(crate) struct Refusal {
-    error: StoreCallError,
-    hint: Option<Hint>,
-}
-
-impl From<StoreCallError> for Refusal {
-    fn from(error: StoreCallError) -> Self {
-        Self { error, hint: None }
-    }
-}
-
-/// A refused stale write names the `read` command that shows the fresh state.
-pub(crate) fn with_refresh_hint(
-    error: impl Into<Refusal>,
-    matches: &ArgMatches,
-    read: &str,
-) -> Refusal {
-    with_next(
-        error,
-        // A conflict that already names its next step (no Server: `ployz server add`) keeps it.
-        |refusal| refusal.code == RpcErrorCode::Conflict && refusal.details.get("next").is_none(),
-        || next(matches, &[read]),
-    )
-}
-
-/// A refusal `when` picks, with no hint yet, names `next` as the command to run next.
-pub(crate) fn with_next(
-    error: impl Into<Refusal>,
-    when: impl FnOnce(&ployz_core::RpcError) -> bool,
-    next: impl FnOnce() -> String,
-) -> Refusal {
-    let mut refusal = error.into();
-    if let (None, StoreCallError::Refused(error)) = (&refusal.hint, &refusal.error)
-        && when(error)
-    {
-        refusal.hint = Some(Hint::Next(next()));
-    }
-    refusal
-}
-
-/// A unit enum variant as a person reads it: its JSON word with spaces, such as `not applied` for `not_applied`.
-pub(crate) fn word(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(|word| word.replace('_', " ")))
-        .unwrap_or_default()
-}
-
-/// A value as a change line shows it: a long one cut to the start that fits 80 columns, and its length, so one big variable doesn't fill the terminal.
-pub(crate) fn shown(value: &serde_json::Value) -> String {
-    const SHOWN: usize = 80;
-    let text = value.to_string();
-    let (start, whole) = fitted(&text, SHOWN);
-    if whole {
-        return start;
-    }
-    let length = value
-        .as_str()
-        .map_or_else(|| text.chars().count(), |raw| raw.chars().count());
-    format!("{start}… ({length} chars)")
-}
-
-/// JSON `text` as shown, kept piece by piece while it fits `columns`, and whether all of it did.
-fn fitted(text: &str, columns: usize) -> (String, bool) {
-    let mut start = String::new();
-    let mut width = 0;
-    for piece in pieces(text) {
-        width += piece.width();
-        if width > columns {
-            return (start, false);
-        }
-        start.push_str(&piece);
-    }
-    (start, true)
-}
-
-/// JSON `text` as shown, in pieces a cut must not split: a JSON escape such as `\n` or
-/// `\u0001`, each [`crate::ui::unprintable`] character as its `\u{…}` escape, or one grapheme
-/// cluster, measured whole since its marks and selectors change its width.
-fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
-    let mut rest = text;
-    std::iter::from_fn(move || {
-        let c = rest.chars().next()?;
-        let (piece, length) = if c == '\\' {
-            let length = if rest.get(1..2) == Some("u") { 6 } else { 2 };
-            let escape = rest.get(..length).unwrap_or(rest);
-            (escape.to_owned(), escape.len())
-        } else if crate::ui::unprintable(c) {
-            (crate::ui::escaped(c.encode_utf8(&mut [0; 4])), c.len_utf8())
-        } else {
-            let printable = rest
-                .find(|c| c == '\\' || crate::ui::unprintable(c))
-                .map_or(rest, |end| rest.get(..end).unwrap_or(rest));
-            let grapheme = printable.graphemes(true).next().unwrap_or(printable);
-            (grapheme.to_owned(), grapheme.len())
-        };
-        rest = rest.get(length..).unwrap_or_default();
-        Some(piece)
-    })
-}
-
-/// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
-/// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
-pub(crate) fn changed(
-    row: &ployz_core::config::ServiceSettingChange,
-    rows: &[ployz_core::config::ServiceSettingChange],
-) -> Vec<String> {
-    if let Some(lines) = config_changed(row).or_else(|| source_changed(row)) {
-        return lines;
-    }
-    let Some(domains) = ployz_store::DomainChange::of(row) else {
-        let value = |value: &serde_json::Value| match (value.as_f64(), value.as_object()) {
-            (Some(gb), _) if row.path.ends_with(".memLimit") => {
-                ployz_core::memory_size::memory_size(gb)
-            }
-            (Some(1.0), _) if row.path.ends_with(".cpuLimit") => "1 vCPU".to_owned(),
-            (Some(cpus), _) if row.path.ends_with(".cpuLimit") => format!("{cpus} vCPUs"),
-            (_, Some(counts)) if row.path.ends_with(".replicas") => counts
-                .iter()
-                .map(|(region, count)| format!("{} {count}", crate::ui::escaped(region)))
-                .collect::<Vec<_>>()
-                .join(" · "),
-            _ => shown(value),
-        };
-        return vec![format!(
-            "{}: {} → {}",
-            crate::ui::escaped(&row.shown_path(rows)),
-            value(&row.before),
-            value(&row.after)
-        )];
-    };
-    let service = row.path.split('.').next().unwrap_or_default();
-    domains
-        .iter()
-        .map(|domain| format!("{service}.domains: {domain}"))
-        .collect()
-}
-
-/// Each part of a source row and the Setting `set` and `get` name it by.
-const SOURCE_PARTS: [(&str, &str); 4] = [
-    ("image", "image"),
-    ("credentials", "registryCredential"),
-    ("repository", "repository"),
-    ("rootDir", "rootDir"),
-];
-
-/// A source row as the Settings it holds, `web.image: "nginx:1.26" → "nginx:1.27"`,
-/// or `None` when no part `set` names changed.
-fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
-    let service = crate::ui::escaped(row.path.strip_suffix(".source")?);
-    // No registry credential reads as unset, so a removed Service doesn't list one.
-    let part = |value: &serde_json::Value, field: &str| {
-        value
-            .get(field)
-            .filter(|part| **part != serde_json::Value::Bool(false))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null)
-    };
-    let lines: Vec<String> = SOURCE_PARTS
-        .iter()
-        .filter_map(|&(field, setting)| {
-            let (before, after) = (part(&row.before, field), part(&row.after, field));
-            (before != after).then(|| {
-                format!(
-                    "{service}.{setting}: {} → {}",
-                    shown(&before),
-                    shown(&after)
-                )
-            })
-        })
-        .collect();
-    (!lines.is_empty()).then_some(lines)
-}
-
-/// A Config row by name, `name: "app" → "app2"` or `files: removed empty.txt`, never
-/// by the id its path keeps.
-fn config_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
-    let (_, field) = row.path.strip_prefix("configs.@")?.split_once('.')?;
-    Some(vec![config_field_changed(field, &row.before, &row.after)])
-}
-
-/// A change to `field` of a Config, as [`changed`] reads a Config row.
-pub(crate) fn config_field_changed(
-    field: &str,
-    before: &serde_json::Value,
-    after: &serde_json::Value,
-) -> String {
-    match field.strip_prefix("files.") {
-        Some(file) => {
-            let edit = match (before.is_null(), after.is_null()) {
-                (true, _) => "added",
-                (_, true) => "removed",
-                _ => "changed",
-            };
-            format!("files: {edit} {}", crate::ui::escaped(file))
-        }
-        None => format!(
-            "{}: {} → {}",
-            crate::ui::escaped(field),
-            shown(before),
-            shown(after)
-        ),
-    }
-}
-
-/// A staged domain change as JSON reports it, beside the raw row storing it as
-/// `managedHostnames` or `routes`: `{"path": "web.domains", "change": "added shop"}`.
-#[derive(serde::Serialize)]
-pub(crate) struct DomainLine {
-    path: String,
-    change: String,
-}
-
-/// Every domain change among `rows`, as [`changed`] reads them to people.
-pub(crate) fn domain_changes<'a>(
-    rows: impl IntoIterator<Item = &'a ployz_core::config::ServiceSettingChange>,
-) -> Vec<DomainLine> {
-    rows.into_iter()
-        .filter_map(|row| {
-            let domains = ployz_store::DomainChange::of(row)?;
-            let service = row.path.split('.').next().unwrap_or_default();
-            Some(domains.into_iter().map(move |domain| DomainLine {
-                path: format!("{service}.domains"),
-                change: domain.to_string(),
-            }))
-        })
-        .flatten()
-        .collect()
-}
-
-/// A Setting's value as `get` and `inspect` show it, marked when it is the default
-/// and followed by the default when it is not: `3 (default 1)`, or `(no default)`.
-pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
-    // An Environment's region has no default to compare: unset, its Services run in any region, so a set one
-    // reads as itself, never as a region named "default" with no default.
-    if row.path.to_string() == "@environment.region" {
-        return if row.value.is_null() {
-            "any region".to_owned()
-        } else {
-            plain(&row.value)
-        };
-    }
-    let value = plain(&row.value);
-    // A variable or mount (`SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`) has no
-    // default: unset removes it.
-    let removable = row.path.to_string().split('.').count() > 2;
-    if row.value == row.default {
-        format!("{value} (default)")
-    } else if removable && row.default.is_null() {
-        value
-    } else if row.default.is_null() {
-        format!("{value} (no default)")
-    } else {
-        format!("{value} (default {})", plain(&row.default))
-    }
-}
-
-/// A value on one line as JSON writes it, text quoted, so `""` and `"-"` never read as
-/// unset, which alone shows as `-`.
-pub(crate) fn plain(value: &serde_json::Value) -> String {
-    if value.is_null() {
-        "-".to_owned()
-    } else {
-        crate::ui::escaped(&value.to_string())
-    }
-}
-
-/// A Service's domains on one line, `shop.acme.ployz.app, app.example.com (port 3000)`,
-/// or `-` when it has none.
-pub(crate) fn domain_list(domains: &[ployz_store::DomainRow], service: &str) -> String {
-    let listed: Vec<String> = domains
-        .iter()
-        .filter(|row| row.domain.service.as_str() == service)
-        .map(|row| match row.domain.port {
-            Some(port) => format!("{} (port {port})", row.domain.shown()),
-            None => row.domain.shown().to_owned(),
-        })
-        .collect();
-    if listed.is_empty() {
-        "-".to_owned()
-    } else {
-        listed.join(", ")
-    }
-}
-
-/// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
-/// value is never echoed.
-pub(crate) fn service_name(
-    matches: &ArgMatches,
-    arg: &str,
-) -> Result<ployz_core::ServiceName, Error> {
-    ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like web")
-    })
-}
-
-/// Every value of argument `arg`, Service names.
-pub(crate) fn service_names(
-    matches: &ArgMatches,
-    arg: &str,
-) -> Result<Vec<ployz_core::ServiceName>, Error> {
-    names(
-        matches,
-        arg,
-        |name| ployz_core::ServiceName::parse(name).ok(),
-        "Service",
-    )
-}
-
-/// Every value of argument `arg`, Volume names.
-pub(crate) fn volume_names(
-    matches: &ArgMatches,
-    arg: &str,
-) -> Result<Vec<ployz_store::VolumeName>, Error> {
-    names(
-        matches,
-        arg,
-        |name| ployz_store::VolumeName::parse(name).ok(),
-        "Volume",
-    )
-}
-
-/// A rejected value is never echoed.
-fn names<T>(
-    matches: &ArgMatches,
-    arg: &str,
-    parse: impl Fn(String) -> Option<T>,
-    what: &str,
-) -> Result<Vec<T>, Error> {
-    super::string_values(matches, arg)
-        .into_iter()
-        .map(|name| {
-            parse(name).ok_or_else(|| {
-                Error::usage(format!(
-                    "Expected {what} names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
-                ))
-            })
-        })
-        .collect()
-}
-
-/// Argument `arg`, a Volume name.
-pub(crate) fn volume_name(
-    matches: &ArgMatches,
-    arg: &str,
-) -> Result<ployz_store::VolumeName, Error> {
-    ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like data")
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use ployz_core::RpcErrorCode;
 
     use super::*;
-
-    /// The names a refusal's `accept` listed, read from the raw value: every string
-    /// of a list, or of each list of an Environment map, and nothing else.
-    fn names_listed_in(accept: Option<&serde_json::Value>) -> Vec<String> {
-        let names = |list: &serde_json::Value| {
-            list.as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|name| name.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-        };
-        match accept {
-            Some(serde_json::Value::Object(by_environment)) => {
-                by_environment.values().flat_map(names).collect()
-            }
-            Some(list) => names(list),
-            None => Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_names_a_refusal_accepts_keep_every_string_whatever_else_its_accept_holds() {
-        let table = [
-            ("absent", json!({})),
-            ("null", json!({ "accept": null })),
-            ("a number", json!({ "accept": 3 })),
-            ("a flat list", json!({ "accept": ["data", "logs"] })),
-            ("a mixed list", json!({ "accept": ["data", 7, "logs"] })),
-            (
-                "a name no Volume has",
-                json!({ "accept": ["data", "Bad Name"] }),
-            ),
-            (
-                "by Environment",
-                json!({ "accept": { "production": ["data"], "staging": ["logs"] } }),
-            ),
-            (
-                "by Environment with a mixed list",
-                json!({ "accept": { "production": ["data", 7], "staging": 9 } }),
-            ),
-            ("an empty map", json!({ "accept": {} })),
-        ];
-        for (name, details) in table {
-            assert_eq!(
-                accepted_names(&Confirmation::of(&details)),
-                names_listed_in(details.get("accept")),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_staged_domain_change_reads_as_a_domain() {
-        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(serde_json::json!({
-            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
-            "before": [{ "prefix": "web", "targetPort": null }],
-            "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
-        }))
-        .unwrap();
-        assert_eq!(
-            changed(&row, &[]),
-            ["web.domains: added shop.<cluster domain>"]
-        );
-        let named: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
-            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
-            "before": [], "after": [{ "prefix": "shop", "targetPort": 8080 }],
-            "hostnames": { "shop": "shop.acme.ployz.app" },
-        }))
-        .unwrap();
-        assert_eq!(
-            changed(&named, &[]),
-            ["web.domains: added shop.acme.ployz.app on port 8080"]
-        );
-        let route: ployz_core::config::ServiceSettingChange =
-            serde_json::from_value(serde_json::json!({
-                "path": "web.routes.r1", "kind": "remove", "canRestore": false,
-                "before": { "id": "r1", "hostname": "app.example.com", "targetPort": null },
-                "after": null,
-            }))
-            .unwrap();
-        assert_eq!(
-            changed(&route, &[]),
-            ["web.domains: removed app.example.com"]
-        );
-    }
-
-    fn row(path: &str, before: serde_json::Value, after: serde_json::Value) -> Vec<String> {
-        changed(
-            &serde_json::from_value(json!({
-                "path": path, "kind": "update", "canRestore": false,
-                "before": before, "after": after,
-            }))
-            .unwrap(),
-            &[],
-        )
-    }
-
-    #[test]
-    fn a_staged_image_change_reads_as_the_setting_set_names() {
-        let source = |image: &str| json!({ "type": "image", "credentials": false, "image": image });
-        assert_eq!(
-            row(
-                "web.source",
-                source("traefik/whoami:v1.10.0"),
-                source("traefik/whoami:v1.10.1")
-            ),
-            [r#"web.image: "traefik/whoami:v1.10.0" → "traefik/whoami:v1.10.1""#]
-        );
-        assert_eq!(
-            row(
-                "web.source",
-                json!({ "type": "git", "repository": "acme/web", "rootDir": "/" }),
-                json!({ "type": "git", "repository": "acme/web", "rootDir": "/api" })
-            ),
-            [r#"web.rootDir: "/" → "/api""#]
-        );
-        assert_eq!(
-            row("db.source", source("postgres:16"), json!(null)),
-            [r#"db.image: "postgres:16" → null"#]
-        );
-    }
-
-    #[test]
-    fn a_staged_config_change_reads_by_name_not_id() {
-        let at = "configs.@765c98f1-af88-4dc8-a63d-6f8127034983";
-        assert_eq!(
-            row(&format!("{at}.name"), json!("app"), json!("app2")),
-            [r#"name: "app" → "app2""#]
-        );
-        let file = json!({ "content": "", "gid": 0, "mode": "0444", "uid": 0 });
-        assert_eq!(
-            row(&format!("{at}.files.empty.txt"), file.clone(), json!(null)),
-            ["files: removed empty.txt"]
-        );
-        assert_eq!(
-            row(&format!("{at}.files.run.sh"), json!(null), file),
-            ["files: added run.sh"]
-        );
-        assert_eq!(
-            row(
-                &format!("{at}.files.a\u{202E}b.txt"),
-                json!(null),
-                json!({})
-            ),
-            [r"files: added a\u{202e}b.txt"]
-        );
-    }
-
-    #[test]
-    fn a_staged_config_mount_reads_by_its_config_name() {
-        let mount = |config_name: Option<&str>| {
-            changed(
-                &serde_json::from_value(json!({
-                    "path": "web.configs.@a18f32f9-1b2c-4d3e-8f40-5a6b7c8d9e0f",
-                    "configName": config_name, "kind": "add", "canRestore": true,
-                    "before": null, "after": "/etc/sentry",
-                }))
-                .unwrap(),
-                &[],
-            )
-        };
-        assert_eq!(
-            mount(Some("sentry")),
-            [r#"web.configs.sentry: null → "/etc/sentry""#]
-        );
-        assert_eq!(
-            mount(None),
-            [r#"web.configs.@a18f32f9-1b2c-4d3e-8f40-5a6b7c8d9e0f: null → "/etc/sentry""#]
-        );
-    }
-
-    #[test]
-    fn a_staged_memory_limit_reads_with_its_unit() {
-        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
-            "path": "web.memLimit", "kind": "update", "canRestore": true,
-            "before": null, "after": 0.201_326_592,
-        }))
-        .unwrap();
-        assert_eq!(changed(&row, &[]), ["web.memLimit: null → 192 MiB"]);
-    }
-
-    #[test]
-    fn a_staged_cpu_limit_reads_in_vcpus() {
-        let row = |before: serde_json::Value, after: serde_json::Value| {
-            let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
-                "path": "web.cpuLimit", "kind": "update", "canRestore": true,
-                "before": before, "after": after,
-            }))
-            .unwrap();
-            changed(&row, &[])
-        };
-        assert_eq!(
-            row(json!(0.5), json!(2)),
-            ["web.cpuLimit: 0.5 vCPUs → 2 vCPUs"]
-        );
-        assert_eq!(row(json!(null), json!(1)), ["web.cpuLimit: null → 1 vCPU"]);
-    }
 
     /// Two reads of Working State's revision, with `between` run between them.
     fn two_reads(store: &Store<'_>, between: impl Fn()) -> Result<(u64, u64), Error> {
@@ -1626,598 +704,5 @@ mod tests {
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Conflict);
         assert_eq!(error.message, "Working State changed while get read it.");
-    }
-
-    #[test]
-    fn a_set_setting_without_a_default_says_it_has_none() {
-        let row = |path: &str, value: serde_json::Value| ployz_store::SettingRow {
-            path: ployz_store::SettingPath::parse(path).unwrap(),
-            value,
-            default: serde_json::Value::Null,
-            apply: serde_json::from_value(json!("staged")).unwrap(),
-            row: None,
-            note: None,
-        };
-        assert_eq!(
-            valued(&row("web.startCommand", json!("npm start"))),
-            "\"npm start\" (no default)"
-        );
-        assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
-        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
-        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
-        assert_eq!(
-            valued(&row("@environment.region", json!("default"))),
-            "\"default\""
-        );
-        assert_eq!(
-            valued(&row("@environment.region", json!(null))),
-            "any region"
-        );
-    }
-
-    #[test]
-    fn empty_text_a_dash_and_unset_read_differently() {
-        let shown = [plain(&json!("")), plain(&json!("-")), plain(&json!(null))];
-        assert_eq!(shown, ["\"\"", "\"-\"", "-"]);
-    }
-
-    #[test]
-    fn a_value_escapes_what_would_steer_the_terminal() {
-        let value = json!("مرحبا\u{202E}evil\u{200B}\u{85}\t");
-        let escaped = r#""مرحبا\u{202e}evil\u{200b}\u{85}\t""#;
-        assert_eq!(plain(&value), escaped);
-        assert_eq!(shown(&value), escaped);
-        let long = shown(&json!(format!("\u{202E}{}", "a".repeat(100))));
-        assert!(long.starts_with(r#""\u{202e}aaa"#), "{long}");
-    }
-
-    #[test]
-    fn a_long_value_is_cut_within_80_columns_never_inside_an_escape() {
-        let cut = |before: usize, odd: char| {
-            shown(&json!(format!(
-                "{}{odd}{}",
-                "a".repeat(before),
-                "z".repeat(90 - before)
-            )))
-        };
-        let a = |count| "a".repeat(count);
-        assert_eq!(cut(78, '\u{202E}'), format!("\"{}… (91 chars)", a(78)));
-        assert_eq!(cut(75, '\u{202E}'), format!("\"{}… (91 chars)", a(75)));
-        assert_eq!(
-            cut(71, '\u{202E}'),
-            format!(r#""{}\u{{202e}}… (91 chars)"#, a(71))
-        );
-        assert_eq!(cut(78, '\n'), format!("\"{}… (91 chars)", a(78)));
-        assert_eq!(cut(76, '\u{1}'), format!("\"{}… (91 chars)", a(76)));
-        assert_eq!(
-            cut(70, '\u{1}'),
-            format!(r#""{}\u0001zzz… (91 chars)"#, a(70))
-        );
-        assert_eq!(cut(78, '界'), format!("\"{}… (91 chars)", a(78)));
-        assert_eq!(cut(78, '😀'), format!("\"{}… (91 chars)", a(78)));
-        assert_eq!(cut(77, '界'), format!("\"{}界… (91 chars)", a(77)));
-    }
-
-    #[test]
-    fn a_value_is_measured_in_columns_by_grapheme() {
-        let wide = |c: &str| format!("\"{}… (40 chars)", c.repeat(39));
-        assert_eq!(shown(&json!("界".repeat(40))), wide("界"));
-        assert_eq!(shown(&json!("😀".repeat(40))), wide("😀"));
-        let marked = format!("{}\u{301}\u{301}\u{301}", "a".repeat(78));
-        assert_eq!(shown(&json!(marked)), format!("\"{marked}\""));
-        let heart = format!("{}\u{2764}\u{FE0F}", "a".repeat(78));
-        assert_eq!(
-            shown(&json!(heart)),
-            format!("\"{}… (80 chars)", "a".repeat(78))
-        );
-    }
-
-    #[test]
-    fn a_long_value_shows_its_start_and_length() {
-        assert_eq!(shown(&json!("short")), "\"short\"");
-        assert_eq!(shown(&json!(3)), "3");
-        let long = shown(&json!("a".repeat(70_000)));
-        assert!(long.starts_with("\"aaa"));
-        assert!(long.ends_with("… (70000 chars)"));
-        assert!(long.chars().count() < 100);
-    }
-
-    #[test]
-    fn a_refused_volume_loss_names_the_exact_retry_keeping_the_approval() {
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "deploy", "--env", "staging", "--approval", "apr_1"])
-            .unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let local = ConfigStore::open("sqlite::memory:", key).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(local),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
-        let refused = ployz_core::RpcError::confirmation_required(
-            "This Deploy permanently deletes the data of data",
-        )
-        .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
-        let error = store.accepting(StoreCallError::Refused(refused));
-        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --approval apr_1 --env staging";
-        assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
-        let error = error.report();
-        assert_eq!(error.details.get("retry"), Some(&json!(retry)));
-        assert_eq!(
-            error.message,
-            "This Deploy permanently deletes the data of data"
-        );
-    }
-
-    #[test]
-    fn the_same_command_again_keeps_a_typed_ployz_config() {
-        let config = "/home/me/my ployz/config.yaml";
-        let again = |typed: &[&str]| {
-            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-            let key = SealingKey::new(&[7; 32]).unwrap();
-            Store {
-                backend: Backend::Local(
-                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-                ),
-                matches: leaf_matches(&root),
-                words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
-                secrets: false,
-            }
-            .again(&["--confirm", "shop/staging"])
-        };
-        let typed = again(&[
-            "ployz",
-            "--ployz-config",
-            config,
-            "env",
-            "rm",
-            "staging",
-            "--confirm",
-            "shop/staging",
-        ]);
-        assert_eq!(
-            typed,
-            "ployz --ployz-config '/home/me/my ployz/config.yaml' env rm staging --confirm shop/staging"
-        );
-        let root = crate::cli::command()
-            .try_get_matches_from(shell_words::split(&typed).unwrap())
-            .unwrap();
-        let leaf = leaf_matches(&root);
-        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
-        assert_eq!(leaf.get_one::<String>("confirm").unwrap(), "shop/staging");
-        // A default or `PLOYZ_CONFIG` holds for the next command on its own.
-        assert_eq!(
-            again(&["ployz", "env", "rm", "staging", "--confirm", "shop/staging"]),
-            "ployz env rm staging --confirm shop/staging"
-        );
-    }
-
-    #[test]
-    fn a_skip_deploy_retry_keeps_its_flag_scope_names_and_approval() {
-        let typed = [
-            "ployz",
-            "deploy",
-            "--skip-deploy",
-            "--project",
-            "shop",
-            "--env",
-            "production",
-            "--expect-version",
-            "3:1:0.1",
-            "--approval",
-            "apr_1",
-        ];
-        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned(), "--skip-deploy".to_owned()],
-            secrets: false,
-        };
-        let refused = ployz_core::RpcError::confirmation_required(
-            "Next deploy deletes the data of pg-data, logs. Accept each by name",
-        )
-        .with_details(json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }));
-        let loss = "ployz deploy --skip-deploy --accept-volume-loss pg-data --accept-volume-loss logs \
-                    --expect-version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
-        assert_eq!(
-            store.accepting(StoreCallError::Refused(refused)).hints(),
-            [Hint::Retry(loss.into())]
-        );
-        let approval = store.approving("apr_2");
-        assert_eq!(
-            approval,
-            "ployz deploy --skip-deploy --expect-version 3:1:0.1 --approval apr_2 --project shop --env production"
-        );
-        let reparsed = |retry: &str| {
-            let root = crate::cli::command()
-                .try_get_matches_from(shell_words::split(retry).unwrap())
-                .unwrap();
-            let leaf = leaf_matches(&root);
-            let mut words: Vec<String> = root
-                .subcommand_name()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-            words.push(leaf.get_flag("skip-deploy").to_string());
-            for id in ["project", "env", "expect-version", "approval"] {
-                words.extend(leaf.get_one::<String>(id).cloned());
-            }
-            words.extend(crate::handlers::string_values(leaf, "accept-volume-loss"));
-            words
-        };
-        assert_eq!(
-            reparsed(loss),
-            [
-                "deploy",
-                "true",
-                "shop",
-                "production",
-                "3:1:0.1:9f2c",
-                "apr_1",
-                "pg-data",
-                "logs"
-            ]
-        );
-        assert_eq!(
-            reparsed(&approval),
-            ["deploy", "true", "shop", "production", "3:1:0.1", "apr_2"]
-        );
-    }
-
-    #[test]
-    fn a_volume_loss_retry_passes_the_version_with_the_flag_its_command_takes() {
-        for words in [
-            &["deploy"][..],
-            &["project", "rm", "shop", "--confirm", "shop"],
-            &["env", "rm", "br", "--confirm", "shop/br"],
-        ] {
-            let root = crate::cli::command()
-                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
-                .unwrap();
-            let key = SealingKey::new(&[7; 32]).unwrap();
-            let store = Store {
-                backend: Backend::Local(
-                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-                ),
-                matches: leaf_matches(&root),
-                words: words.iter().map(|word| (*word).to_owned()).collect(),
-                secrets: false,
-            };
-            let refused = ployz_core::RpcError::confirmation_required(
-                "This permanently deletes the data of data",
-            )
-            .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
-            let hints = store.accepting(StoreCallError::Refused(refused)).hints();
-            let [Hint::Retry(retry)] = &hints[..] else {
-                panic!("{words:?} names no retry");
-            };
-            let reparsed = crate::cli::command()
-                .try_get_matches_from(shell_words::split(retry).unwrap())
-                .unwrap_or_else(|error| panic!("{retry}: {error}"));
-            assert_eq!(
-                leaf_matches(&reparsed)
-                    .get_one::<String>("expect-version")
-                    .map(String::as_str),
-                Some("3:1:0.1"),
-                "{retry}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_copy_loss_retry_runs_and_carries_clouds_version_back_verbatim() {
-        let typed = [
-            "ployz",
-            "deploy",
-            "--project",
-            "mirrors",
-            "--env",
-            "production",
-        ];
-        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
-        let refused = ployz_core::RpcError::confirmation_required(
-            "Deploying loses data of data. Accept each by name",
-        )
-        .with_details(json!({ "version": "5:1:0.1#loss-fzfjky", "accept": ["data"] }));
-        let hints = store.accepting(StoreCallError::Refused(refused)).hints();
-        let retry = "ployz deploy --accept-volume-loss data --expect-version '5:1:0.1#loss-fzfjky' \
-                     --project mirrors --env production";
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
-        let reparsed = crate::cli::command()
-            .try_get_matches_from(shell_words::split(retry).unwrap())
-            .unwrap_or_else(|error| panic!("{retry}: {error}"));
-        let leaf = leaf_matches(&reparsed);
-        assert_eq!(
-            leaf.get_one::<String>("expect-version").map(String::as_str),
-            Some("5:1:0.1#loss-fzfjky")
-        );
-        assert_eq!(
-            crate::handlers::string_values(leaf, "accept-volume-loss"),
-            ["data"]
-        );
-    }
-
-    #[test]
-    fn publish_is_not_a_command() {
-        assert!(
-            crate::cli::command()
-                .try_get_matches_from(["ployz", "publish"])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn a_refused_review_names_this_command_at_the_fresh_version() {
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
-            .unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let local = ConfigStore::open("sqlite::memory:", key).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(local),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
-        let next_of = |details| {
-            let refusal = store.at_review(
-                StoreCallError::Refused(
-                    ployz_core::RpcError::conflict(String::from(
-                        "This draft includes a pull request: review it and pass its version",
-                    ))
-                    .with_details(details),
-                ),
-                "diff",
-            );
-            Error::from(refusal.error).hint(refusal.hint).hints()
-        };
-        assert_eq!(
-            next_of(json!({ "diff": { "version": "3:1:0.1" } })),
-            [Hint::Next(
-                "ployz deploy --expect-version 3:1:0.1 --env staging".into()
-            )]
-        );
-        assert_eq!(
-            next_of(json!({})),
-            [Hint::Next("ployz diff --env staging".into())]
-        );
-    }
-
-    /// A stale version's conflict that hands back the fresh review's loss names it at
-    /// the version binding it, when this command already accepts each of its
-    /// Volumes; one it doesn't accept leaves the losses behind, as before.
-    #[test]
-    fn a_stale_version_carries_a_fresh_loss_it_already_accepts() {
-        let typed = [
-            "ployz",
-            "deploy",
-            "--accept-volume-loss",
-            "big1",
-            "--accept-volume-loss",
-            "big2",
-            "--expect-version",
-            "1:1:0.1:deadbeef",
-            "--env",
-            "staging",
-        ];
-        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
-        let next = |accept: serde_json::Value| {
-            let refusal = store.at_review(
-                StoreCallError::Refused(
-                    ployz_core::RpcError::conflict(String::from(
-                        "The Environment changed after this review. Review the latest \
-                              changes and try again",
-                    ))
-                    .with_details(json!({
-                        "diff": { "version": "33:4:0.4" },
-                        "volume_loss": { "version": "33:4:0.4:cafe", "accept": accept },
-                    })),
-                ),
-                "diff",
-            );
-            let message = match &refusal.error {
-                StoreCallError::Refused(error) => error.message.clone(),
-                StoreCallError::Cloud(_) | StoreCallError::Stopped(_) => String::new(),
-            };
-            (
-                message,
-                Error::from(refusal.error).hint(refusal.hint).hints(),
-            )
-        };
-        let (message, hints) = next(json!(["big1"]));
-        assert_eq!(
-            message,
-            "The Environment changed after this review. Review the latest changes and try \
-             again. The command below still accepts deleting the data of big1."
-        );
-        assert_eq!(
-            hints,
-            [Hint::Next(
-                "ployz deploy --accept-volume-loss big1 --expect-version 33:4:0.4:cafe --env staging"
-                    .into()
-            )]
-        );
-        assert_eq!(
-            next(json!(["big1", "big3"])).1,
-            [Hint::Next(
-                "ployz deploy --expect-version 33:4:0.4 --env staging".into()
-            )]
-        );
-    }
-
-    /// A stale version's next line drops the Volume losses accepted at it, so running
-    /// it shows what the fresh review deletes, and its retry line binds that.
-    #[test]
-    fn a_stale_version_leaves_its_accepted_volume_loss_behind() {
-        let typed = [
-            "ployz",
-            "deploy",
-            "--accept-volume-loss",
-            "big1",
-            "--expect-version",
-            "1:1:0.1:deadbeef",
-            "--env",
-            "staging",
-        ];
-        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-        let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
-                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-            ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
-        let refusal = store.at_review(
-            StoreCallError::Refused(
-                ployz_core::RpcError::conflict(String::from(
-                    "The Environment changed after this review. Review the latest changes \
-                          and try again",
-                ))
-                .with_details(json!({ "diff": { "version": "33:4:0.4" } })),
-            ),
-            "diff",
-        );
-        assert_eq!(
-            Error::from(refusal.error).hint(refusal.hint).hints(),
-            [Hint::Next(
-                "ployz deploy --expect-version 33:4:0.4 --env staging".into()
-            )]
-        );
-    }
-
-    /// Accepting every Volume a refusal lists, at a version that doesn't bind their
-    /// loss, is refused for the version: naming them again would change nothing.
-    #[test]
-    fn a_version_short_of_the_loss_is_refused_for_the_version() {
-        let accepting = |typed: &[&str], deploy: bool| {
-            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-            let key = SealingKey::new(&[7; 32]).unwrap();
-            let store = Store {
-                backend: Backend::Local(
-                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-                ),
-                matches: leaf_matches(&root),
-                words: vec!["deploy".to_owned()],
-                secrets: false,
-            };
-            let refused = StoreCallError::Refused(
-                ployz_core::RpcError::confirmation_required(String::from(
-                    "This permanently deletes the data of big1, big2. Accept each by name",
-                ))
-                .with_details(json!({
-                    "version": "33:4:0.4:481da69fb1927724",
-                    "accept": ["big1", "big2"],
-                })),
-            );
-            let error = if deploy {
-                store.accepting(store.at_review(refused, "diff"))
-            } else {
-                store.accepting(refused)
-            };
-            (error.hints(), error.report().message)
-        };
-        let retry = "ployz deploy --accept-volume-loss big1 --accept-volume-loss big2 \
-                     --expect-version 33:4:0.4:481da69fb1927724";
-        let all = [
-            "ployz",
-            "deploy",
-            "--accept-volume-loss",
-            "big2",
-            "--accept-volume-loss",
-            "big1",
-            "--expect-version",
-            "33:4:0.4",
-        ];
-        let (hints, message) = accepting(&all, true);
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
-        assert_eq!(
-            message,
-            "--expect-version 33:4:0.4 doesn't cover the data this deletes. Retry with the \
-             version below"
-        );
-        // A removal's refusal lists more than Volumes; it keeps its message.
-        let (hints, message) = accepting(&all, false);
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
-        assert_eq!(
-            message,
-            "This permanently deletes the data of big1, big2. Accept each by name"
-        );
-        // Naming only some of them is still answered by naming each.
-        let (hints, message) = accepting(
-            &[
-                "ployz",
-                "deploy",
-                "--accept-volume-loss",
-                "big1",
-                "--expect-version",
-                "33:4:0.4",
-            ],
-            true,
-        );
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
-        assert_eq!(
-            message,
-            "This permanently deletes the data of big1, big2. Accept each by name"
-        );
-    }
-
-    #[test]
-    fn a_conflict_keeps_the_next_step_the_store_named() {
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
-            .unwrap();
-        let refused = |details| {
-            StoreCallError::Refused(ployz_core::RpcError::conflict("refused").with_details(details))
-        };
-        let next_of = |error| {
-            let refusal = with_refresh_hint(error, leaf_matches(&root), "diff");
-            Error::from(refusal.error).hint(refusal.hint).hints()
-        };
-        assert_eq!(
-            next_of(refused(json!({ "next": "ployz server add" }))),
-            [Hint::Next("ployz server add".into())]
-        );
-        assert_eq!(
-            next_of(refused(json!({}))),
-            [Hint::Next("ployz diff --env staging".into())]
-        );
     }
 }

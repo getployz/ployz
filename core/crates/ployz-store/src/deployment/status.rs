@@ -4,7 +4,8 @@
 
 use std::sync::LazyLock;
 
-use super::{DeploymentStatus, now};
+use super::DeploymentStatus;
+use crate::storage::now;
 
 impl DeploymentStatus {
     /// Every status.

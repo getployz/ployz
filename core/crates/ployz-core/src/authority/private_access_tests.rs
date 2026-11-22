@@ -103,7 +103,7 @@ fn another_key_cluster_or_window_is_refused() {
     assert_eq!(
         check(&by_device(), &trusted, &Ciphertext::from_bytes(vec![4; 80])),
         Err(AuthorityRefusal::Mismatch {
-            field: "an auth key"
+            field: MismatchField::AuthKey
         }),
         "an approval over one ciphertext admits no other"
     );
@@ -118,7 +118,9 @@ fn another_key_cluster_or_window_is_refused() {
     );
     assert_eq!(
         elsewhere,
-        Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Cluster
+        })
     );
     let late = verify(
         &by_device(),
@@ -255,7 +257,7 @@ fn a_key_approval_is_checked_in_one_fixed_order() {
     assert_eq!(
         check(&KeyApproval::Signed(named.clone()), &trusted, &sealed()),
         Err(AuthorityRefusal::Mismatch {
-            field: "a proposal"
+            field: MismatchField::Proposal
         })
     );
     named.proposal = None;
@@ -273,7 +275,7 @@ fn a_key_approval_is_checked_in_one_fixed_order() {
     assert_eq!(
         no_cluster(&KeyApproval::Signed(named)),
         Err(AuthorityRefusal::Mismatch {
-            field: "the signer"
+            field: MismatchField::Signer
         })
     );
     assert_eq!(
@@ -292,6 +294,8 @@ fn a_key_approval_is_checked_in_one_fixed_order() {
     );
     assert_eq!(
         elsewhere_and_late,
-        Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Cluster
+        })
     );
 }

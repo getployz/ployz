@@ -177,7 +177,7 @@ async fn runtime_watch_snapshot_is_an_error_when_the_store_is_unreachable() {
 }
 
 #[tokio::test]
-async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() {
+async fn record_order_failure_is_an_error_when_the_store_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
@@ -185,9 +185,8 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
     let hostname = IngressHost::parse("app.example.com").unwrap();
     assert!(
         store
-            .record_certificate_failure(
+            .record_order_failure(
                 &hostname,
-                None,
                 "does not resolve",
                 IssuanceClock::new(
                     1,
@@ -2002,7 +2001,7 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .record_renewal_failure(&hostname, &material, "ACME request failed", clock)
         .await
         .unwrap();
     let row = store.certificate_row(&hostname).await.unwrap();
@@ -2021,7 +2020,7 @@ async fn a_failed_renewal_keeps_its_material_and_backs_off() {
         .await
         .unwrap();
     store
-        .record_certificate_failure(&hostname, Some(&material), "ACME request failed", clock)
+        .record_renewal_failure(&hostname, &material, "ACME request failed", clock)
         .await
         .unwrap();
     let row = store.certificate_row(&hostname).await.unwrap();
@@ -2525,7 +2524,7 @@ async fn a_late_certificate_failure_leaves_newly_issued_material() {
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+        .record_order_failure(&hostname, "ACME request failed", clock)
         .await
         .unwrap();
     let issued = certificate_material(&hostname);
@@ -2536,7 +2535,7 @@ async fn a_late_certificate_failure_leaves_newly_issued_material() {
             let hostname = hostname.clone();
             move |store| async move {
                 store
-                    .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+                    .record_order_failure(&hostname, "ACME request failed", clock)
                     .await
                     .unwrap();
             }
@@ -2736,7 +2735,7 @@ async fn a_certificate_failure_without_tried_material_keeps_a_row_with_material(
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .record_order_failure(&hostname, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Kept
@@ -2751,7 +2750,7 @@ async fn a_certificate_policy_refusal_with_the_same_reason_keeps_its_clock() {
     let hostname = IngressHost::parse("app.example.com").unwrap();
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     store
-        .record_certificate_failure(&hostname, None, "policy refused", clock)
+        .record_order_failure(&hostname, "policy refused", clock)
         .await
         .unwrap();
     let before = stored_certificate_body(&store, &hostname).await;
@@ -2792,11 +2791,11 @@ async fn every_acme_certificate_writer_keeps_a_published_row() {
             .await
             .unwrap(),
         store
-            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .record_order_failure(&hostname, "ACME request failed", clock)
             .await
             .unwrap(),
         store
-            .record_certificate_failure(&hostname, Some(&published), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &published, "ACME request failed", clock)
             .await
             .unwrap(),
         store
@@ -2899,7 +2898,7 @@ async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_a
     let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &tried, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Changed
@@ -2915,7 +2914,7 @@ async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_a
     let renewed = stored_certificate_body(&store, &hostname).await;
     assert_eq!(
         store
-            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .record_renewal_failure(&hostname, &tried, "ACME request failed", clock)
             .await
             .unwrap(),
         super::AcmeWrite::Moved

@@ -318,7 +318,7 @@ fn status_names_a_service_whose_copies_crash() {
     );
     assert!(warned(&check).is_empty());
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           Serving 0 of 2 copies. machine-1 restarting, machine-2 exited with code 1.\n"
     );
 }
@@ -379,7 +379,7 @@ fn status_names_a_crash_looping_copy_while_it_is_briefly_up() {
         }])
     );
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           Serving 0 of 1 copy. machine-2 restarted 6 times, up 3 s.\n"
     );
 }
@@ -465,7 +465,7 @@ fn status_names_a_service_left_draining() {
     );
     assert!(warned(&check).is_empty());
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           Serving 1 of 3 copies. machine-1 draining, machine-2 draining.\n"
     );
 }
@@ -859,7 +859,7 @@ fn status_names_a_deployed_service_with_no_copies() {
     );
     assert!(warned(&check).is_empty());
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         format!("organization  ?\nsigned in as  local\napi           {NO_COPIES}\n")
     );
 }
@@ -1593,7 +1593,7 @@ fn status_names_a_live_machine_whose_proxy_lacks_a_new_copy() {
         }])
     );
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
     );
 }
@@ -1637,7 +1637,7 @@ fn status_names_a_machine_whose_proxy_routes_a_copy_at_an_address_its_owner_does
         }])
     );
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nweb           machine-3 routes a copy to 10.210.2.2, which its owner does not report. Check its network.\n"
     );
 }
@@ -2041,7 +2041,7 @@ fn status_shows_a_machine_down_on_the_entry_and_the_reader_as_down_only() {
     );
     assert!(warned(&check).is_empty());
     assert_eq!(
-        super::super::link::rendered(check.attention),
+        super::super::status::rendered(check.attention),
         "organization  ?\nsigned in as  local\nmachine-3     Down. Its copies serve again once it's back.\n"
     );
 }
@@ -2517,7 +2517,7 @@ fn every_attention_and_subject_serializes_to_these_bytes() {
 #[test]
 fn every_attention_renders_under_the_label_its_subject_gives() {
     assert_eq!(
-        super::super::link::rendered(one_of_each_attention()),
+        super::super::status::rendered(one_of_each_attention()),
         "organization     ?\n\
          signed in as     local\n\
          needs attention  None answered.\n\

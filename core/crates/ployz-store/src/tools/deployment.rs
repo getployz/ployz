@@ -13,8 +13,8 @@ use super::refusal::{Call, Refusal};
 use super::step::{Gate, version_for_loss};
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentWarning, DeploymentsQuery, EnvironmentRef, EnvironmentSummary, NodeOutcome,
-    NumberedDeploymentQuery, Outcome, Retry, RowState, Start, VolumeName,
+    DeploymentsQuery, EnvironmentRef, EnvironmentSummary, NodeOutcome, NumberedDeploymentQuery,
+    Outcome, Retry, RowState, Start, VolumeName,
 };
 
 /// The Deployment `number` names, or the latest numbered one when it names none,
@@ -181,19 +181,6 @@ pub(super) fn say_waiting(shown: &mut Map<String, Value>, deployment: &Deploymen
     }
 }
 
-/// Whether a warning holds only names the Config Store wrote, such as a variable
-/// a Deploy left out, rather than text a Server reported.
-fn named(warning: &DeploymentWarning) -> bool {
-    match warning {
-        DeploymentWarning::Fragile { .. }
-        | DeploymentWarning::NotSet { .. }
-        | DeploymentWarning::NotSetInFile { .. } => true,
-        DeploymentWarning::IngressNotServing { .. }
-        | DeploymentWarning::IngressUnchecked { .. }
-        | DeploymentWarning::Deploy { .. } => false,
-    }
-}
-
 fn show(view: &DeploymentView) -> Value {
     let mut shown = summary(&view.deployment);
     if let Value::Object(object) = &mut shown {
@@ -206,7 +193,7 @@ fn show(view: &DeploymentView) -> Value {
             .deployment
             .warnings
             .iter()
-            .partition(|warning| named(warning));
+            .partition(|warning| warning.is_named());
         if !stored.is_empty() {
             object.insert("warnings".into(), json!(stored));
         }

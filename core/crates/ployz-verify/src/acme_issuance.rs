@@ -303,8 +303,8 @@ enum Record {
     /// `record_certificate_error` found the same reason and wrote nothing
     /// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check).
     Same,
-    /// `record_certificate_failure` found material and wrote nothing
-    /// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s check for material).
+    /// `record_order_failure` found material and wrote nothing
+    /// (core/crates/ployzd/src/corrosion/store.rs, `record_order_failure`'s check for material).
     HasMaterial,
     /// The Machine is not rank 0, so it records no refusal, unless `Broken::any_rank_records`.
     NotRankZero,
@@ -407,7 +407,7 @@ enum Ends {
     Rechecked,
     /// The order succeeds (`order_certificate` and `publish_certificate` in `obtain`).
     Issued,
-    /// The order fails; `recorded` says `record_certificate_failure` returned Ok (`note_failure_write` in `issue_wanted`).
+    /// The order fails; `recorded` says `record_order_failure` returned Ok (`note_failure_write` in `issue_wanted`).
     Failed { recorded: bool },
 }
 
@@ -670,7 +670,7 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "a refusal's record_certificate_failure returns Err",
+        name: "a refusal's record_order_failure returns Err",
         on: everywhere,
         omit: None,
         reached: |_, state| {
@@ -786,7 +786,7 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "a failed order's record_certificate_failure returns Err",
+        name: "a failed order's record_order_failure returns Err",
         on: everywhere,
         omit: None,
         reached: |_, state| {
@@ -991,8 +991,8 @@ struct AcmeIssuance {
     broken: Broken,
 }
 
-/// `record_certificate_failure` with no material tried
-/// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`): `write_acme_row` reads the row; with
+/// `record_order_failure`, the record with no material tried
+/// (core/crates/ployzd/src/corrosion/store.rs, `record_order_failure`): `write_acme_row` reads the row; with
 /// material it writes nothing; otherwise it writes `with_backoff`, which keeps the material and
 /// replaces the refusal (`ployzd::corrosion::certificate::CertificateRow::with_backoff`, `ployzd::corrosion::certificate::CertificateChallenge::parse`).
 /// `None` when the write would be lost but none would be made.
@@ -1267,7 +1267,7 @@ impl AcmeIssuance {
                     policy.backoff_base(),
                     policy.backoff_cap(),
                 );
-                // `issue_wanted`'s `record_certificate_failure` call: the snapshot held no material (`tried`).
+                // `issue_wanted`'s `record_order_failure` call: the snapshot held no material (`tried`).
                 let record = record_failure(
                     &mut state.row,
                     Reason::Authority,
@@ -1787,9 +1787,9 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 "the hostname is Refused, and the next pass the gate lets through starts orderable_since again (`ployz_decide::issuance::step`)"
             },
             match record {
-                Record::Wrote if rank(after, who) > 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
-                Record::Wrote => "it records the reason and the clock with record_certificate_failure (issue_wanted's Refused arm)",
-                Record::Lost => "its record_certificate_failure returns Err and writes nothing, which is only logged",
+                Record::Wrote if rank(after, who) > 0 => "it records the reason and the clock with record_order_failure, though it is not rank 0 (under Broken)",
+                Record::Wrote => "it records the reason and the clock with record_order_failure (issue_wanted's Refused arm)",
+                Record::Lost => "its record_order_failure returns Err and writes nothing, which is only logged",
                 Record::NotRankZero => "it is not rank 0, so it records nothing",
                 Record::HasMaterial | Record::Same => unreachable!("the pass's snapshot held no material"),
             },
@@ -1841,12 +1841,12 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 },
                 match record {
                     Record::Wrote => format!(
-                        "record_certificate_failure writes {} (issue_wanted's record_certificate_failure call, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s no-material write)",
+                        "record_order_failure writes {} (issue_wanted's record_order_failure call, core/crates/ployzd/src/corrosion/store.rs, `record_order_failure`'s write)",
                         after.row.clock().map_or_else(String::new, clock_words)
                     ),
-                    Record::Lost => "record_certificate_failure returns Err and writes nothing, which is only logged".to_owned(),
-                    Record::HasMaterial => "record_certificate_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s check for material)".to_owned(),
-                    Record::Same | Record::NotRankZero => unreachable!("an authority failure records with record_certificate_failure"),
+                    Record::Lost => "record_order_failure returns Err and writes nothing, which is only logged".to_owned(),
+                    Record::HasMaterial => "record_order_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_order_failure`'s check for material)".to_owned(),
+                    Record::Same | Record::NotRankZero => unreachable!("an authority failure records with record_order_failure"),
                 },
                 if after.row.material {
                     "the next pass skips the hostname".to_owned()

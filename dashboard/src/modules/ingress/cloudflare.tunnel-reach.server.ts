@@ -3,10 +3,9 @@ import { lookup as resolve, type LookupAddress } from "node:dns";
 import { request } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import type { TunnelAnswer } from "@ployz/sdk";
+import { HOSTNAME_VERIFY_PATH } from "@ployz/sdk/cloud-contract";
 import { Effect } from "effect";
 
-/** Every Server answers it with its Machine id, behind any door (core `HOSTNAME_VERIFY_PATH`). */
-const VERIFY_PATH = "/.well-known/acme-challenge/ployz-verify";
 const REACH_TIMEOUT_MS = 3_000;
 /** A Machine id is 32 characters; anything much longer is some other page. */
 const BODY_LIMIT = 128;
@@ -58,7 +57,7 @@ export const failedAnswer = (code: string | undefined): TunnelAnswer => code !==
 export const reachesCluster = (hostname: string, machineIds: ReadonlySet<string>): Effect.Effect<TunnelAnswer> => isIP(hostname) !== 0 ? Effect.succeed("elsewhere") : Effect.tryPromise({
   try: (signal) => new Promise<boolean>((done, fail) => {
     const asked = request({
-      host: hostname, path: VERIFY_PATH, method: "GET", lookup: publicLookup, signal, timeout: REACH_TIMEOUT_MS,
+      host: hostname, path: HOSTNAME_VERIFY_PATH, method: "GET", lookup: publicLookup, signal, timeout: REACH_TIMEOUT_MS,
       headers: { accept: "text/plain" },
     }, (response) => {
       const status = response.statusCode ?? 0;

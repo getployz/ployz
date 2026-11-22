@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ipnet::{IpNet, Ipv4Net};
+use ipnet::IpNet;
 use ployz_core::{
     AdvertisedEndpoint, Machine, MachineId, MachineName, SelectedEndpoint, WireGuardPublicKey,
 };
@@ -119,11 +119,6 @@ pub enum NetworkError {
         #[source]
         source: defguard_wireguard_rs::error::WireguardInterfaceError,
     },
-}
-
-#[must_use]
-pub fn default_cluster_network() -> Ipv4Net {
-    "10.210.0.0/16".parse().expect("static network is valid")
 }
 
 pub use ployz_core::management_address;
