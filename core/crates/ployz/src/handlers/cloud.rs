@@ -577,7 +577,14 @@ where
         let claimed = identity.claims(ployz_core::JOIN_TRUST_CAPABILITY);
         match answered {
             cloud_enroll::Outcome::Join(join) => {
-                crate::enrollment::confirm_join(&mut client, claimed, &join.registration).await?;
+                // The daemon restarts after it enrolls, so this dials the same connection again.
+                let via = client.connection().clone();
+                crate::enrollment::confirm_join(
+                    async || super::server::connect_direct(plan.reach(), &via).await,
+                    claimed,
+                    &join.registration,
+                )
+                .await?;
             }
             cloud_enroll::Outcome::Initialize(_) if claimed => {
                 return Err(Error::conflict(

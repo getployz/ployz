@@ -29,6 +29,31 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
     address
 }
 
+/// [`serve_machine`] behind a proxy that closes every open connection each time `daemon`
+/// restarts, as a real daemon's restart after its enroll does.
+pub async fn serve_restarting_machine(daemon: JoinDaemon) -> SocketAddr {
+    let restarts = daemon.restarts();
+    let behind = serve_machine(daemon).await;
+    let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = front.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut inbound, _)) = front.accept().await {
+            let mut restarted = restarts.clone();
+            restarted.mark_unchanged();
+            tokio::spawn(async move {
+                let Ok(mut outbound) = tokio::net::TcpStream::connect(behind).await else {
+                    return;
+                };
+                tokio::select! {
+                    _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {}
+                    _ = restarted.changed() => {}
+                }
+            });
+        }
+    });
+    address
+}
+
 pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<AtomicUsize>) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let socket = std::env::temp_dir().join(format!(

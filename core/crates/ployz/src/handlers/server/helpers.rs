@@ -123,7 +123,25 @@ pub(in crate::handlers) async fn inspect_token(
             ),
         )
     })?;
+    let token = joining_as_approved(&details, token);
     Ok((details, token))
+}
+
+/// A Server still joining asks for the addresses its join was approved with. Its token
+/// rediscovers them, and once its WireGuard is up they differ, so a rerun would ask the
+/// admitting Server for a join it never approved and be refused.
+fn joining_as_approved(details: &MachineDetails, mut token: MachineToken) -> MachineToken {
+    if details.phase == LocalMachinePhase::Joining
+        && let Some(machine) = details.machine.as_ref()
+        && machine.id == token.id
+        && machine.public_key == token.public_key
+    {
+        token.public_ip = machine.public_ip;
+        token
+            .advertised_endpoints
+            .clone_from(&machine.advertised_endpoints);
+    }
+    token
 }
 
 /// The `--name` the user passed, refused with the normalised form when it isn't a Machine Name.
@@ -211,10 +229,7 @@ pub(super) async fn reconnect_direct(
     .map_err(Into::into)
 }
 
-/// The daemon restarts after it enrolls, so a first failed attempt is the expected path,
-/// not a reachability problem: this setup reached the same connection moments before (#3371).
-pub(in crate::handlers) const STARTING: crate::setup_retry::Expected =
-    crate::setup_retry::Expected("Waiting for the Server's daemon to start…");
+pub(in crate::handlers) use crate::setup_retry::STARTING;
 
 pub(super) async fn wait_direct_participating(
     matches: &ArgMatches,
@@ -625,6 +640,61 @@ mod tests {
         );
         assert!(!message.contains("docker network rm"), "{message}");
         assert!(!message.contains("systemctl stop"), "{message}");
+    }
+
+    /// A rerun on a Server stuck joining asks for the addresses its join was approved with,
+    /// not the ones it rediscovers now that its WireGuard is up, which the admitting Server
+    /// would refuse as a join it never approved.
+    #[test]
+    fn a_server_still_joining_asks_again_with_its_approved_addresses() {
+        let mut machine = crate::global_fixtures::machine('a', "web-3");
+        machine.public_ip = Some("203.0.113.7".parse().unwrap());
+        machine.advertised_endpoints = vec![ployz_core::AdvertisedEndpoint(
+            "203.0.113.7:51820".parse().unwrap(),
+        )];
+        let rediscovered = MachineToken {
+            id: machine.id,
+            public_key: machine.public_key,
+            public_ip: Some("198.51.100.9".parse().unwrap()),
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                "10.210.1.1:51820".parse().unwrap(),
+            )],
+            ..token_with_hostname("web-3")
+        };
+        let details = |phase| MachineDetails {
+            devices: Vec::new(),
+            removed_keys: Vec::new(),
+            id: machine.id,
+            phase,
+            public_key: machine.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: Some(machine.clone()),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            passkeys: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+            sealing: None,
+            founding: Default::default(),
+            grants: Vec::new(),
+        };
+
+        let asked = joining_as_approved(&details(LocalMachinePhase::Joining), rediscovered.clone());
+        assert_eq!(
+            (asked.public_ip, asked.advertised_endpoints),
+            (machine.public_ip, machine.advertised_endpoints.clone())
+        );
+        let fresh = joining_as_approved(
+            &details(LocalMachinePhase::Uninitialized),
+            rediscovered.clone(),
+        );
+        assert_eq!(
+            fresh.advertised_endpoints,
+            rediscovered.advertised_endpoints
+        );
     }
 
     fn token_with_hostname(hostname: &str) -> MachineToken {

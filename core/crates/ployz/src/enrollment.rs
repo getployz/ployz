@@ -41,38 +41,56 @@ pub fn claims(joiner: &ployz_core::MachineRuntime) -> Vec<&'static str> {
 /// answered the confirmation with, so it may participate. It refuses to without them, so a
 /// reply that lacks them fails here, naming the upgrade it needs.
 ///
+/// The joiner's daemon restarts right after it enrolls, which closes the connection that
+/// enrolled it, so each attempt dials afresh with `dial` until one lands or the start wait
+/// ends. Taking the same restrictions twice changes nothing on the joiner.
+///
 /// # Errors
-/// Returns a missing set as `unsupported`, and the joiner's own refusal or a transport error.
-pub async fn confirm_join(
-    joiner: &mut Client,
+/// Returns a missing set as `unsupported`, and the joiner's own refusal, or the last
+/// transport error once the start wait ends.
+pub(crate) async fn confirm_join(
+    mut dial: impl AsyncFnMut() -> Result<Client, ConnectError>,
     claimed: bool,
     registration: &Registered,
-) -> Result<(), RpcError> {
+) -> Result<(), crate::setup_retry::Error<ConnectError>> {
     if !claimed {
         return Ok(());
     }
+    crate::setup_retry::run_expecting(
+        &mut (),
+        &crate::ui::WaitNotices,
+        "Confirming the join",
+        Some(crate::setup_retry::STARTING),
+        ployz_core::MACHINE_START_WAIT,
+        ConnectError::is_start_retryable,
+        async |()| confirm_once(&mut dial().await?, registration).await,
+    )
+    .await
+}
+
+async fn confirm_once(joiner: &mut Client, registration: &Registered) -> Result<(), ConnectError> {
     let Some(restrictions) = registration.restrictions.clone() else {
         // A joiner that already participates took its restrictions on an earlier run.
         let details = joiner
             .call_shared::<op::Inspect>(ployz_core::InspectRequest::default(), Call::once())
-            .await
-            .map_err(crate::connect::rpc_error)?;
+            .await?;
         if details.phase == ployz_core::LocalMachinePhase::Participating {
             return Ok(());
         }
-        return Err(RpcError::unsupported(format!(
-            "The admitting Server didn't answer with the restrictions this Server needs before it serves ({}). Upgrade the admitting Server, then run this again.",
-            ployz_core::JOIN_TRUST_CAPABILITY
-        ))
-        .with_details(serde_json::json!({ "capability": ployz_core::JOIN_TRUST_CAPABILITY })));
+        return Err(ConnectError::Remote(
+            RpcError::unsupported(format!(
+                "The admitting Server didn't answer with the restrictions this Server needs before it serves ({}). Upgrade the admitting Server, then run this again.",
+                ployz_core::JOIN_TRUST_CAPABILITY
+            ))
+            .with_details(serde_json::json!({ "capability": ployz_core::JOIN_TRUST_CAPABILITY })),
+        ));
     };
     joiner
         .call_shared::<op::ConfirmJoin>(
             ployz_core::ConfirmJoinRequest { restrictions },
             Call::once(),
         )
-        .await
-        .map_err(crate::connect::rpc_error)?;
+        .await?;
     Ok(())
 }
 

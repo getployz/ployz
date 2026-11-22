@@ -39,6 +39,10 @@ impl<E: Into<Failure> + std::error::Error + Send + Sync + 'static> From<Error<E>
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Expected(pub(crate) &'static str);
 
+/// The daemon restarts after it enrolls, so a first failed attempt is the expected path,
+/// not a reachability problem: this setup reached the same connection moments before (#3371).
+pub(crate) const STARTING: Expected = Expected("Waiting for the Server's daemon to start…");
+
 /// What a wait says on its first failure, for whoever supplies the [`Observer`] to show.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Notice<'a> {

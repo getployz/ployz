@@ -162,8 +162,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             confirmed.request.join_confirmation =
                 Some(join_confirmation.ok_or_else(helpers::confirmation_missing)?);
             let answered = crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+            // The daemon restarts after it enrolls, so this dials the same connection again.
             crate::enrollment::confirm_join(
-                &mut target_client,
+                async || helpers::connect_direct(matches, &connection).await,
                 confirmed
                     .request
                     .capabilities
