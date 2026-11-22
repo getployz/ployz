@@ -15,12 +15,14 @@ use thiserror::Error;
 
 use crate::coded::Coded;
 
+mod approvals;
 pub(crate) mod cleanup;
 mod exec;
 mod machine_calls;
+pub(crate) use approvals::{Approvals, KeptVersions, RuleProofs};
 pub(crate) use exec::{MoveEnd, MoveError, health_error, move_container};
 pub(crate) use machine_calls::{
-    Answer, CopyLifecycle, MachineOperations, ProxyPlacement, RestartTolerant, set_each,
+    Answer, Approved, CopyLifecycle, MachineOperations, ProxyPlacement, RestartTolerant, set_each,
 };
 #[cfg(test)]
 pub(crate) use machine_calls::{RedialFailure, Session};

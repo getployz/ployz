@@ -592,7 +592,7 @@ fn ingress_failure_message<'a>(
 impl Run {
     /// Keep the verified builds the Servers issued during the run, so a later Deployment
     /// or drain of the same image needs no token. Failing to keep them costs only that.
-    async fn keep_verified(&self, proofs: &crate::cluster::RuleProofs) {
+    async fn keep_verified(&self, proofs: &crate::deploy::RuleProofs) {
         let kept = proofs.issued();
         if kept.is_empty() {
             return;
@@ -649,7 +649,7 @@ impl Run {
             .collect();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
-        let mut rules = crate::cluster::RuleProofs::default();
+        let mut rules = crate::deploy::RuleProofs::default();
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -1549,11 +1549,11 @@ async fn rule_proofs(
     claimed: &Claimed,
     receipts: &BTreeMap<ServiceName, BuildReceipt>,
     reader: Option<&ployz_core::GithubToken>,
-) -> crate::cluster::RuleProofs {
+) -> crate::deploy::RuleProofs {
     use ployz_core::authority::{
         BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
     };
-    let mut proofs = crate::cluster::RuleProofs::default();
+    let mut proofs = crate::deploy::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
         return proofs;
     };
@@ -1562,7 +1562,7 @@ async fn rule_proofs(
             .get(service)
             .and_then(|receipt| BuiltImageDigest::parse(&receipt.image.reference).ok());
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
-            proofs.rules.insert(
+            proofs.insert(
                 service.clone(),
                 RuleProof {
                     rule: signed.clone(),
@@ -1592,7 +1592,7 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
-        if proofs.rules.contains_key(service) {
+        if proofs.contains(service) {
             continue;
         }
         let approved = rule.service(service);
@@ -1625,7 +1625,7 @@ async fn rule_proofs(
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.token.clone());
-        proofs.rules.insert(
+        proofs.insert(
             service.clone(),
             RuleProof {
                 rule: signed.clone(),

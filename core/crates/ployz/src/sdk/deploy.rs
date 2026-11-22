@@ -102,7 +102,7 @@ impl PreparedDeploy {
         self.confirm_approved(
             deployment_id,
             cleanup,
-            crate::cluster::RuleProofs::default(),
+            crate::deploy::RuleProofs::default(),
             Vec::new(),
         )
     }
@@ -112,11 +112,11 @@ impl PreparedDeploy {
     /// no Container that reaches data without one.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
-    pub fn confirm_approved(
+    pub(crate) fn confirm_approved(
         &self,
         deployment_id: Option<ployz_core::DeploymentLogId>,
         cleanup: ImageCleanup,
-        rules: crate::cluster::RuleProofs,
+        rules: crate::deploy::RuleProofs,
         versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
@@ -133,11 +133,10 @@ impl PreparedDeploy {
         }
         let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = session
-            .client()?
-            .with_versions(versions)
-            .with_rule_proofs(rules);
-        client.deploy.id = deployment_id;
+        let client = crate::deploy::Approved::new(
+            session.client()?,
+            crate::deploy::Approvals::signed(versions, rules),
+        );
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
@@ -152,11 +151,11 @@ impl PreparedDeploy {
             let outcome = tokio::select! {
                 biased;
                 () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
-                outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
+                outcome = client.confirm(&preview, deployment_id, &token, Some(tx)) => outcome,
             };
             if !token.is_cancelled() {
                 session_cancel
-                    .run_until_cancelled(clean_up(&client, &prune_targets, &events))
+                    .run_until_cancelled(clean_up(&client.client, &prune_targets, &events))
                     .await;
             }
             Ok(outcome)
