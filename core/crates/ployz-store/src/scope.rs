@@ -512,6 +512,15 @@ pub(crate) fn nodes(
     Ok(intent)
 }
 
+const PROJECTS: &str = "projects";
+
+/// Whether a refusal's `details` list the Projects to name one of, as [`project`]'s
+/// refusal of an unnamed Project in an Organization of several does.
+#[must_use]
+pub fn lists_projects(details: &serde_json::Value) -> bool {
+    details.get(PROJECTS).is_some()
+}
+
 pub(crate) fn project(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -545,7 +554,7 @@ pub(crate) fn project(
         }),
         rows => Err(error::ambiguous(
             "Name a Project: this Organization has more than one",
-            json!({ "projects": rows.iter().map(|row| row.text(1)).collect::<Result<Vec<_>, _>>()? }),
+            json!({ PROJECTS: rows.iter().map(|row| row.text(1)).collect::<Result<Vec<_>, _>>()? }),
         )),
     }
 }

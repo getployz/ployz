@@ -12,7 +12,7 @@ pub use crate::config_item::query::{
 pub use crate::deployment::query::{
     AppliedRoute, DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery,
     NamespaceView, NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace,
-    PlanQuery, PlanView, RouteKind,
+    PlanQuery, PlanView, RouteKind, Unresolved,
 };
 pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
