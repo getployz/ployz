@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Cause, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
-import { parseErrorEvidence } from "#/lib/error-evidence";
+import { parseErrorEvidence } from "#/modules/inngest/error-evidence";
 import { asRecord } from "#/lib/json";
 import { runAppEffect } from "#/server/run.server";
 import { PublicErrorCategory } from "#/lib/public-error";

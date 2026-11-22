@@ -29,3 +29,6 @@ export * from "#/modules/notifications/tables";
 export * from "#/modules/observe-ingest/tables";
 export * from "#/modules/web-analytics/tables";
 export * from "#/modules/sandbox/tables";
+export * from "#/server/rate-limit.tables";
+export * from "#/modules/inngest/outbox.tables";
+export * from "#/collections/change-log/tables";

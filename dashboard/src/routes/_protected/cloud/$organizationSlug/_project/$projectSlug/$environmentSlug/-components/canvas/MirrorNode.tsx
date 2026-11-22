@@ -12,7 +12,7 @@ import {
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { stagedSurface } from "#/modules/runtime/node-status";
+import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 
 const STAGED_LIFECYCLE = { new: "create", primary: "update", removing: "delete" } as const satisfies Record<StagedCopy, ReviewLifecycleKind>;

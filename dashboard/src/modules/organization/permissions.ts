@@ -82,6 +82,9 @@ function holdings(role: RankedRole, withheld: ReadonlyArray<Permission> = []): R
 export const can = (role: PermissionRole, permission: Permission): boolean =>
   Object.hasOwn(ROLE_PERMISSIONS, role) && ROLE_PERMISSIONS[role].has(permission);
 
+/** The roles a member manager holding `role` may give or take away: only an owner makes or removes an owner. */
+export const assignableRoles = (role: MemberRole): ReadonlyArray<MemberRole> => (role === "owner" ? MemberRole.literals : InviteRole.literals);
+
 /** The roles that may manage members: what an invite's maker must still hold for the invite to work. */
 export const MANAGING_ROLES: ReadonlyArray<MemberRole> = MemberRole.literals.filter((role) => can(role, "members:manage"));
 

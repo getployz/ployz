@@ -1,10 +1,11 @@
 import type { MailContent } from "#/modules/mail/layout";
+import type { InviteRole } from "#/modules/organization/permissions";
 
 export type InviteMail = {
   readonly to: string;
   readonly organization: string;
   readonly inviter: string;
-  readonly role: "admin" | "member";
+  readonly role: InviteRole;
   readonly link: string;
   readonly expiresAt: Date;
 };

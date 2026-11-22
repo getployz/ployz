@@ -1,7 +1,7 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { checkResize, type CopyHolder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, type CopyHolder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-placement/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { type ClusterNameControl, useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
-import { ClusterSetup } from "./cluster-setup";
-import { InstallTabs } from "./copy-block";
+import { ClusterSetup } from "#/modules/machines/waiting/ui/cluster-setup";
+import { InstallTabs } from "#/modules/machines/waiting/ui/copy-block";
 import { useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 /**

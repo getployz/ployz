@@ -1,9 +1,11 @@
 import type { MachineName } from "@ployz/sdk";
+import { Schema } from "effect";
 import { listNames } from "#/lib/plural";
 import { GB, gigabytes } from "#/modules/config-store/store-volumes";
+import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { type Requirement, requirements } from "#/modules/runtime/daemon-compat";
 import type { Refusal } from "#/modules/volume-run/plan";
-import type { AnsweredMember, VolumeRunArgs } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type VolumeRunArgs, VolumeInput } from "#/modules/volume-run/volume-run";
 
 /** Whole bytes, as `ProvisionedVolumeMaximumBytes` crosses the SDK. */
 export type Bytes = number;
@@ -193,3 +195,10 @@ export type PoolShortfall = { readonly code: string; readonly required_growth_by
 export function undoOnRefusal(stepsDone: readonly ("recorded" | "held")[]): boolean {
   return stepsDone.includes("recorded") && !stepsDone.includes("held");
 }
+
+/** The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. */
+export const ResizeVolumeInput = Schema.Struct({
+  ...VolumeInput.fields,
+  maximumBytes: MaximumBytes,
+  requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
+});

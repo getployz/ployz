@@ -12,7 +12,6 @@ import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { RequestScope } from "#/server/request-scope.server";
 import { can, type MemberRole, type Permission, permissionsOf, refusalFor, reads, type SupportShows } from "./permissions";
 
-export type Role = MemberRole;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
 /** What an Access may do: its role's permissions narrowed by a token's grant, and the Environments it may write, if limited. */
@@ -23,14 +22,14 @@ type Held = { readonly permissions: Permission[]; readonly environments: string[
  * Support reads only what `shows` lets it, as of this request.
  */
 export type Access = Held & (
-  | { readonly kind: "member"; readonly userId: string; readonly role: Role; readonly organization: OrganizationRef }
+  | { readonly kind: "member"; readonly userId: string; readonly role: MemberRole; readonly organization: OrganizationRef }
   | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows }
 );
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
   readonly organization: OrganizationRef;
-  readonly role: Role | null;
+  readonly role: MemberRole | null;
   readonly supportAllowed: boolean;
   readonly supportShows: SupportShows;
 };
@@ -69,7 +68,7 @@ export const admit = (input: {
 }): AccessDecision => {
   const { userId, facts, isStaff, permission, grant = FULL_GRANT, lands = landsOf(permission) } = input;
   if (facts === null) return { kind: "not_found" };
-  const hold = (role: Role | "support"): Held | Refused => {
+  const hold = (role: MemberRole | "support"): Held | Refused => {
     if (!can(role, permission)) return { kind: "forbidden", permission, message: refusalOf(permission, "role") };
     const permissions = granted(permissionsOf(role), grant);
     if (!permissions.includes(permission)) return { kind: "forbidden", permission, message: refusalOf(permission, "grant") };

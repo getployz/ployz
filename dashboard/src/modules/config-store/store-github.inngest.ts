@@ -76,7 +76,7 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: EffectR
  * A Store write or a Deployment may have moved a pull request's check: publish it again, one post per pull request at
  * a time, once its writes settle for a few seconds.
  */
-export const createStorePrCheck = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
+export const createStorePrCheck = (inngest: PloyzInngest) =>
   inngest.createFunction(
     {
       id: "store-pr-check",
@@ -86,24 +86,24 @@ export const createStorePrCheck = (inngest: PloyzInngest, runEffect: EffectRunne
       debounce: { key: "event.data.pullRequestKey", period: "10s" },
     },
     async ({ event, step }) => ({
-      check: await step.run("publish-check", () => runEffect(publishRequestedStorePrCheck(event.data))),
+      check: await step.run("publish-check", () => runInngestEffect(publishRequestedStorePrCheck(event.data))),
     }),
   );
 
 /** Hourly: every Store closes idle Branches and deletes closing ones that left the Servers. */
-export const createStoreSweep = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
+export const createStoreSweep = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "store-sweep", retries: 3, triggers: [{ cron: "30 * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => followUp(step, await step.run("sweep", () => runEffect(sweepStores(new Date()))), runEffect),
+    async ({ step }) => followUp(step, await step.run("sweep", () => runInngestEffect(sweepStores(new Date()))), runInngestEffect),
   );
 
 /** A write closed a Branch at once: its Organization's Store sweeps now, and Cloud does what the sweep left it. */
-export const createStoreSweepRequested = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
+export const createStoreSweepRequested = (inngest: PloyzInngest) =>
   inngest.createFunction(
     {
       id: "store-sweep-requested", retries: 3, triggers: [{ event: configSweepRequested.eventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step }) =>
-      followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect),
+      followUp(step, await step.run("sweep", () => runInngestEffect(sweepStore(event.data.organizationId, new Date()))), runInngestEffect),
   );

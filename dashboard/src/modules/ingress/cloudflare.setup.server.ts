@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
-import { Cause, Effect, Exit, type Redacted } from "effect";
+import { Cause, Context, Effect, Exit, type Redacted } from "effect";
 import {
   CloudflareError,
   CloudflareHttp,
@@ -28,8 +28,10 @@ import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Validation } from "#/server/public-error";
 
-/** The Cloudflare Cloud calls through; tests give it a mock of the API. */
-export const realCloudflare = new CloudflareHttp({ fetch: (input, init) => fetch(input, init) });
+/** The Cloudflare API Cloud calls through, unless a test provides a mock of it. */
+export const CloudflareApi = Context.Reference<CloudflareHttp>("ployz/CloudflareApi", {
+  defaultValue: () => new CloudflareHttp({ fetch: (input, init) => fetch(input, init) }),
+});
 
 const BOTH = ["public", "tunnel"] as const;
 const PUBLIC = ["public"] as const;
@@ -49,7 +51,8 @@ const untouched = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(words, Effect.mapError((error) => error instanceof Validation ? refuse(`${error.message} Nothing was changed.`) : error));
 
 /** The names of the zones the token can see, so the page can offer them. Nothing is changed. */
-export const listCloudflareZoneNames = Effect.fn("Cloudflare.zoneNames")(function* (token: Redacted.Redacted<string>, http: CloudflareHttp = realCloudflare) {
+export const listCloudflareZoneNames = Effect.fn("Cloudflare.zoneNames")(function* (token: Redacted.Redacted<string>) {
+  const http = yield* CloudflareApi;
   const zones = yield* listZones(http, token).pipe(words);
   return zones.map((zone) => zone.name).sort();
 });
@@ -61,8 +64,8 @@ export const listCloudflareZoneNames = Effect.fn("Cloudflare.zoneNames")(functio
  */
 export const checkCloudflareSetup = Effect.fn("Cloudflare.check")(function* (
   input: { readonly token: Redacted.Redacted<string>; readonly zone: string },
-  http: CloudflareHttp = realCloudflare,
 ) {
+  const http = yield* CloudflareApi;
   const zones = yield* listZones(http, input.token).pipe(words);
   const zoneTrouble = zoneProblem(input.zone, zones.map((zone) => zone.name));
   if (zoneTrouble !== null) return yield* refuse(zoneTrouble);
@@ -130,8 +133,8 @@ const restorePublic = Effect.fn("Cloudflare.restorePublic")(function* (session: 
 export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   organizationId: string,
   input: { readonly token: Redacted.Redacted<string>; readonly zone: string },
-  http: CloudflareHttp = realCloudflare,
 ) {
+  const http = yield* CloudflareApi;
   const database = yield* Database;
   const { drizzle } = database;
   const early = yield* setupProblem(organizationId);

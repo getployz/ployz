@@ -6,7 +6,6 @@ import { defineCommand } from "#/modules/commands/define";
 import { StoreRefused } from "#/lib/refusal";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { callerOrganizations } from "#/modules/identity/caller.server";
-import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { refusalOf } from "#/modules/organization/access.server";
@@ -60,7 +59,7 @@ const refuse = (code: string, message: string, details: JsonValue = null) => new
  * The member `selector` names, by email when it holds an `@` and by name otherwise. Refuses `forbidden` unless the
  * caller manages members, and unless they are an owner when `touchesOwner` says the change makes or removes one.
  */
-const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: Role) => boolean) {
+const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: MemberRole) => boolean) {
   if (!callerCan(caller, "members:manage")) return yield* refuse("forbidden", refusalOf("members:manage"));
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();

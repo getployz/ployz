@@ -31,9 +31,9 @@ import { chatTitle } from "#/modules/agent/thread-title";
 import type { ThreadSummary } from "#/modules/agent/persistence.server";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
-import { answeredBy, pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
+import { answeredBy, pendingApprovalsOptions, waitsOnYou } from "#/modules/approvals/approvals.queries";
 import { ProposalCard } from "./proposal-card";
-import { pendingProposalsOptions } from "./proposals.queries";
+import { pendingProposalsOptions } from "#/modules/proposals/proposals.queries";
 import { agentThreadsOptions, refetchAgentThreads } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 

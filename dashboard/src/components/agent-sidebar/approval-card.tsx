@@ -18,7 +18,7 @@ import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
 import { lossMoment } from "#/utils/relative-time";
 import { toErrorMessage } from "#/lib/error-message";
-import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
+import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "#/modules/approvals/approvals.queries";
 import { approvalBadge, approvedLine, redeployLine } from "./approval-copy";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 import { denial, DenyReason, DenyWithReasonButton, DestroyedItem, DestroysList, ServerLine } from "./decision-parts";

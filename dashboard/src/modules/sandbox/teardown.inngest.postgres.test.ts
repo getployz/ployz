@@ -13,7 +13,8 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { claimSecretFor, hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { claimOrganization } from "#/modules/sandbox/claim.server";
 import { organizationToken, user } from "#/modules/identity/tables";
-import { member, organization, organizationChange } from "#/modules/organization/tables";
+import { member, organization } from "#/modules/organization/tables";
+import { organizationChangeLog } from "#/collections/change-log/tables";
 import { anonymousTeardownRequested } from "#/modules/sandbox/anonymous.events";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -67,7 +68,7 @@ const seeded = Effect.fn(function* (expiresAt: Date, has: { project?: boolean; s
   yield* drizzle.insert(analyticsSalt).values({ organizationId: ORGANIZATION, environmentId: ENVIRONMENT, day: "2026-10-17", salt: Buffer.from("salt") });
   yield* drizzle.insert(uptimeCheck).values({ id: CHECK, organizationId: ORGANIZATION, name: "web", url: "https://web.example.test/", environmentId: ENVIRONMENT, serviceId: SERVICE });
   yield* drizzle.insert(uptimeIncident).values({ id: INCIDENT, organizationId: ORGANIZATION, checkId: CHECK, checkRevision: 1, openedAt: new Date(), openedBy: { status: 503 } });
-  yield* drizzle.insert(organizationChange).values({ organizationId: ORGANIZATION, sourceTable: "config_project", changedIds: [], deletedIds: [], allRows: true });
+  yield* drizzle.insert(organizationChangeLog).values({ organizationId: ORGANIZATION, sourceTable: "config_project", changedIds: [], deletedIds: [], allRows: true });
   if (has.server) {
     yield* enrollStoreServer(ORGANIZATION);
     yield* drizzle.update(organizationPairing).set({ founderMachineId: FOUNDER as MachineId });

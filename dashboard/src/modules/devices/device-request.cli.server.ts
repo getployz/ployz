@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { DEVICE_KEY } from "#/modules/devices/device-code";
 import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
-import { decodeBody, missingRefusal, personOnly, shellPersonOnly, type CliRoutes } from "#/server/cli-call";
+import { decodeBody, missingRefusal, personOnly, shellPersonOnly, type CliRoutes } from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse } from "#/server/public-error";
 
 const NewDeviceRequest = Schema.Struct({ key: Schema.String.check(Schema.isPattern(DEVICE_KEY)) });

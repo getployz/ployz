@@ -3,7 +3,7 @@ import type { EnvironmentRef, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import type { AgentCaller } from "#/modules/agent/agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 import { askerCaller } from "#/modules/approvals/apply.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";

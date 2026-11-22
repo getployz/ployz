@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { admit, beyondEnvironments, type Lands, refusalOf, type Role } from "#/modules/organization/access.server";
+import { admit, beyondEnvironments, type Lands, refusalOf } from "#/modules/organization/access.server";
 import { presetGrant, type TokenGrant } from "#/modules/identity/token-grant";
-import { PERMISSIONS, type Permission, permissionsOf } from "#/modules/organization/permissions";
+import { type MemberRole, PERMISSIONS, type Permission, permissionsOf } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
 
 const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
 const userId = "user-1";
 
-const admitted = (role: Role | null, permission: Permission, support = { isStaff: false, allowed: false }, grant?: TokenGrant, lands?: Lands) =>
+const admitted = (role: MemberRole | null, permission: Permission, support = { isStaff: false, allowed: false }, grant?: TokenGrant, lands?: Lands) =>
   admit({
     userId,
     facts: { organization, role, supportAllowed: support.allowed, supportShows: SUPPORT_SHOWS_NONE },
@@ -18,7 +18,7 @@ const admitted = (role: Role | null, permission: Permission, support = { isStaff
   });
 
 describe("admit", () => {
-  const member = (role: Role) => ({ kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined });
+  const member = (role: MemberRole) => ({ kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined });
   const forbidden = (permission: Permission) => ({ kind: "forbidden", permission, message: refusalOf(permission) });
 
   it.each(["org:read", "changes:deploy", "tokens:create", "approvals:answer"] as const)("admits every role to %s", (permission) => {
@@ -52,7 +52,7 @@ describe("admit", () => {
 
   it.each(["billing", "constructor", "__proto__"])("forbids a stored role outside the three (%s) without throwing", (stored) => {
     for (const permission of PERMISSIONS) {
-      expect(admitted(stored as Role, permission)).toEqual({ kind: "forbidden", permission, message: refusalOf(permission) });
+      expect(admitted(stored as MemberRole, permission)).toEqual({ kind: "forbidden", permission, message: refusalOf(permission) });
     }
   });
 

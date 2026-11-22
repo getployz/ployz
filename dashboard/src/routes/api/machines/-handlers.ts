@@ -4,7 +4,7 @@ import { authenticateObservePush, observePushCredentials, recordSaltFetch } from
 import { authenticateMachineToken, forwardOtlp, type OtlpSignal } from "#/modules/observe-ingest/otlp.server";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { readCappedBody } from "#/server/capped-body";
-import { machineErrorResponse, Validation } from "#/server/public-error";
+import { machineErrorResponse, machineRefusal, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
 const MAX_SALTS_BYTES = 1024;
@@ -16,9 +16,9 @@ export function handleMachineOtlp(request: Request, signal: OtlpSignal) {
     const sender = yield* Effect.result(authenticateMachineToken(request.headers.get("authorization")));
     if (Result.isFailure(sender)) return machineErrorResponse(sender.failure);
     const read = yield* Effect.result(Effect.tryPromise(() => readCappedBody(request, MAX_OTLP_BYTES)));
-    if (Result.isFailure(read)) return Response.json({ error: "Cloud could not read the request body." }, { status: 503, headers: noStore });
+    if (Result.isFailure(read)) return machineRefusal(503, "Cloud could not read the request body.");
     const body = read.success;
-    if (body === null) return Response.json({ error: "OTLP body is over 8 MiB." }, { status: 413, headers: noStore });
+    if (body === null) return machineRefusal(413, "OTLP body is over 8 MiB.");
     const forwarded = yield* Effect.result(forwardOtlp(sender.success, signal, request.headers, body));
     if (Result.isFailure(forwarded)) return machineErrorResponse(forwarded.failure);
     if (signal !== "logs" || !forwarded.success.ok) return forwarded.success;
@@ -40,7 +40,7 @@ export function handleAnalyticsSalts(request: Request, machineId: string) {
     // An empty site list would read as every site turned off, so a failure answers an error and the Machine keeps its salts.
     if (Result.isFailure(issued)) {
       yield* Effect.logError("Cannot issue analytics salts.", { ...pusher.success, cause: issued.failure });
-      return Response.json({ error: "Cloud could not issue analytics salts." }, { status: 503, headers: noStore });
+      return machineRefusal(503, "Cloud could not issue analytics salts.");
     }
     return Response.json(issued.success, { headers: noStore });
   });

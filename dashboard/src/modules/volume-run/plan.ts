@@ -1,7 +1,7 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
-import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, copyName, heardFrom, type Member, namesServer, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
 export type Role = "writer" | "cutting" | "mirror" | "empty" | "unanswered";
@@ -108,8 +108,7 @@ export function observedEpoch(members: readonly Member[]): number {
   }));
 }
 
-const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
-  machine === undefined ? member.machine.name === to : member.machine.id === machine;
+const isDestination = (args: VolumeRunArgs["move"], member: Member) => namesServer(args, member.machine);
 
 const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
@@ -340,8 +339,9 @@ function copyElsewhere(name: string, copy: Member): Refusal {
 export const alreadyOn = (name: string, server: string): Refusal => ({ code: "already_on", message: `${name}'s writer is already on ${server}` });
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
-function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {
-  const source = answered.find((member) => (machine === undefined ? member.machine.name === from : member.machine.id === machine));
+function planRestore(name: string, args: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {
+  const { from } = args;
+  const source = answered.find((member) => namesServer(args, member.machine));
   if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
   const copy = source.view.copy;
   if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);

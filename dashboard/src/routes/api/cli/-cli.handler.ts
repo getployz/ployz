@@ -11,8 +11,9 @@ import { organizationCliRoutes } from "#/modules/organization/organization.cli.s
 import { passkeysCliRoutes } from "#/modules/passkeys/passkeys.cli.server";
 import { serverUpgradeCliRoutes } from "#/modules/server-upgrade/server-upgrade.cli.server";
 import { volumeRunCliRoutes } from "#/modules/volume-run/volume-run.cli.server";
+import { mirrorSyncCliRoutes } from "#/modules/volume-copies/mirror-sync/mirror-sync.cli.server";
 import { githubCliRoutes } from "#/routes/api/cli/-github.cli";
-import type { CliRoutes } from "#/server/cli-call";
+import type { CliRoutes } from "#/modules/commands/cli-call.server";
 import { NotFound } from "#/server/public-error";
 
 /** Every `/api/cli/*` route, each owned by the module whose data it reads or changes. */
@@ -27,6 +28,7 @@ const CLI_ROUTES = {
   ...deviceRequestCliRoutes,
   ...passkeysCliRoutes,
   ...volumeRunCliRoutes,
+  ...mirrorSyncCliRoutes,
   ...githubCliRoutes,
 } satisfies CliRoutes;
 

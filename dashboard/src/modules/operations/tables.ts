@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { check, pgTable, primaryKey, text, uuid } from "drizzle-orm/pg-core";
 import { createdAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
 
@@ -19,20 +19,5 @@ export const operationRequest = pgTable(
   (table) => [
     primaryKey({ columns: [table.organizationId, table.requestKey] }),
     check("operation_request_key_check", sql`${table.requestKey} ~ '^[A-Za-z0-9_-]{8,64}$'`),
-  ],
-);
-
-/** An event written with the row it starts, sent after the commit and again until Inngest takes it. */
-export const operationOutbox = pgTable(
-  "operation_outbox",
-  {
-    eventId: text("event_id").primaryKey(),
-    name: text("name").notNull(),
-    data: jsonb("data").notNull(),
-    createdAt,
-    sentAt: timestamp("sent_at", { mode: "date", withTimezone: true }),
-  },
-  (table) => [
-    index("operation_outbox_unsent_idx").on(table.createdAt).where(sql`${table.sentAt} is null`),
   ],
 );

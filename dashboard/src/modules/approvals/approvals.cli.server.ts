@@ -3,7 +3,7 @@ import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { freshApproval, freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { cliRefusalResponse } from "#/server/public-error";
-import { decodeBody, refusedMissing, type CliRoutes } from "#/server/cli-call";
+import { decodeBody, refusedMissing, type CliRoutes } from "#/modules/commands/cli-call.server";
 
 /** Reading an approval a destructive write waits on, and deciding it. */
 export const approvalsCliRoutes = {

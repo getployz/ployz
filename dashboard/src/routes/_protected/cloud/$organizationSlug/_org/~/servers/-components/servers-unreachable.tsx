@@ -5,7 +5,7 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { SSH_UPGRADE } from "#/modules/machines/installer";
 import type { OlderServers } from "#/modules/machines/use-servers";
-import { CopyBlock } from "./copy-block";
+import { CopyBlock } from "#/modules/machines/waiting/ui/copy-block";
 import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
 
 /** Why Cloud can't use a Server that answers, by which older Ployz it runs, and what its upgrade brings. */

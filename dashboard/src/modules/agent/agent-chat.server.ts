@@ -19,7 +19,7 @@ import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { refused } from "#/lib/refusal";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
 import { type CallOrigin, sessionIdOf } from "#/modules/agent/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
@@ -41,7 +41,7 @@ import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { findCommand } from "#/modules/commands/commands.server";
 import { readStore } from "#/modules/config-store/config-store.server";
-import type { Caller } from "#/modules/identity/actor";
+import type { AgentCaller, Caller } from "#/modules/identity/actor";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };

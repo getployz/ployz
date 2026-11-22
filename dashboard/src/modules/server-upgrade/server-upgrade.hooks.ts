@@ -1,5 +1,6 @@
 import { refusalFor } from "#/modules/organization/permissions";
 import { useEffect, useState } from "react";
+import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useOrganizationContext } from "#/collections/use-organization-context";
 import { toast } from "sonner";
@@ -17,22 +18,21 @@ import {
 
 export const UPGRADE_REFUSED = refusalFor("servers:operate", "upgrade servers");
 
-/** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
-const PENDING_MS = 60_000;
-
-/** A click on Upgrade reads as Upgrading until a newer attempt than `newestAttemptId` is recorded, or for a minute. */
+/**
+ * A click on Upgrade reads as Upgrading until a newer attempt than the one it was clicked from is recorded, or for a
+ * minute: a Busy Server records none.
+ */
 function usePendingUpgrade(newestAttemptId: string | null) {
-  const [from, setFrom] = useState<PendingFrom>(undefined);
-  const recorded = from !== undefined && newestAttemptId !== from;
-  useEffect(() => {
-    if (recorded) setFrom(undefined);
-  }, [recorded]);
-  useEffect(() => {
-    if (from === undefined) return;
-    const timer = setTimeout(() => setFrom(undefined), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [from]);
-  return { from, start: () => setFrom(newestAttemptId), cancel: () => setFrom(undefined) };
+  const [clicked, setClicked] = usePendingAttempt<{ readonly from: string | null }, string | null>(
+    newestAttemptId,
+    ({ from }, newest) => newest !== from,
+  );
+  const from: PendingFrom = clicked?.from;
+  return {
+    from,
+    start: () => setClicked((current) => (current?.from === newestAttemptId ? current : { from: newestAttemptId })),
+    cancel: () => setClicked(null),
+  };
 }
 
 /**

@@ -6,7 +6,7 @@ import type { DiffView } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { AgentButton, AgentColumn } from "./agent-sidebar";
-import { pendingApprovalsOptions, type ApprovalView } from "./approvals.queries";
+import { pendingApprovalsOptions, type ApprovalView } from "#/modules/approvals/approvals.queries";
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));

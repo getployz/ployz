@@ -8,9 +8,10 @@ import { toErrorMessage } from "#/lib/error-message";
 import { openPublicPortsServerFn } from "#/modules/ingress/doors.functions";
 import { clusterIngressKeys, clusterIngressObservationQueryOptions, clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { CloudflareChoice } from "./cluster-setup";
+import { CloudflareChoice } from "#/modules/machines/waiting/ui/cluster-setup";
 import { forgetCloudflare, holdCloudflare, runFirstSetup, useHeldCloudflare } from "#/modules/ingress/cloudflare-setup";
-import { type CardCloudflare, firstTunnelState } from "./servers-page-state";
+import { type CardCloudflare } from "#/modules/machines/waiting/ui/cloudflare-choice";
+import { firstTunnelState } from "./servers-page-state";
 
 /** On the Servers page once the first Server joined: how the Cloudflare Tunnel chosen for it stands, and the ways on. */
 export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: string }) {

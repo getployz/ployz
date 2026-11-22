@@ -3,6 +3,7 @@ import { Inngest } from "inngest";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
+import { createDrainServer } from "#/modules/machines/server-drain.inngest";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { asTestDouble } from "#/lib/test-double";
@@ -79,5 +80,15 @@ describe("Server Policy Inngest boundary", () => {
 
     expect(output.result).toEqual({ skipped: true });
     expect(updates).toEqual([]);
+  });
+});
+
+describe("Drain and Server Policy slot", () => {
+  it("keys Drain and Server Policy changes with one expression, which Inngest needs to share a slot across functions", () => {
+    const inngest = new Inngest({ id: "drain-slot-contract" });
+    const [drainSlot] = [createDrainServer(inngest).opts.concurrency].flat();
+    const [policySlot] = [createApplyServerPolicyChange(inngest).opts.concurrency].flat();
+    expect(drainSlot).toMatchObject({ scope: "env", limit: 1 });
+    expect(policySlot).toEqual(drainSlot);
   });
 });

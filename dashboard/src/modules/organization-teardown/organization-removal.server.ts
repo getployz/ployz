@@ -13,7 +13,8 @@ import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.se
 import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import { eq } from "drizzle-orm";
 import { session } from "#/modules/identity/tables";
-import { organization, organizationChange } from "#/modules/organization/tables";
+import { organization } from "#/modules/organization/tables";
+import { organizationChangeLog } from "#/collections/change-log/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -125,7 +126,7 @@ const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* <E>(or
   yield* removeOrganizationMachines(organizationId);
   yield* deleting(drizzle.delete(organization).where(eq(organization.id, organizationId)).pipe(Effect.asVoid, Effect.orDie));
   // The cascade's statement triggers logged the deletes under the Organization's id; the log goes with it.
-  yield* drizzle.delete(organizationChange).where(eq(organizationChange.organizationId, organizationId));
+  yield* drizzle.delete(organizationChangeLog).where(eq(organizationChangeLog.organizationId, organizationId));
   // Sessions in it move to their user's next Organization, or none: /cloud then offers a new one.
   const users = yield* drizzle.selectDistinct({ userId: session.userId }).from(session).where(eq(session.activeOrganizationId, organizationId));
   yield* Effect.forEach(users, ({ userId }) => moveSessionsOutOf(organizationId, userId));

@@ -8,7 +8,7 @@ import { healthcheckOf } from "./healthcheck";
 import { replicaChange } from "./replica-rows";
 import { branchText, sourceChange } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
-import { configSettingOf, envKeyOf, isConfigMountSetting, isConfigSetting, isEnvSetting, isMountSetting, mountVolumeOf, nodePath, settingWithin } from "./setting-paths";
+import { configSettingOf, envKeyOf, isConfigMountSetting, isConfigSetting, isEnvSetting, isMountSetting, mountVolumeOf, nodePath, REGION_PATH, settingWithin } from "./setting-paths";
 
 /** A Config file in a change. `content` is missing where the reader may not see it: Ployz support, unless the Organization shows it. */
 const reviewFile = Schema.Struct({ content: Schema.optional(Schema.String), mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
@@ -132,8 +132,6 @@ export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly
 }
 
 export const regionName = (region: string | null) => region ?? "any region";
-
-const REGION_PATH = "@environment.region";
 
 /** The staged region, which no node holds: the Environment's one change, `Region any region → fsn`. */
 function regionGroups(diff: DiffView): ChangeGroup[] {

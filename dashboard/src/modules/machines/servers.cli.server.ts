@@ -21,7 +21,7 @@ import {
   noSuchServer,
   serverIdOf,
   type CliRoutes,
-} from "#/server/cli-call";
+} from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse, NotFound } from "#/server/public-error";
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: caller.credential, organizationId: caller.organization.id });

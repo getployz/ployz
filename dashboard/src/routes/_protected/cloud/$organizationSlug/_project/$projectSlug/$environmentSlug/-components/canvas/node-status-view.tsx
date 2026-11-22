@@ -5,7 +5,7 @@ import { Badge } from "#/components/ui/badge";
 import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
-import { issuesLabel, stagedWord, type DeployChipState, type NodeIssues, type RuntimeLine, type StagedColour, type Tone } from "#/modules/runtime/node-status";
+import { issuesLabel, stagedWord, type DeployChipState, type NodeIssues, type RuntimeLine, type StagedColour, type Tone } from "./node-status";
 
 /** Pink keys on `data-changed`, as the no-hand-drawn-staged lint rule requires, so a tray using `surface` sets it too. */
 export const STAGED_CLASSES = {

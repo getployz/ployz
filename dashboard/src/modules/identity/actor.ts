@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { type Permission, permissionsOf, type SupportShows } from "#/modules/organization/permissions";
+import { type MemberRole, type Permission, permissionsOf, type SupportShows } from "#/modules/organization/permissions";
 import { granted, type TokenGrant } from "#/modules/identity/token-grant";
 
 export const Actor = Schema.Struct({
@@ -34,10 +34,13 @@ export type Credential =
 export type Caller = Actor & {
   readonly organization: { readonly id: string; readonly slug: string };
   readonly credential: Credential;
-  readonly role: "owner" | "admin" | "member" | null;
+  readonly role: MemberRole | null;
   readonly support: SupportShows | null;
   readonly via: "dashboard" | "cli" | "agent";
 };
+
+/** A Caller acting through an agent: the sidebar, or a remote MCP client. */
+export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
 
 type Holder = Pick<Caller, "role" | "support"> & Partial<Pick<Caller, "credential">>;
 

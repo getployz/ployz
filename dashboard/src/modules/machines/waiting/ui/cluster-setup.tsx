@@ -17,7 +17,7 @@ import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
 import { holdCloudflare } from "#/modules/ingress/cloudflare-setup";
-import { abandonCloudflare, type CardCloudflare, installGate } from "./servers-page-state";
+import { abandonCloudflare, type CardCloudflare, installGate } from "./cloudflare-choice";
 import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
 
 const STEPS = ["Run the command", "Review", "Enroll"] as const;

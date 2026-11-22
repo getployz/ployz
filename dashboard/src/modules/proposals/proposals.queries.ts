@@ -1,6 +1,6 @@
 /** @data-source remote: proposals waiting on a human, and each one a card shows, polled every 2s while waiting or running: an agent can present, another tab decide, and each step end at any moment */
 import { queryOptions } from "@tanstack/react-query";
-import { decidable, DECIDABLE_POLL_MS } from "./decidable";
+import { decidable, DECIDABLE_POLL_MS } from "#/modules/approvals/decidable";
 import {
   decideProposalServerFn,
   getProposalServerFn,

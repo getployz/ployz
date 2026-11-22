@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { MetricRead, ServiceHistory } from "#/modules/metrics/metrics";
 import { type Marker, serviceMetrics } from "#/modules/metrics/metrics-model";
 import { serviceMarkersQueryOptions } from "#/modules/metrics/metrics.queries";
-import { containerTrouble, LOOP_QUIET_MS, TROUBLE_WINDOW_MS } from "#/modules/runtime/node-status";
+import { containerTrouble, LOOP_QUIET_MS, TROUBLE_WINDOW_MS } from "./node-status";
 
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
 const NO_MARKERS: readonly Marker[] = [];
