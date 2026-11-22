@@ -21,9 +21,10 @@ import { deploymentDestination } from "#/modules/config-store/deployments/run-se
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { docsUrl } from "#/lib/docs";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
-const LOG_HISTORY_DOCS = "https://ployz.dev/docs/self-hosting";
+const LOG_HISTORY_DOCS = docsUrl("/docs/self-hosting");
 
 const LEVELS = ["error", "warn", "info", "debug"] as const;
 const levelTone = { error: "text-destructive", warn: "text-warning", info: null, debug: "text-muted-foreground" } as const;

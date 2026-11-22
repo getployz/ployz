@@ -1,6 +1,6 @@
+import { PLOYZ_ORIGIN } from "#/lib/docs";
 import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
 
-const DEFAULT_CLOUD_ORIGIN = "https://ployz.dev";
 
 /** Where Ployz is installed from, and where the daemon reads its Release Channel pointers (core `RELEASE_CHANNEL_URL`). */
 export const INSTALL_ORIGIN = "https://ployz.sh";
@@ -21,7 +21,7 @@ export type InstallTarget = { readonly cloudOrigin: string; readonly ployzVersio
  * terminal, so it passes the token in PLOYZ_FLEET_TOKEN.
  */
 export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget): InstallLines {
-  const cloud = cloudOrigin === DEFAULT_CLOUD_ORIGIN ? "" : `PLOYZ_CLOUD_URL='${cloudOrigin}' `;
+  const cloud = cloudOrigin === PLOYZ_ORIGIN ? "" : `PLOYZ_CLOUD_URL='${cloudOrigin}' `;
   return {
     shell: `curl -fsSL ${INSTALL_ORIGIN} | sudo ${cloud}sh -s -- ${ployzVersion} --enroll`,
     cloudInit: `#cloud-config\nruncmd:\n  - curl -fsSL ${INSTALL_ORIGIN} | ${cloud}PLOYZ_FLEET_TOKEN=${token} sh -s -- ${ployzVersion}`,

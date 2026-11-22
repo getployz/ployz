@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { Effect } from "effect";
+import { BASE32 } from "#/lib/base32";
 import { claimSecretFor, claimUrlForSecret, hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { user } from "#/modules/identity/tables";
@@ -12,7 +13,6 @@ import { allocateUnique } from "#/utils/slug";
 export const ANONYMOUS_ORGANIZATION_NAME = "Agent sandbox";
 export const ANONYMOUS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
-const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 const base32Suffix = () => Array.from({ length: 8 }, () => BASE32[randomInt(BASE32.length)]).join("");
 
 export const signUpAnonymous = Effect.fn("Identity.signUpAnonymous")(function* () {
