@@ -76,7 +76,7 @@ export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "servi
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
 const STAGE_SEVERAL = "For several steps under one approval, stage them in a proposal.";
 /** What the catalog's gated tools end with, said of a published command that asks too: its `about` is the CLI's help. */
-const ASKS = "May stop to ask a human to approve.";
+export const ASKS = "May stop to ask a human to approve.";
 /** A proposal's place in a Service tool: a gated call already says it asks, an ungated one asks only as a step. */
 const inProposal = (gated: boolean): string =>
   gated ? STAGE_SEVERAL : `It runs without approval; as a step of a proposal, a human approves it in the dashboard. ${STAGE_SEVERAL}`;

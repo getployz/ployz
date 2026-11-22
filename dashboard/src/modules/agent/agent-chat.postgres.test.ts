@@ -12,7 +12,7 @@ import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
 import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
-import { approvalBadge } from "#/modules/approvals/approvals";
+import { approvalBadge } from "#/components/agent-sidebar/approval-copy";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";

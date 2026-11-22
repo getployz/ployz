@@ -9,6 +9,7 @@ import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
+import { ASKS, INTENT_REFUSAL } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { asTestDouble } from "#/lib/test-double";
 import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
@@ -399,7 +400,7 @@ it.live("a call that does not say why it is made is refused, and feedback needs 
     for (const said of [null, "   "]) {
       expect(yield* agent.call("environment_show", SHOP, said)).toMatchObject({
         isError: true,
-        body: { ok: false, refusal: { code: "invalid_argument", message: "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves." } },
+        body: { ok: false, refusal: { code: "invalid_argument", message: INTENT_REFUSAL } },
       });
     }
     const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { type: "missing_capability", message: "I could not list backups." } }));
@@ -548,7 +549,7 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
       expect(tools.find((tool) => tool.name === name)?.description).toContain("stage them in a proposal");
     }
     for (const name of ["service_restart", "service_stop"]) {
-      expect(tools.find((tool) => tool.name === name)?.description).toContain("May stop to ask a human to approve.");
+      expect(tools.find((tool) => tool.name === name)?.description).toContain(ASKS);
     }
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("a human approves it in the dashboard");
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("It runs without approval");

@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, redeployLine, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
+import { approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
 import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
 import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approved-key";
@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
+import { approvalBadge, approvedLine, redeployLine } from "./approval-copy";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
@@ -45,12 +46,6 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
     case "denied": return <TraceLine>Denied{approval.reason ? `: ${approval.reason}` : "."}</TraceLine>;
     case "superseded": return <TraceLine>The plan changed since this was asked. Ask again to review the new one.</TraceLine>;
   }
-}
-
-function approvedLine(approval: ApprovalView) {
-  if (approval.command === "publish") return "Saves without deploying.";
-  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Check private access in Integrations." : "Private access turns off.";
-  return `${approvalSubject(approval.command, approval.review).verb} goes ahead.`;
 }
 
 function PendingCard({ organizationSlug, approval }: { organizationSlug: string; approval: ApprovalView }) {

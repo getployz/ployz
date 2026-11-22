@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
+import { approvalUuid, askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -24,7 +24,6 @@ import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.se
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { admitRun, planVolumeRun, type VolumeRunPlan } from "#/modules/volume-run/volume-run.server";
 import { Conflict, Forbidden, NotFound } from "#/server/public-error";
-import { uuidFrom } from "#/server/uuid-from";
 
 export type OperationCall = {
   readonly key: string | null;
@@ -337,7 +336,7 @@ export const actService = (
       if (!gated.ok) return refused(gated.refusal);
       if (gated.approvalId === null) return run;
       // One approval runs one stop or restart: its run takes an id the approval names, so a later call asks again.
-      const approved = uuidFrom(`ployz.approval:${caller.organization.id}:${gated.approvalId}`);
+      const approved = approvalUuid(`ployz.approval:${caller.organization.id}`, gated.approvalId);
       if (yield* serviceActExists(caller.organization.id, approved)) return refused(yield* askAgain(caller, asked));
       return () => run(approved);
     }),

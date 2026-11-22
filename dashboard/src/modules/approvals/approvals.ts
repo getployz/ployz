@@ -1,15 +1,25 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord, asString } from "#/lib/json";
 import type { Caller } from "#/modules/identity/actor";
-import { rollbackConfirm } from "#/modules/config-store/store-deployments";
-import { holds } from "#/modules/support-access/support-view";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
 export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "mirror" | "sync" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
+
+/**
+ * What an operation's `subject` names, before its colon: `server:<machine id>`, `servers:<organization id>`,
+ * `organization:<organization id>`, `cluster:<organization id>`, `namespace:<name>`, `volume:<volume id>`,
+ * `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`, `environment:<environment id>` or
+ * `project:<name>`.
+ */
+export const SUBJECT_KINDS = ["server", "servers", "organization", "cluster", "namespace", "volume", "member", "invite", "service", "environment", "project"] as const;
+export type SubjectKind = (typeof SUBJECT_KINDS)[number];
+
+/** The subjects whose approval is planned again when its command reruns, so there is no Cluster to recompute it from. */
+export const REPLANNED_ON_RERUN: ReadonlySet<string> = new Set<SubjectKind>(["member", "invite", "service", "project", "environment", "organization", "servers"]);
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
@@ -37,29 +47,20 @@ export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true; dropped?: string[] }
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
-const isSealed = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
-
-/**
- * `diff` with each variable it seals shown sealed before too: saving the seal removes the earlier plain value from
- * History, so an approval kept after it runs keeps none either. Cloud checks only a refusal's version and Environment,
- * so a review without changes passes through as it is.
- */
-export function withoutSealedBefore<T extends DiffView>(diff: T): T {
-  const node = (change: NodeChange): NodeChange => ({
-    ...change,
-    settings: change.settings.map((row) =>
-      holds(row.row, row.path) === "variable" && isSealed(row.after) && row.before !== null && !isSealed(row.before) ? { ...row, before: { secret: true } } : row),
-  });
-  const nodes = (changes: NodeChange[] | undefined) => changes?.map(node);
-  const shown = { ...diff };
-  const changes = nodes(diff.changes);
-  if (changes) shown.changes = changes;
-  const drafts = nodes(diff.draft_changes);
-  if (drafts) shown.draft_changes = drafts;
-  return shown;
-}
-
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
+
+/** The verbs that don't read as their own name: the card's title for each, and how a refusal says what was asked. */
+const OPERATION_WORDS = {
+  set_cluster_name: { title: "Rename cluster", asked: (name: string) => `renaming the Cluster to ${name}` },
+  set_ingress_doors: { title: "Switch web traffic", asked: (name: string) => `switching web traffic ${name}` },
+  set_private_access: { title: "Turn private access", asked: (name: string) => `turning Private Access ${name}` },
+} as const satisfies Partial<Record<OperationVerb, { title: string; asked: (name: string) => string }>>;
+
+const operationWords = (verb: OperationVerb) => verb in OPERATION_WORDS ? OPERATION_WORDS[verb as keyof typeof OPERATION_WORDS] : null;
+
+/** What a refusal calls an operation waiting on a human: "renaming the Cluster to acme", or "this drain of fra-1". */
+export const operationAsked = (verb: OperationVerb, name: string) =>
+  operationWords(verb)?.asked(name) ?? `this ${verb.replaceAll("_", " ")} of ${name}`;
 
 /**
  * What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". A Store
@@ -67,9 +68,7 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) {
-    const verb = review.operation.verb === "set_cluster_name" ? "Rename cluster"
-      : review.operation.verb === "set_ingress_doors" ? "Switch web traffic"
-      : review.operation.verb === "set_private_access" ? "Turn private access" : capitalized(review.operation.verb);
+    const verb = operationWords(review.operation.verb)?.title ?? capitalized(review.operation.verb);
     return { verb, name: review.operation.name, project: null };
   }
   const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
@@ -102,17 +101,9 @@ export function approvalTarget(command: string, review: ApprovalReview) {
 }
 
 /** A retry the Store refused without a `redeploy` is a removal's: it takes the Environment off again. */
-const shutsDownAgain = (review: ApprovalReview) => "diff" in review && !review.redeploy;
+export const shutsDownAgain = (review: ApprovalReview) => "diff" in review && !review.redeploy;
 
-const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
-
-/** What a redeploy's card says it ships: "Back to #4. Undoes #5 and #6.", or "Ships #4 again."; null for anything else. */
-export function redeployLine(command: string, review: ApprovalReview) {
-  if (command !== "retry" || !("diff" in review) || !review.redeploy) return null;
-  const { deployment, rolls_back } = review.redeploy;
-  const rollback = rollbackConfirm({ number: deployment, rolls_back });
-  return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
-}
+export const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
 
 /** A full Deploy that also removes every other Service its Environment runs, which only the Servers can name. */
 export const prunes = (review: ApprovalReview) => "diff" in review && review.prunes === true;
@@ -170,32 +161,6 @@ export const asksForAuthKey = (review: ApprovalReview) => "operation" in review
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
-
-/** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
-export function approvalBadge(command: string, review: ApprovalReview) {
-  const { effects } = review;
-  if (losesVolumeAccess(review)) return "Removes server";
-  if (command === "publish") return "Deletes on deploy";
-  if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
-  if (command === "stop") return "Stops service";
-  if (command === "restart") return "Restarts service";
-  if (command === "unprotect") return "Unprotects";
-  if (command === "sync") return "Syncs";
-  if (command === "take") return "Takes";
-  if (command === "cancel") return "Cancels deploy";
-  if (command === "move") return "Moves volume";
-  if (command === "restore") return "Restores volume";
-  if (command === "resize") return "Resizes volume";
-  if (command === "set_cluster_name") return "Renames cluster";
-  if (command === "set_private_access") return asksForAuthKey(review) ? "Joins a tailnet" : "Removes routers";
-  if (command === "set_ingress_doors") return effects.length === 0 ? "Switches web traffic" : `Moves ${effects.length} ${effects.length === 1 ? "address" : "addresses"}`;
-  if (command === "release" && effects.length === 0) return "Releases volume";
-  if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";
-  if (effects.every((effect) => effect.kind === "deletes_volume")) {
-    return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
-  }
-  return `Destroys ${effects.length} ${effects.length === 1 ? "thing" : "things"}`;
-}
 
 /** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
 export function approvalCommand(command: ConfigCommand) {

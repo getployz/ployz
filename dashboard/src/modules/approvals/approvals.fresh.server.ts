@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
+import { REPLANNED_ON_RERUN } from "#/modules/approvals/approvals";
 import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
@@ -18,7 +19,7 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
   const key = subject.slice(separator + 1);
   // A member, invite, Service, Project, Environment, Organization or forget-every-Server approval is planned again when
   // its command reruns; there is no Cluster to recompute it from.
-  if (["member", "invite", "service", "project", "environment", "organization", "servers"].includes(subject.slice(0, separator))) return Effect.succeed(stored);
+  if (REPLANNED_ON_RERUN.has(subject.slice(0, separator))) return Effect.succeed(stored);
   const fresh = Effect.gen(function* () {
     switch (verb) {
       case "drain": {

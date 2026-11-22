@@ -162,13 +162,16 @@ const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, ori
       return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page, origin }).pipe(Effect.map(outcomeOf)));
     }));
 
+/** The system prompt's account of which calls may wait for a human. `agent-chat.server.test.ts` holds it to `GATED`. */
+export const GATE_NOTE = "A Deploy (skip_deploy included), removing an Environment or a Project, a Service restart or stop, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service start never waits, and neither does a server upgrade.";
+
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
 
 You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you. Never act in another Organization.
 
 Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
 
-A Deploy (skip_deploy included), removing an Environment or a Project, a Service restart or stop, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service start never waits, and neither does a server upgrade.
+${GATE_NOTE}
 
 To run several Service restarts, stops or starts as one plan, call proposal_create, stage each step with proposal set to its id, in the order to run, then call proposal_present. A person approves every step at once. Only those three tools can be staged, and a staged step never runs on its own.
 

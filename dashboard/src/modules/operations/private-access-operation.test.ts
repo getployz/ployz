@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approvalBadge, approvalSubject, asksForAuthKey, type ApprovalReview } from "#/modules/approvals/approvals";
+import { approvalSubject, asksForAuthKey, type ApprovalReview } from "#/modules/approvals/approvals";
+import { approvalBadge } from "#/components/agent-sidebar/approval-copy";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { privateAccessUse } from "#/modules/private-access/private-access.commands.server";
 import { privateAccessAsked } from "#/modules/private-access/private-access.server";

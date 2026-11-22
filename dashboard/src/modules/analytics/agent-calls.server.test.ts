@@ -2,7 +2,7 @@ import { PostHogMCP } from "@posthog/mcp";
 import { Effect } from "effect";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { type AgentCaller, INTENT_REFUSAL, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { type AgentCallReport, type AgentSurface, recordAgentCall, sessionIdOf } from "#/modules/analytics/agent-calls.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 
@@ -105,7 +105,7 @@ it("a call refused for lacking a reason is a failed call of type validation, wit
   const caller = asTestDouble<AgentCaller>()({ userId: "user-1", organization: { id: "org-1", slug: "shop" } });
   const origin = { surface: "cloud", session: sessionIdOf("x"), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null } as const;
   const answer = await withPostHog(runAgentCall(caller, { tool: "environment_show", input: { intent: "  " }, key: "k", approvalId: null, page: { at: "organization" }, origin }) as Effect.Effect<unknown>);
-  expect(answer).toEqual({ outcome: { ok: false, refusal: { code: "invalid_argument", message: "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves.", details: null } } });
+  expect(answer).toEqual({ outcome: { ok: false, refusal: { code: "invalid_argument", message: INTENT_REFUSAL, details: null } } });
   const events = await flushed();
   expect(events).toHaveLength(1);
   expect(events[0]?.properties).toMatchObject({ $mcp_tool_name: "environment_show", $mcp_is_error: true, $mcp_error_type: "validation" });
