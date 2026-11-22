@@ -4166,6 +4166,7 @@ dependencies = [
  "ed25519-dalek",
  "ployz",
  "ployz-core",
+ "ployz-decide",
  "rcgen",
  "reqwest",
  "rusqlite",

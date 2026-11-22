@@ -14,6 +14,7 @@ pub mod caddy_load;
 pub mod fate;
 pub mod github_build;
 pub mod issuance;
+pub mod rotation;
 pub mod service_floor;
 pub mod standing;
 pub mod volume_size;

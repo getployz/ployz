@@ -2,6 +2,7 @@
 
 use super::*;
 use ployz_core::{ContainerNow, EnsuredContainer, IngressDoors, RpcResponse, ServiceName};
+use ployz_decide::rotation::{Checked, RotationWant, decide, in_rotation, in_rotation_refusal};
 
 fn global_slot(key: &str, service: &ServiceName) -> SlotKey {
     SlotKey {
@@ -650,7 +651,7 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 let copy = current.first_mut().unwrap();
                                 match owner_decides(
                                     copy,
-                                    &RotationTarget::Out,
+                                    &RotationWant::Out { allow_empty: false },
                                     expect.as_ref(),
                                     peer.is_none(),
                                 ) {
@@ -666,14 +667,17 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 assert_eq!(id, container_id('a'));
                                 let mut current = current.lock().unwrap();
                                 let copy = current.first_mut().unwrap();
-                                match owner_decides(copy, &RotationTarget::Gone, None, false) {
-                                    Some(refusal) => refused_with(copy.clone(), refusal),
-                                    None => {
-                                        current.clear();
-                                        ensured(ContainerNow::Absent {
-                                            of: ContainerLocator::Id(id),
-                                        })
-                                    }
+                                let rotation = copy.rotation().clone();
+                                if in_rotation(&rotation, &RotationTarget::Gone) {
+                                    refused_with(
+                                        copy.clone(),
+                                        in_rotation_refusal(&copy.container_id, &rotation),
+                                    )
+                                } else {
+                                    current.clear();
+                                    ensured(ContainerNow::Absent {
+                                        of: ContainerLocator::Id(id),
+                                    })
                                 }
                             }
                             other => panic!("an ineligible target never runs a copy: {other:?}"),
@@ -730,59 +734,27 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
     }
 }
 
-/// Decides a rotation want on `copy` the way its owner does: the `expect`
-/// check, then the shared edge table, then the LastIn guard on In to Out.
+/// Decides a rotation want on `copy` the way its owner does: the shared verdict, then
+/// the LastIn guard on In to Out.
 fn owner_decides(
     copy: &mut ContainerObservation,
-    target: &ployz_core::RotationTarget,
+    want: &RotationWant,
     expect: Option<&CopyRotation>,
     last_in: bool,
 ) -> Option<ContainerRefusal> {
-    use ployz_core::{RotationEdge, RotationRefusal, RotationTarget};
     let rotation = copy.rotation().clone();
-    let refused = |reason, message: String| {
-        Some(ContainerRefusal {
-            reason,
-            message,
+    match decide(&rotation, want, expect) {
+        Checked::Met => None,
+        Checked::Refused(refusal) => Some(refusal),
+        Checked::Allowed(_) if rotation == CopyRotation::In && last_in => Some(ContainerRefusal {
+            reason: ContainerRefusalReason::LastIn,
+            message: "no other copy is In and routed; send allow_empty to empty the Service".into(),
             capability: None,
-        })
-    };
-    if matches!(
-        (&rotation, target),
-        (CopyRotation::In, RotationTarget::In { .. }) | (CopyRotation::Out, RotationTarget::Out)
-    ) {
-        return None;
-    }
-    if let Some(expect) = expect
-        && *expect != rotation
-    {
-        return refused(
-            ContainerRefusalReason::RotationMismatch,
-            format!("the copy is {rotation:?}, not {expect:?} as expected"),
-        );
-    }
-    match rotation.edge(target) {
-        RotationEdge::Write(CopyRotation::Out) if rotation == CopyRotation::In && last_in => {
-            refused(
-                ContainerRefusalReason::LastIn,
-                "no other copy is In and routed; send allow_empty to empty the Service".into(),
-            )
-        }
-        RotationEdge::Write(to) => {
+        }),
+        Checked::Allowed(to) => {
             copy.try_update(|parts| parts.rotation = Some(to)).unwrap();
             None
         }
-        RotationEdge::Keep | RotationEdge::Remove => None,
-        RotationEdge::Refused(refusal) => refused(
-            match refusal {
-                RotationRefusal::HeldByOtherRun => ContainerRefusalReason::HeldByOtherRun,
-                RotationRefusal::InRotation => ContainerRefusalReason::InRotation,
-                RotationRefusal::OutIsFinal | RotationRefusal::NoEdge => {
-                    ContainerRefusalReason::RotationMismatch
-                }
-            },
-            format!("{refusal:?}"),
-        ),
     }
 }
 
@@ -945,7 +917,7 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                                         recorded.lock().unwrap().push("in");
                                         owner_decides(
                                             copy,
-                                            &RotationTarget::In { run },
+                                            &RotationWant::In { run },
                                             expect.as_ref(),
                                             false,
                                         )
@@ -974,14 +946,17 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                                     .position(|copy| copy.container_id == id)
                                     .unwrap();
                                 let copy = current.get_mut(at).unwrap();
-                                match owner_decides(copy, &RotationTarget::Gone, None, false) {
-                                    Some(refusal) => refused_with(copy.clone(), refusal),
-                                    None => {
-                                        current.remove(at);
-                                        ensured(ContainerNow::Absent {
-                                            of: ContainerLocator::Id(id),
-                                        })
-                                    }
+                                let rotation = copy.rotation().clone();
+                                if in_rotation(&rotation, &RotationTarget::Gone) {
+                                    refused_with(
+                                        copy.clone(),
+                                        in_rotation_refusal(&copy.container_id, &rotation),
+                                    )
+                                } else {
+                                    current.remove(at);
+                                    ensured(ContainerNow::Absent {
+                                        of: ContainerLocator::Id(id),
+                                    })
                                 }
                             }
                             other => panic!("unexpected want: {other:?}"),
