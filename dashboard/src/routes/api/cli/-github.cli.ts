@@ -1,5 +1,6 @@
 import { Effect } from "effect";
-import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
+import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
+import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import type { CliRoutes } from "#/server/cli-call";
 import { cliRefusalResponse, NotFound } from "#/server/public-error";

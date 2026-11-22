@@ -1,11 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
 import { Cache, Context, Effect, Layer } from "effect";
 import { GithubDisconnected, type GithubAccess } from "#/modules/github/github-access";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { isValidGithubId } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
-import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
+import { findInstallationLink, installationUsable } from "#/modules/github/github.repository";
 import { Database } from "#/server/database.server";
 
 /** Installation tokens live for one hour on GitHub. */
@@ -35,31 +34,6 @@ export interface GithubTokensService {
 
 export class GithubTokens extends Context.Service<GithubTokens, GithubTokensService>()("ployz/GithubTokens") {}
 
-/** What Cloud knows of an installation for one Organization: whether it links it, and whether GitHub suspended it. */
-export const findInstallationLink = Effect.fn("GithubTokens.findInstallationLink")(function* (organizationId: string, installationId: number) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle
-    .select({
-      accountLogin: githubInstallation.accountLogin,
-      suspendedAt: githubInstallation.suspendedAt,
-      linked: organizationGithubInstallation.organizationId,
-    })
-    .from(githubInstallation)
-    .leftJoin(organizationGithubInstallation, and(
-      eq(organizationGithubInstallation.installationId, githubInstallation.installationId),
-      eq(organizationGithubInstallation.organizationId, organizationId),
-    ))
-    .where(eq(githubInstallation.installationId, installationId))
-    .limit(1);
-  const row = rows[0];
-  return {
-    installed: row !== undefined,
-    linked: row?.linked !== undefined && row.linked !== null,
-    suspended: row?.suspendedAt !== undefined && row.suspendedAt !== null,
-    accountLogin: row?.accountLogin ?? `installation ${installationId}`,
-  };
-});
-
 type InstallationLink = Effect.Success<ReturnType<typeof findInstallationLink>>;
 
 const refusalOf = (organizationId: string, installationId: number, link: InstallationLink) => link.linked && !link.suspended
@@ -69,13 +43,6 @@ const refusalOf = (organizationId: string, installationId: number, link: Install
 /** Why the Organization can't use the installation now, or null when it can. */
 export const installationRefusal = Effect.fn("GithubTokens.installationRefusal")(function* (organizationId: string, installationId: number) {
   return refusalOf(organizationId, installationId, yield* findInstallationLink(organizationId, installationId));
-});
-
-const installationUsable = Effect.fn("GithubTokens.installationUsable")(function* (installationId: number) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ suspendedAt: githubInstallation.suspendedAt }).from(githubInstallation)
-    .where(eq(githubInstallation.installationId, installationId)).limit(1);
-  return rows[0] !== undefined && rows[0].suspendedAt === null;
 });
 
 export const makeGithubTokens = Effect.fn("GithubTokens.make")(function* (

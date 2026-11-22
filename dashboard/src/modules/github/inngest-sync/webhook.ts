@@ -7,7 +7,7 @@ import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.
 import {
   processGithubInstallationEvent,
   processGithubInstallationRepositoriesEvent,
-} from "#/modules/github/github.server";
+} from "#/modules/github/github-installation.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
 
 export type GithubInstallationWebhookStepTools = Pick<

@@ -339,3 +339,39 @@ export const listGithubRepositoryNamesForOrganization = Effect.fn("Github.listRe
     return rows.map((row) => row.fullName);
   },
 );
+
+/** How many of `repositories` an installation grants. */
+export const repositoryCountOf = (repositories: ReadonlyArray<{ readonly installationId: number }>, installationId: number) =>
+  repositories.filter((repository) => repository.installationId === installationId).length;
+
+/** What Cloud knows of an installation for one Organization: whether it links it, and whether GitHub suspended it. */
+export const findInstallationLink = Effect.fn("Github.findInstallationLink")(function* (organizationId: string, installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle
+    .select({
+      accountLogin: schemaGithubInstallation.accountLogin,
+      suspendedAt: schemaGithubInstallation.suspendedAt,
+      linked: schemaLink.organizationId,
+    })
+    .from(schemaGithubInstallation)
+    .leftJoin(schemaLink, and(
+      eq(schemaLink.installationId, schemaGithubInstallation.installationId),
+      eq(schemaLink.organizationId, organizationId),
+    ))
+    .where(eq(schemaGithubInstallation.installationId, installationId))
+    .limit(1);
+  const row = rows[0];
+  return {
+    installed: row !== undefined,
+    linked: row?.linked !== undefined && row.linked !== null,
+    suspended: row?.suspendedAt !== undefined && row.suspendedAt !== null,
+    accountLogin: row?.accountLogin ?? `installation ${installationId}`,
+  };
+});
+
+export const installationUsable = Effect.fn("Github.installationUsable")(function* (installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ suspendedAt: schemaGithubInstallation.suspendedAt }).from(schemaGithubInstallation)
+    .where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
+  return rows[0] !== undefined && rows[0].suspendedAt === null;
+});

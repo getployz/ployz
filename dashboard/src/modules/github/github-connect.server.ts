@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Effect, Redacted, Schema } from "effect";
 import {
   linkGithubInstallation,
+  repositoryCountOf,
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsById,
   listGithubInstallationsForOrganization,
@@ -10,7 +11,6 @@ import {
 } from "#/modules/github/github.repository";
 import { MAX_OFFERED_INSTALLATIONS, type ConnectNotice } from "#/modules/github/github-connect";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
-import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import type { Actor } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
@@ -18,7 +18,7 @@ import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { AppConfig } from "#/server/config.server";
+import { AppConfig, type GithubOrigins } from "#/server/config.server";
 import { Forbidden, Validation } from "#/server/public-error";
 
 const TOKEN_TTL_MS = 15 * 60_000;
@@ -66,6 +66,9 @@ const verify = Effect.fn("GithubConnect.verify")(function* <S extends Schema.Top
   );
   return value !== null && value.expiresAt > Date.now() ? value : null;
 });
+
+export const getGithubAppInstallUrl = (github: { readonly appSlug: string; readonly origins: GithubOrigins }) =>
+  `${github.origins.web}/apps/${github.appSlug}/installations/new`;
 
 const settingsPath = (organizationSlug: string, search: { connect: ConnectNotice } | { offer: string }) =>
   `/cloud/${organizationSlug}/~/settings?${new URLSearchParams({ section: "github", ...search }).toString()}`;
@@ -184,7 +187,7 @@ export const listOrganizationGithub = Effect.fn("GithubConnect.list")(function* 
     accounts: installations.map((installation) => ({
       login: installation.accountLogin,
       avatarUrl: installation.accountAvatarUrl,
-      repositories: repositories.filter((repository) => repository.installationId === installation.installationId).length,
+      repositories: repositoryCountOf(repositories, installation.installationId),
       repositoriesSynced: installation.repositoriesSyncedAt !== null,
       connectedBy: installation.connectedByName,
       connectedAt: installation.connectedAt.toISOString(),

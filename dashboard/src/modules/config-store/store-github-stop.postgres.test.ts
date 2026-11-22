@@ -6,7 +6,7 @@ import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
 import { recordStoreDeploymentRun, type StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
-import { disconnectGithub } from "#/modules/github/github-cli.server";
+import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
 import { executeProcessGithubInstallationReceived } from "#/modules/github/inngest-sync/webhook";
 import type { Caller } from "#/modules/identity/actor";
 import type { PloyzStepTools } from "#/modules/inngest/client";

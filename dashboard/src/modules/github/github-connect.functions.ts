@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { disconnectGithub } from "#/modules/github/github-cli.server";
-import { MAX_OFFERED_INSTALLATIONS } from "#/modules/github/github-connect";
+import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
+import { MAX_OFFERED_INSTALLATIONS, OFFER_MAX_LENGTH } from "#/modules/github/github-connect";
 import { acceptGithubOffer, listGithubOffer, listOrganizationGithub } from "#/modules/github/github-connect.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
@@ -10,7 +10,7 @@ const authenticated = [publicErrorMiddleware, actorMiddleware] as const;
 const OrganizationScope = Schema.Struct({
   organizationSlug: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 });
-const GithubOffer = Schema.Struct({ ...OrganizationScope.fields, offer: Schema.NonEmptyString.check(Schema.isMaxLength(8192)) });
+const GithubOffer = Schema.Struct({ ...OrganizationScope.fields, offer: Schema.NonEmptyString.check(Schema.isMaxLength(OFFER_MAX_LENGTH)) });
 
 export const acceptGithubOfferInput = strictValidator(Schema.Struct({
   ...GithubOffer.fields,

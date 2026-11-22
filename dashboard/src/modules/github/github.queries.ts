@@ -10,13 +10,13 @@ import {
 } from "#/modules/github/github.functions";
 
 /** A repository as one Organization reads it: through its linked installation, or publicly. */
-export type GithubRepositoryRef = {
+export type GithubRepositorySelector = {
   organizationSlug: string;
   repositoryId: number;
   installationId: number | null;
 };
 
-export function githubFileSearchQueryOptions(input: GithubRepositoryRef & {
+export function githubFileSearchQueryOptions(input: GithubRepositorySelector & {
   ref: string;
   pattern: string;
 }) {
@@ -30,7 +30,7 @@ export function githubFileSearchQueryOptions(input: GithubRepositoryRef & {
 export const githubKeys = {
   all: ["github"] as const,
   access: (organizationSlug: string) => [...githubKeys.all, "access", organizationSlug] as const,
-  branches: (input: GithubRepositoryRef) =>
+  branches: (input: GithubRepositorySelector) =>
     [
       ...githubKeys.all,
       "branches",
@@ -65,7 +65,7 @@ export function useGithubWebOrigin() {
   return useSuspenseQuery(githubWebQueryOptions()).data.origin;
 }
 
-export function githubBranchesQueryOptions(input: GithubRepositoryRef) {
+export function githubBranchesQueryOptions(input: GithubRepositorySelector) {
   return queryOptions({
     queryKey: githubKeys.branches(input),
     staleTime: 60_000,

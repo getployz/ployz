@@ -13,6 +13,7 @@ import {
   type GithubPullRequestAction,
   type GithubPullRequestWebhook,
   type GithubPushWebhook,
+  githubNonEmptyStringSchema,
 } from "#/modules/github/github-ingestion.contracts";
 import { asRecord, asString } from "#/lib/json";
 
@@ -40,7 +41,6 @@ const githubCheckSuitePayloadSchema = Schema.Struct({
     updated_at: githubTimestampSchema,
   }),
 });
-const nonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
 const githubPullRequestPayloadSchema = Schema.Struct({
   ...githubIdentityFields,
   pull_request: Schema.Struct({
@@ -62,14 +62,14 @@ const githubInstallationPayloadSchema = Schema.Struct({
   installation: Schema.Struct({
     id: githubIdSchema,
     account: Schema.Struct({
-      login: nonEmptyStringSchema,
-      type: nonEmptyStringSchema,
-      avatar_url: nonEmptyStringSchema,
+      login: githubNonEmptyStringSchema,
+      type: githubNonEmptyStringSchema,
+      avatar_url: githubNonEmptyStringSchema,
     }),
   }),
   sender: Schema.Struct({
     id: githubIdSchema,
-    login: nonEmptyStringSchema,
+    login: githubNonEmptyStringSchema,
   }),
 });
 // GitHub sends no default branch, URL or timestamp here, so a cache entry comes from the sync instead.
@@ -81,18 +81,18 @@ const githubInstallationRepositoriesPayloadSchema = Schema.Struct({
   repositories_removed: Schema.Array(githubInstallationRepositorySchema),
   sender: Schema.Struct({
     id: githubIdSchema,
-    login: nonEmptyStringSchema,
+    login: githubNonEmptyStringSchema,
   }),
 });
 
 export const githubInstallationWebhookEventDataSchema = Schema.Struct({
-  deliveryId: nonEmptyStringSchema,
+  deliveryId: githubNonEmptyStringSchema,
   ...githubInstallationPayloadSchema.fields,
 });
 
 export const githubInstallationRepositoriesWebhookEventDataSchema =
   Schema.Struct({
-    deliveryId: nonEmptyStringSchema,
+    deliveryId: githubNonEmptyStringSchema,
     ...githubInstallationRepositoriesPayloadSchema.fields,
   });
 

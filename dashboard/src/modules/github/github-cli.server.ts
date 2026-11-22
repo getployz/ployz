@@ -1,21 +1,20 @@
 import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { Context, Effect, Layer } from "effect";
-import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
-import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
-import { GithubApi, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
+import {
+  GithubApi, isGithubObservationNotFound, listGithubRepositoryBranches, readGithubRepositoryContents,
+} from "#/modules/github/github-observation.api";
 import {
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
   listGithubRepositoryNamesForOrganization,
-  unlinkGithubInstallation,
+  repositoryCountOf,
 } from "#/modules/github/github.repository";
-import { basicGlob } from "#/modules/github/github.server";
-import { repositoryOwnerId, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { requireAccess } from "#/modules/organization/access.server";
+import { githubConnectHref } from "#/modules/github/github-connect";
+import { repositoryOwnerId, repositoryPaths, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
+import type { Caller } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -29,7 +28,7 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
   const installations = yield* listGithubInstallationsForOrganization(caller.organization.id);
   const repositories = yield* listCachedGithubRepositoriesForOrganization(caller.organization.id);
   return {
-    connect_url: new URL(`/api/github/connect?${new URLSearchParams({ organization: caller.organization.slug }).toString()}`, config.app.url).href,
+    connect_url: new URL(githubConnectHref(caller.organization.slug, false), config.app.url).href,
     ready: repositories.length > 0,
     installations: installations.map((installation) => ({
       id: installation.installationId,
@@ -37,7 +36,7 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
       account_type: installation.accountType,
       connected_by: installation.connectedByName,
       connected_at: installation.connectedAt.toISOString(),
-      repositories: repositories.filter((repository) => repository.installationId === installation.installationId).length,
+      repositories: repositoryCountOf(repositories, installation.installationId),
     })),
     repositories: repositories
       .map((repository) => ({
@@ -98,17 +97,15 @@ export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
   repository: ReadableRepository, query: Omit<GithubTreeQuery, "repository">,
 ) {
   const at = query.ref ?? repository.defaultBranch;
-  const listed = yield* listGithubRepositoryFiles(accessFor(repository.organizationId, repository.installationId), repository.fullName, at).pipe(
+  const listed = yield* repositoryPaths(accessFor(repository.organizationId, repository.installationId), repository.fullName, at, {
+    cap: TREE_PATHS, directory: directoryOf(query.path), match: query.match,
+  }).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
-  const directory = directoryOf(query.path);
-  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file === directory || file.startsWith(`${directory}/`));
-  const matcher = query.match === undefined ? null : basicGlob(query.match);
-  const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
     repository: repository.fullName,
     ref: at,
-    paths: matching.slice(0, TREE_PATHS),
-    truncated: listed.truncated || matching.length > TREE_PATHS,
+    paths: listed.paths,
+    truncated: listed.truncated,
   } satisfies GithubTreeView;
 });
 
@@ -161,12 +158,12 @@ const githubFile = Effect.fn("GithubCli.file")(function* (caller: Caller, query:
 }, Effect.catchTags({ NotFound: missing, Validation: invalid }));
 
 /** What a tree or file read fails with: a refusal, or the database or GitHub failing. */
-type GithubReadError = Effect.Error<ReturnType<typeof githubFile>>;
+type GithubRepositoryReadError = Effect.Error<ReturnType<typeof githubFile>>;
 
 /** Reads of a repository's files, the Organization's to read; a refusal names what was wrong. */
 export class GithubRepositories extends Context.Service<GithubRepositories, {
-  readonly tree: (caller: Caller, query: GithubTreeQuery) => Effect.Effect<GithubTreeView, GithubReadError>;
-  readonly file: (caller: Caller, query: GithubFileQuery) => Effect.Effect<GithubFileView, GithubReadError>;
+  readonly tree: (caller: Caller, query: GithubTreeQuery) => Effect.Effect<GithubTreeView, GithubRepositoryReadError>;
+  readonly file: (caller: Caller, query: GithubFileQuery) => Effect.Effect<GithubFileView, GithubRepositoryReadError>;
 }>()("ployz/GithubRepositories") {}
 
 /** GitHub itself, through the App's installations or as a public repository. */
@@ -180,26 +177,3 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
     file: (caller, query) => provided(githubFile(caller, query)),
   };
 }));
-
-/**
- * Disconnect, from Organization › GitHub or `ployz github disconnect LOGIN`: the Organization lets go of the GitHub
- * account it links by that login (a `manage` call). The link goes first, so nothing new reads or builds through it;
- * then its builds running on GitHub through that installation are cancelled as Cloud and their Deployments fail with
- * the disconnect. A stop that fails is caught by the build walk's next look. Other Organizations linked to the
- * installation keep it. Uninstalling the App happens on GitHub.
- */
-export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (actor: Actor, organizationSlug: string, login: string) {
-  const { origins } = (yield* AppConfig).github;
-  const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
-  const installation = (yield* listGithubInstallationsForOrganization(organization.id))
-    .find((linked) => linked.accountLogin.toLowerCase() === login.toLowerCase());
-  if (installation === undefined) return yield* new NotFound({ message: `No GitHub account ${login} in this Organization.` });
-  yield* unlinkGithubInstallation({ organizationId: organization.id, installationId: installation.installationId });
-  yield* stopGithubInstallationBuilds(installation.installationId, [organization.id]).pipe(
-    Effect.catch((error) => Effect.logWarning("Could not stop a disconnected installation's GitHub builds.", error)),
-  );
-  const settings = installation.accountType === "Organization"
-    ? `${origins.web}/organizations/${installation.accountLogin}/settings/installations/${installation.installationId}`
-    : `${origins.web}/settings/installations/${installation.installationId}`;
-  return { disconnected: { id: installation.installationId, account: installation.accountLogin }, uninstall_url: settings };
-});

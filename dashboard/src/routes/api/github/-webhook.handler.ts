@@ -1,4 +1,5 @@
-import { Data, Effect, Option, Result as EffectResult, Schema } from "effect";
+import crypto from "node:crypto";
+import { Data, Effect, Option, Redacted, Result as EffectResult, Schema } from "effect";
 import {
   decodeGithubCheckSuitePayload,
   decodeGithubInstallationPayload,
@@ -6,8 +7,7 @@ import {
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
-import { verifyWebhookSignature } from "#/modules/github/github.api";
-import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_PATH } from "#/modules/github/github-build-workflow";
 import {
   createGithubBuildRunCompletedEvent,
   createGithubCheckSuiteReceivedEvent,
@@ -39,6 +39,19 @@ class GithubWebhookReadError extends Data.TaggedError(
 function rejectDelivery(input: { deliveryId: string; eventKind: string; rejection: "malformed" | "unsupported_action" }) {
   return Effect.logWarning("Rejected webhook delivery.", input).pipe(Effect.as(new Response("Rejected webhook", { status: 422 })));
 }
+
+const verifyWebhookSignature = Effect.fn("Github.verifyWebhookSignature")(function* (body: string, signature: string | null) {
+  const config = yield* AppConfig;
+  if (!signature) return false;
+  const expected = crypto
+    .createHmac("sha256", Redacted.value(config.github.appWebhookSecret))
+    .update(body)
+    .digest("hex");
+  const expectedBuffer = Buffer.from(`sha256=${expected}`);
+  const actualBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== actualBuffer.length) return false;
+  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+});
 
 export const handleGithubWebhookRequest = Effect.fn(
   "Github.handleWebhookRequest",
@@ -76,7 +89,7 @@ export const handleGithubWebhookRequest = Effect.fn(
   // every other run is ignored.
   if (event === "workflow_run") {
     const run = Schema.decodeUnknownOption(workflowRunPayloadSchema)(payload.value);
-    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`) {
+    if (Option.isSome(run) && run.value.action === "completed" && run.value.workflow_run.path === GITHUB_BUILD_WORKFLOW_PATH) {
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: deliveryId, runId: run.value.workflow_run.id }));
     }
     return new Response("OK", { status: 200 });
