@@ -362,6 +362,20 @@ pub const CASES: &[Case] = &[
         Expected::Refused(&[SET_DEVICE_CAPABILITY]),
     ),
     case(
+        SET_KEY_CAPABILITY,
+        "from the mesh",
+        "a SetKey trusting a key, from Cloud",
+        Expected::Refused(&[SET_KEY_CAPABILITY]),
+    ),
+    case(
+        CONFIRM_JOIN_CAPABILITY,
+        "from Cloud",
+        "a ConfirmJoin carrying restrictions Cloud wrote, from Cloud",
+        Expected::Bounded(
+            "the joiner refuses restrictions its admitting Machine didn't MAC under the Sealing Key, and valid ones only narrow what it trusts",
+        ),
+    ),
+    case(
         SET_PUSH_TARGET_CAPABILITY,
         "any target",
         "a SetPushTarget naming a URL",
