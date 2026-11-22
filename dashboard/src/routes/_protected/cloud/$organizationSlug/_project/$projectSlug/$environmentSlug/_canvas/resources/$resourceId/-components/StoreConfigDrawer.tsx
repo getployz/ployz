@@ -42,6 +42,7 @@ import { deploymentDestination } from "#/modules/config-store/deployments/run-se
 import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
 import { useConfigFileEditor } from "./config-file-editor-loader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { configNodePath } from "#/modules/config-store/setting-paths";
 
 
 const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
@@ -370,7 +371,7 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
         hint={removing ? "Keep the config to undo this."
           : mounts > 0 ? `Unmounts from ${mounts} service${mounts === 1 ? "" : "s"} on next deploy.` : "Removed on next deploy."}
         action={removing ? (
-          <Button variant="outline" onClick={() => actions.discard(`configs.@${config.id}`)}>Keep config</Button>
+          <Button variant="outline" onClick={() => actions.discard(configNodePath(config.id))}>Keep config</Button>
         ) : (
           <Button variant="destructive" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />

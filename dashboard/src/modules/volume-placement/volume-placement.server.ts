@@ -23,6 +23,7 @@ import { inspectVolumeCopies, planVolumeRun } from "#/modules/volume-run/volume-
 import { planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
+import { mountPath, volumeNodePath } from "#/modules/config-store/setting-paths";
 
 type Row = typeof volumePlacement.$inferSelect;
 
@@ -239,10 +240,10 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
       if (restored !== undefined && restored.change !== "create") return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
       const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
       const commands: BatchCommand[] = restored === undefined ? [] : [
-        { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
+        { command: "discard", environment, path: volumeNodePath(restored.name), version: null },
         ...restored.mounts
           .filter((mount) => source !== undefined && !source.mounts.some((held) => held.service === mount.service))
-          .map((mount): BatchCommand => ({ command: "discard", environment, path: `${mount.service}.mounts.${seed.sourceName}`, version: null })),
+          .map((mount): BatchCommand => ({ command: "discard", environment, path: mountPath(mount.service, seed.sourceName), version: null })),
       ];
       if (commands.length > 0) {
         const written = yield* callStoreBy(organizationId, by, { operation: "write", command: { command: "batch", environment, commands } });

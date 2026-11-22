@@ -9,6 +9,7 @@ import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organi
 import { can, type Permission } from "#/modules/organization/permissions";
 import { type EnvironmentRef, type StoreRead } from "./store.contract";
 import { StoreRefused, type StoreRefusal } from "#/lib/refusal";
+import { matchesEnvironmentRef } from "./environment-ref";
 
 const notProtector: StoreRefusal = { code: "forbidden", message: refusalOf("environments:protect"), details: null };
 
@@ -53,7 +54,7 @@ export const guardProtected = Effect.fn("ConfigStore.guardProtected")(function* 
 /** The Environment `ref` names; one the Store doesn't know is undefined, and the write's own refusal says so. */
 const listed = Effect.fn("ConfigStore.listed")(function* (ref: typeof EnvironmentRef.Type, read: StoreRead) {
   const { environments } = yield* storeTry(() => read({ query: "environments", project: ref.project ?? null }));
-  return environments.find((environment) => ref.environment == null ? environment.default : environment.name === ref.environment);
+  return environments.find((environment) => matchesEnvironmentRef(environment, ref));
 });
 
 /**
@@ -69,7 +70,7 @@ export const unprotectAsked = Effect.fn("ConfigStore.unprotectAsked")(function* 
   const store = yield* cloudStore;
   const ref = command.environment;
   const { project, environments } = yield* storeTry(() => store.read(organizationId, { query: "environments", project: ref.project ?? null }));
-  const environment = environments.find((candidate) => ref.environment == null ? candidate.default : candidate.name === ref.environment);
+  const environment = environments.find((candidate) => matchesEnvironmentRef(candidate, ref));
   if (environment === undefined) {
     return yield* new StoreRefused({ code: "not_found", message: `No Environment named ${ref.environment ?? "default"}`, details: null });
   }

@@ -26,6 +26,7 @@ import { countOrganizationMachines } from "#/modules/runtime/connections.server"
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreResult, ViewAnswer } from "./store.contract";
+import { environmentKey } from "./environment-ref";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -284,8 +285,6 @@ export const writePermission = (command: ConfigCommand): Permission => {
 
 /** How many shown views one write rereads at once. */
 const SHOWN_VIEW_READS = 4;
-
-const environmentKey = (ref: StoreEnvironmentRef) => `${ref.project ?? ""}/${ref.environment ?? ""}`;
 
 /** The Environments a query reads: its own, or a Sync's two sides. */
 function queryEnvironments(query: ConfigQuery): StoreEnvironmentRef[] {

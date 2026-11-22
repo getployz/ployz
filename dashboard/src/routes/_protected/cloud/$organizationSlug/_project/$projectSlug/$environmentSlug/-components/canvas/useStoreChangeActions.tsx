@@ -7,6 +7,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.review";
+import { environmentKey } from "#/modules/config-store/environment-ref";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -42,7 +43,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
-  const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
+  const place = environmentKey(environment);
   const [loss, setLoss] = useState<Loss | null>(null);
   // Settles the Save waiting on the dialog: true once it saves, false when the dialog closes first.
   const savePending = useRef<((saved: boolean) => void) | null>(null);

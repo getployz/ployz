@@ -22,6 +22,7 @@ import type {
   ArrivingNode,
 } from "./types";
 import type { Arriving } from "#/modules/config-store/store-pending";
+import { mountSetting } from "#/modules/config-store/setting-paths";
 
 /** A node's link handles: out of its top, into its bottom, below any trays. */
 const handles = (height: number) => [
@@ -62,7 +63,7 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
       // A mount is the Service's Setting, `mounts.VOLUME`.
       const changes = serviceChanges(diff, service.id);
       return [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] => by.includes(service.name)
-        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`),
+        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(mountSetting(volume.name)),
           writers: volumeWriters(volume, replicasOf).total, copies: copies.get(volume.id) ?? null }] : [])];
     })),
     unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),

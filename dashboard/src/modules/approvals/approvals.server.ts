@@ -30,6 +30,7 @@ import { isOwnedOnlyByAgents } from "#/modules/sandbox/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
+import { matchesEnvironmentRef } from "#/modules/config-store/environment-ref";
 
 type ApprovalRow = typeof operationApprovals.$inferSelect;
 
@@ -291,7 +292,7 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
   const listed = (project: string | null) =>
     Effect.map(readStore(organizationId, { query: "environments", project }), ({ environments }) => environments);
   const named = (ref: EnvironmentRef) =>
-    Effect.map(listed(ref.project), (environments) => environments.find((listing) => ref.environment == null ? listing.default : listing.name === ref.environment)?.id);
+    Effect.map(listed(ref.project), (environments) => environments.find((listing) => matchesEnvironmentRef(listing, ref))?.id);
   const target = Effect.gen(function* () {
     switch (command.command) {
       case "remove":
@@ -306,7 +307,7 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
         if (command.into != null) return yield* named(command.into);
         // Omitted, it lands in the sender's Parent.
         const environments = yield* listed(command.from.project);
-        const parent = environments.find((listing) => command.from.environment == null ? listing.default : listing.name === command.from.environment)?.parent;
+        const parent = environments.find((listing) => matchesEnvironmentRef(listing, command.from))?.parent;
         return parent == null ? undefined : environments.find((listing) => listing.name === parent)?.id;
       }
       case "take":

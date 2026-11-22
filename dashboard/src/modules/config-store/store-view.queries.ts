@@ -12,6 +12,7 @@ import { storeViewRefreshedBy, type StoreViewName } from "./store.change-sources
 import { readStoreViewServerFn } from "./store.functions";
 import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { usePendingMarks, showPending } from "./store-pending";
+import { environmentKey } from "./environment-ref";
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
 const DOMAIN_POLL_MS = 30_000;
@@ -97,11 +98,6 @@ export function refetchStoreViews(organizationSlug: string, scope: CollectionSco
     });
   }
   void scope.queryClient.invalidateQueries(filters, { cancelRefetch: false });
-}
-
-/** Names an Environment the same way however a ref spells it; the Store resolves omitted names to defaults. */
-export function environmentKey(ref: EnvironmentRef) {
-  return `${ref.project ?? ""}/${ref.environment ?? ""}`;
 }
 
 /** Whether a cached view reads the Environment: its own views, and a Sync's from either side. */

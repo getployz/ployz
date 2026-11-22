@@ -6,6 +6,7 @@ import type {
 import type { ReferenceValue } from "./config-references";
 import { serviceChanges, serviceSettingRows, settingText } from "./store-services";
 import { serviceVariables, storeManagedExports } from "./store-variables";
+import { configMountPath, configMountSetting } from "./setting-paths";
 
 /** The most text one Config file holds, in bytes; the Store's `MAX_FILE_BYTES`. */
 export const CONFIG_FILE_MAX_BYTES = 256 * 1024;
@@ -104,7 +105,7 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
       const changes = serviceChanges(diff, service.id);
       return [service.id, configs.flatMap((config): MountedConfig[] => config.mounts
         .filter((mount) => mount.service === service.name)
-        .map((mount) => ({ config, dir: mount.dir, mountChanged: changes.has(`configs.@${config.id}`) })))];
+        .map((mount) => ({ config, dir: mount.dir, mountChanged: changes.has(configMountSetting(config.id)) })))];
     })),
     unmounted: configs.filter((config) => !config.mounts.some((mount) => names.has(mount.service))),
   };
@@ -113,7 +114,7 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
 /** Detached rows belong to the exact Config, even when a replacement shares its name. */
 export function detachedConfigMounts(diff: DiffView, configId: string) {
   return diff.changes.flatMap((node) => node.type !== "service" ? [] : node.settings.flatMap((row) =>
-    row.path === `${node.name}.configs.@${configId}` && row.after === null && row.before !== null
+    row.path === configMountPath(node.name, configId) && row.after === null && row.before !== null
       ? [{ serviceId: node.id, service: node.name, directory: settingText(row.before) }]
       : []));
 }

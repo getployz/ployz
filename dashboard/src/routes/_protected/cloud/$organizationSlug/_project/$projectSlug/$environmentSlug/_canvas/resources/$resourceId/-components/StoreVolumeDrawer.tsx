@@ -35,6 +35,7 @@ import { changedProps } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions";
 import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { volumeNodePath } from "#/modules/config-store/setting-paths";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
 
@@ -236,7 +237,7 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
           action={removing ? (
             <>
               {/* The staged removal goes; the Volume stays as deployed. */}
-              <Button variant="outline" onClick={() => actions.discard(`volumes.${volume.name}`)}>Keep volume</Button>
+              <Button variant="outline" onClick={() => actions.discard(volumeNodePath(volume.name))}>Keep volume</Button>
               {volume.deployed ? (
                 <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
                   <Trash2Icon data-icon="inline-start" />

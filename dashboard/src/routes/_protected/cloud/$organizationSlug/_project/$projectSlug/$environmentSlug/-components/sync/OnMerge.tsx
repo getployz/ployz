@@ -21,6 +21,7 @@ import { useStoreMergeRowsPending } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { isEnvSetting } from "#/modules/config-store/setting-paths";
 
 /**
  * A PR Environment's On merge button, while its pull request is open: how many changes the merge lands, and the list
@@ -169,7 +170,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
             <EllipsisIcon />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {!excluded && row.preview !== null && row.name?.startsWith("env.") ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
+            {!excluded && row.preview !== null && row.name !== null && isEnvSetting(row.name) ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
             {edited ? <DropdownMenuItem onClick={() => void land()}>Reset</DropdownMenuItem> : null}
             <DropdownMenuItem onClick={() => exclude(excluded)}>{excluded ? "Include" : "Exclude"}</DropdownMenuItem>
           </DropdownMenuContent>
