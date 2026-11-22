@@ -300,6 +300,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         target,
         PlanOptions {
             force_recreate: false,
+            recreate: std::collections::BTreeSet::new(),
             skip_health_monitor: false,
             placement_seed: 0,
             selected,

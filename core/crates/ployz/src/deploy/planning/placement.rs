@@ -434,7 +434,7 @@ fn reusable_global(
     options: &PlanOptions,
 ) -> bool {
     let observation = container.as_observation();
-    !options.force_recreate
+    !options.recreates(&requested.name)
         && !super::super::is_active_runtime(&observation.runtime)
         && observation.creation_key().is_some()
         && observation.resolved_spec
@@ -1344,7 +1344,9 @@ fn container_fate(
     landing: Landing,
 ) -> ContainerFate {
     let observation = container.as_observation();
-    if options.force_recreate || !observation.runtime.may_serve() || !serving_rotation(observation)
+    if options.recreates(&requested.name)
+        || !observation.runtime.may_serve()
+        || !serving_rotation(observation)
     {
         return ContainerFate::Replace;
     }

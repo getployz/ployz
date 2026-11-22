@@ -245,7 +245,7 @@ fn take(
         })?,
     };
     let verified = build::verified(tx, &id)?;
-    intent.options.force_recreate = super::versions::recreates(tx, &id)?;
+    intent.options.recreate = super::versions::recreates(tx, &id)?;
     let ran = super::versions::pinned(
         tx,
         (

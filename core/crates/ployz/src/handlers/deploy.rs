@@ -386,7 +386,7 @@ pub(super) fn upload_and_ship(
                 .as_ref()
                 .map(|device| device.versions.clone())
                 .unwrap_or_default(),
-            recreate: false,
+            recreate: Vec::new(),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     let forgot = (!forgets.is_empty())

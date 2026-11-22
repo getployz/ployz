@@ -40,7 +40,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
         )
         .unwrap();
@@ -132,7 +132,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
         )
         .unwrap();

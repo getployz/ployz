@@ -788,7 +788,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -1307,7 +1307,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1450,7 +1450,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )

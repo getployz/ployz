@@ -814,7 +814,11 @@ fn redeploy(
             prune: false,
             no_prune: false,
             versions,
-            recreate: true,
+            recreate: carried
+                .services
+                .iter()
+                .map(|service| service.version.service.clone())
+                .collect(),
         }))
         .map_err(|error| store.fail(error))?;
     let shipped = deploy::execute(leaf, store, &admitted, None, events)?;

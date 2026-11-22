@@ -27,6 +27,11 @@ use thiserror::Error;
 pub struct PlanOptions {
     /// Recreate containers even when the resolved spec matches.
     pub force_recreate: bool,
+    /// Services whose Containers it recreates even when the resolved spec matches,
+    /// beside `force_recreate`, which recreates every Service's.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub recreate: BTreeSet<ServiceName>,
     /// Skip waiting on container health after start or replace.
     pub skip_health_monitor: bool,
     /// Caller-supplied entropy keeps the planner pure while varying equal-priority placement.
@@ -65,6 +70,12 @@ pub struct PlanOptions {
 }
 
 impl PlanOptions {
+    /// Whether it recreates `service`'s Containers even when the resolved spec matches.
+    #[must_use]
+    pub fn recreates(&self, service: &ServiceName) -> bool {
+        self.force_recreate || self.recreate.contains(service)
+    }
+
     /// Who runs this Deploy, which the planner reads instead of the loose runner fields.
     /// A Deploy is a runner's exactly when it blocks unmountable Services, the one flag
     /// a runner always sets; `ended_runs` means nothing without it.

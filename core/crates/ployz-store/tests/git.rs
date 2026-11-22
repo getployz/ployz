@@ -426,7 +426,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )

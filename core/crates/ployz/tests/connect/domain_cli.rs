@@ -82,7 +82,7 @@ fn applied(store: &Path) {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
-        recreate: false,
+        recreate: Vec::new(),
     });
     local
         .write_trusted(&who, &deploy, &Trusted::default())

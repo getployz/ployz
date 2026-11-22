@@ -132,7 +132,7 @@ fn try_deploy(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )?;

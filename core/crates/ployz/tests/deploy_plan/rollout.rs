@@ -379,6 +379,37 @@ fn force_recreate_replaces_an_otherwise_matching_container() {
     ));
 }
 
+/// A key rotation recreates the Services it signs again; one they only reference, such
+/// as a database, keeps its Container.
+#[test]
+fn recreating_one_service_keeps_an_unchanged_service_beside_it() {
+    let api = requested(ServiceMode::Global);
+    let mut web = api.clone();
+    web.name = ServiceName::parse("web").unwrap();
+    let plan = plan_deploy(
+        [&web, &api],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('b', '1', &web, &service_id('a')),
+                container('c', '1', &api, &service_id('d')),
+            ],
+            ..Default::default()
+        },
+        PlanOptions {
+            recreate: [web.name.clone()].into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })]
+            if old_container_id == &container_id('b')
+    ));
+}
+
 #[test]
 fn no_op_plan_does_not_run_a_pre_deploy_hook() {
     let mut requested = requested(ServiceMode::Global);

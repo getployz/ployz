@@ -6086,7 +6086,7 @@ fn applied(store: &Target, environment: &str) {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())

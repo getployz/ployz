@@ -81,9 +81,10 @@ struct Record {
     #[serde(flatten)]
     origin: Origin,
     services: Ran,
-    /// Its runner replaces each running Container even when its spec is unchanged.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    recreate: bool,
+    /// Services whose running Containers its runner replaces even when their spec is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    recreate: BTreeSet<ServiceName>,
 }
 
 /// Where a Service a Deployment names no pin for takes one from when it is claimed.
@@ -233,26 +234,37 @@ pub(super) fn replaying(source: &DeploymentId) -> Result<String, RpcError> {
             source: source.clone(),
         },
         services: Ran::new(),
-        recreate: false,
+        recreate: BTreeSet::new(),
     })
 }
 
-/// Have Deployment `id`'s runner replace each running Container of what it ships, even
-/// one whose spec is unchanged.
+/// Have Deployment `id`'s runner replace each running Container of `services`, even one
+/// whose spec is unchanged.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
-pub(crate) fn recreate(tx: &mut dyn Tx, id: &DeploymentId) -> Result<(), RpcError> {
+pub(crate) fn recreate(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    services: &[ServiceName],
+) -> Result<(), RpcError> {
+    if services.is_empty() {
+        return Ok(());
+    }
     let mut record = record_of(tx, id)?;
-    record.recreate = true;
+    record.recreate.extend(services.iter().cloned());
     write_record(tx, id, &record)
 }
 
-/// Whether Deployment `id`'s runner replaces each running Container of what it ships.
+/// The Services whose running Containers Deployment `id`'s runner replaces even when
+/// their spec is unchanged.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
-pub(crate) fn recreates(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+pub(crate) fn recreates(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<BTreeSet<ServiceName>, RpcError> {
     Ok(record_of(tx, id)?.recreate)
 }
 

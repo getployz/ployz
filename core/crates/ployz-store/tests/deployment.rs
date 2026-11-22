@@ -97,7 +97,7 @@ fn admit(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -4260,7 +4260,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4365,7 +4365,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4484,7 +4484,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         prune: false,
                         no_prune: false,
                         versions: Vec::new(),
-                        recreate: false,
+                        recreate: Vec::new(),
                     }),
                     &Trusted::default(),
                 )
@@ -4573,7 +4573,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4705,7 +4705,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4750,7 +4750,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
-            recreate: false,
+            recreate: Vec::new(),
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4835,7 +4835,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
         )
     };
@@ -5355,7 +5355,7 @@ fn deploy_choosing(
         prune: false,
         no_prune: false,
         versions: Vec::new(),
-        recreate: false,
+        recreate: Vec::new(),
     };
     choose(&mut deploy);
     store.write_trusted(who, &Admit::Deploy(deploy), trusted)
@@ -5871,7 +5871,7 @@ fn agent_deploys_only(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -5918,7 +5918,7 @@ fn agent_deploys_upload(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -7259,7 +7259,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
-                    recreate: false,
+                    recreate: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -7334,7 +7334,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -7378,7 +7378,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
-                    recreate: false,
+                    recreate: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -8194,7 +8194,7 @@ fn a_deploy_plan_lowers_exactly_what_its_runner_is_handed() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
-                recreate: false,
+                recreate: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -9124,7 +9124,7 @@ fn admit_with(
             prune: false,
             no_prune: false,
             versions,
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -9404,7 +9404,7 @@ fn admit_services(
             prune: false,
             no_prune: false,
             versions,
-            recreate: false,
+            recreate: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -9446,7 +9446,7 @@ fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_un
     web_reads_api(&store, &who);
     let api = signed_spec(&store, &who, "api", P1);
     let root = signed_spec(&store, &who, "web", P1);
-    let child = |n: u8, recreate: bool| {
+    let child = |n: u8, recreate: Vec<ServiceName>| {
         let version = ployz_store::PostedVersion {
             statement: edit("web", signed_spec(&store, &who, "web", P2), root),
             pin: Some(ployz_store::TagPin {
@@ -9475,11 +9475,16 @@ fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_un
             )
             .unwrap();
     };
+    let web = ServiceName::parse("web").unwrap();
+    let api_name = ServiceName::parse("api").unwrap();
     // A silent `deploy web --image`, then a key rotation's redeploy of what it signed.
-    for (n, recreate) in [(2, false), (3, true)] {
-        child(n, recreate);
+    for (n, recreate) in [(2, Vec::new()), (3, vec![web.clone()])] {
+        child(n, recreate.clone());
         assert_eq!(admitted_by(&store, n, "api"), (api, vec![api]), "#{n}");
-        apply(&store, n);
+        let options = apply(&store, n).options;
+        assert_eq!(options.recreates(&web), !recreate.is_empty(), "#{n}");
+        // The rotation ships api only because web reads it: its Container stays.
+        assert!(!options.recreates(&api_name), "#{n}");
     }
 }
 
@@ -10181,44 +10186,4 @@ fn a_deployment_that_failed_in_a_service_never_becomes_its_parent() {
         (first[1].statement.clone(), P1.to_owned()),
         "api never ran the version Deployment 2 failed to start"
     );
-}
-
-/// `ployz key rotate` redeploys what a rotated key signed with the same spec, so only a
-/// forced recreate makes each Server admit the Containers again under the new key.
-#[test]
-fn a_deploy_admitted_to_recreate_hands_its_runner_a_forced_recreate() {
-    let (store, who) = shop();
-    for (n, recreate) in [(1, false), (2, true)] {
-        store
-            .write_trusted(
-                &who,
-                &Admit::Deploy(Deploy {
-                    id: id(n),
-                    environment: EnvironmentRef::default(),
-                    services: vec![ServiceName::parse("web").unwrap()],
-                    version: None,
-                    upload: None,
-                    accept_volume_loss: Vec::new(),
-                    message: None,
-                    prune: false,
-                    no_prune: false,
-                    versions: Vec::new(),
-                    recreate,
-                }),
-                &Trusted::default(),
-            )
-            .unwrap();
-        let claimed = store.claim(&id(n), &runner("cli-a")).unwrap();
-        assert_eq!(claimed.intent.options.force_recreate, recreate, "#{n}");
-        store
-            .record(
-                &id(n),
-                &runner("cli-a"),
-                RunEvidence::Prepared(preview(&["web"])),
-            )
-            .unwrap();
-        store
-            .record(&id(n), &runner("cli-a"), succeeded(&["web"]))
-            .unwrap();
-    }
 }

@@ -90,7 +90,7 @@ fn deploy_production(n: u8) -> Admit {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
-        recreate: false,
+        recreate: Vec::new(),
     })
 }
 
@@ -226,7 +226,7 @@ fn a_deploy_without_changes_deploy_is_refused_before_it_looks_anything_up() {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
-        recreate: false,
+        recreate: Vec::new(),
     });
     let refused = store
         .write_trusted(&who, &nowhere, &holding(&[Permission::ChangesStage]))
