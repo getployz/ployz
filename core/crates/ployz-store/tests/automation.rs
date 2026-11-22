@@ -12,10 +12,9 @@ use ployz_store::{
 };
 use serde_json::json;
 
-mod backend;
-mod shop;
+use ployz_store::testing::backend;
 
-use shop::*;
+use ployz_store::testing::shop::*;
 
 #[test]
 fn discarded_mount_reversal_affects_automatic_deploy_only_after_save() {

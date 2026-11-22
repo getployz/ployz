@@ -381,7 +381,7 @@ async fn build_concurrency_bounds_simultaneous_builds_on_separate_slots() {
 
     fixture
         .local
-        .update(
+        .update_machine(
             serde_json::from_value(serde_json::json!({
                 "update": {"build_concurrency": {"action": "set", "value": 2}}
             }))
@@ -418,7 +418,7 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
 
     let updated = tokio::time::timeout(
         Duration::from_secs(2),
-        fixture.local.update(
+        fixture.local.update_machine(
             serde_json::from_value(serde_json::json!({
                 "update": {
                     "label_changes": {"pool": "build"},
@@ -443,7 +443,7 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
 
     let error = fixture
         .local
-        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+        .request_machine_upgrade(ployz_core::RequestMachineUpgradeRequest {
             attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
             release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
         })
@@ -456,7 +456,7 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
 
     tokio::time::timeout(
         Duration::from_secs(2),
-        fixture.local.update(
+        fixture.local.update_machine(
             serde_json::from_value(serde_json::json!({"update": {"name": "renamed"}})).unwrap(),
         ),
     )
@@ -489,7 +489,7 @@ async fn durable_upgrade_marker_refuses_build_before_execution() {
     }))
     .unwrap();
     assert!(matches!(
-        fixture.local.update(policy).await,
+        fixture.local.update_machine(policy).await,
         Err(crate::machine::LocalMachineError::Admission(
             crate::mutation::Error::Busy
         ))
@@ -611,7 +611,7 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
 
     let error = fixture
         .local
-        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+        .request_machine_upgrade(ployz_core::RequestMachineUpgradeRequest {
             attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
             release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
         })

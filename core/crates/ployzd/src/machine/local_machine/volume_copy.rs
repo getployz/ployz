@@ -1,24 +1,24 @@
-//! SetVolumeCopy: the transition table and its Container half. ZFS runs on the plugin
-//! through the routes in [`crate::volume_copy`].
+//! SetVolumeCopy, Volume.Seed and SetVolumeSize: the transition table and its Container
+//! half, under the switch lock each takes. ZFS runs on the plugin through the routes in
+//! [`crate::volume_copy`].
 
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, OpaquePayload, RpcError, RunRotation, RunTarget,
-    SetVolumeCopyRefused, SetVolumeCopyReply, SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen,
-    WantedCopy,
+    EnsuredContainer, HealthVerdict, RpcError, RunRotation, RunTarget, SeedVolumeRequest,
+    SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, Start,
+    VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
 };
-use tonic::{Response, Status};
 
-use super::{MachineService, local_error, respond};
+use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Point, Want},
-    machine::{AdmittedSpec, CutRefusal, LocalMachineError},
+    machine::has_cluster_identity,
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
-        INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE,
-        WriterRequest,
+        INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, VOLUME_SEED_ROUTE,
+        VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
     },
 };
 
@@ -32,24 +32,33 @@ enum StartState {
     Gone,
 }
 
-impl MachineService {
-    /// `admitted` is the spec of the Container this request's start creates, when it
-    /// creates one.
-    pub(super) async fn set_copy(
+impl LocalMachine {
+    /// SetVolumeCopy: move the copy of `request.name` to its want, under the switch lock
+    /// from the floor check through the transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal the request answers, or the failure of a step.
+    pub(crate) async fn set_volume_copy(
         &self,
         request: SetVolumeCopyRequest,
-        admitted: Option<AdmittedSpec>,
-    ) -> Result<Response<OpaquePayload>, Status> {
+    ) -> Result<Copy, Error> {
+        // The spec of the Container this request's start creates, when it creates one.
+        let admitted = match &request.want {
+            WantedCopy::Writer {
+                start: Some(start), ..
+            } => self.admit_volume_start(start).await?,
+            WantedCopy::Writer { start: None, .. }
+            | WantedCopy::Mirror { .. }
+            | WantedCopy::Snapshot { .. }
+            | WantedCopy::Forget
+            | WantedCopy::Floor => None,
+        };
         if request.want == WantedCopy::Floor {
-            return match self.floor_copy(&request.name, request.r#gen).await {
-                Ok(copy) => respond(SetVolumeCopyReply { copy }),
-                Err(error) => local_error(error),
-            };
+            return self.floor_copy(&request.name, request.r#gen).await;
         }
-        if let Err(error) = self.admit_gen(&request.name, request.r#gen).await {
-            return local_error(error);
-        }
-        let guard = self.local.lock_switch().await;
+        self.admit_gen(&request.name, request.r#gen).await?;
+        let guard = self.lock_switch().await;
         crate::faults::apply(
             Point::Verb("SetVolumeCopy"),
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
@@ -59,20 +68,72 @@ impl MachineService {
         // free the next request to plan against a cut still running. The task runs this
         // one transition and ends when ZFS or Docker answers; it never retries or starts
         // other work.
-        let service = Self {
-            local: self.local.inside_switch(&guard),
-            ..self.clone()
-        };
-        let planned = tokio::spawn(async move {
+        let local = self.inside_switch(&guard);
+        tokio::spawn(async move {
             let _guard = guard;
-            service.set_copy_planned(request, admitted).await
+            local.set_copy_planned(request, admitted).await
         })
-        .await
-        .map_err(LocalMachineError::from)
-        .and_then(|copy| copy);
-        match planned {
-            Ok(copy) => respond(SetVolumeCopyReply { copy }),
-            Err(error) => local_error(error),
+        .await?
+    }
+
+    /// Volume.Seed, under the switch lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Stale refusal for a gen below the floor of `into`, or the plugin's error.
+    pub(crate) async fn seed_volume(
+        &self,
+        request: &SeedVolumeRequest,
+    ) -> Result<VolumeCopyView, Error> {
+        let _guard = self.lock_switch().await;
+        // Checked under the switch lock, which a mirror pull of `into` takes too: a check
+        // before it would let a Seed admitted at the old floor run after a later run
+        // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
+        if let Some(r#gen) = request.r#gen {
+            self.check_gen(&request.into, r#gen).await?;
+        }
+        self.volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
+            .await
+    }
+
+    /// SetVolumeSize, under the switch lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the plugin's error.
+    pub(crate) async fn set_volume_size(
+        &self,
+        request: &SetVolumeSizeRequest,
+    ) -> Result<SetVolumeSizeReply, Error> {
+        let _guard = self.lock_switch().await;
+        self.volume_verb("SetVolumeSize", VOLUME_SIZE_SET_ROUTE, request)
+            .await
+    }
+
+    /// Call the plugin's `route` for the volume verb `verb` on a joined Machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotParticipating`] off a Cluster, or the plugin's error.
+    pub(crate) async fn volume_verb<T: serde::de::DeserializeOwned>(
+        &self,
+        verb: &'static str,
+        route: &str,
+        request: &impl serde::Serialize,
+    ) -> Result<T, Error> {
+        self.require_joined()?;
+        crate::faults::apply(Point::Verb(verb), None).await;
+        self.plugin
+            .call::<T>(route, request)
+            .await
+            .map_err(Error::StoragePreparation)
+    }
+
+    fn require_joined(&self) -> Result<(), Error> {
+        if has_cluster_identity(&self.record().phase()) {
+            Ok(())
+        } else {
+            Err(Error::NotParticipating)
         }
     }
 
@@ -80,7 +141,7 @@ impl MachineService {
         &self,
         request: SetVolumeCopyRequest,
         admitted: Option<AdmittedSpec>,
-    ) -> Result<Copy, LocalMachineError> {
+    ) -> Result<Copy, Error> {
         let SetVolumeCopyRequest {
             name,
             expect,
@@ -183,14 +244,13 @@ impl MachineService {
                 Ok(copy)
             }
             (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, drain, .. }) => {
-                let plugin = self.local.plugin().clone();
+                let plugin = self.plugin().clone();
                 let request = CutRequest {
                     name: name.clone(),
                     target,
                     r#gen,
                 };
                 let cut = self
-                    .local
                     .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
                         // This closure runs only past the Busy re-check, so the line means every
                         // holder is stopped, whoever signalled it. The verify harness credits that
@@ -205,7 +265,7 @@ impl MachineService {
                             .call::<Copy>(CUT_ROUTE, &request)
                             .await
                             .map(drop)
-                            .map_err(LocalMachineError::StoragePreparation)
+                            .map_err(Error::StoragePreparation)
                     })
                     .await?;
                 match cut {
@@ -243,7 +303,7 @@ impl MachineService {
                     ..
                 },
             ) => {
-                self.local.admit_pull_source(&from).await?;
+                self.admit_pull_source(&from).await?;
                 self.plugin_copy(
                     PULL_ROUTE,
                     &PullRequest {
@@ -261,10 +321,7 @@ impl MachineService {
                     &copy
                 {
                     let origin = origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(&name));
-                    self.containers()?
-                        .lifecycle()
-                        .forgot(&name, &origin)
-                        .await?;
+                    self.docker()?.lifecycle().forgot(&name, &origin).await?;
                 }
                 self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
                     .await
@@ -275,11 +332,7 @@ impl MachineService {
         }
     }
 
-    async fn admit_gen(
-        &self,
-        name: &DockerVolumeName,
-        r#gen: VolumeGen,
-    ) -> Result<(), LocalMachineError> {
+    async fn admit_gen(&self, name: &DockerVolumeName, r#gen: VolumeGen) -> Result<(), Error> {
         let admitted = self.joined_floor_turn().await?.admit(name, r#gen).await?;
         match admitted {
             Ok(()) => Ok(()),
@@ -290,11 +343,7 @@ impl MachineService {
     /// Refuse `gen` Stale below the floor of `name`, without raising it. A Seed fences on
     /// `into` this way: raising it would refuse every later mirror sync of `into` that
     /// carries a gen below the seed run's.
-    pub(super) async fn check_gen(
-        &self,
-        name: &DockerVolumeName,
-        r#gen: VolumeGen,
-    ) -> Result<(), LocalMachineError> {
+    async fn check_gen(&self, name: &DockerVolumeName, r#gen: VolumeGen) -> Result<(), Error> {
         let checked = self.joined_floor_turn().await?.check(name, r#gen).await?;
         match checked {
             Ok(()) => Ok(()),
@@ -305,29 +354,21 @@ impl MachineService {
     /// The Floor want: raise the floor and read the copy under the floor lock, which a
     /// cut holds through its flip, so the copy is the root or the slot, never between.
     /// Never refuses on `gen`; a lower one leaves the floor where it is.
-    async fn floor_copy(
-        &self,
-        name: &DockerVolumeName,
-        r#gen: VolumeGen,
-    ) -> Result<Copy, LocalMachineError> {
+    async fn floor_copy(&self, name: &DockerVolumeName, r#gen: VolumeGen) -> Result<Copy, Error> {
         let mut floor = self.joined_floor_turn().await?;
         floor.admit(name, r#gen).await?.ok();
         self.inspect_copy(name).await
     }
 
-    async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, LocalMachineError> {
-        let joined = || {
-            self.require_joined()
-                .map_err(|_| LocalMachineError::NotParticipating)
-        };
-        joined()?;
-        let turn = self.containers()?.lifecycle().floor_turn().await;
+    async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, Error> {
+        self.require_joined()?;
+        let turn = self.docker()?.lifecycle().floor_turn().await;
         // Checked again under the floor lock: a reset may have begun while this queued.
-        joined()?;
+        self.require_joined()?;
         Ok(turn)
     }
 
-    async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<Copy, LocalMachineError> {
+    async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<Copy, Error> {
         self.plugin_copy(INSPECT_ROUTE, &CopyRequest { name: name.clone() })
             .await
     }
@@ -336,12 +377,11 @@ impl MachineService {
         &self,
         route: &str,
         request: &impl serde::Serialize,
-    ) -> Result<Copy, LocalMachineError> {
-        self.local
-            .plugin()
+    ) -> Result<Copy, Error> {
+        self.plugin
             .call::<Copy>(route, request)
             .await
-            .map_err(LocalMachineError::StoragePreparation)
+            .map_err(Error::StoragePreparation)
     }
 
     /// Whether the Writer's start already runs. It runs when Docker runs the Container
@@ -352,12 +392,12 @@ impl MachineService {
         &self,
         start: &Start,
         name: &DockerVolumeName,
-    ) -> Result<StartState, LocalMachineError> {
-        let observed = self.start_container(start).await?;
+    ) -> Result<StartState, Error> {
+        let observed = self.start_observed(start).await?;
         if observed
             .as_ref()
             .is_some_and(|observed| observed.runtime.is_running())
-            || self.local.volume_holder_running(name).await?
+            || self.volume_holder_running(name).await?
         {
             return Ok(StartState::Running);
         }
@@ -367,12 +407,9 @@ impl MachineService {
         })
     }
 
-    async fn start_container(
-        &self,
-        start: &Start,
-    ) -> Result<Option<ContainerObservation>, LocalMachineError> {
-        let containers = self.containers()?;
-        let machine_id = self.local.record().id();
+    async fn start_observed(&self, start: &Start) -> Result<Option<ContainerObservation>, Error> {
+        let containers = self.docker()?;
+        let machine_id = self.record().id();
         let container_id = match start {
             Start::Kept { container_id } => Some(*container_id),
             Start::Create {
@@ -381,10 +418,8 @@ impl MachineService {
                 creation_key,
                 ..
             } => {
-                let record = self.local.record();
-                let machine = record
-                    .machine()
-                    .ok_or(LocalMachineError::NotParticipating)?;
+                let record = self.record();
+                let machine = record.machine().ok_or(Error::NotParticipating)?;
                 containers
                     .lifecycle()
                     .find_creation(
@@ -416,11 +451,7 @@ impl MachineService {
     /// want does. A copy left unrouted fails the request, so the Move keeps its source
     /// Container and a resend tries again. A newer copy already In serves the Service,
     /// so that refusal is no failure.
-    async fn route_created(
-        &self,
-        start: &Start,
-        name: &DockerVolumeName,
-    ) -> Result<(), LocalMachineError> {
+    async fn route_created(&self, start: &Start, name: &DockerVolumeName) -> Result<(), Error> {
         let Start::Create {
             rotation: rotation @ RunRotation::In { .. },
             ..
@@ -428,22 +459,22 @@ impl MachineService {
         else {
             return Ok(());
         };
-        let created = self.start_container(start).await?;
+        let created = self.start_observed(start).await?;
         let running = created
             .as_ref()
             .is_some_and(|created| created.runtime.is_running());
         // A resend lands here too when another holder runs; only this Create's own copy is
         // routed. A copy that exited is started again by its In want, which reports health.
-        if !running && self.local.volume_holder_running(name).await? {
+        if !running && self.volume_holder_running(name).await? {
             return Ok(());
         }
         let Some(created) = created else {
-            return Err(LocalMachineError::StoragePreparation(not_routed(
+            return Err(Error::StoragePreparation(not_routed(
                 "the moved Service is not routed: its Container is gone".to_owned(),
             )));
         };
         // Boxed: the In future is large, and inline it overflows the SetVolumeCopy task's stack.
-        let ensured = Box::pin(self.local.ensure_container(
+        let ensured = Box::pin(self.ensure_container(
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(created.container_id)),
                 rotation: rotation.clone(),
@@ -469,7 +500,7 @@ impl MachineService {
                 })
             }
         };
-        Err(LocalMachineError::StoragePreparation(error))
+        Err(Error::StoragePreparation(error))
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.
@@ -481,9 +512,8 @@ impl MachineService {
         name: &DockerVolumeName,
         r#gen: VolumeGen,
         admitted: Option<AdmittedSpec>,
-    ) -> Result<(), LocalMachineError> {
+    ) -> Result<(), Error> {
         match self
-            .local
             .start_volume_holder(start, name.clone(), r#gen, admitted)
             .await?
         {
@@ -494,7 +524,7 @@ impl MachineService {
 }
 
 /// A delay names one cell, so a run can slow the promote without slowing every pull poll.
-fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMachineError {
+fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> Error {
     refusal(
         SetVolumeCopyRefused {
             reason,
@@ -505,7 +535,7 @@ fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMac
     )
 }
 
-fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> LocalMachineError {
+fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> Error {
     refusal(
         SetVolumeCopyRefused {
             reason: CopyRefusal::Stale,
@@ -516,7 +546,7 @@ fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> LocalMachineE
     )
 }
 
-fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachineError {
+fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
     let message = match refused.reason {
         CopyRefusal::Mismatch => format!("Volume {name} is not the copy the request expected"),
         CopyRefusal::NoTransition => format!("Volume {name} has no transition to the want"),
@@ -537,7 +567,7 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
             refused.floor.unwrap_or_default()
         ),
     };
-    LocalMachineError::StoragePreparation(refused.rpc_error(message))
+    Error::StoragePreparation(refused.rpc_error(message))
 }
 
 fn not_routed(message: String) -> RpcError {

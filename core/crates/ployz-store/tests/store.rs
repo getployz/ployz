@@ -15,8 +15,8 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
 use backend::{fresh_url, open};
+use ployz_store::testing::backend;
 
 fn actor(organization: &str) -> Actor {
     Actor::system(OrganizationId::parse(organization).unwrap())

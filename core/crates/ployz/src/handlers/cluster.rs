@@ -7,7 +7,7 @@ use ployz_core::{
 use serde::Serialize;
 use serde_json::json;
 
-use super::{Error, leaf_matches, route, runtime, server};
+use super::{Error, leaf_matches, route, runtime};
 use crate::approval;
 use crate::cli::{base, positional};
 use crate::cloud::account::Credential;
@@ -88,7 +88,7 @@ fn through_cloud(
         credential,
         OperationVerb::SetClusterName,
         leaf.get_one::<String>("approval").cloned(),
-        |id| server::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
+        |id| crate::cli::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
         async |approval| {
             let key = uuid::Uuid::new_v4().to_string();
             let input = json!({ "name": name.as_str() });

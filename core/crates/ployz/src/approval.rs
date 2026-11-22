@@ -182,11 +182,18 @@ impl Asked {
         })
     }
 
-    /// The verb Cloud named, or `Deploy` for a Store write, whose diff names none.
-    pub(crate) fn verb(&self) -> Verb {
-        match &self.required.subject {
-            Subject::Diff(_) => Verb::Deploy,
-            Subject::Operation(operation) => Verb::Operation(operation.verb),
+    /// The verb Cloud named. A diff names none, so `command`, the Store write that
+    /// waits, says what it is; without one it is a deploy.
+    pub(crate) fn verb(&self, command: Option<&ployz_store::Command>) -> Verb {
+        use ployz_store::{Admit, Command};
+        match (&self.required.subject, command) {
+            (Subject::Operation(operation), _) => Verb::Operation(operation.verb),
+            (Subject::Diff(_), Some(Command::Publish(_))) => Verb::Publish,
+            (Subject::Diff(_), Some(Command::Admit(Admit::Retry(_)))) => Verb::Retry,
+            (Subject::Diff(_), Some(Command::Remove(_) | Command::Admit(Admit::Remove(_)))) => {
+                OperationVerb::Remove.into()
+            }
+            (Subject::Diff(_), Some(_) | None) => Verb::Deploy,
         }
     }
 
@@ -631,8 +638,11 @@ mod tests {
             "operation": { "verb": "set_cluster_name", "name": "acme" },
         }))
         .unwrap();
-        assert_eq!(asked.verb(), Verb::Operation(OperationVerb::SetClusterName));
-        assert_eq!(asked.what(asked.verb()), "this rename to acme");
+        assert_eq!(
+            asked.verb(None),
+            Verb::Operation(OperationVerb::SetClusterName)
+        );
+        assert_eq!(asked.what(asked.verb(None)), "this rename to acme");
     }
 
     #[test]
@@ -643,7 +653,7 @@ mod tests {
                 "operation": { "verb": "set_cluster_name", "name": "beta", "preview": preview },
             }))
             .unwrap();
-            asked.review_in(asked.verb(), &chrono::Utc)
+            asked.review_in(asked.verb(None), &chrono::Utc)
         };
         assert_eq!(
             review(serde_json::json!({ "from": "alpha", "to": "beta" })),
@@ -668,7 +678,7 @@ mod tests {
             "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
             "operation": { "subject": "server:box", "verb": "remove", "name": "box" },
         })).unwrap();
-        let review = asked.review(asked.verb()).join("\n");
+        let review = asked.review(asked.verb(None)).join("\n");
         assert!(review.contains("loses access to Volume pgdata"), "{review}");
         assert!(
             review.contains("its data stays on the Server's disk until wiped"),
@@ -710,7 +720,7 @@ mod tests {
             })).unwrap();
             assert!(
                 asked
-                    .review(asked.verb())
+                    .review(asked.verb(None))
                     .join("\n")
                     .contains("deletes Volume pgdata and its data")
             );
@@ -721,7 +731,7 @@ mod tests {
     fn a_role_change_reads_as_a_change_in_its_organization() {
         let asked = asked("set", "changes_role");
         assert_eq!(
-            asked.review(asked.verb()),
+            asked.review(asked.verb(None)),
             [
                 "This change in Organization acme:",
                 "  ~ changes the role of bob@example.com",
@@ -745,7 +755,7 @@ mod tests {
     fn a_member_removal_names_its_organization_and_what_it_destroys() {
         let asked = asked("remove", "removes_member");
         assert_eq!(
-            asked.review(asked.verb()),
+            asked.review(asked.verb(None)),
             [
                 "This removal in Organization acme destroys 1 thing:",
                 "  ✕ removes member bob@example.com",
@@ -1075,7 +1085,7 @@ mod tests {
             "A human must approve moving pg-data before it runs."
         );
         assert_eq!(
-            asked.review_in(asked.verb(), &chrono::Utc),
+            asked.review_in(asked.verb(None), &chrono::Utc),
             [
                 "This removal in Organization ada:",
                 "  ✕ loses access to Volume pg-data; its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",

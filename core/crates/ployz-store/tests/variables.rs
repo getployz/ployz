@@ -16,7 +16,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
+use ployz_store::testing::backend;
 
 fn who() -> Actor {
     Actor::system(OrganizationId::parse("org").unwrap())

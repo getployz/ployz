@@ -607,7 +607,7 @@ mod tests {
 
     /// The deploy output for a pull that containerd failed mid-extract, as the
     /// Server reports `free_bytes` under its Docker root.
-    fn failed_pull(free_bytes: u64) -> ployz_store::Failure {
+    fn failed_pull(free_bytes: u64) -> ployz_core::deploy_progress::Failure {
         let lchown = DockerError::DockerStreamError {
             error: "failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory".into(),
         };
@@ -616,7 +616,7 @@ mod tests {
             Some(("/var/lib/docker".into(), free_bytes)),
             &[],
         );
-        ployz_store::Failure::of(
+        ployz_core::deploy_progress::Failure::of(
             &ployz_core::ExecutionError::Machine {
                 action: ployz_core::MachineAction::PullImage,
                 error: ployz_core::RpcError::from(&error),
@@ -644,13 +644,13 @@ mod tests {
     const PEER_EXTRACT: &str = "failed to extract layer (application/vnd.oci.image.layer.v1.tar+gzip sha256:759e) to overlayfs as \"extract-570279893-IhHy sha256:4105\": mount callback failed on /var/lib/containerd/tmpmounts/containerd-mount82441223: write /var/lib/containerd/tmpmounts/containerd-mount82441223/usr/lib/libcrypto.so.3: no space left on device";
 
     /// The deploy output for a peer pull that failed with `printed`.
-    fn failed_peer_pull(printed: &str, free_bytes: u64) -> ployz_store::Failure {
+    fn failed_peer_pull(printed: &str, free_bytes: u64) -> ployz_core::deploy_progress::Failure {
         let error = pull_failure(
             Error::PeerPull(printed.into()),
             Some(("/var/lib/docker".into(), free_bytes)),
             &[],
         );
-        ployz_store::Failure::of(
+        ployz_core::deploy_progress::Failure::of(
             &ployz_core::ExecutionError::Machine {
                 action: ployz_core::MachineAction::PullImage,
                 error: ployz_core::RpcError::from(&error),
@@ -834,7 +834,7 @@ mod tests {
             Some(("/var/lib/docker".into(), free_bytes)),
             &[],
         );
-        ployz_store::Failure::of(
+        ployz_core::deploy_progress::Failure::of(
             &ployz_core::ExecutionError::Machine {
                 action: ployz_core::MachineAction::PullImage,
                 error: ployz_core::RpcError::from(&error)

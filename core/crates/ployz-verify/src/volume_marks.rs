@@ -23,7 +23,7 @@
 //!
 //! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
-//! `seed_volume` runs, through `ployzd::machine_api::local_volume_copy::MachineService::check_gen` and
+//! `seed_volume` runs, through `ployzd::machine::local_machine::volume_copy::LocalMachine::check_gen` and
 //! `ployzd::docker::spec_store::FloorTurn::check`. The check refuses a gen below the
 //! floor and leaves the floor where it is. Gens come from one identity column, so a later
 //! run's `SetVolumeCopy` on A raises `into`'s floor above the seed run's gen.
@@ -234,7 +234,7 @@ enum Action {
     TimeOut,
     /// `PATIENCE_WAITS` ran out: `03-too-long` fails the run.
     GiveUp,
-    /// A's `Volume.Seed` (machine_api/local.rs `seed_volume`) runs one request off the
+    /// A's `Volume.Seed` (machine/local_machine/volume_copy.rs `seed_volume`) runs one request off the
     /// wire under the switch lock; `answered` when the step that sent it still waits. Under
     /// `Broken::floor_checked_only_before_lock` it runs one request `Admit` let through.
     Seed { answered: bool },
@@ -539,7 +539,7 @@ impl VolumeMarks {
     }
 
     /// Volume.Seed for one request: the floor check under the switch lock
-    /// (machine_api/local.rs `seed_volume`), then `VolumeStorage::seed_volume` (seed.rs)
+    /// (machine/local_machine/volume_copy.rs `seed_volume`), then `VolumeStorage::seed_volume` (seed.rs)
     /// under `admit_mutation`. With `stops`, a landing stops at `finish_landing`'s
     /// `readonly=off`.
     fn seed(&self, state: &mut State, stops: bool) -> Answer {
@@ -647,8 +647,8 @@ impl VolumeMarks {
     }
 
     /// `ployzd::docker::spec_store::FloorTurn::admit` through `admit_gen`
-    /// (`ployzd::machine_api::local_volume_copy::MachineService::admit_gen`), which `set_copy` runs before the switch
-    /// lock (`ployzd::machine_api::local_volume_copy::MachineService::set_copy`) and `set_copy_planned` again under it.
+    /// (`ployzd::machine::local_machine::volume_copy::LocalMachine::admit_gen`), which `set_volume_copy` runs before the switch
+    /// lock (`ployzd::machine::local_machine::volume_copy::LocalMachine::set_volume_copy`) and `set_copy_planned` again under it.
     fn admit(state: &mut State, generation: u8) -> bool {
         let Ok(raised) = volume_floor::admit(lane(state.floor), lane(generation)) else {
             return false;
@@ -658,7 +658,7 @@ impl VolumeMarks {
     }
 
     /// `ployzd::docker::spec_store::FloorTurn::check` through `check_gen`
-    /// (`ployzd::machine_api::local_volume_copy::MachineService::check_gen`): refuses a gen below the floor, so an
+    /// (`ployzd::machine::local_machine::volume_copy::LocalMachine::check_gen`): refuses a gen below the floor, so an
     /// equal one passes, and leaves the floor where it is.
     fn check(&self, state: &mut State, generation: u8) -> bool {
         if self.broken.seed_raises_floor {

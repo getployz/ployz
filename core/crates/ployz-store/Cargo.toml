@@ -20,12 +20,18 @@ ring = "0.17.14"
 rusqlite.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tempfile = { version = "3.27.0", optional = true }
 tracing = "0.1.44"
 ts-rs.workspace = true
 uuid = { version = "1.24.0", features = ["serde", "v4", "v5"] }
 
+[features]
+# The test Store and fixtures each suite opens, for this crate's tests and ployz-agent-tools'.
+test-support = ["dep:tempfile"]
+
 [dev-dependencies]
 ployz-core = { workspace = true, features = ["test-keypair"] }
+ployz-store = { path = ".", features = ["test-support"] }
 tempfile = "3.27.0"
 uuid = { version = "1.24.0", features = ["v5"] }
 

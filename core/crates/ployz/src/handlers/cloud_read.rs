@@ -10,7 +10,6 @@ use ployz_agent_tools::{
     cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
 };
 use ployz_core::{MachineName, QualifiedService, RpcErrorCode, ServiceName, ServiceSelector};
-use reqwest::Method;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
@@ -42,11 +41,9 @@ fn refusable<T: DeserializeOwned>(
     credential: &Credential,
     query: CloudQuery,
 ) -> Result<Result<T, StoreCallError>, Error> {
-    Ok(super::runtime()?.block_on(cloud::account::approved_answer(
+    Ok(super::runtime()?.block_on(cloud::account::agent_call(
         credential,
-        Method::POST,
-        "agent/ask",
-        &json!({ "ask": query }),
+        &cloud::account::CloudCall::Ask(query),
         None,
     )))
 }

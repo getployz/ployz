@@ -82,16 +82,15 @@ pub(super) async fn serve(
 }
 
 /// Only the founder records the Cluster network locally; a joined Machine reads it from
-/// the replicated Cluster record. `None` until it has replicated.
+/// the replicated Cluster record once it participates. `None` until it has replicated.
 async fn cluster_network(record: &LocalMachineRecord, local: &LocalMachine) -> Option<Ipv4Net> {
-    if let Some(network) = record.cluster_network() {
-        return Some(network);
-    }
-    if record.phase() != ployz_core::LocalMachinePhase::Participating {
+    if record.cluster_network().is_none()
+        && record.phase() != ployz_core::LocalMachinePhase::Participating
+    {
         return None;
     }
-    match local.replicated().ok()?.cluster_network().await {
-        Ok(network) => network,
+    match local.cluster_network().await {
+        Ok(network) => Some(network),
         Err(error) => {
             tracing::debug!(error = %ployz_core::error_chain::inline(&error), "tunnel could not read the Cluster network");
             None

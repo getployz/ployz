@@ -137,7 +137,7 @@ async fn enroll_resends_past_the_read_budget_until_the_machine_replies() {
     })
     .await;
     let started = Instant::now();
-    let enrolled = super::enroll(&mut client, founder_request(&machine))
+    let enrolled = crate::enrollment::machine::enroll(&mut client, founder_request(&machine))
         .await
         .unwrap();
     assert_eq!(enrolled, machine);
@@ -159,7 +159,7 @@ async fn a_refused_enroll_is_reported_not_resent() {
     };
     let (mut client, enrolls, server) = enrolling_machine(refused).await;
     tokio::time::advance(Duration::from_secs(71)).await;
-    let error = super::enroll(&mut client, founder_request(&machine))
+    let error = crate::enrollment::machine::enroll(&mut client, founder_request(&machine))
         .await
         .unwrap_err();
     assert!(error.to_string().contains("holds a different enrollment"));
@@ -239,7 +239,10 @@ async fn leave_lost_to_a_daemon_restart_is_resent() {
         }
     };
     let departing = departing();
-    let (result, new) = tokio::join!(super::leave(&mut client, &departing), restart);
+    let (result, new) = tokio::join!(
+        crate::enrollment::machine::leave(&mut client, &departing),
+        restart
+    );
     new.shutdown_background();
     result.unwrap();
     assert_eq!(resent.load(Ordering::SeqCst), 1);
@@ -264,7 +267,9 @@ async fn a_leave_that_could_not_remove_its_row_says_so() {
     let mut client = unix_client(&path).await;
     let departing = departing();
 
-    super::leave(&mut client, &departing).await.unwrap();
+    crate::enrollment::machine::leave(&mut client, &departing)
+        .await
+        .unwrap();
 
     daemon.shutdown_background();
     let (_, json) = crate::ui::captured(|| crate::ui::show(&serde_json::json!({})));
@@ -365,7 +370,13 @@ async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
         "Waiting for the participating phase",
         ployz_core::MACHINE_START_WAIT,
         crate::connect::ConnectError::is_setup_retryable,
-        async |client| super::check_listed(client, &mut super::Joining::default()).await,
+        async |client| {
+            crate::enrollment::machine::check_listed(
+                client,
+                &mut crate::enrollment::machine::Joining::default(),
+            )
+            .await
+        },
     )
     .await
     .unwrap();

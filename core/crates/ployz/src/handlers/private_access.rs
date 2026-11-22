@@ -101,13 +101,13 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
             let observed = observe_access(client).await?;
             let seal_for = seal_to.key(client, observed.sealing).await?;
             let sealed = seal_key(&seal_for, &key)?;
-            let approval = match super::device::key::load(&device_key) {
-                Ok(Some(secret)) => Some(device_approval(
+            let approval = match super::device::key::load(&device_key)? {
+                Some(secret) => Some(device_approval(
                     &Signer::from_seed(&secret),
                     seal_for,
                     &sealed,
                 )?),
-                _ => None,
+                None => None,
             };
             let addressed = observed.machines.clone();
             let changed = turn_on(

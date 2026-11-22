@@ -187,9 +187,9 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
 /// This CLI's Device signer. Only a Device signs a rule: it stands for every future push.
 pub(super) fn signer(root: &ArgMatches) -> Result<Signer, Error> {
     let key = super::device::key::path(&super::config_path(root)?);
-    match super::device::key::load(&key) {
-        Ok(Some(secret)) => Ok(Signer::from_seed(&secret)),
-        _ => Err(Error::coded(
+    match super::device::key::load(&key)? {
+        Some(secret) => Ok(Signer::from_seed(&secret)),
+        None => Err(Error::coded(
             RpcErrorCode::Unauthenticated,
             "This CLI has no device key, so it can't sign a rule. Run ployz device request, \
              then approve it from a device your servers trust.",

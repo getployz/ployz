@@ -17,7 +17,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
+use ployz_store::testing::backend;
 
 /// Items as their text, to compare with literals.
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {

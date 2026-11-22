@@ -61,7 +61,7 @@ impl Store<'_> {
     /// This command again with its [`Self::args`] and `extra`, in the same Project
     /// and Environment, with the same Ployz config.
     pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = super::super::config_flag(self.matches)
+        let mut words: Vec<&str> = crate::cli::config_flag(self.matches)
             .into_iter()
             .flatten()
             .collect();

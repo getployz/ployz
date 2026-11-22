@@ -8,8 +8,8 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
 use backend::open;
+use ployz_store::testing::backend;
 
 const MARKER: &str = "MARKER_9f3c";
 const VOLUME: &str = "0b9e7c4e-1f2a-4c3b-9d8e-7f6a5b4c3d2e";

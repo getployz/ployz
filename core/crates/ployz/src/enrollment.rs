@@ -1,5 +1,15 @@
-//! Bounded enrollment after the caller has durably saved its allocation.
+//! Enrolling a Server: what `server add` asks for, the calls to its daemon, and the Cloud
+//! enrollment the check-in loop runs too. Bounded enrollment after the caller has durably saved
+//! its allocation sits here as well.
+pub(crate) mod asked_policy;
+pub(crate) mod cloud;
+pub(crate) mod founding;
 pub mod local;
+pub(crate) mod machine;
+pub(crate) mod plan;
+
+pub(crate) use asked_policy::AskedPolicy;
+pub(crate) use plan::EnrollPlan;
 
 use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError};

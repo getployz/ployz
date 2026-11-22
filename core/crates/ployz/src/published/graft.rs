@@ -106,14 +106,8 @@ fn arg(arg: &PublishedArg) -> Arg {
     if arg.positional {
         clap = clap.value_name(arg.name.to_uppercase());
     } else {
-        // Cloud's `environment` input is `--env`, as on every compiled command.
-        let long = if arg.name == "environment" {
-            "env"
-        } else {
-            arg.name.as_str()
-        };
         clap = clap
-            .long(long.to_owned())
+            .long(arg.flag().to_owned())
             .value_name(arg.name.to_uppercase());
     }
     if let Some(help) = &arg.help {

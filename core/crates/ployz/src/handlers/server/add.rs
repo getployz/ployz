@@ -9,6 +9,7 @@ use super::super::{connect_context_chosen, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
+use crate::enrollment::machine;
 use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
@@ -24,10 +25,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )?;
     let requested_name = helpers::requested_name(matches)?;
     let token_request = helpers::token_request(matches)?;
-    let pinned = helpers::pinned(&token_request);
+    let pinned = machine::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
-    let storage = crate::provisioning::resolve_storage(matches)?;
+    let storage = super::provision::resolve_storage(matches)?;
     let no_install = matches.get_flag("no-install");
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
@@ -45,7 +46,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let entry_answers = entry.answers_for_itself(&entry_id);
         require_a_pin(own_device.is_some() || entry_answers, destination)?;
         if !no_install {
-            crate::provisioning::provision(matches, &storage).await?;
+            super::provision::provision(matches, &storage).await?;
         }
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
@@ -54,10 +55,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             helpers::reconnect_direct(matches, &connection).await?
         };
         let (details, mut token) =
-            helpers::inspect_token(&mut target_client, token_request.clone()).await?;
+            machine::inspect_token(&mut target_client, token_request.clone()).await?;
         require_another_entry(entry_id, token.id, destination)?;
         // Before the reset, so a taken name leaves the Server as it was.
-        let name = helpers::machine_name(requested_name, &token);
+        let name = machine::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;
         let history = config.path().with_extension("enrollment");
         // A Server still joining under this identity resumes: an approved join stays unlisted
@@ -71,10 +72,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             && joining.is_none()
             && listed.is_none()
         {
-            helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
-            helpers::leave(&mut target_client, &details).await?;
+            machine::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
+            machine::leave(&mut target_client, &details).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
-            token = helpers::inspect_token(&mut target_client, token_request)
+            token = machine::inspect_token(&mut target_client, token_request)
                 .await?
                 .1;
         }
@@ -110,15 +111,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             .await
         {
             Err(error)
-                if error.code == ployz_core::RpcErrorCode::from("forbidden")
-                    && error
-                        .details
-                        .get("capability")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY)
-                    // A forgotten Server needs a new identity, not an approval.
-                    && error.details.get("reason").and_then(serde_json::Value::as_str)
-                        != Some("member_removed") =>
+                if error.enforcement().is_some_and(|gate| {
+                    gate.capability == ployz_core::JOIN_APPROVAL_CAPABILITY
+                        // A forgotten Server needs a new identity, not an approval.
+                        && gate.reason != Some(ployz_core::GateReason::MemberRemoved)
+                }) =>
             {
                 if !crate::handlers::device::sign_waiting_join(
                     &mut entry,
@@ -147,7 +144,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let approved = registration.assigned_machine.join_approval.is_some();
         let pin = join_pin(own_device, entry_answers.then_some(&registration.devices));
-        let (_, join_confirmation) = helpers::enroll_member(
+        let (_, join_confirmation) = machine::enroll_member(
             &mut target_client,
             EnrollRequest {
                 role: EnrollAs::Member {
@@ -162,7 +159,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         if approved {
             let mut confirmed = assignment.clone();
             confirmed.request.join_confirmation =
-                Some(join_confirmation.ok_or_else(helpers::confirmation_missing)?);
+                Some(join_confirmation.ok_or_else(machine::confirmation_missing)?);
             crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
         }
 
@@ -185,14 +182,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         (unarrived, catch_up) = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(
-                crate::global_catch_up::follow_globals(&mut entry, &assigned, |args| {
+                super::catch_up::follow_globals(&mut entry, &assigned, |args| {
                     super::super::recovery_command(matches, &context_name, args)
                 })
                 .await,
             )
         })?;
         catch_up.map_err(|error| {
-            crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
+            super::catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::super::recovery_command(matches, &context_name, args)
             })
         })?;
@@ -201,7 +198,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok(())
     })();
     crate::ui::emit_committed(
-        crate::global_catch_up::with_unarrived(
+        super::catch_up::with_unarrived(
             json!({ "server": super::server_json(&assigned) }),
             &unarrived,
         ),
@@ -304,7 +301,7 @@ mod tests {
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {
         let assigned = assigned_machine("edge", 'a');
-        let failure = crate::global_catch_up::joined_catch_up_error(
+        let failure = super::super::catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned())
                     .hint(Hint::Next("ployz deploy".into())),
