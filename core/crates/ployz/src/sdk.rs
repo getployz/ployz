@@ -420,12 +420,10 @@ pub async fn drain_machine_kept(
         expect,
     )
     .await?;
-    let kept = crate::cluster::KeptVersions::new(store, organization);
-    let client = session
-        .client()
-        .map(|client| client.with_kept_versions(kept));
-    let report = match client {
-        Ok(client) => session.drain_with(machine, scope, client).await,
+    let approvals =
+        crate::deploy::Approvals::kept(crate::deploy::KeptVersions::new(store, organization));
+    let report = match session.client() {
+        Ok(client) => session.drain_with(machine, scope, client, approvals).await,
         Err(error) => Err(error),
     };
     session.close().await;
@@ -1153,7 +1151,13 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
-        self.drain_with(machine, scope, self.client()?).await
+        self.drain_with(
+            machine,
+            scope,
+            self.client()?,
+            crate::deploy::Approvals::default(),
+        )
+        .await
     }
 
     async fn drain_with(
@@ -1161,10 +1165,11 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
         mut client: Client,
+        approvals: crate::deploy::Approvals,
     ) -> Result<crate::drain::DrainReport, RpcError> {
         let target = resolve_target(machine)?;
         client
-            .drain(&target, scope, &self.inner.cancel, &mut |_| {})
+            .drain(&target, scope, approvals, &self.inner.cancel, &mut |_| {})
             .await
             .map_err(RpcError::from)
     }

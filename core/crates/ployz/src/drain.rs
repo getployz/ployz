@@ -30,8 +30,8 @@ use ts_rs::TS;
 
 use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::DeploySnapshot;
 use crate::deploy::cleanup::Copy;
+use crate::deploy::{Approvals, Approved, DeploySnapshot};
 
 pub(crate) mod placement;
 pub(crate) mod retirement;
@@ -319,7 +319,8 @@ impl From<DrainError> for RpcError {
 }
 
 impl Client {
-    /// Drain `target` within `scope`.
+    /// Drain `target` within `scope`, handing each Server `approvals` with each copy it
+    /// moves there.
     ///
     /// Cancelling `cancellation` ends the Drain at its next safe point: a move in flight
     /// removes its new Container again, the Services not reached read `not_attempted`,
@@ -330,15 +331,17 @@ impl Client {
     /// Only before anything moved: `target` is not a visible Server, the services role
     /// can't be turned off or isn't observed off by the entry within 30 s, the Server's
     /// Services can't be observed, or `cancellation` fired first.
-    pub async fn drain(
+    pub(crate) async fn drain(
         &mut self,
         target: &MachineTarget,
         scope: &DrainScope,
+        approvals: Approvals,
         cancellation: &CancellationToken,
         progress: &mut (dyn FnMut(DrainStep<'_>) + Send),
     ) -> Result<DrainReport, DrainError> {
         let ready = preflight(self, target, scope, cancellation, progress).await?;
-        Ok(execute(self, ready, cancellation, progress).await)
+        let mut approved = Approved::new(self.clone(), approvals);
+        Ok(execute(&mut approved, ready, cancellation, progress).await)
     }
 }
 
@@ -531,13 +534,15 @@ trait DrainClient {
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd;
 }
 
-impl DrainClient for Client {
+impl DrainClient for Approved {
     async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost> {
         let machines = self
+            .client
             .machines()
             .await
             .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         let live = self
+            .client
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
             .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
@@ -551,7 +556,7 @@ impl DrainClient for Client {
         globals: &[QualifiedService],
         cancellation: &CancellationToken,
     ) -> Vec<(QualifiedService, Retirement)> {
-        retire_globals(self, server, globals, cancellation).await
+        retire_globals(&mut self.client, server, globals, cancellation).await
     }
 
     async fn converge(
@@ -572,6 +577,7 @@ impl DrainClient for Client {
 
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
         let known: Vec<MachineRef> = self
+            .client
             .machines()
             .await
             .unwrap_or_default()

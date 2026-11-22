@@ -1,6 +1,4 @@
-//! What a Deploy hands the Client it runs through: the log it writes under, the pull
-//! credentials of its Services, and the signatures every Server gets with a Container
-//! change.
+//! The signatures a Deploy or a drain hands every Server with a Container change.
 
 use std::{
     collections::BTreeMap,
@@ -8,8 +6,7 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
-    ServiceName,
+    ContainerLocator, ContainerWant, NewContainer, RunTarget, ServiceName,
     authority::{
         BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
@@ -18,22 +15,12 @@ use ployz_core::{
 use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
 
 use crate::cloud_account::Credential;
+use crate::cluster::Carried;
 use crate::failure::Failure;
-
-/// The Deploy this client executes, shared by its clones as their Deploy's own.
-#[derive(Clone, Default)]
-pub(crate) struct DeployContext {
-    /// The Deploy's log; a replacement joining a named Deploy keeps that Deploy's label.
-    pub(crate) id: Option<DeploymentLogId>,
-    /// Pull credentials by Service.
-    pub(crate) registry_auth: BTreeMap<ServiceName, RegistryAuth>,
-    /// What every Container change this client sends carries.
-    approvals: Arc<Approvals>,
-}
 
 /// The signatures a client hands each Server with a Container change.
 #[derive(Clone, Debug, Default)]
-struct Approvals {
+pub(crate) struct Approvals {
     /// A rule's proof for each Service it built, when a rule deploys in place of a
     /// person's signature.
     proofs: RuleProofs,
@@ -95,7 +82,7 @@ impl KeptVersions {
     async fn of(&self, new: &NewContainer) -> Carried {
         let Ok(digest) = PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace)
         else {
-            return Carried::none();
+            return Carried::default();
         };
         let query = VersionsQuery {
             namespace: new.slot.namespace.clone(),
@@ -131,7 +118,7 @@ impl KeptVersions {
             },
             Err(error) => {
                 tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
-                Carried::none()
+                Carried::default()
             }
         }
     }
@@ -141,15 +128,23 @@ impl KeptVersions {
 /// place of a person's signed version, and the verified builds the Servers issued for
 /// them, which every clone of the Deploy's client shares.
 #[derive(Clone, Debug, Default)]
-pub struct RuleProofs {
-    pub rules: BTreeMap<ServiceName, RuleProof>,
-    pub issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
+pub(crate) struct RuleProofs {
+    rules: BTreeMap<ServiceName, RuleProof>,
+    issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
 }
 
 impl RuleProofs {
+    pub(crate) fn insert(&mut self, service: ServiceName, proof: RuleProof) {
+        self.rules.insert(service, proof);
+    }
+
+    pub(crate) fn contains(&self, service: &ServiceName) -> bool {
+        self.rules.contains_key(service)
+    }
+
     /// The verified build a Server issued for each Service, with the claim it covers.
     #[must_use]
-    pub fn issued(&self) -> BTreeMap<ServiceName, ployz_store::VerifiedClaim> {
+    pub(crate) fn issued(&self) -> BTreeMap<ServiceName, ployz_store::VerifiedClaim> {
         let issued = self
             .issued
             .lock()
@@ -207,42 +202,10 @@ impl RuleProofs {
     }
 }
 
-/// What a Container change carries to the Server: the signed versions and the proofs for
-/// `want`.
-pub(super) struct Carried {
-    pub(super) rule: Option<Box<RuleProof>>,
-    pub(super) versions: Vec<Signed<ServiceVersion>>,
-}
-
-impl Carried {
-    pub(super) fn none() -> Self {
-        Self {
-            rule: None,
-            versions: Vec::new(),
-        }
-    }
-}
-
-impl DeployContext {
-    pub(super) fn set_proofs(&mut self, proofs: RuleProofs) {
-        Arc::make_mut(&mut self.approvals).proofs = proofs;
-    }
-
-    /// Keep the verified build a Server issued for a creation of `service`, when the
-    /// Deploy carried that Service's proof.
-    pub(super) fn note_issued(&self, service: &ServiceName, verified: VerifiedBuild) {
-        let proofs = &self.approvals.proofs;
-        if proofs.rules.contains_key(service) {
-            proofs
-                .issued
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(service.clone(), verified);
-        }
-    }
-
-    /// Hand each Service's creations the versions signed for their spec, newest last.
-    pub(super) fn set_versions(&mut self, versions: Vec<Signed<ServiceVersion>>) {
+impl Approvals {
+    /// Hand each Service's creations the versions signed for their spec, newest last, and
+    /// each change the rule's proof for its Service, in place of a person's signed version.
+    pub(crate) fn signed(versions: Vec<Signed<ServiceVersion>>, proofs: RuleProofs) -> Self {
         let mut by_service: BTreeMap<ServiceName, Vec<_>> = BTreeMap::new();
         for version in versions {
             if let Ok(body) = version.open() {
@@ -252,18 +215,37 @@ impl DeployContext {
                     .push((body.digest, version));
             }
         }
-        Arc::make_mut(&mut self.approvals).versions = Versions::ByService(by_service);
+        Self {
+            proofs,
+            versions: Versions::ByService(by_service),
+        }
     }
 
     /// Read each new creation's versions from `kept` by the digest of its own spec.
-    pub(super) fn set_kept(&mut self, kept: KeptVersions) {
-        Arc::make_mut(&mut self.approvals).versions = Versions::Kept(kept);
+    pub(crate) fn kept(kept: KeptVersions) -> Self {
+        Self {
+            proofs: RuleProofs::default(),
+            versions: Versions::Kept(kept),
+        }
+    }
+
+    /// Keep the verified build a Server issued for a creation of `service`, when the
+    /// Deploy carried that Service's proof.
+    pub(super) fn note_issued(&self, service: &ServiceName, verified: VerifiedBuild) {
+        let proofs = &self.proofs;
+        if proofs.rules.contains_key(service) {
+            proofs
+                .issued
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(service.clone(), verified);
+        }
     }
 
     /// What a change of `want` carries. A new creation carries its spec's versions; a
     /// step on an existing Container carries none.
     pub(super) async fn carried(&self, want: &ContainerWant) -> Carried {
-        let versions = match (want, &self.approvals.versions) {
+        let versions = match (want, &self.versions) {
             (
                 ContainerWant::Running {
                     container: RunTarget::New(new),
@@ -300,12 +282,12 @@ impl DeployContext {
             ) => Vec::new(),
         };
         Carried {
-            rule: self.approvals.proofs.carried(want),
+            rule: self.proofs.carried(want),
             versions,
         }
     }
 }
 
 #[cfg(test)]
-#[path = "deploy_context_tests.rs"]
+#[path = "approvals_tests.rs"]
 mod tests;

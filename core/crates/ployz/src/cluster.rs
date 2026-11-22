@@ -8,20 +8,19 @@ use std::{
 use futures_util::future::join_all;
 pub(crate) use ployz_core::global_creation_key;
 use ployz_core::{
-    BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
-    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation, Departed,
-    DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
-    EnvironmentValues, ForgetRequest, Forgotten, IngressDoorsSet, InspectRequest,
-    InspectStorageRequest, InspectTelemetry, LeaveRequest, Left, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineLabelKey, MachineName, MachineObservation, MachineStorageObservation, MachineSuccess,
-    MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss, OpaquePayload,
-    PartialResult, PrivateAccessSet, RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError,
-    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, SetIngressDoorsRequest,
-    SetPrivateAccessRequest, StopOptions, StorageCapacity, TelemetryObservation,
-    UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
-    decode_runtime_watch_frame, derive_live_services, op,
+    BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerObservation,
+    ContainerWant, CopyRole, DataLoss, DataLossConfirmation, Departed, DescribeContractRequest,
+    DockerVolumeId, DockerVolumeName, EnsureContainerRequest, EnvironmentValues, ForgetRequest,
+    Forgotten, IngressDoorsSet, InspectRequest, InspectStorageRequest, InspectTelemetry,
+    LeaveRequest, Left, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineFailure, MachineId, MachineImages, MachineLabelKey, MachineName,
+    MachineObservation, MachineStorageObservation, MachineSuccess, MachineTarget, MachineUpdate,
+    NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult, PrivateAccessSet,
+    RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame,
+    RuntimeWatchRequest, SetIngressDoorsRequest, SetPrivateAccessRequest, StopOptions,
+    StorageCapacity, TelemetryObservation, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval,
+    VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -45,7 +44,6 @@ use crate::{
 mod call;
 mod capacity;
 mod container_health;
-mod deploy_context;
 mod fan_out;
 #[cfg(test)]
 mod retry;
@@ -57,9 +55,6 @@ mod session;
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
-pub(crate) use deploy_context::KeptVersions;
-pub use deploy_context::RuleProofs;
-use deploy_context::{Carried, DeployContext};
 pub(crate) use fan_out::{fan_out, fan_out_entry_last};
 pub(crate) use routes::FullRoutes;
 pub(crate) use session::Refusal;
@@ -67,12 +62,12 @@ use session::Session;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// What an `EnsureContainer` carries to the Machine beside its want.
-#[derive(Clone, Copy)]
-enum Carry {
-    /// The approvals and proofs this client's Deploy holds.
-    Approvals,
-    Nothing,
+/// What an `EnsureContainer` carries to the Machine beside its want: the signed versions
+/// and the rule's proof that approve it.
+#[derive(Default)]
+pub struct Carried {
+    pub rule: Option<Box<ployz_core::authority::RuleProof>>,
+    pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -81,8 +76,6 @@ pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60)
 
 #[derive(Clone)]
 pub struct Client {
-    /// The Deploy this client executes: its log, pull credentials and approvals.
-    pub(crate) deploy: DeployContext,
     /// The connection to the entry and what was confirmed behind it.
     session: Session,
     /// The Full-scope connections a Full call may dial.
@@ -103,7 +96,6 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
-            deploy: DeployContext::default(),
             session: Session::new(channel, connection, source, connector),
             routes: FullRoutes::default(),
         }
@@ -198,32 +190,6 @@ impl Client {
         client.session.ending_with(&self.session);
         self.session.ended()?;
         Ok(Some(client))
-    }
-
-    /// Hand every Server, with each new copy, the signed versions `kept` holds for that
-    /// copy's own spec.
-    #[must_use]
-    pub(crate) fn with_kept_versions(mut self, kept: KeptVersions) -> Self {
-        self.deploy.set_kept(kept);
-        self
-    }
-
-    /// Hand every Server the signed versions of the Service each creation belongs to.
-    #[must_use]
-    pub(crate) fn with_versions(
-        mut self,
-        versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
-    ) -> Self {
-        self.deploy.set_versions(versions);
-        self
-    }
-
-    /// Hand every Server the rule's proof for the Service each change belongs to, in
-    /// place of a person's signed version.
-    #[must_use]
-    pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
-        self.deploy.set_proofs(proofs);
-        self
     }
 
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
@@ -1050,19 +1016,6 @@ impl Client {
         Ok(live)
     }
 
-    /// Converge one Container on `machine_id` to `want`. A refusal answers as the error
-    /// the replaced Container verbs answered.
-    pub async fn ensure_container(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-        timeout: Option<Duration>,
-    ) -> Result<ContainerNow, RpcError> {
-        self.ensure_settled(machine_id, want, timeout)
-            .await
-            .map(|(now, _)| now)
-    }
-
     /// Bring `machine`'s Ingress Proxy, its holder and Caddy, to its daemon's pinned
     /// wiring for `request`'s Doors. The daemon may pull both images first, so no client
     /// deadline applies, as for a Deploy's create. A daemon from before the route
@@ -1107,47 +1060,14 @@ impl Client {
         .map_err(|error| answered_by(machine, error))
     }
 
-    pub(crate) async fn ensure_settled(
+    /// Converge one Container on `machine_id` to `want` on route `R`: ensure.v1, or the
+    /// pinned route, which runs exactly the image ID its Container names and which a daemon
+    /// from before it refuses by name. `carry` says what the request carries beside `want`.
+    pub async fn ensure<R>(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-        timeout: Option<Duration>,
-    ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
-        self.ensure_unsettled(machine_id, want, timeout)
-            .await?
-            .into_settled()
-    }
-
-    /// Converge one Container and keep a refusal as the owner typed it, for
-    /// callers that act on which rotation rule refused.
-    pub(crate) async fn ensure_unsettled(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-        timeout: Option<Duration>,
-    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        let request = self.ensure_request_to(machine_id, want).await?;
-        self.send_ensure::<op::EnsureContainer>(machine_id, request, timeout)
-            .await
-    }
-
-    /// The request a Deploy sends to create or settle `want` on `machine_id`, with the
-    /// Deploy's approvals. Failing here, nothing was sent.
-    pub(crate) async fn ensure_request_to(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-    ) -> Result<EnsureContainerRequest, RpcError> {
-        self.ensure_request(&MachineTarget::from(machine_id), want, Carry::Approvals)
-            .await
-    }
-
-    /// Send `request` on route `R`: ensure.v1, or the pinned route, which runs exactly the
-    /// image ID its Container names and which a daemon from before it refuses by name.
-    pub(crate) async fn send_ensure<R>(
-        &self,
-        machine_id: &MachineId,
-        request: EnsureContainerRequest,
+        carry: impl AsyncFnOnce(&ContainerWant) -> Carried,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError>
     where
@@ -1156,35 +1076,18 @@ impl Client {
                 Response = ployz_core::EnsuredContainer,
             >,
     {
-        let service = if let ContainerWant::Running {
-            container: ployz_core::RunTarget::New(new),
-            ..
-        } = &request.want
-        {
-            Some(new.slot.service.clone())
-        } else {
-            None
-        };
+        // Boxed so a Deploy's nested ensure futures fit a test thread's stack.
+        let request =
+            Box::pin(self.ensure_request(&MachineTarget::from(machine_id), want, carry)).await?;
         let payload = R::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        let ensured = apply_timeout(
+        apply_timeout(
             timeout,
             self.send::<R>(payload, Some(&MachineTarget::from(machine_id))),
         )
         .await
-        .map_err(|error| answered_by(machine_id, error))?;
-        if let (
-            Some(service),
-            ployz_core::EnsuredContainer::Ensured {
-                verified: Some(verified),
-                ..
-            },
-        ) = (&service, &ensured)
-        {
-            self.deploy.note_issued(service, *verified);
-        }
-        Ok(ensured)
+        .map_err(|error| answered_by(machine_id, error))
     }
 
     /// Converge one Container as a joiner's catch-up does, which carries no Deploy's
@@ -1194,25 +1097,24 @@ impl Client {
         target: &MachineTarget,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        let request = self.ensure_request(target, want, Carry::Nothing).await?;
+        let request = self
+            .ensure_request(target, want, async |_| Carried::default())
+            .await?;
         self.call::<op::EnsureContainer>(request, Call::keyed().to(target))
             .await
             .map_err(RpcError::from)
     }
 
     /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
-    /// value reaches a Machine that can't keep it sealed.
+    /// value reaches a Machine that can't keep it sealed, and only then asks `carry`.
     async fn ensure_request(
         &self,
         target: &MachineTarget,
         want: ContainerWant,
-        carry: Carry,
+        carry: impl AsyncFnOnce(&ContainerWant) -> Carried,
     ) -> Result<EnsureContainerRequest, RpcError> {
         crate::sealed_compat::admit(self, target, &want).await?;
-        let carried = match carry {
-            Carry::Approvals => self.deploy.carried(&want).await,
-            Carry::Nothing => Carried::none(),
-        };
+        let carried = carry(&want).await;
         Ok(EnsureContainerRequest {
             want,
             rule: carried.rule,

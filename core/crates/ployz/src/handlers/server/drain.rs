@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::target;
 use crate::approval;
 use crate::cloud_account::{self, Credential};
-use crate::cluster::KeptVersions;
+use crate::deploy::{Approvals, KeptVersions};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -60,8 +60,8 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     crate::handlers::runtime()?.block_on(async {
         let mut client = route::connect(matches, context).await?;
-        let mut client = match kept {
-            Some(kept) => client.with_kept_versions(kept),
+        let approvals = match kept {
+            Some(kept) => Approvals::kept(kept),
             None => {
                 let unsigned = crate::drain::needing_versions(&mut client, &target, &scope)
                     .await
@@ -69,12 +69,12 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
                 if !unsigned.is_empty() {
                     return Err(unsigned_moves(matches, selector, &unsigned));
                 }
-                client
+                Approvals::default()
             }
         };
         let cancellation = crate::cancellation::on_ctrl_c();
         let report = client
-            .drain(&target, &scope, &cancellation, &mut show)
+            .drain(&target, &scope, approvals, &cancellation, &mut show)
             .await
             .map_err(refusal)?;
         render(&report)
