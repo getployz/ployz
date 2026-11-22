@@ -134,11 +134,61 @@ const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === 
 const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
 
 /** Commands that leave an Environment's review where it is: the review's own Deploy and Save, a Deployment's start and cancel. */
-const KEEPS_REVIEW: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "publish", "start", "cancel"]);
+const KEEPS_REVIEW = {
+  create_project: false,
+  rename_project: false,
+  create_environment: false,
+  create_service: false,
+  create_git_service: false,
+  rename_service: false,
+  remove_service: false,
+  create_volume: false,
+  set_volume_storage: false,
+  set_volume_shared_writes: false,
+  remove_volume: false,
+  rename_volume: false,
+  create_config: false,
+  put_config_file: false,
+  remove_config_file: false,
+  rename_config: false,
+  delete_config: false,
+  attach_config: false,
+  detach_config: false,
+  edit: false,
+  publish: true,
+  stage_history: false,
+  discard: false,
+  admit: true,
+  start: true,
+  cancel: true,
+  add_domain: false,
+  set_generated_domain: false,
+  remove_domain: false,
+  create_branch: false,
+  sync: false,
+  undo_sync: false,
+  remove_proposal: false,
+  take: false,
+  copy_node: false,
+  never_sync: false,
+  set_merge_value: false,
+  keep_branch: false,
+  set_build_order: false,
+  name_region: false,
+  set_default_environment: false,
+  set_branch_setup: false,
+  set_environment_protected: false,
+  remove: false,
+  cancel_removal: false,
+  set_pr_plan: false,
+  approve_rule: false,
+  approve_pull_request: false,
+  batch: false,
+} satisfies Record<ConfigCommand["command"], boolean>;
 
 /** Whether `command` can move the Environment's review: any other write that names it, a field's edit or a Volume's storage. */
 const movesReview = (command: ConfigCommand, environment: EnvironmentRef) =>
-  !KEEPS_REVIEW.has(command.command) && commandEnvironments(command).some((named) => sameRef(named, environment));
+  !KEEPS_REVIEW[command.command] && commandEnvironments(command).some((named) => sameRef(named, environment));
 
 /** The newest write this tab has made, any kind: a press marks it as its gesture starts, for `reviewMoving`. */
 export function writeMark(queryClient: QueryClient): number {
