@@ -18,7 +18,7 @@ import { newestGuid, type Planned, planForwardRelease, type Refusal, type Refusa
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, namesServer, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
@@ -512,7 +512,7 @@ export const readOrigins = Effect.fn("VolumeRun.readOrigins")(function* (
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   if (frame === null) return { kind: "unanswered" } as const;
   const machines = frameServers(frame);
-  const target = named === null ? undefined : machines.find((machine) => named.machine === undefined ? machine.name === named.to : machine.id === named.machine);
+  const target = named === null ? undefined : machines.find((machine) => namesServer(named, machine));
   if (named !== null && target === undefined) return { kind: "unknown", server: named.to } as const;
   const holders = frame.volumes.filter((entry) => entry.id.name === dockerVolume).map((entry) => entry.id.machine_id);
   return { kind: "read", blockers: originBlockers(machines, [...target === undefined ? [] : [target.id], ...servers, ...holders]) } as const;
