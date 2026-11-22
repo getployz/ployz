@@ -378,8 +378,8 @@ To swap a key for a new one with the same scope, for example on a schedule, run
 `ployz key rotate <code>`. It lists each service that runs a version the old key signed, with its
 image, when it was signed and its digest, and asks. Then it gives every server the new key,
 prints the new `PLOYZ_KEY=...`, redeploys those services under the new key and follows each
-deploy to the end. A service they reference ships with them under the version a person approved, and keeps its
-container when nothing about it changed. Update the `PLOYZ_KEY` secret your CI deploys with before you rotate, or right
+deploy to the end. A service they only reference ships with them under the version a person approved, and keeps
+its container when nothing about it changed. Update the `PLOYZ_KEY` secret your CI deploys with before you rotate, or right
 after the new key prints: until the old key is removed, a deploy signed with it still lands. Before
 it removes the old key, the rotation looks again for services running a version only the old key
 signed, such as one CI shipped while it ran, and redeploys those too. If a deploy with the old key

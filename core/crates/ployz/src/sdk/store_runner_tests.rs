@@ -1937,9 +1937,11 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         .preview()
         .operations
         .iter()
-        .filter_map(|row| match &row.operation {
-            DeployOperation::ReplaceContainer(replace) => Some(replace.spec.name.clone()),
-            _ => None,
+        .filter_map(|row| {
+            let DeployOperation::ReplaceContainer(replace) = &row.operation else {
+                return None;
+            };
+            Some(replace.spec.name.clone())
         })
         .collect();
     prepared.close();

@@ -404,29 +404,32 @@ pub(super) fn upload_and_ship(
     Ok(shipped)
 }
 
-/// The `--image` edits a deploy staged, and the edit that sets each image back.
+/// The `--image` edits a deploy staged, the edit that sets back each image it replaced,
+/// and the Services whose image it can't set back.
 struct Staged {
     edits: Vec<silent::ImageEdit>,
     undo: Option<Edit>,
+    kept: Vec<ServiceName>,
 }
 
 impl Staged {
     /// Set back what this deploy staged, because `error` refuses it before admission: a
-    /// staged image left behind would refuse every later silent deploy. An edit made
-    /// since keeps what it staged, and a warning says so.
+    /// staged image left behind would refuse every later silent deploy. Only an image
+    /// the deploy replaced goes back, and only while no edit came since; anything else
+    /// stays staged, and a warning says so.
     fn unstage(&self, store: &Store, error: Error) -> Error {
+        let mut kept: Vec<&str> = self.kept.iter().map(ServiceName::as_str).collect();
         if let Some(undo) = &self.undo
             && store.try_edit(undo).is_err()
         {
-            let services: Vec<&str> = self
-                .edits
-                .iter()
-                .map(|edit| edit.service.as_str())
-                .collect();
+            kept.extend(self.edits.iter().map(|edit| edit.service.as_str()));
+            kept.sort_unstable();
+            kept.dedup();
+        }
+        if !kept.is_empty() {
             ui::warn(format!(
-                "Couldn't set back the image of {} after the refusal. ployz diff shows what is \
-                 staged.",
-                services.join(", ")
+                "The new image of {} stays staged. ployz diff shows what is staged.",
+                kept.join(", ")
             ));
         }
         error
@@ -451,6 +454,7 @@ fn images(
         return Ok(Staged {
             edits: Vec::new(),
             undo: None,
+            kept: Vec::new(),
         });
     }
     if let Some((service, _)) = typed
@@ -479,6 +483,7 @@ fn images(
     })?;
     let mut changes = Vec::new();
     let mut undo = Vec::new();
+    let mut kept = Vec::new();
     for (edit, path) in edits.iter().zip(paths) {
         let image = serde_json::Value::String(edit.image.clone());
         let before = working
@@ -487,8 +492,10 @@ fn images(
             .find(|row| row.path == path)
             .map(|row| row.value.clone())
             .unwrap_or_default();
+        // An image set on a Service that had none replaced its Git or upload source and
+        // build settings, which unsetting it doesn't bring back.
         if before.is_null() {
-            undo.push(Change::Unset { path: path.clone() });
+            kept.push(edit.service.clone());
         } else if before != image {
             undo.push(Change::Set {
                 path: path.clone(),
@@ -497,17 +504,32 @@ fn images(
         }
         changes.push(Change::Set { path, value: image });
     }
-    let edited = store.try_edit(&Edit {
+    let staging = Edit {
         environment: environment.clone(),
-        expect: None,
+        expect: Some(working.environment.revision),
         changes,
-    })?;
+    };
+    let edited = match store.try_edit(&staging) {
+        Ok(edited) => edited,
+        // Another edit came after the read: stage over it, as `ployz set` would, with
+        // nothing to set back, since the read no longer says what was there.
+        Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Conflict => {
+            let edited = store.try_edit(&Edit {
+                expect: None,
+                ..staging
+            })?;
+            kept.extend(edits.iter().map(|edit| edit.service.clone()));
+            undo.clear();
+            edited
+        }
+        Err(error) => return Err(error.into()),
+    };
     let undo = (!undo.is_empty()).then(|| Edit {
         environment: environment.clone(),
         expect: Some(edited.environment.revision),
         changes: undo,
     });
-    Ok(Staged { edits, undo })
+    Ok(Staged { edits, undo, kept })
 }
 
 /// The refusal of `--forget-older` on a deploy this Device doesn't sign: only a signed
