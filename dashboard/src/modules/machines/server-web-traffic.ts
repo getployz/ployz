@@ -1,6 +1,6 @@
 import type { IngressCheck } from "@ployz/sdk";
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 /** Which way the switch was flipped: on starts the web server on the Server, off stops it. */
 export const WEB_TRAFFIC_WANTS = ["on", "off"] as const;

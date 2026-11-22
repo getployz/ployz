@@ -7,7 +7,7 @@ import {
   createServerUpgradeRequestedEvent,
   serverUpgradeRequestedEventType,
 } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
 import { machineUpgradeAttemptId } from "#/modules/runtime/ployz.server";

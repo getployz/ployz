@@ -1,6 +1,6 @@
 import type { DrainReport } from "@ployz/sdk";
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 /**
  * One Drain Cloud runs on one Server, as its row moves: the click writes `pending`, the run claims it `running` right

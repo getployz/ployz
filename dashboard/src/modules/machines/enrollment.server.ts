@@ -16,25 +16,8 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import {
-  JoinApprovalRequired,
-  enrollmentExpiry,
-  MANAGEMENT_CAPABILITY_LENGTH,
-  registerRequestFromEnrollmentIdentity,
-  rustMachineIdSchema,
-  setupReportAccepted,
-  setupReportProperties,
-  type SetupReport,
-  waitForFounder,
-  waitForJoinSlot,
-  type EnrollmentIdentity,
-  type EnrollmentCallback,
-  type EnrollmentCallbackSealing,
-  type CliMintMachineEnrollmentInput,
-  type CliResetPendingEnrollmentInput,
-  type ReadMachineEnrollmentInput,
-  type ResetPendingEnrollmentInput,
-} from "#/modules/machines/enrollment";
+import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";

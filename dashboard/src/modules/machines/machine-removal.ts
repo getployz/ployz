@@ -5,7 +5,7 @@ import {
   type DataLossIdentity,
 } from "#/modules/runtime/data-loss-identity";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 export const MACHINE_REMOVE_ATTEMPT_STATES = [
   "pending",

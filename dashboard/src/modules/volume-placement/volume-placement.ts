@@ -5,7 +5,7 @@ import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
 import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import {
   type AnsweredMember, heardFrom, type Member, needsFloor, parseDockerVolumeName, RUN_FEATURES, type VolumeRunInput, type VolumeRunView, unheardOf,

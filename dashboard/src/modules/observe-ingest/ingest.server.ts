@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { MachineId } from "@ployz/sdk";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { Database } from "#/server/database.server";

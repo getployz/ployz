@@ -6,7 +6,7 @@ import { Data, Effect, Schema } from "effect";
 import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/machines/connections.server";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import {
   clusterSealingKey, clusterSealingKeyGenerator, enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt,
   organizationMachine, serverAccess,

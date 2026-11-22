@@ -1,3 +1,4 @@
+import type { MachineId } from "@ployz/sdk";
 import { Schema, SchemaAST } from "effect";
 
 export const strictParseOptions = {
@@ -42,3 +43,19 @@ export function trimmedString(options?: {
 }
 
 export const Uuid = Schema.String.check(Schema.isUUID());
+
+export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
+
+/** The same rule as `MACHINE_ID_PATTERN`, for table checks. */
+export const MACHINE_ID_SQL = "^[0-9a-f]{32}$";
+
+const MachineIdType = Schema.declare<MachineId>(
+  (value): value is MachineId => typeof value === "string",
+);
+
+/** A Machine ID: the daemon's 32-hex form, branded as the SDK's `MachineId`. */
+export const rustMachineIdSchema = Schema.String.check(
+  Schema.isPattern(MACHINE_ID_PATTERN, {
+    message: "MachineId must be a 32-hex UUID",
+  }),
+).pipe(Schema.decodeTo(MachineIdType));

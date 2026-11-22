@@ -1,7 +1,7 @@
 import { Effect, Option, Schema } from "effect";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { serverPolicyChangeRequestedEventType } from "#/modules/inngest/events";
 import { ServerPolicyChangeSchema } from "#/modules/machines/server-policy";
 import { applyServerPolicyChangeActivity } from "#/modules/machines/server-policy.server";

@@ -10,7 +10,7 @@ import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/w
 import { cancelServerEnrollment, startArrivalEnrollment, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { bindServerEnrollment, closeStaleServerEnrollments, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";

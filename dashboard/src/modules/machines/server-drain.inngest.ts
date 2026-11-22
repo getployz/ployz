@@ -3,7 +3,7 @@ import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
 import { serverDrainRequestedEventType } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import {
   bindDrainRun,
   closeDrainRun,

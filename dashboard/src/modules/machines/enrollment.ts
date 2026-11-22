@@ -1,7 +1,7 @@
-import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
+import type { MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
-import { Uuid } from "#/lib/schema";
+import { rustMachineIdSchema, Uuid } from "#/lib/schema";
 import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
 
 export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
@@ -10,7 +10,6 @@ export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired
   readonly details = { capability: "ployz.machine.join.device-approval.v1" };
 }
 
-export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 export const ENROLL_NOT_YET_RETRY_AFTER_SECONDS = 2;
 export const ENROLL_QUEUED_RETRY_AFTER_SECONDS = 5;
@@ -54,17 +53,6 @@ export const CliResetPendingEnrollmentInput = Schema.Struct({
 
 export type CliResetPendingEnrollmentInput =
   typeof CliResetPendingEnrollmentInput.Type;
-
-const MachineIdType = Schema.declare<MachineId>(
-  (value): value is MachineId => typeof value === "string",
-);
-
-/** A Machine ID: the daemon's 32-hex form, branded as the SDK's `MachineId`. */
-export const rustMachineIdSchema = Schema.String.check(
-  Schema.isPattern(MACHINE_ID_PATTERN, {
-    message: "MachineId must be a 32-hex UUID",
-  }),
-).pipe(Schema.decodeTo(MachineIdType));
 
 const WIREGUARD_PUBLIC_KEY_BYTES = 32;
 

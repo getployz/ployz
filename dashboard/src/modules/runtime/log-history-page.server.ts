@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { organizationMachine } from "#/modules/machines/tables";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";

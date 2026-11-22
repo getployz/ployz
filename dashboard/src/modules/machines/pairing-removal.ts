@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 const EncryptedCredential = Schema.Struct({
   version: Schema.Literal(1),

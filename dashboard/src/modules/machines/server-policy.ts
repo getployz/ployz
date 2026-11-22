@@ -1,7 +1,7 @@
 import type { MachineUpdate } from "@ployz/sdk";
 import { parseRegion } from "@ployz/sdk/config";
 import { Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
