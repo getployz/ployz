@@ -31,7 +31,6 @@ use standing::Standing;
 pub use standing::{Leaving, Withdrawal};
 mod stream;
 mod telemetry;
-mod tunnel_token;
 mod unregistry;
 mod volume;
 pub use volume::Volumes;
@@ -561,6 +560,11 @@ impl ContainerRuntime {
 
     pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
         self.observation.sealing_key_dir()
+    }
+
+    /// The secret files this Machine keeps for the Containers that mount them.
+    pub(crate) fn machine_files(&self) -> crate::machine_files::MachineFiles {
+        crate::machine_files::MachineFiles::new(self.settings.machine_root.clone())
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {

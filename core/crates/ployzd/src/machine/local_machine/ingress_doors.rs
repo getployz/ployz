@@ -467,7 +467,7 @@ impl LocalMachine {
                     Err(error) => return Err(error.into()),
                 }
             }
-            let Some(held) = doors_held(&inventory, containers.tunnel_door_closed()) else {
+            let Some(held) = doors_held(&inventory, containers.machine_files().tunnel_door_closed()) else {
                 return Ok(None);
             };
             if let Some(declared) = local.declared_doors().await
@@ -482,7 +482,7 @@ impl LocalMachine {
             let pinned = doors_as_found(
                 &inventory,
                 held.specs.proxy.service_id,
-                containers.tunnel_door_closed(),
+                containers.machine_files().tunnel_door_closed(),
             );
             if pinned != held.specs {
                 tracing::warn!(
@@ -502,7 +502,7 @@ impl LocalMachine {
                     .open_tunnel_token(sealed)
                     .map_err(Error::TunnelToken)?;
                 containers
-                    .write_tunnel_token(&token)
+                    .machine_files().write_tunnel_token(&token)
                     .map_err(Error::TunnelTokenFile)?;
             }
             let _turn = local.exclusive_turn().await;
@@ -536,7 +536,7 @@ impl LocalMachine {
                 Legacy::Caddy => doors_as_found(
                     &inventory,
                     specs.proxy.service_id,
-                    containers.tunnel_door_closed(),
+                    containers.machine_files().tunnel_door_closed(),
                 ),
                 Legacy::No => specs,
             };
@@ -551,6 +551,7 @@ impl LocalMachine {
             }
             if let Some(token) = &token {
                 containers
+                    .machine_files()
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
@@ -560,6 +561,7 @@ impl LocalMachine {
                 .await?;
             if specs.tunnel.is_none() && set.failure.is_none() {
                 containers
+                    .machine_files()
                     .remove_tunnel_token()
                     .map_err(Error::TunnelTokenFile)?;
             }
@@ -596,9 +598,10 @@ impl LocalMachine {
         let plan = plan_doors(inventory, specs, legacy == Legacy::Caddy);
         let mut set = IngressDoorsSet::default();
         let mut effects = Effects::default();
-        let reopening = specs.tunnel.is_some() && containers.tunnel_door_closed();
+        let reopening = specs.tunnel.is_some() && containers.machine_files().tunnel_door_closed();
         if reopening {
             containers
+                .machine_files()
                 .clear_tunnel_door_closed()
                 .map_err(Error::TunnelDoorMarker)?;
         }
@@ -622,7 +625,7 @@ impl LocalMachine {
             let connector_may_run = stage == IngressStage::Tunnel && !undone;
             if reopening
                 && !connector_may_run
-                && let Err(marker) = containers.mark_tunnel_door_closed()
+                && let Err(marker) = containers.machine_files().mark_tunnel_door_closed()
             {
                 tracing::warn!(
                     error = %ployz_core::error_chain::inline(&marker),
@@ -633,7 +636,7 @@ impl LocalMachine {
             return Ok(set);
         }
         let marked = if specs.tunnel.is_none() && !plan.retire_tunnels.is_empty() {
-            containers.mark_tunnel_door_closed()
+            containers.machine_files().mark_tunnel_door_closed()
         } else {
             Ok(())
         };
@@ -658,6 +661,7 @@ impl LocalMachine {
                 marked.map_err(Error::TunnelDoorMarker)?;
             } else {
                 containers
+                    .machine_files()
                     .clear_tunnel_door_closed()
                     .map_err(Error::TunnelDoorMarker)?;
             }

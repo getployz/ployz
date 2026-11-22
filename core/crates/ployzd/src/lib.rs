@@ -38,6 +38,7 @@ pub mod logs;
 pub mod machine;
 pub mod machine_api;
 pub(crate) mod machine_api_socket;
+pub(crate) mod machine_files;
 pub(crate) mod machine_pool;
 pub mod management;
 pub(crate) mod mesh_peer;
