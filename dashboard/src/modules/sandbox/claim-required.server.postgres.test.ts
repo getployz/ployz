@@ -27,7 +27,8 @@ import { Database } from "#/server/database.server";
 import { seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c501";
-const ACTIONS: ReadonlyArray<ClaimedAction> = ["add_domain", "mint_token", "invite", "billing", "github_connect"];
+const EVERY_ACTION = { add_domain: true, mint_token: true, invite: true, billing: true, github_connect: true } satisfies Record<ClaimedAction, true>;
+const ACTIONS = Object.keys(EVERY_ACTION) as ReadonlyArray<ClaimedAction>;
 const here = { project: null, environment: null };
 const domain = (hostname: string | null): ConfigCommand => ({ command: "add_domain", environment: here, service: "web", hostname, port: null });
 

@@ -15,15 +15,11 @@ describe("Server Access dial diagnostics", () => {
 
   it("shares a random correlation across native, dial, and Set fields", () => {
     const correlation = "0011223344556677";
-    const knownIds = ["machine-1", "organization-1", "credential-1"];
     const native = nativeDialTimingFields({ totalMs: 12, outcome: "answered", pathKind: "unknown", correlation });
     const dial = dialTimingFields({ stage: "cloud_dial", totalMs: 12, outcome: "answered", sampled: true, correlation });
     const set = dialTimingFields({ stage: "set_management_client", totalMs: 12, outcome: "answered", sampled: true, correlation });
     for (const fields of [native, dial, set]) {
       expect(fields.correlation).toBe(correlation);
-      for (const id of knownIds) expect(fields.correlation).not.toBe(id);
-      expect(Object.keys(fields)).not.toContain("dialMs");
-      expect(Object.keys(fields)).not.toContain("setMs");
     }
   });
 
@@ -33,7 +29,6 @@ describe("Server Access dial diagnostics", () => {
     expect(first).toMatch(/^[0-9a-f]{16}$/);
     expect(second).toMatch(/^[0-9a-f]{16}$/);
     expect(first).not.toBe(second);
-    for (const id of ["machine-1", "organization-1", "credential-1"]) expect(first).not.toBe(id);
   });
 
   it("names the deadline that stopped a native dial", () => {

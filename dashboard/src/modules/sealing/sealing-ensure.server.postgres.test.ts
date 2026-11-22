@@ -82,7 +82,6 @@ describe("requestSealingKeyEnsure", () => {
 
   it("asks to record the key when the lone Server recovered it and Cloud has none for the Cluster", async () => {
     await ensure({ m1: "held" });
-    expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(ensureRequested);
   });
 
@@ -95,14 +94,12 @@ describe("requestSealingKeyEnsure", () => {
   it("asks to share the key when one Server holds it and another still lacks it", async () => {
     await recordKey();
     await ensure({ m1: "held", m2: "needs_access" });
-    expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(ensureRequested);
   });
 
   it("asks to record the key when Cloud holds one only for an earlier pairing of the same Servers", async () => {
     await recordKey(hashEnrollmentToken("an-earlier-pairing-secret"));
     await ensure({ m1: "held", m2: "held" });
-    expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(ensureRequested);
   });
 

@@ -4,8 +4,8 @@ import type { PloyzInngest, StepTools } from "#/modules/inngest/client";
 import { createStartupResealEvent, variablesResealRequested } from "#/modules/sealing/sealing.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
-import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
-import { runInngestEffect } from "#/modules/inngest/run.server";
+import type { StoreServices } from "#/modules/config-store/store-deployment.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 const legacyOrganizations = Effect.gen(function* () {
   const store = yield* cloudStore;
@@ -31,7 +31,7 @@ const reseal = Effect.fn("Reseal.environment")(function* (environmentId: string,
  * Reseals `organizationId`'s Legacy secrets to its Cluster's key, one step per Environment so a crash resumes at the
  * next. Without a key it waits: the Cluster's first key report sends this again.
  */
-export async function executeResealOrganization(organizationId: string, step: StepTools<"run" | "sendEvent">, runEffect: StoreEffectRunner) {
+export async function executeResealOrganization(organizationId: string, step: StepTools<"run" | "sendEvent">, runEffect: EffectRunner<StoreServices>) {
   const before = await step.run("count-before", () => runEffect(legacyCount(organizationId)));
   const sealing = await step.run("recipient", () => runEffect(Effect.gen(function* () {
     const sealing = yield* readClusterSealing(organizationId);
@@ -56,7 +56,7 @@ export async function executeResealOrganization(organizationId: string, step: St
   return { resealed, ...after };
 }
 
-export async function executeReseal({ event, step }: { event: { data: { organizationId?: string } }; step: StepTools<"run" | "sendEvent"> }, runEffect: StoreEffectRunner) {
+export async function executeReseal({ event, step }: { event: { data: { organizationId?: string } }; step: StepTools<"run" | "sendEvent"> }, runEffect: EffectRunner<StoreServices>) {
   const { organizationId } = event.data;
   if (organizationId !== undefined) return executeResealOrganization(organizationId, step, runEffect);
   const organizations = await step.run("organizations", () => runEffect(legacyOrganizations));
@@ -71,7 +71,7 @@ export const requestResealAtStart = Effect.fn("Reseal.requestAtStart")(function*
   yield* enqueueEvent(createStartupResealEvent(startedAt));
 });
 
-export const createResealVariables = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+export const createResealVariables = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     {
       id: "reseal-variables",

@@ -1,5 +1,5 @@
 import {
-  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
+  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
@@ -24,7 +24,7 @@ import { fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFoll
 import { finishedVolumeRun } from "#/modules/volume-run/volume-run.inngest";
 import { cleanOrphans } from "#/modules/volume-run/volume-run.orphans.server";
 import { closeVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
-import { runInngestEffect } from "#/modules/inngest/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
 
@@ -35,7 +35,7 @@ export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
  * first, so its cancellation finds the Deployment; a run that fails or is cancelled stops its GitHub builds and the
  * Store records that it stopped.
  */
-export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     {
       id: RUN_STORE_DEPLOYMENT_FUNCTION_ID,
@@ -115,7 +115,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
  * Every minute: a queued Deployment whose hand-off to the worker was lost goes to it again, unkeyed like "Deploy now",
  * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing.
  */
-export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     { id: "redispatch-store-deployments", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
@@ -126,7 +126,7 @@ export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runEffec
   );
 
 /** Someone cancelled a run of the worker in Inngest: it stops like a failed one. */
-export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     {
       id: "cancel-store-deployment",
@@ -150,7 +150,7 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  * which catches a completion that landed between waits. With a Builder after GitHub, the first wait is the start limit.
  * Whatever GitHub doesn't build, the runner builds on the servers when the walk has them next, or fails with why.
  */
-async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: StoreEffectRunner): Promise<string | null> {
+async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: EffectRunner<StoreServices>): Promise<string | null> {
   const key = target.service;
   const started = await step.run(`github-start-${key}`, () => runEffect(startStoreGithubBuild(organizationId, target)));
   if (started.kind !== "dispatched") return null;
@@ -175,7 +175,7 @@ const PLACEMENT_PULL_WAIT = "10m";
  * The finished event names how the run ended, so the Deploy closes the row itself rather than wait for the closer; a wait
  * that times out looks at the row again, since the event can be lost.
  */
-async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<PlacementAdvance> {
+async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: EffectRunner<StoreServices>): Promise<PlacementAdvance> {
   let waited: PlacementWait | null = null;
   for (let pull = 0; pull < PLACEMENT_PULLS; pull += 1) {
     const last = waited;
@@ -197,7 +197,7 @@ async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step
  * The Organization's first Server joined: each Environment with published state deploys to it. Each admission's id is
  * minted in its own step, so a retry after an unrecorded commit replays that admission rather than admitting again.
  */
-export const createDeployToFirstServer = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+export const createDeployToFirstServer = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     {
       id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoined.eventType }],

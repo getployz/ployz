@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   billedUnits,
-  monthlyPriceUsd,
   planUnitsChange,
   selectManagedSubscriptionSnapshot,
   type PolarSubscription,
@@ -56,10 +55,6 @@ describe("billing policy", () => {
 describe("Production units", () => {
   it("carries one unit per Server, and the product's minimum of two below that", () => {
     expect([0, 1, 2, 3, 7].map(billedUnits)).toEqual([2, 2, 2, 3, 7]);
-  });
-
-  it("prices two Servers at $10 a month and $5 for each extra", () => {
-    expect([0, 1, 2, 3, 7].map(monthlyPriceUsd)).toEqual([10, 10, 10, 15, 35]);
   });
 
   it("changes nothing when the units already match", () => {

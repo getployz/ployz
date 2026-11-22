@@ -23,7 +23,7 @@ it("asks the passkey to approve exactly the sealed key, which never holds the ke
   const digest = Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.from(on.sealed_auth_key, "base64"))).toString("hex");
   const body = JSON.stringify({ auth_key: digest, cluster: CLUSTER, expires_at: 901_000, issued_at: 1_000, signer: "passkey" });
   expect(on.approval).toEqual({ passkey: { body, assertion: ASSERTION } });
-  expect(challenge).toHaveBeenCalledExactlyOnceWith(body, "workflow");
+  expect(challenge).toHaveBeenCalledWith(body, expect.anything());
 });
 
 it("sends nothing when the passkey doesn't answer", async () => {

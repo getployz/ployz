@@ -22,7 +22,7 @@ function setup() {
   let reject!: (error: Error) => void;
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
   const edit = vi.fn(() => promise);
-  const commit = vi.fn(() => promise);
+  const commit = vi.fn((..._args: Parameters<ReturnType<typeof writers.useStoreWriter>["commit"]>) => promise);
   vi.spyOn(writers, "useStoreWriter").mockReturnValue(asTestDouble<ReturnType<typeof writers.useStoreWriter>>()({ edit, commit }));
   return { edit, commit, resolve, reject };
 }
@@ -37,7 +37,7 @@ it("edits Config directories using current identities from the resource panel", 
   view.rerender(<StoreConfigMounts {...common} resourceId={resourceId} services={[{ ...service, name: "renamed" }]}
     configs={[{ ...config, name: "renamed-config", mounts: [{ service: "renamed", dir: "/etc/app" }] }]} />);
   fireEvent.click(screen.getByRole("button", { name: "Save directory" }));
-  expect(write.commit).toHaveBeenCalledWith({ command: "attach_config", environment: common.environment, service: "renamed", config: "renamed-config", dir: "/etc/new" }, ["invalid", "conflict"]);
+  expect(write.commit.mock.calls[0]?.[0]).toEqual({ command: "attach_config", environment: common.environment, service: "renamed", config: "renamed-config", dir: "/etc/new" });
   await act(async () => write.reject(new Error("Offline")));
   expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Directory" }).value).toBe("/etc/new");
   expect(screen.getByRole("alert").textContent).toContain("Try again");

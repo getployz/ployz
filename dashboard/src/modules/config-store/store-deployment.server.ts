@@ -17,7 +17,6 @@ import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { GithubApi } from "#/modules/github/github-observation.api";
-import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { AppConfig } from "#/server/config.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -25,9 +24,6 @@ import { admitDeploy } from "./admit-deploy";
 
 /** What Cloud's Store workers need from Cloud. */
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
-
-/** Runs one of the Store workers' Effects for an Inngest step. */
-export type StoreEffectRunner = EffectRunner<StoreServices>;
 
 /** Pin the Deployment's Git Services, then check out every pin for the runner until the scope closes. */
 const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
