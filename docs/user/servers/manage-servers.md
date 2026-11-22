@@ -378,7 +378,8 @@ To swap a key for a new one with the same scope, for example on a schedule, run
 `ployz key rotate <code>`. It lists each service that runs a version the old key signed, with its
 image, when it was signed and its digest, and asks. Then it gives every server the new key,
 prints the new `PLOYZ_KEY=...`, redeploys those services under the new key and follows each
-deploy to the end. A service they reference ships with them under the version a person approved. Update the `PLOYZ_KEY` secret your CI deploys with before you rotate, or right
+deploy to the end. A service they reference ships with them under the version a person approved, and keeps its
+container when nothing about it changed. Update the `PLOYZ_KEY` secret your CI deploys with before you rotate, or right
 after the new key prints: until the old key is removed, a deploy signed with it still lands. Before
 it removes the old key, the rotation looks again for services running a version only the old key
 signed, such as one CI shipped while it ran, and redeploys those too. If a deploy with the old key
@@ -404,7 +405,8 @@ key: a rotation signs again whatever the old key deployed, including anything so
 with it. After `key rm`, a container the key approved keeps running until it stops, and then its
 server refuses to start it again with
 `The key that approved this was rotated or removed; deploy again.` The one exception is a container
-whose exact spec a person also signed: it still starts.
+whose exact spec a person signed, in any version they deployed, not only the one the key's deploy
+built on: it still starts.
 
 Removing the device that approved a version also stops CI and agent deploys built on that
 version, until a person deploys from a terminal again.
