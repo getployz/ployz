@@ -86,10 +86,6 @@ export function setPostHogOrganization(organizationId: string, properties: { rea
   if (posthog.__loaded) posthog.group("organization", organizationId, properties);
 }
 
-export function capturePostHog(event: string, properties?: Record<string, string>) {
-  if (posthog.__loaded) posthog.capture(event, properties);
-}
-
 /** The next person on this browser starts anonymous. */
 export function resetPostHog() {
   if (posthog.__loaded) posthog.reset();

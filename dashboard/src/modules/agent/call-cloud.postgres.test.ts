@@ -12,7 +12,8 @@ import { decideApproval, operationDigest } from "#/modules/approvals/approvals.s
 import type { Caller } from "#/modules/identity/actor";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
-import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
+import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { enqueueMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";

@@ -10,7 +10,7 @@ import {
   type FleetTokenView,
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
-import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import { generateTokenName } from "#/modules/machines/waiting/names";
 import { user } from "#/modules/identity/tables";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";

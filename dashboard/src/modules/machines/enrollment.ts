@@ -24,13 +24,6 @@ const OrganizationSlug = Schema.String.check(
 /** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
 const OrganizationId = Uuid;
 
-export const MintMachineEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-});
-
-export type MintMachineEnrollmentInput =
-  typeof MintMachineEnrollmentInput.Type;
-
 export const CliMintMachineEnrollmentInput = Schema.Struct({
   organizationId: OrganizationId,
 });
@@ -355,12 +348,6 @@ export type EnrollResponse =
   | JoinEnrollMaterial
   | NotYetEnrollMaterial;
 
-export type MintedMachineEnrollment = {
-  command: string;
-  token: string;
-  expiresAt: string;
-};
-
 export type OrganizationEnrollmentStatus = "unclaimed" | "pending" | "ready";
 
 /** The organization's pairing row (at most one) as seen by Cloud. */
@@ -377,39 +364,6 @@ export function organizationEnrollmentStatus(row: OrganizationEnrollmentRow | un
 
 export function enrollmentExpiry(now: Date) {
   return new Date(now.getTime() + ENROLLMENT_TOKEN_TTL_MS);
-}
-
-const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
-/** The installer is shared Ployz infrastructure, also for Self-hosted Cloud. */
-const INSTALLER_URL = "https://ployz.sh/";
-
-/**
- * One line that installs a daemon and enrolls it. It pins `version`, the release this
- * Cloud's SDK speaks, since the stable channel may be older or newer than that.
- */
-export function buildMachineJoinCommand(input: {
-  origin: string;
-  version: string;
-}) {
-  const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
-  const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | sh -s -- ${input.version} && sudo ployz server add${cloudUrlFlag}`;
-}
-
-export function mintedEnrollment(input: {
-  origin: string;
-  token: string;
-  version: string;
-  expiresAt: Date;
-}): MintedMachineEnrollment {
-  return {
-    command: buildMachineJoinCommand({
-      origin: input.origin,
-      version: input.version,
-    }),
-    token: input.token,
-    expiresAt: input.expiresAt.toISOString(),
-  };
 }
 
 export function waitForFounder(): NotYetEnrollMaterial {

@@ -35,12 +35,11 @@ import { githubInstallation, githubRepositoryCache, organizationGithubInstallati
 import { member, session as sessionTable, user } from "#/modules/identity/tables";
 import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import {
-  completeMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
   releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
-import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import { completeMachineRemoveAttempt, requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { LeftNotForgotten, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -1146,7 +1145,7 @@ it.live(
           assert.strictEqual(removed.kind, "removed");
           if (removed.kind !== "removed") return assert.fail("not removed");
           const release = yield* releaseServerActivity({ ...removal, ...removed });
-          yield* completeMachineRemoveAttemptActivity({
+          yield* completeMachineRemoveAttempt({
             attemptId: attempt.id,
             inngestRunId,
             completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
@@ -1461,7 +1460,7 @@ const removeServerReplying = Effect.fn(function* (
     .pipe(Effect.provideService(OrganizationRuntime, runtime));
   if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
   const release = yield* releaseServerActivity({ ...removal, ...removed });
-  yield* completeMachineRemoveAttemptActivity({
+  yield* completeMachineRemoveAttempt({
     attemptId: attempt.id, inngestRunId, now: new Date(),
     completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
   });

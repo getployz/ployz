@@ -25,9 +25,6 @@ export function observePushMessage(machineId: string, timestamp: bigint, body: U
   return Buffer.concat([DOMAIN, Buffer.from(machineId, "ascii"), Buffer.from([0]), stamp, createHash("sha256").update(body).digest()]);
 }
 
-/** Whether `signature` is the ed25519 signature of `message` by the management key `identity` (64 hex digits). */
-export const verifyObservePush = verifyManagementSignature;
-
 const decodeMachineId = Schema.decodeUnknownOption(rustMachineIdSchema);
 
 /** Refuses a push whose headers are missing, malformed or signed outside the clock window, before its body is read. */
@@ -49,7 +46,7 @@ export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(f
   body: Uint8Array,
 ) {
   const message = observePushMessage(machineId, timestamp, body);
-  const organizationId = yield* organizationOfSigningMachine(machineId, (identity) => verifyObservePush(identity, message, signature));
+  const organizationId = yield* organizationOfSigningMachine(machineId, (identity) => verifyManagementSignature(identity, message, signature));
   return { organizationId, machineId } satisfies ObservePusher;
 });
 

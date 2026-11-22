@@ -15,7 +15,6 @@ import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { PROCESS_MACHINE_REMOVE_FUNCTION_ID } from "#/modules/inngest/row-backed-workflow-ids";
 import {
   cancelMachineRemoveAttemptActivity,
-  completeMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
   observeLeavingServerActivity,
   prepareMachineRemoveAttemptActivity,
@@ -23,10 +22,9 @@ import {
   releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
+import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { observeOrganization } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
-
-export { PROCESS_MACHINE_REMOVE_FUNCTION_ID };
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const MachineRemoveRequestedData = Schema.Struct({ attemptId: NonEmptyString });
@@ -122,7 +120,7 @@ export async function executeProcessMachineRemove({
   if (removed.kind === "refused") {
     await step.run("complete-refused", () =>
       runEffect(
-        completeMachineRemoveAttemptActivity({
+        completeMachineRemoveAttempt({
           attemptId,
           inngestRunId: runId,
           completion: { state: "failed", failureCode: removed.failureCode, failureMessage: removed.message },
@@ -136,7 +134,7 @@ export async function executeProcessMachineRemove({
   if (removed.kind === "missing_identities") {
     await step.run("complete-missing-identities", () =>
       runEffect(
-        completeMachineRemoveAttemptActivity({
+        completeMachineRemoveAttempt({
           attemptId,
           inngestRunId: runId,
           completion: {
@@ -174,7 +172,7 @@ export async function executeProcessMachineRemove({
 
   await step.run("complete-succeeded", () =>
     runEffect(
-      completeMachineRemoveAttemptActivity({
+      completeMachineRemoveAttempt({
         attemptId,
         inngestRunId: runId,
         completion: {

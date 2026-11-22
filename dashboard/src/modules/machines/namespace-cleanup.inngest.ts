@@ -51,5 +51,4 @@ const lifecycle = attemptLifecycle({
 
 export const createCleanNamespace = lifecycle.createRun;
 export const createCancelNamespaceCleanup = lifecycle.createCancel;
-export const createCloseStaleNamespaceCleanups = lifecycle.createSweep;
 export const createNamespaceCleanupFunctions = lifecycle.createFunctions;

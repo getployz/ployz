@@ -44,10 +44,9 @@ export function retentionCutoff(kind: Retained, now: Date): Date {
 
 /**
  * The visible start of a read: `since`, moved up to the series' retention cutoff when it reaches further back. Every
- * uptime read applies it. Retention is the same for every organization today. A per-plan cutoff would read the
- * organization here.
+ * uptime read applies it.
  */
-export function clampSince(_organizationId: string, series: UptimeSeries, since: Date, now: Date): Date {
+export function clampSince(series: UptimeSeries, since: Date, now: Date): Date {
   const cutoff = retentionCutoff(series, now);
   return since < cutoff ? cutoff : since;
 }

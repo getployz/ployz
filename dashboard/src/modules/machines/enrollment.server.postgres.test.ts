@@ -30,7 +30,6 @@ import {
   CLUSTER_NOT_FRESH,
   CANNOT_KEEP_DOORS,
   CLUSTER_UNREACHABLE,
-  mintMachineEnrollment,
   readMachineEnrollment,
   recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
@@ -41,7 +40,8 @@ import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { checkServerEnrollment, recordStage, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
-import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { asTestDouble } from "#/lib/test-double";
 import { recoveryDigest } from "#/modules/machines/sealing-key.server";
 import { readCollection } from "#/collections/read.server";
@@ -342,13 +342,8 @@ describe("organization enrollment coordinator", () => {
           // No pairing row: the Org Store holds no enrollment row, which reads as unclaimed.
           expect((yield* readCollection({ userId }, enrollment)).rows).toEqual([]);
 
-          const minted = yield* mintMachineEnrollment(
-            { userId },
-            { organizationSlug: "enroll" },
-          );
-          expect(minted.command).toMatch(/^curl .* && sudo ployz server add/u);
+          const minted = yield* mintCliMachineEnrollment({ userId }, { organizationId });
           expect(minted.token).toMatch(/^pmet_/u);
-          expect(minted.command).not.toContain(minted.token);
 
           const outsider = "00000000-0000-4000-8000-000000000499";
           const denied = yield* readCollection({ userId: outsider }, { ...enrollment, userId: outsider }).pipe(Effect.exit);
