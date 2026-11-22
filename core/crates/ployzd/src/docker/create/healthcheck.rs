@@ -7,7 +7,7 @@ use ployz_core::{
 };
 
 use super::Error;
-use crate::docker::RawContainerConfig;
+use crate::docker::inspect::RawContainerConfig;
 
 /// Docker's own health check turned off.
 pub(super) fn disabled() -> HealthConfig {

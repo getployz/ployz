@@ -313,12 +313,10 @@ async fn exec_process(docker: &bollard::Docker, exec_id: &str) -> Option<rustix:
         rustix::process::PidfdFlags::empty(),
     )
     .ok()?;
-    let init = docker
-        .inspect_container(&container, None)
+    let init = super::inspect::inspect(docker, &container)
         .await
-        .ok()?
-        .state?
-        .pid?;
+        .ok()??
+        .pid()?;
     let cgroup = |pid: i64| std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok();
     let still = running(&docker.inspect_exec(exec_id).await.ok()?) == Some(pid);
     (still && cgroup(pid)? == cgroup(init)?).then_some(process)

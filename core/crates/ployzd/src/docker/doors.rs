@@ -9,17 +9,15 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
-use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, NetworkCreateRequest, NetworkInspect,
-};
+use bollard::models::{NetworkCreateRequest, NetworkInspect};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, MachineId,
     Namespace, PullPolicy, QualifiedService, ServiceName,
 };
 
 use super::{
-    Error, LocalDocker, Observation, Status, TUNNEL_NETWORK_NAME, classify, docker_error,
-    lifecycle::{failed_start, is_running},
+    Error, LocalDocker, Observation, Status, TUNNEL_NETWORK_NAME, classify,
+    inspect::{self, Inspected, inspect},
 };
 use crate::docker_image::prepare_image;
 
@@ -122,27 +120,23 @@ pub(crate) struct DoorEntry {
 }
 
 /// The Container a `container:` network mode names.
-pub(crate) fn joined_to(inspected: &ContainerInspectResponse) -> Option<ContainerId> {
+pub(crate) fn joined_to(inspected: &Inspected) -> Option<ContainerId> {
     inspected
-        .host_config
-        .as_ref()?
-        .network_mode
-        .as_deref()?
+        .network_mode()?
         .strip_prefix("container:")
         .and_then(|id| ContainerId::parse(id).ok())
 }
 
 /// The network namespace of a running Container's process.
-pub(crate) fn netns_of(inspected: &ContainerInspectResponse) -> Option<NetnsId> {
+pub(crate) fn netns_of(inspected: &Inspected) -> Option<NetnsId> {
     netns_at(Path::new("/proc"), inspected)
 }
 
-fn netns_at(proc_root: &Path, inspected: &ContainerInspectResponse) -> Option<NetnsId> {
-    let state = inspected.state.as_ref()?;
-    if state.status != Some(ContainerStateStatusEnum::RUNNING) {
+fn netns_at(proc_root: &Path, inspected: &Inspected) -> Option<NetnsId> {
+    if !inspected.is_running() {
         return None;
     }
-    let pid = state.pid.filter(|pid| *pid > 0)?;
+    let pid = inspected.pid()?;
     let metadata = std::fs::metadata(proc_root.join(pid.to_string()).join("ns/net")).ok()?;
     Some(NetnsId {
         dev: metadata.dev(),
@@ -154,14 +148,14 @@ fn netns_at(proc_root: &Path, inspected: &ContainerInspectResponse) -> Option<Ne
 pub(crate) fn door_facts(
     observation: &ContainerObservation,
     door: Door,
-    inspected: &ContainerInspectResponse,
+    inspected: &Inspected,
 ) -> DoorFacts {
     DoorFacts {
         id: observation.container_id,
         door,
         created_at: observation.created_at_unix_nanos,
         runtime: observation.runtime.clone(),
-        failed_start: failed_start(inspected),
+        failed_start: inspected.failed_start(),
         joined_to: joined_to(inspected),
         netns: netns_of(inspected),
     }
@@ -241,7 +235,7 @@ impl Doors {
             let Some(inspected) = self.inspect_present(&id).await? else {
                 continue;
             };
-            if is_running(&inspected) {
+            if inspected.is_running() {
                 running.push((inspected.created.unwrap_or_default(), id));
             }
         }
@@ -249,26 +243,10 @@ impl Doors {
     }
 
     /// Docker's inspect of `id`, or `None` once Docker no longer has it.
-    async fn inspect_present(
-        &self,
-        id: &ContainerId,
-    ) -> Result<Option<ContainerInspectResponse>, Error> {
-        match self
-            .docker
-            .client
-            .inspect_container(id.as_str(), None)
+    async fn inspect_present(&self, id: &ContainerId) -> Result<Option<Inspected>, Error> {
+        inspect(&self.docker.client, id.as_str())
             .await
-        {
-            Ok(inspected) => Ok(Some(inspected)),
-            Err(error) => {
-                let error = docker_error(id, error);
-                if matches!(error, Error::ContainerNotFound(_)) {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            }
-        }
+            .map_err(inspect::failed)
     }
 }
 
@@ -350,7 +328,6 @@ impl super::LocalDocker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::{ContainerState, HostConfig};
 
     fn network(driver: &str, bridge: &str, ipv6: bool) -> NetworkInspect {
         NetworkInspect {
@@ -389,46 +366,24 @@ mod tests {
         }
     }
 
-    fn inspected(
-        status: ContainerStateStatusEnum,
-        pid: i64,
-        mode: &str,
-    ) -> ContainerInspectResponse {
-        ContainerInspectResponse {
-            state: Some(ContainerState {
-                status: Some(status),
-                pid: Some(pid),
-                ..Default::default()
-            }),
-            host_config: Some(HostConfig {
-                network_mode: Some(mode.into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
+    fn inspected(status: &str, pid: i64, mode: &str) -> Inspected {
+        serde_json::from_value(serde_json::json!({
+            "State": { "Status": status, "Pid": pid },
+            "HostConfig": { "NetworkMode": mode },
+        }))
+        .unwrap()
     }
 
     #[test]
     fn a_caddy_names_the_holder_it_joined() {
         let holder = ContainerId::parse("a".repeat(64)).unwrap();
         assert_eq!(
-            joined_to(&inspected(
-                ContainerStateStatusEnum::RUNNING,
-                1,
-                &format!("container:{holder}")
-            )),
+            joined_to(&inspected("running", 1, &format!("container:{holder}"))),
             Some(holder)
         );
+        assert_eq!(joined_to(&inspected("running", 1, "ployz")), None);
         assert_eq!(
-            joined_to(&inspected(ContainerStateStatusEnum::RUNNING, 1, "ployz")),
-            None
-        );
-        assert_eq!(
-            joined_to(&inspected(
-                ContainerStateStatusEnum::RUNNING,
-                1,
-                "container:short"
-            )),
+            joined_to(&inspected("running", 1, "container:short")),
             None,
             "a name is not an id, and the daemon only ever creates by id"
         );
@@ -439,31 +394,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ployzd-netns-{}", MachineId::random()));
         std::fs::create_dir_all(root.join("7/ns")).unwrap();
         std::fs::write(root.join("7/ns/net"), b"").unwrap();
-        let running = netns_at(
-            &root,
-            &inspected(ContainerStateStatusEnum::RUNNING, 7, "ployz"),
-        );
+        let running = netns_at(&root, &inspected("running", 7, "ployz"));
         assert!(running.is_some());
         assert_eq!(
             running,
-            netns_at(
-                &root,
-                &inspected(ContainerStateStatusEnum::RUNNING, 7, "ployz")
-            ),
+            netns_at(&root, &inspected("running", 7, "ployz")),
             "the same inode reads the same"
         );
+        assert_eq!(netns_at(&root, &inspected("exited", 7, "ployz")), None);
         assert_eq!(
-            netns_at(
-                &root,
-                &inspected(ContainerStateStatusEnum::EXITED, 7, "ployz")
-            ),
-            None
-        );
-        assert_eq!(
-            netns_at(
-                &root,
-                &inspected(ContainerStateStatusEnum::RUNNING, 8, "ployz")
-            ),
+            netns_at(&root, &inspected("running", 8, "ployz")),
             None,
             "an unreadable namespace is unknown, not equal"
         );

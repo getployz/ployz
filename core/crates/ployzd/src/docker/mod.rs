@@ -11,6 +11,8 @@ pub(crate) mod holder;
 mod http_health;
 mod images;
 pub use images::Images;
+mod inspect;
+use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
 pub use lifecycle::Lifecycle;
 mod limits;
@@ -51,9 +53,7 @@ use std::{
 };
 
 use bollard::{
-    Docker,
-    models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
-    query_parameters::ListContainersOptionsBuilder,
+    Docker, models::ImageManifestSummaryKindEnum, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
@@ -191,20 +191,8 @@ impl LocalDocker {
         )?))
     }
 
-    /// Docker's inspect of `container_id`, decoded to the fields this crate reads. A
-    /// response bollard's typed decode refuses is decoded from its raw JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ContainerNotFound` when Docker has no such Container, and another
-    /// error when Docker cannot answer or answers something undecodable.
-    async fn inspect(&self, container_id: &ContainerId) -> Result<RawContainerInspect, Error> {
-        decode_raw_inspect(
-            self.client
-                .inspect_container(container_id.as_str(), None)
-                .await,
-            container_id,
-        )
+    async fn inspect(&self, container_id: &ContainerId) -> Result<Inspected, Error> {
+        inspect::inspect_id(&self.client, container_id).await
     }
 
     pub(crate) async fn docker_root(&self) -> Result<PathBuf, Error> {
@@ -599,19 +587,9 @@ impl Observation {
     pub(super) async fn ensure_managed(
         &self,
         container_id: &ContainerId,
-    ) -> Result<ContainerInspectResponse, Error> {
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
-            .await
-            .map_err(|error| docker_error(container_id, error))?;
-        let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .ok_or(Error::NotManaged)?;
-        ServiceLabels::parse(labels)?;
+    ) -> Result<Inspected, Error> {
+        let inspected = self.docker.inspect(container_id).await?;
+        ServiceLabels::parse(inspected.labels().ok_or(Error::NotManaged)?)?;
         self.specs
             .get(container_id)
             .await?
@@ -832,7 +810,8 @@ impl Observation {
         let ended = matches!(
             runtime_observation(inspected.state.as_ref()),
             ContainerRuntimeObservation::Exited { .. }
-        ) && finished_at(inspected.state.as_ref())
+        ) && inspected
+            .finished_at()
             .is_some_and(|finished| finished >= since);
         Ok(ended.then(|| container_run(&inspected)).flatten())
     }
@@ -848,7 +827,9 @@ impl Observation {
         container_id: &ContainerId,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
         let inspected = self.docker.inspect(container_id).await?;
-        Ok(finished_at(inspected.state.as_ref()).filter(|finished| finished.timestamp() > 0))
+        Ok(inspected
+            .finished_at()
+            .filter(|finished| finished.timestamp() > 0))
     }
 
     /// The host pid of the Container's process, or `None` when Docker reports none.
@@ -858,13 +839,7 @@ impl Observation {
     /// Returns when Docker cannot inspect the Container.
     pub async fn pid(&self, container_id: &ContainerId) -> Result<Option<u32>, Error> {
         let inspected = self.docker.inspect(container_id).await?;
-        Ok(inspected
-            .state
-            .as_ref()
-            .and_then(|state| state.get("Pid"))
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-            .filter(|pid| *pid != 0))
+        Ok(inspected.pid().and_then(|pid| u32::try_from(pid).ok()))
     }
 
     /// The record of the Sealed values `container_id` was given, from its label.
@@ -877,13 +852,8 @@ impl Observation {
         container_id: &ContainerId,
     ) -> Result<Option<crate::sealed_env::SealedRecord>, Error> {
         let inspected = self.docker.inspect(container_id).await?;
-        let label = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(labels::SEALED_ENV));
         Ok(crate::sealed_env::record_from_label(
-            label.map(String::as_str),
+            inspected.label(labels::SEALED_ENV),
         )?)
     }
 
@@ -928,9 +898,7 @@ impl Observation {
         let leaving = self.standing.is_leaving(container_id);
         let inspected = self.docker.inspect(container_id).await?;
         let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
+            .labels()
             .ok_or(Error::MissingField("container labels"))?;
         let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
         let (resolved_spec, rotation) = self
@@ -980,7 +948,7 @@ impl Observation {
                     .expect("check records are never poisoned")
                     .settle(
                         container_id,
-                        started_at(inspected.state.as_ref()),
+                        inspected.started_at(),
                         deadline,
                         chrono::Utc::now(),
                         health,
@@ -994,13 +962,7 @@ impl Observation {
             runtime,
             ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Running { .. }
         )
-        .then(|| {
-            inspected
-                .state
-                .as_ref()
-                .and_then(|state| state.get("ExitCode"))
-                .and_then(serde_json::Value::as_i64)
-        })
+        .then(|| inspected.exit_code())
         .flatten()
         .filter(|code| *code != 0 || matches!(runtime, ContainerRuntimeObservation::Restarting));
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
@@ -1036,12 +998,7 @@ impl Observation {
                     .and_then(|host| host.log_config.as_ref())
                     .and_then(|log| log.typ.clone()),
             })?;
-        let oom_killed = inspected
-            .state
-            .as_ref()
-            .and_then(|state| state.get("OOMKilled"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let oom_killed = inspected.oom_killed();
         Ok(InspectedRun {
             details: ployz_core::ContainerDetails {
                 container,
@@ -1095,19 +1052,6 @@ fn withdrawn_hides_only_running_containers_marked_stopping() {
         withdrawn(ContainerRuntimeObservation::Exited { code: 0 }, true),
         ContainerRuntimeObservation::Exited { code: 0 }
     );
-}
-
-fn decode_raw_inspect(
-    result: Result<ContainerInspectResponse, bollard::errors::Error>,
-    container_id: &ContainerId,
-) -> Result<RawContainerInspect, Error> {
-    match result {
-        Ok(inspected) => Ok(RawContainerInspect::from_typed(&inspected)?),
-        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
-            Ok(serde_json::from_str(&contents)?)
-        }
-        Err(error) => Err(docker_error(container_id, error)),
-    }
 }
 
 fn malformed_container(error: &Error) -> bool {
@@ -1175,45 +1119,6 @@ fn display_name(name: Option<&str>) -> String {
     name.unwrap_or_default().trim_start_matches('/').to_owned()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct RawContainerInspect {
-    name: Option<String>,
-    restart_count: Option<i64>,
-    created: Option<String>,
-    image: Option<String>,
-    config: Option<RawContainerConfig>,
-    state: Option<serde_json::Value>,
-    network_settings: Option<RawNetworkSettings>,
-    host_config: Option<RawHostConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct RawHostConfig {
-    log_config: Option<RawLogConfig>,
-}
-
-#[derive(Deserialize)]
-struct RawLogConfig {
-    #[serde(rename = "Type")]
-    typ: Option<String>,
-}
-
-impl RawContainerInspect {
-    fn from_typed(inspected: &ContainerInspectResponse) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(serde_json::to_value(inspected)?)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct RawContainerConfig {
-    env: Option<Vec<String>>,
-    labels: Option<HashMap<String, String>>,
-    healthcheck: Option<HealthConfig>,
-}
-
 fn inspected_environment(
     config: &RawContainerConfig,
 ) -> Option<std::collections::BTreeMap<String, String>> {
@@ -1235,36 +1140,12 @@ pub(crate) fn parse_environment(
         .collect()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct RawNetworkSettings {
-    networks: Option<HashMap<String, RawEndpointSettings>>,
-}
-
-#[derive(Deserialize)]
-struct RawEndpointSettings {
-    #[serde(rename = "IPAddress")]
-    ip_address: Option<String>,
-}
-
-fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::ContainerRun> {
-    let started = started_at(inspected.state.as_ref())?;
+fn container_run(inspected: &Inspected) -> Option<ployz_core::ContainerRun> {
+    let started = inspected.started_at()?;
     Some(ployz_core::ContainerRun {
         restart_count: inspected.restart_count.unwrap_or_default(),
         started_at_unix_nanos: started.timestamp_nanos_opt()?,
     })
-}
-
-fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(state?.get("StartedAt")?.as_str()?)
-        .ok()
-        .map(Into::into)
-}
-
-fn finished_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(state?.get("FinishedAt")?.as_str()?)
-        .ok()
-        .map(Into::into)
 }
 
 fn created_at_unix_nanos(created: Option<&str>) -> i64 {
@@ -1326,8 +1207,10 @@ fn last_docker_check(
     let newest = state?.get("Health")?.get("Log")?.as_array()?.last()?;
     let newest = InspectHealthLog::deserialize(newest).ok()?;
     let checked = chrono::DateTime::parse_from_rfc3339(&newest.start).ok();
-    if let (Some(checked), Some(started)) = (checked, started_at(state))
-        && checked < started
+    if let (Some(checked), Some(started)) = (
+        checked,
+        state.and_then(|state| inspect::state_time(state, "StartedAt")),
+    ) && checked < started
     {
         return None;
     }
@@ -1408,7 +1291,7 @@ fn runtime_from_parts_with_raw(
     }
 }
 
-fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress> {
+fn container_address(inspected: &Inspected) -> Option<ContainerAddress> {
     inspected
         .network_settings
         .as_ref()?
@@ -3061,7 +2944,7 @@ mod tests {
 
     #[test]
     fn raw_docker_inspect_keeps_future_state_and_effective_healthcheck() {
-        let inspected: RawContainerInspect = serde_json::from_value(json!({
+        let inspected: Inspected = serde_json::from_value(json!({
             "Config": {
                 "Healthcheck": {
                     "Test": ["CMD", "true"],
@@ -3101,7 +2984,7 @@ mod tests {
             }))
         );
 
-        let disabled: RawContainerInspect = serde_json::from_value(json!({
+        let disabled: Inspected = serde_json::from_value(json!({
             "Config": { "Healthcheck": { "Test": ["NONE"], "Interval": 1_000_000 } }
         }))
         .unwrap();
@@ -3110,7 +2993,7 @@ mod tests {
             Some(HealthcheckSpec::Disabled)
         );
 
-        let inherited: RawContainerInspect = serde_json::from_value(json!({
+        let inherited: Inspected = serde_json::from_value(json!({
             "Config": { "Healthcheck": { "Test": [] } }
         }))
         .unwrap();
@@ -3120,7 +3003,7 @@ mod tests {
     #[test]
     fn each_docker_start_is_its_own_run() {
         let run = |restart_count: i64, started_at: &str| {
-            let inspected: RawContainerInspect = serde_json::from_value(json!({
+            let inspected: Inspected = serde_json::from_value(json!({
                 "RestartCount": restart_count,
                 "State": { "Status": "running", "StartedAt": started_at },
             }))
@@ -3165,7 +3048,7 @@ mod tests {
     }
 
     fn projected(
-        inspected: &RawContainerInspect,
+        inspected: &Inspected,
     ) -> (
         String,
         i64,
@@ -3211,8 +3094,9 @@ mod tests {
     #[test]
     fn typed_and_raw_inspect_namespace_equivalent_observations() {
         let value = inspect_json();
-        let typed: ContainerInspectResponse = serde_json::from_value(value.clone()).unwrap();
-        let from_typed = projected(&RawContainerInspect::from_typed(&typed).unwrap());
+        let typed: bollard::models::ContainerInspectResponse =
+            serde_json::from_value(value.clone()).unwrap();
+        let from_typed = projected(&Inspected::from_typed(&typed).unwrap());
         let from_raw = projected(&serde_json::from_value(value).unwrap());
         assert_eq!(from_typed, from_raw);
         assert_eq!(from_raw, expected_typed_projection());
@@ -3220,7 +3104,7 @@ mod tests {
 
     #[test]
     fn raw_inspect_reads_docker_ip_address_spelling() {
-        let inspected: RawContainerInspect = serde_json::from_value(json!({
+        let inspected: Inspected = serde_json::from_value(json!({
             "NetworkSettings": {
                 "Networks": {
                     "ployz": { "IPAddress": "10.210.0.5" }
@@ -3236,7 +3120,7 @@ mod tests {
 
     #[test]
     fn raw_inspect_keeps_unknown_health_on_a_running_container() {
-        let inspected: RawContainerInspect = serde_json::from_value(json!({
+        let inspected: Inspected = serde_json::from_value(json!({
             "State": {
                 "Status": "running",
                 "Health": { "Status": "future-health" }
@@ -3261,15 +3145,16 @@ mod tests {
                 "HostConfig".into(),
                 json!({ "Isolation": "future-isolation" }),
             );
-        assert!(serde_json::from_value::<ContainerInspectResponse>(value.clone()).is_err());
-        let inspected = decode_raw_inspect(
-            Err(bollard::errors::Error::JsonDataError {
-                message: "unknown variant `future-isolation`".into(),
-                contents: value.to_string(),
-                column: 1,
-            }),
-            &ContainerId::parse("a".repeat(64)).unwrap(),
-        )
+        assert!(
+            serde_json::from_value::<bollard::models::ContainerInspectResponse>(value.clone())
+                .is_err()
+        );
+        let inspected = inspect::decode(Err(bollard::errors::Error::JsonDataError {
+            message: "unknown variant `future-isolation`".into(),
+            contents: value.to_string(),
+            column: 1,
+        }))
+        .unwrap()
         .unwrap();
         assert_eq!(projected(&inspected), expected_typed_projection());
     }
@@ -3363,6 +3248,46 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
         observe(&second_start, "unhealthy").await,
         HealthObservation::Unhealthy
     );
+}
+
+// Catches a Container whose inspect bollard's typed decode refuses, as a newer Docker's
+// does, which the inventory listed but no start, stop or rotation turn could reach.
+#[cfg(test)]
+#[tokio::test]
+async fn a_container_bollard_cannot_decode_is_still_started_and_stopped() {
+    use test_support::{FakeDocker, container_request, fake_runtime_with, machine};
+
+    let containers = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let (runtime, _fake) = fake_runtime_with(FakeDocker {
+        named_containers: Some(containers.clone()),
+        ..Default::default()
+    })
+    .await;
+    let namespace = Namespace::parse("app").unwrap();
+    let spec = test_support::spec_with_sources(Vec::new());
+    let created = runtime
+        .lifecycle()
+        .create_with_admission::<_, _, Error>(
+            &machine(),
+            container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            ),
+        )
+        .await
+        .unwrap();
+    for container in containers.lock().unwrap().values_mut() {
+        container.as_object_mut().unwrap().insert(
+            "HostConfig".into(),
+            json!({ "Isolation": "future-isolation" }),
+        );
+    }
+    let id = &created.container_id;
+    runtime.lifecycle().start(id).await.unwrap();
+    runtime.lifecycle().rotation_turn(id).await.unwrap();
+    runtime.lifecycle().stop(id, None, None).await.unwrap();
 }
 
 #[cfg(test)]

@@ -1589,12 +1589,8 @@ async fn live_stats_leave_out_an_exited_service_container() {
         .await
         .unwrap();
     let id = ContainerId::parse(created.id).unwrap();
-    let inspected = docker
-        .client
-        .inspect_container(id.as_str(), None)
-        .await
-        .unwrap();
-    crate::docker::holder::start(&docker.client, &inspected, None)
+    let inspected = docker.inspect(&id).await.unwrap();
+    crate::docker::holder::start_inspected(&docker.client, &inspected, None)
         .await
         .unwrap();
     let review = || vec![format!("{}=review", labels::NAMESPACE)];
