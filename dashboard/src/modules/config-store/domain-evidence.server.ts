@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
-import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigView, DnsLookup, PublishedHostname, RuntimeWatchView, TunnelAnswer, TunnelEvidence, TunnelReach } from "@ployz/sdk";
-import { Array as Arr, Clock, Deferred, Effect, Option, Schema } from "effect";
+import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigView, DnsLookup, RuntimeWatchView, TunnelAnswer, TunnelEvidence, TunnelReach } from "@ployz/sdk";
+import { Array as Arr, Clock, Context, Deferred, Effect, Option, Schema } from "effect";
 import { activeCloudflare } from "#/modules/ingress/cloudflare.source.server";
 import { reachesCluster } from "#/modules/ingress/cloudflare.tunnel-reach.server";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
@@ -10,6 +10,7 @@ import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables"
 import { requestClusterDomainSync } from "#/modules/cluster-domain/sync-request.server";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
+import { publishedOf } from "#/modules/runtime/published-hostnames";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { CLUSTER_QUERIES } from "./cluster-queries";
@@ -61,21 +62,6 @@ const clusterDomainOf = Effect.fn("ConfigStore.clusterDomainOf")(function* (orga
   if (cloudflare !== null) return { name: cloudflare.zone, status: { kind: "ready" } } satisfies NonNullable<ConfigDomainEvidence["cluster_domain"]>;
   return clusterDomain(reserve ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId));
 });
-
-/**
- * The hostnames the Servers publish now, each with the Namespace and Service publishing it. As in the runtime's
- * `hostname_owners`, only Service containers claim one: a pre-deploy hook keeps its spec's ports but serves nothing.
- */
-export function publishedOf(frame: RuntimeWatchView): PublishedHostname[] {
-  const seen = new Map<string, PublishedHostname>();
-  for (const container of frame.containers) {
-    if (container.kind !== "service_container") continue;
-    for (const port of container.resolved_spec.ports) {
-      if (port.mode === "ingress") seen.set(`${container.namespace}/${port.hostname}`, { hostname: port.hostname, namespace: container.namespace, service: container.resolved_spec.name });
-    }
-  }
-  return [...seen.values()];
-}
 
 /**
  * What one Runtime Watch frame says of the domains: the Cluster's certificates and those it couldn't read, how many
@@ -200,14 +186,19 @@ const fetchOnce = (key: string, fetch: Effect.Effect<TunnelAnswer>) => Effect.ge
  * answered waits {@link REACH_WAIT_MS} before it reads as unobserved. A check (`fresh`) fetches again rather than
  * reusing an answer from seconds ago, and waits for it. No address of a Server is looked at in this mode.
  */
+/** Fetches a hostname's verify path to learn who answers through it. Node's own, unless a test provides another. */
+export const ClusterReach = Context.Reference<{ readonly reach: typeof reachesCluster }>("ployz/ClusterReach", {
+  defaultValue: () => ({ reach: reachesCluster }),
+});
+
 export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* (
   organizationId: string,
   cloudflare: NonNullable<Cloudflare>,
   observed: Observed | null,
   fresh: boolean,
   hostnames: readonly string[],
-  reach: typeof reachesCluster = reachesCluster,
 ) {
+  const { reach } = yield* ClusterReach;
   if (observed === null) return { target: cloudflare.target, reached: [] } satisfies TunnelEvidence;
   const now = yield* Clock.currentTimeMillis;
   const published = new Set(observed.seen.published.map(({ hostname }) => String(hostname)));
@@ -244,7 +235,6 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   organizationId: string,
   call: StoreCall,
   read: StoreRead,
-  lookUp: (hostname: string) => Effect.Effect<DnsLookup | null> = lookUpHostname,
 ) {
   const asked = call.operation === "read" ? call.query : call.command;
   const adding = Option.getOrUndefined(Schema.decodeUnknownOption(AddDomainAnyHostname)(asked));
@@ -292,6 +282,6 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.
   yield* requestClusterDomainSync(organizationId);
   if (cloudflare !== null || rows?.view !== "domain" || rows.domain.kind !== "custom") return evidence;
-  const lookup = yield* lookUp(rows.domain.hostname);
+  const lookup = yield* lookUpHostname(rows.domain.hostname);
   return lookup === null ? evidence : { ...evidence, lookups: [lookup] };
 });

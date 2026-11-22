@@ -9,7 +9,7 @@ import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/ingress/door-fra
 import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
 import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
-import { publishedOf } from "#/modules/config-store/domain-evidence.server";
+import { publishedOf } from "#/modules/runtime/published-hostnames";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import { SERVERS_UNANSWERED_MESSAGE, StoreRefused } from "#/lib/refusal";
 import {
