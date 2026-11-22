@@ -222,19 +222,30 @@ pub(crate) fn post(
     write_record(tx, id, &record)
 }
 
-/// What a retry or rollback of `source` records before it is claimed, as JSON for its
-/// `ran` column: only its source. Its claim reads what `source` ran, after what the
-/// retry itself posted.
+/// What a retry or rollback of `source` that ships the runtime Services `ships` records
+/// before it is claimed, as JSON for its `ran` column: its source, and which of `ships`
+/// the source recreates. Its claim reads what `source` ran, after what the retry itself
+/// posted. A retry of a retry copies its source's copy.
 ///
 /// # Errors
-/// Returns `corrupt` when the record doesn't serialize.
-pub(super) fn replaying(source: &DeploymentId) -> Result<String, RpcError> {
+/// Returns `corrupt` when the source's record doesn't read or this one doesn't
+/// serialize, or a storage error.
+pub(super) fn replaying(
+    tx: &mut dyn Tx,
+    source: &DeploymentId,
+    ships: &BTreeSet<&ServiceName>,
+) -> Result<String, RpcError> {
+    let recreate = record_of(tx, source)?
+        .recreate
+        .into_iter()
+        .filter(|service| ships.contains(service))
+        .collect();
     json_text(&Record {
         origin: Origin::Replay {
             source: source.clone(),
         },
         services: Ran::new(),
-        recreate: BTreeSet::new(),
+        recreate,
     })
 }
 

@@ -9488,6 +9488,60 @@ fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_un
     }
 }
 
+// Catches a retry that starts with no recreate list: a key rotation's Deployment that
+// failed before replacing web must replace it when retried, and when that retry is.
+#[test]
+fn a_retry_of_a_rotation_recreates_what_the_rotation_did() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let root = signed_spec(&store, &who, "web", P1);
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(2),
+                environment: EnvironmentRef::default(),
+                services: vec![web.clone()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: vec![ployz_store::PostedVersion {
+                    statement: edit("web", signed_spec(&store, &who, "web", P2), root),
+                    pin: Some(ployz_store::TagPin {
+                        tag: "nginx:1".to_owned(),
+                        image: P2.to_owned(),
+                    }),
+                    births: Default::default(),
+                }],
+                recreate: vec![web.clone()],
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let fail = |n: u8| {
+        let a = runner("runner-a");
+        let intent = store.claim(&id(n), &a).unwrap().intent;
+        store
+            .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+            .unwrap();
+        intent.options
+    };
+    assert!(fail(2).recreates(&web));
+    retry(&store, &who, 3, 2).unwrap();
+    assert!(
+        fail(3).recreates(&web),
+        "a retry recreates what its source did"
+    );
+    retry(&store, &who, 4, 3).unwrap();
+    let options = apply(&store, 4).options;
+    assert!(options.recreates(&web), "so does a retry of a retry");
+    assert!(!options.recreates(&ServiceName::parse("api").unwrap()));
+}
+
 #[test]
 fn a_deploy_of_one_service_runs_each_version_its_plan_asks_a_device_to_sign() {
     let (store, who) = shop();

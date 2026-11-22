@@ -272,7 +272,16 @@ pub(crate) fn retry(
             ..uploads
         })
     });
-    let ran = super::versions::replaying(source)?;
+    let ships = nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { runtime, .. } => Some(runtime),
+            TargetNode::Retire { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
+        })
+        .collect();
+    let ran = super::versions::replaying(tx, source, &ships)?;
     let admitted_at = now();
     let environment = &stored.summary.environment_id;
     queue(tx, environment, (id, false), |tx, number| {
