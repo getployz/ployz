@@ -86,16 +86,7 @@ pub(crate) fn create_git_service(
     if !found.has_branch(branch.as_str()) {
         return Err(no_branch(found.repository.as_str(), create.name.as_str()));
     }
-    let source = ServiceSource::Git {
-        version: 2,
-        repository: found.repository.to_string(),
-        repository_id: found.repository_id.get(),
-        access: found.access.clone(),
-        root_dir: "/".into(),
-        branch: ServiceGitBranch::Connected {
-            name: branch.to_string(),
-        },
-    };
+    let source = connected(found, branch, "/".to_owned());
     crate::service::insert_service(
         tx,
         who,
@@ -219,10 +210,7 @@ impl GitSetting {
         let build = &config.build;
         match (self, &config.source) {
             (Self::Repository, ServiceSource::Git { repository, .. }) => json!(repository),
-            (Self::Branch, ServiceSource::Git { branch, .. }) => match branch {
-                ServiceGitBranch::Connected { name } => json!(name),
-                ServiceGitBranch::Disconnected { .. } => Value::Null,
-            },
+            (Self::Branch, ServiceSource::Git { branch, .. }) => json!(branch_name(branch)),
             (Self::RootDir, ServiceSource::Git { root_dir, .. }) if root_dir != "/" => {
                 json!(root_dir)
             }
@@ -285,11 +273,13 @@ impl GitSetting {
                     // An empty or image Service starts building the repository's default branch.
                     ServiceSource::Empty { root_dir, .. } => {
                         let root_dir = root_dir.clone();
-                        config.source = connected(authorized(trusted, &text)?, root_dir);
+                        let found = authorized(trusted, &text)?;
+                        config.source = connected(found, &found.default_branch, root_dir);
                         return Ok(());
                     }
                     ServiceSource::Image { .. } => {
-                        config.source = connected(authorized(trusted, &text)?, "/".to_owned());
+                        let found = authorized(trusted, &text)?;
+                        config.source = connected(found, &found.default_branch, "/".to_owned());
                         return Ok(());
                     }
                 };
@@ -379,11 +369,30 @@ pub(crate) fn tracks(
     repository_id: RepositoryId,
     branch: &BranchName,
 ) -> bool {
-    matches!(
-        &service.config.source,
-        ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
-            if *at == repository_id.get() && name == branch.as_str()
-    )
+    built_from(&service.config.source).is_some_and(|(at, built)| {
+        at == repository_id.get() && branch_name(built) == Some(branch.as_str())
+    })
+}
+
+/// The repository and branch `source` builds, if it builds one. Two sources that
+/// answer the same build the same commits.
+pub(crate) fn built_from(source: &ServiceSource) -> Option<(u64, &ServiceGitBranch)> {
+    match source {
+        ServiceSource::Git {
+            repository_id,
+            branch,
+            ..
+        } => Some((*repository_id, branch)),
+        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
+    }
+}
+
+/// The branch `branch` names while it is connected.
+pub(crate) fn branch_name(branch: &ServiceGitBranch) -> Option<&str> {
+    match branch {
+        ServiceGitBranch::Connected { name } => Some(name),
+        ServiceGitBranch::Disconnected { .. } => None,
+    }
 }
 
 /// Refuse any Git source in `after` whose repository, access or branch changed from
@@ -467,8 +476,8 @@ fn authorized<'a>(
     })
 }
 
-/// A source building `found`'s default branch from `root_dir`.
-fn connected(found: &AuthorizedRepository, root_dir: String) -> ServiceSource {
+/// A source building `found`'s `branch` from `root_dir`.
+fn connected(found: &AuthorizedRepository, branch: &BranchName, root_dir: String) -> ServiceSource {
     ServiceSource::Git {
         version: 2,
         repository: found.repository.to_string(),
@@ -476,7 +485,7 @@ fn connected(found: &AuthorizedRepository, root_dir: String) -> ServiceSource {
         access: found.access.clone(),
         root_dir,
         branch: ServiceGitBranch::Connected {
-            name: found.default_branch.to_string(),
+            name: branch.to_string(),
         },
     }
 }

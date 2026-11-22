@@ -983,7 +983,8 @@ fn last_built(
             .services
             .iter()
             .find(|then| then.id == service.id)
-            .is_some_and(|then| same_source(&then.config.source, &service.config.source));
+            .and_then(|then| crate::git::built_from(&then.config.source))
+            .is_some_and(|then| crate::git::built_from(&service.config.source) == Some(then));
         return if same {
             row.parse(0, "commit").map(Some)
         } else {
@@ -991,17 +992,6 @@ fn last_built(
         };
     }
     Ok(None)
-}
-
-/// Whether `a` and `b` build the same branch of the same repository.
-fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
-    matches!(
-        (a, b),
-        (
-            ServiceSource::Git { repository_id, branch, .. },
-            ServiceSource::Git { repository_id: then, branch: then_branch, .. },
-        ) if repository_id == then && branch == then_branch
-    )
 }
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:

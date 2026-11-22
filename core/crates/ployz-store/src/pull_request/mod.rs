@@ -1276,7 +1276,12 @@ fn create(
         .working
         .services
         .iter()
-        .filter(|service| ours(event, &service.config.source))
+        .filter(|service| {
+            service
+                .config
+                .source
+                .builds_repository(event.repository_id.get())
+        })
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
     let deployment = crate::automation::auto_admit(
@@ -1292,11 +1297,6 @@ fn create(
         trusted,
     )?;
     Ok(Some(automation::Deploy::Admitted(Box::new(deployment))))
-}
-
-/// Whether `source` builds from the pull request's repository.
-fn ours(event: &PullRequest, source: &ServiceSource) -> bool {
-    source.builds_repository(event.repository_id.get())
 }
 
 /// A PR Environment [`make`] opened and saved, with the Cluster Domain its generated
@@ -1317,7 +1317,7 @@ fn make(
     (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
-    let ours = |source: &ServiceSource| ours(event, source);
+    let ours = |source: &ServiceSource| source.builds_repository(event.repository_id.get());
     let mut copy: Vec<NodeName> = working
         .services
         .iter()

@@ -10,7 +10,7 @@ use ployz_core::authority::{
     AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, RuleEvidence,
     RuleProof, Signed, VerifiedBuild,
 };
-use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
+use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
@@ -689,10 +689,7 @@ fn source_of(
         repository: RepositoryName::parse(repository.as_str()).ok()?,
         repository_id: RepositoryId::parse(*repository_id).ok()?,
         access: access.clone(),
-        branch: match branch {
-            ServiceGitBranch::Connected { name } => BranchName::parse(name.as_str()).ok(),
-            ServiceGitBranch::Disconnected { .. } => None,
-        },
+        branch: crate::git::branch_name(branch).and_then(|name| BranchName::parse(name).ok()),
         root_dir: root_dir.clone(),
         dockerfile_path: (config.build.build_method == BuildMethod::Dockerfile).then(|| {
             config
