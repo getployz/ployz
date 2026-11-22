@@ -14,24 +14,24 @@ use ployz_core::{
 };
 use ployz_decide::volume_size::{Refused, SizeFacts, SizePlan, size_plan};
 
-use super::{PluginError, VolumeName, VolumeStorage, inspect::internal, slot, storage::Held};
+use super::{PluginError, VolumeName, VolumeStorage, storage::Held};
 
 impl VolumeStorage {
     async fn set_size(
         &self,
         request: &SetVolumeSizeRequest,
     ) -> Result<SetVolumeSizeReply, RpcError> {
-        let name = slot::name(&request.name)?;
+        let name = VolumeName::try_from(&request.name)?;
         let wanted = request.maximum_bytes;
         let allow_shrink = request.allow_shrink;
-        let admission = self.admit_mutation().await.map_err(internal)?;
+        let admission = self.admit_mutation().await?;
         let storage = self.clone();
         tokio::spawn(async move {
             let _admission = admission;
             storage.set_size_admitted(&name, wanted, allow_shrink).await
         })
         .await
-        .unwrap_or_else(|error| Err(internal(PluginError::from(error.to_string()))))
+        .unwrap_or_else(|error| Err(RpcError::internal(error.to_string())))
     }
 
     async fn set_size_admitted(
@@ -40,7 +40,7 @@ impl VolumeStorage {
         wanted: ProvisionedVolumeMaximumBytes,
         allow_shrink: bool,
     ) -> Result<SetVolumeSizeReply, RpcError> {
-        let _pool_guard = self.pool.lock_mutation().await.map_err(internal)?;
+        let _pool_guard = self.pool.lock_mutation().await?;
         let not_found = || {
             refuse(
                 SizeRefusal::NotFound,
@@ -51,8 +51,7 @@ impl VolumeStorage {
         let Some(pool) = self
             .pool
             .admit(super::pool::UnlabeledBacking::Preserve)
-            .await
-            .map_err(internal)?
+            .await?
         else {
             return Err(not_found());
         };
@@ -60,20 +59,16 @@ impl VolumeStorage {
         // The admission keeps a new one from starting, and a finished one changes
         // nothing more, so one retake reads the slot as it stays.
         let mut receiving = self.receives.status(name).busy();
-        let mut datasets = self.datasets(&pool).await.map_err(internal)?;
+        let mut datasets = self.datasets(&pool).await?;
         if receiving && !self.receives.status(name).busy() {
-            datasets = self.datasets(&pool).await.map_err(internal)?;
+            datasets = self.datasets(&pool).await?;
             receiving = false;
         }
-        let Some(held) = self
-            .held(&datasets, &pool, name, receiving)
-            .map_err(internal)?
-        else {
+        let Some(held) = self.held(&datasets, &pool, name, receiving)? else {
             return Err(not_found());
         };
         if let Held::Root(root) = &held {
-            root.require_mountpoint(&name.mountpoint())
-                .map_err(internal)?;
+            root.require_mountpoint(&name.mountpoint())?;
         }
         let Some(bound) = held.bound() else {
             return Err(refuse(
@@ -127,7 +122,7 @@ impl VolumeStorage {
             SizePlan::Shrink => {
                 self.shrink_bound(&held, wanted.get())
                     .await
-                    .map_err(internal)?;
+                    ?;
                 Ok(SetVolumeSizeReply {
                     bound_bytes: wanted,
                 })
@@ -155,12 +150,12 @@ impl VolumeStorage {
                             "this Machine has no room to grow Volume {name} to {wanted}: {capacity}"
                         )));
                     }
-                    Err(error) => return Err(internal(error)),
+                    Err(error) => return Err(RpcError::from(error)),
                 }
                 if raise_copy && let Some(fs) = copy_behind {
                     self.set_verified(fs, "refquota", &wanted.get().to_string())
                         .await
-                        .map_err(internal)?;
+                        ?;
                 }
                 Ok(SetVolumeSizeReply {
                     bound_bytes: wanted,
@@ -170,7 +165,7 @@ impl VolumeStorage {
                 if let Some(fs) = copy_behind {
                     self.set_verified(fs, "refquota", &wanted.get().to_string())
                         .await
-                        .map_err(internal)?;
+                        ?;
                 }
                 Ok(SetVolumeSizeReply {
                     bound_bytes: wanted,

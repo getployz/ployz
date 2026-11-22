@@ -21,10 +21,9 @@ use ployz_core::{
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
     holders::{Unheld, copy_held_for_other_data, copy_unlisted},
-    inspect::{answering, internal},
+    inspect::answering,
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
-    slot,
     transfer::{Busy, ReceiveFailure, Stop, pulling},
 };
 
@@ -107,7 +106,7 @@ struct Scope {
 
 impl Scope {
     fn root(&self) -> Result<Option<&Dataset>, RpcError> {
-        VolumeStorage::dataset(&self.datasets, &self.pool, &self.name).map_err(internal)
+        VolumeStorage::dataset(&self.datasets, &self.pool, &self.name).map_err(RpcError::from)
     }
 
     fn slot(&self) -> Option<&Dataset> {
@@ -129,7 +128,7 @@ fn refuse(reason: CopyRefusal, copy: Copy, message: String) -> RpcError {
 }
 
 fn no_pool() -> RpcError {
-    internal("no usable existing Machine Pool".into())
+    RpcError::internal("no usable existing Machine Pool")
 }
 
 fn no_room(bound: u64, name: &VolumeName) -> RpcError {
@@ -142,8 +141,8 @@ fn no_room(bound: u64, name: &VolumeName) -> RpcError {
 
 impl VolumeStorage {
     async fn admit(&self, wire: &WireName) -> Result<Admitted, RpcError> {
-        let name = slot::name(wire)?;
-        let (held, installation) = self.admit_mutation().await.map_err(internal)?;
+        let name = VolumeName::try_from(wire)?;
+        let (held, installation) = self.admit_mutation().await?;
         Ok(Admitted {
             held,
             installation,
@@ -152,7 +151,7 @@ impl VolumeStorage {
     }
 
     async fn enter(&self, admitted: Admitted, pool: MachinePool) -> Result<Scope, RpcError> {
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        let datasets = self.datasets(&pool).await?;
         Ok(Scope {
             held: admitted.held,
             _installation: admitted.installation,
@@ -164,41 +163,36 @@ impl VolumeStorage {
 
     async fn scope(&self, wire: &WireName) -> Result<Option<Scope>, RpcError> {
         let admitted = self.admit(wire).await?;
-        match self.pool.one_usable().await.map_err(internal)? {
+        match self.pool.one_usable().await? {
             Some(pool) => self.enter(admitted, pool).await.map(Some),
             None => Ok(None),
         }
     }
 
     async fn first_pool(&self, bound: u64, name: &VolumeName) -> Result<MachinePool, RpcError> {
-        let _pool_guard = self.pool.lock_mutation().await.map_err(internal)?;
-        if let Some(pool) = self.pool.one_usable().await.map_err(internal)? {
+        let _pool_guard = self.pool.lock_mutation().await?;
+        if let Some(pool) = self.pool.one_usable().await? {
             return Ok(pool);
         }
-        if let Some(pool) = self
-            .pool
-            .recover(UnlabeledBacking::Remove)
-            .await
-            .map_err(internal)?
-        {
+        if let Some(pool) = self.pool.recover(UnlabeledBacking::Remove).await? {
             return Ok(pool);
         }
         match self.pool.create(bound).await {
-            Ok(_) => self.one_pool().await.map_err(internal),
+            Ok(_) => self.one_pool().await.map_err(RpcError::from),
             Err(PluginError::Capacity(_)) => Err(no_room(bound, name)),
-            Err(error) => Err(internal(error)),
+            Err(error) => Err(RpcError::from(error)),
         }
     }
 
     async fn z(&self, args: &[&str]) -> Result<(), RpcError> {
-        self.zfs(args).await.map(drop).map_err(internal)
+        self.zfs(args).await.map(drop).map_err(RpcError::from)
     }
 
     /// The copy as the datasets stand now.
     async fn copy_now(&self, scope: &Scope) -> Result<Copy, RpcError> {
         self.current_copy(&scope.pool, &scope.name)
             .await
-            .map_err(internal)
+            .map_err(RpcError::from)
     }
 
     async fn receiving_another(&self, scope: &Scope) -> RpcError {
@@ -232,8 +226,7 @@ impl VolumeStorage {
                 &format!("written@{snapshot}"),
                 dataset,
             ])
-            .await
-            .map_err(internal)?;
+            .await?;
         Ok(written.trim() != "0")
     }
 
@@ -266,8 +259,7 @@ impl VolumeStorage {
         let (root_name, readonly, mounted) = (root.name.clone(), root.readonly, root.mounted);
         let taken = self
             .snapshots(&root_name)
-            .await
-            .map_err(internal)?
+            .await?
             .iter()
             .any(|snapshot| snapshot.name == request.target);
         if taken && self.written_since(&root_name, &request.target).await? {
@@ -287,7 +279,7 @@ impl VolumeStorage {
         }
         // Docker on this Machine keeps its record for the Volume; plugin Get answers
         // from the slot while the root is away.
-        self.marks(&root_name).set_cut().await.map_err(internal)?;
+        self.marks(&root_name).set_cut().await?;
         if !taken {
             self.z(&["snapshot", &format!("{root_name}@{}", request.target)])
                 .await?;
@@ -306,8 +298,7 @@ impl VolumeStorage {
             self.z(&["unmount", &root_name]).await?;
         }
         self.park_root_in_slot(&scope.held, &scope.pool, &scope.datasets, name, root)
-            .await
-            .map_err(internal)?;
+            .await?;
         self.copy_now(&scope).await
     }
 
@@ -316,7 +307,7 @@ impl VolumeStorage {
     async fn copy_run_snapshot(&self, request: &SnapshotRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let root = self.require_root(&scope).await?;
-        let snapshots = self.snapshots(&root).await.map_err(internal)?;
+        let snapshots = self.snapshots(&root).await?;
         if !snapshots
             .iter()
             .any(|snapshot| snapshot.name == request.snapshot)
@@ -340,7 +331,7 @@ impl VolumeStorage {
                 r#gen: request.r#gen,
             }),
         );
-        let snapshots = self.snapshots(&root).await.map_err(internal)?;
+        let snapshots = self.snapshots(&root).await?;
         self.destroy_snapshots(&root, snapshots.get(2..).unwrap_or_default())
             .await?;
         self.copy_now(&scope).await
@@ -353,7 +344,7 @@ impl VolumeStorage {
             return Ok(None);
         };
         let root = self.require_root(&scope).await?;
-        let snapshots = self.snapshots(&root).await.map_err(internal)?;
+        let snapshots = self.snapshots(&root).await?;
         for (index, snapshot) in snapshots.iter().enumerate() {
             self.z(&["destroy", &format!("{root}@{}", snapshot.name)])
                 .await?;
@@ -406,7 +397,7 @@ impl VolumeStorage {
         let root_name = DatasetLayout::of(&scope.pool).root(name);
         if let Some(root) = scope.root()? {
             let (readonly, mountpoint) = (root.readonly, root.mountpoint.clone());
-            let epoch = self.marks(&root_name).epoch().await.map_err(internal)?;
+            let epoch = self.marks(&root_name).epoch().await?;
             if epoch > request.epoch {
                 return Err(self
                     .refuse_found(
@@ -421,10 +412,7 @@ impl VolumeStorage {
             }
             self.require_at(&scope, &root_name, request).await?;
             if epoch < request.epoch {
-                self.marks(&root_name)
-                    .set_epoch(request.epoch)
-                    .await
-                    .map_err(internal)?;
+                self.marks(&root_name).set_epoch(request.epoch).await?;
             }
             if scope.slot().is_some() && scope.fs().is_none() {
                 self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
@@ -455,20 +443,19 @@ impl VolumeStorage {
                 .await);
         }
         let marks = self.marks(&fs_name);
-        if marks.is_set(Mark::ResumeToken).await.map_err(internal)? {
+        if marks.is_set(Mark::ResumeToken).await? {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
         let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
         // No copy leaves its slot while the slot still holds a record its bytes lack.
-        self.complete(&parent, &fs_name).await.map_err(internal)?;
-        let newest = self.newest_snapshot(&fs_name).await.map_err(internal)?;
+        self.complete(&parent, &fs_name).await?;
+        let newest = self.newest_snapshot(&fs_name).await?;
         let carried = self
             .origin_of(
                 Some(&parent),
                 Some((&fs_name, newest.as_ref().map(|newest| &newest.name))),
             )
-            .await
-            .map_err(internal)?;
+            .await?;
         match self.admit_holders(&request.name, carried).await {
             Ok(()) => {}
             Err(Unheld::Foreign) => {
@@ -490,12 +477,10 @@ impl VolumeStorage {
                     .await);
             }
         }
-        marks.promote_slot(request.epoch).await.map_err(internal)?;
+        marks.promote_slot(request.epoch).await?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = DatasetLayout::of(&scope.pool).root_parent();
-        self.ensure_root(&scope.datasets, &parent)
-            .await
-            .map_err(internal)?;
+        self.ensure_root(&scope.datasets, &parent).await?;
         self.z(&["rename", &fs_name, &root_name]).await?;
         self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
             .await?;
@@ -509,12 +494,7 @@ impl VolumeStorage {
         dataset: &str,
         request: &WriterRequest,
     ) -> Result<(), RpcError> {
-        let newest = self
-            .snapshots(dataset)
-            .await
-            .map_err(internal)?
-            .into_iter()
-            .next();
+        let newest = self.snapshots(dataset).await?.into_iter().next();
         if newest.is_some_and(|newest| newest.guid == request.at) {
             return Ok(());
         }
@@ -543,7 +523,7 @@ impl VolumeStorage {
         if readonly {
             self.z(&["set", "readonly=off", root]).await?;
         }
-        self.marks(root).clear_cut().await.map_err(internal)?;
+        self.marks(root).clear_cut().await?;
         Ok(())
     }
 
@@ -552,7 +532,7 @@ impl VolumeStorage {
     /// else starts or resumes the receive.
     async fn copy_pull(&self, request: &PullRequest) -> Result<Copy, RpcError> {
         let admitted = self.admit(&request.name).await?;
-        let (scope, fetched) = match self.pool.one_usable().await.map_err(internal)? {
+        let (scope, fetched) = match self.pool.one_usable().await? {
             Some(pool) => (self.enter(admitted, pool).await?, None),
             None => {
                 let bound = self.fetch_bound(request).await?;
@@ -573,11 +553,7 @@ impl VolumeStorage {
         let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
         let target = request.target.to_string();
         let pulling = match scope.slot() {
-            Some(_) => self
-                .marks(&parent)
-                .get(Mark::Pull)
-                .await
-                .map_err(internal)?,
+            Some(_) => self.marks(&parent).get(Mark::Pull).await?,
             None => None,
         };
         if pulling.as_deref() == Some(target.as_str()) {
@@ -611,13 +587,12 @@ impl VolumeStorage {
                     return Err(if error.is_capacity() {
                         no_room(bound, name)
                     } else {
-                        internal(error)
+                        RpcError::from(error)
                     });
                 }
                 self.ensure_mirror_root(&scope.pool, &scope.datasets)
-                    .await
-                    .map_err(internal)?;
-                self.create_slot(&parent, bound).await.map_err(internal)?;
+                    .await?;
+                self.create_slot(&parent, bound).await?;
                 crate::faults::kill_inside(
                     Point::Copy(CopyTransition::NoneToMirror),
                     Some(Identity {
@@ -632,48 +607,37 @@ impl VolumeStorage {
             }
         };
         if bound == 0 {
-            return Err(internal(PluginError::from(format!(
+            return Err(RpcError::internal(format!(
                 "slot {parent} carries no bound"
-            ))));
+            )));
         }
         let fs = DatasetLayout::of(&scope.pool).slot_fs(name);
         let newest = match scope.fs() {
-            Some(_) => self
-                .snapshots(&fs)
-                .await
-                .map_err(internal)?
-                .into_iter()
-                .next(),
+            Some(_) => self.snapshots(&fs).await?.into_iter().next(),
             None => None,
         };
         let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
         if newest_name == Some(target.as_str()) {
             // An old copy already holding the target receives nothing, and is the mirror now.
-            if self.marks(&parent).role().await.map_err(internal)? != SlotRole::Mirror {
-                self.marks(&parent)
-                    .set_role(SlotRole::Mirror)
-                    .await
-                    .map_err(internal)?;
+            if self.marks(&parent).role().await? != SlotRole::Mirror {
+                self.marks(&parent).set_role(SlotRole::Mirror).await?;
             }
             self.finish_copy(&fs, bound)
                 .await
-                .map_err(|error| internal(error.into()))?;
-            let snapshots = self.snapshots(&fs).await.map_err(internal)?;
+                .map_err(RpcError::internal)?;
+            let snapshots = self.snapshots(&fs).await?;
             self.destroy_snapshots(&fs, snapshots.get(1..).unwrap_or_default())
                 .await?;
-            self.complete(&parent, &fs).await.map_err(internal)?;
+            self.complete(&parent, &fs).await?;
             if pulling.is_some() {
-                self.marks(&parent).clear_pull().await.map_err(internal)?;
+                self.marks(&parent).clear_pull().await?;
             }
             self.receives.forget(name);
             return self.copy_now(&scope).await;
         }
         let retarget = pulling.as_deref() != Some(target.as_str());
         if retarget {
-            self.marks(&parent)
-                .set_role(SlotRole::Mirror)
-                .await
-                .map_err(internal)?;
+            self.marks(&parent).set_role(SlotRole::Mirror).await?;
         }
         let bound = if fresh {
             bound
@@ -682,11 +646,7 @@ impl VolumeStorage {
                 .await?
         };
         let token = match scope.fs() {
-            Some(_) => self
-                .marks(&fs)
-                .get(Mark::ResumeToken)
-                .await
-                .map_err(internal)?,
+            Some(_) => self.marks(&fs).get(Mark::ResumeToken).await?,
             None => None,
         };
         let source = match (token, newest) {
@@ -709,10 +669,7 @@ impl VolumeStorage {
         // Set last before the spawn, so a step above that fails leaves `ployz:pull` naming
         // the target it named before.
         if retarget {
-            self.marks(&parent)
-                .set_pull(&target)
-                .await
-                .map_err(internal)?;
+            self.marks(&parent).set_pull(&target).await?;
         }
         let storage = self.clone();
         let (from, r#gen) = (request.from, request.r#gen);
@@ -849,7 +806,7 @@ impl VolumeStorage {
                     ),
                 )
                 .await),
-            Err(error) => Err(internal(error)),
+            Err(error) => Err(RpcError::from(error)),
         }
     }
 
@@ -861,13 +818,16 @@ impl VolumeStorage {
             .timeout(self.receive_stall)
             .build()
             .map_err(|error| {
-                internal(format!("could not build the bound client: {}", inline(&error)).into())
+                RpcError::internal(format!(
+                    "could not build the bound client: {}",
+                    inline(&error)
+                ))
             })?;
         let response = client
             .get(&url)
             .send()
             .await
-            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?;
+            .map_err(|error| RpcError::internal(format!("GET {url}: {}", inline(&error))))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             let reason = response.text().await.unwrap_or_default();
             return Err(refuse(
@@ -881,12 +841,12 @@ impl VolumeStorage {
         }
         let body = response
             .error_for_status()
-            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?
+            .map_err(|error| RpcError::internal(format!("GET {url}: {}", inline(&error))))?
             .text()
             .await
-            .map_err(|error| internal(format!("GET {url}: {}", inline(&error)).into()))?;
+            .map_err(|error| RpcError::internal(format!("GET {url}: {}", inline(&error))))?;
         protocol::parse_bound(&body)
-            .map_err(|error| internal(format!("GET {url} answered {body:?}: {error}").into()))
+            .map_err(|error| RpcError::internal(format!("GET {url} answered {body:?}: {error}")))
     }
 
     async fn copy_destroy(&self, request: &ForgetRequest) -> Result<Copy, RpcError> {
@@ -896,12 +856,7 @@ impl VolumeStorage {
         };
         let name = &scope.name;
         if let Some(root) = scope.root()? {
-            if self
-                .marks(&root.name)
-                .unadopted_seed()
-                .await
-                .map_err(internal)?
-            {
+            if self.marks(&root.name).unadopted_seed().await? {
                 crate::faults::kill_inside(
                     Point::Copy(CopyTransition::SeedToForget),
                     Some(forgetting(wire, request.r#gen)),
