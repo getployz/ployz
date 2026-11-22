@@ -608,16 +608,7 @@ fn not_set_note(
         1 => ("secret", "it", "it"),
         _ => ("secrets", "them", "each"),
     };
-    let set = shell_words::join([
-        "ployz",
-        "set",
-        &path(first),
-        "--secret",
-        "--project",
-        project.as_str(),
-        "--env",
-        branch.as_str(),
-    ]);
+    let set = store::next_in(project, branch, &["set", &path(first), "--secret"]);
     Some(format!(
         "{} {secrets} not set in {branch}: {}. Deploys leave {them} out until you set {each}: \
          printf %s \"$VALUE\" | {set}",

@@ -2,6 +2,7 @@
 
 pub(crate) mod rows;
 
+use super::super::store::scope_args;
 use crate::failure::Failure;
 use crate::failure::{Detail, Diagnostic, LogTail};
 use crate::ui::progress::{Frame, Row, Run, State, Subject, Timing, Work};
@@ -416,12 +417,7 @@ pub(super) fn beside_volumes(
     view: &DeploymentView,
     command: impl Fn(&[&str]) -> String,
 ) -> Vec<Hint> {
-    let scope = [
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ];
+    let scope = scope_args(&view.environment.project, &view.environment.name);
     view.preview
         .iter()
         .flat_map(|preview| &preview.blocked)
@@ -614,15 +610,11 @@ pub(super) fn removal_retry(
         DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
     );
     (view.deployment.remove && ended).then(|| {
-        Hint::Retry(command(&[
-            "deployment",
-            "redeploy",
-            &target(&view.deployment),
-            "--project",
-            view.environment.project.as_str(),
-            "--env",
-            view.environment.name.as_str(),
-        ]))
+        let deployment = target(&view.deployment);
+        let scope = scope_args(&view.environment.project, &view.environment.name);
+        Hint::Retry(command(
+            &[&["deployment", "redeploy", deployment.as_str()][..], &scope].concat(),
+        ))
     })
 }
 
@@ -632,12 +624,7 @@ fn superseded(
     successor: Option<&DeploymentSummary>,
     command: impl Fn(&[&str]) -> String,
 ) -> Failure {
-    let scope = [
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ];
+    let scope = scope_args(&view.environment.project, &view.environment.name);
     let (message, inspect) = match successor {
         Some(newer) => {
             let from = newer.push.as_ref().map_or(String::new(), |push| {
@@ -706,15 +693,13 @@ pub(super) fn replaced(
         ),
         serde_json::json!({ "deployment": view.deployment.id, "replaced_by": newer.id }),
     )
-    .hint(Hint::Inspect(command(&[
-        "deployment",
-        "show",
-        shown.as_str(),
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ])))
+    .hint(Hint::Inspect(command(
+        &[
+            &["deployment", "show", shown.as_str()][..],
+            &scope_args(&view.environment.project, &view.environment.name),
+        ]
+        .concat(),
+    )))
 }
 
 /// Why the Deployment failed, and what that came from, outermost first: none when it
@@ -746,12 +731,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
             Vec::new(),
         ),
     };
-    let scope = [
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ];
+    let scope = scope_args(&view.environment.project, &view.environment.name);
     let deployment = target(&view.deployment);
     // A Service the plan blocked is blocked again until its cause changes.
     let blocked = view
