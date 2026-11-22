@@ -217,7 +217,6 @@ where
             .or_else(|| answer.clone())
             .or_else(|| silent.clone())
             .unwrap_or_else(|| error.clone());
-        // Whether to send again follows what this attempt met.
         let retry = if unreached { &error } else { &reported }.code.retry();
         let error = reported;
         let again = retry != Retry::Never

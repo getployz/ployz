@@ -5,7 +5,6 @@ use ployz_core::{
     LiveServices, MachineId, MachineName, MachineObservation, PartialResult, RpcError,
 };
 
-/// Each Server's name, by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ServerNames(Vec<(MachineId, MachineName)>);
 

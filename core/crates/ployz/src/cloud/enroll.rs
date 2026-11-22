@@ -304,7 +304,6 @@ impl EnrollIdentity {
     }
 }
 
-/// Successful enroll `join` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Join {
     pub pairing: CloudPairing,
@@ -312,7 +311,6 @@ pub(crate) struct Join {
     pub registration: Registered,
 }
 
-/// Successful enroll `initialize` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Initialize {
     pub mode: InitializeMode,
@@ -321,7 +319,6 @@ pub(crate) struct Initialize {
     pub recovery: Option<Recovery>,
 }
 
-/// Enroll outcome after `not_yet` retries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
     Join(Box<Join>),
@@ -343,7 +340,6 @@ pub(crate) enum InitializeMode {
     Resume,
 }
 
-/// One enroll POST body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Response {
     Ready(Outcome),

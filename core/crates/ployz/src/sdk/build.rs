@@ -138,7 +138,6 @@ async fn reuse(
             "the deployment must hold exactly one Service",
         ));
     };
-    // Fingerprints are keyed by Service, as `capture` computes them.
     let fingerprints = preparation::expected_fingerprints(
         input.deployment,
         std::collections::BTreeMap::from([(spec.name.clone(), input.commit)]),

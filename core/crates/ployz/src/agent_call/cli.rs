@@ -15,7 +15,6 @@ use crate::cloud::login::CredentialStore;
 use crate::cloud::origin::CloudOrigin;
 use crate::failure::Failure;
 
-/// The `--why` flag.
 pub(crate) const WHY: &str = "why";
 
 const REASON_REQUIRED: &str =

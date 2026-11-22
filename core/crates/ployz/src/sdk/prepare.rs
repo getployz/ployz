@@ -474,7 +474,6 @@ async fn reuse_without_source(
     };
     let mut reused: Vec<BuiltService> = Vec::new();
     let mut missing: Vec<ployz_core::ServiceName> = Vec::new();
-    // Each Service's receipts in order: the first usable one serves it.
     for receipt in receipts {
         let served = reused.iter().any(|built| built.name == receipt.name);
         if served {

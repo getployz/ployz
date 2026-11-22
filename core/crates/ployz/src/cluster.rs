@@ -1653,7 +1653,6 @@ async fn wait_until(
     not_observed: RoleWaitError,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RoleWaitError> {
-    // ponytail: 30 s deadline plus one ListMachines call, capped at 10 s.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let machines = tokio::select! {
