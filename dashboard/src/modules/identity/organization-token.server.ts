@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { sha256Hex } from "#/lib/hash.server";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
@@ -19,7 +20,7 @@ export const CLI_USER_AGENT_PREFIX = "ployz-cli/";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function hashOrganizationTokenSecret(secret: string) {
-  return createHash("sha256").update(secret).digest("hex");
+  return sha256Hex(secret);
 }
 
 /**

@@ -6,6 +6,7 @@ import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentAssignment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Option, Schema } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -83,7 +84,7 @@ const unlessAnswered = (error: PloyzProviderError | Cause.TimeoutError) =>
     : error;
 
 export function hashEnrollmentToken(token: string) {
-  return crypto.createHash("sha256").update(token).digest("hex");
+  return sha256Hex(token);
 }
 
 function randomSecret(prefix: string) {
@@ -383,7 +384,7 @@ export const reserveEnrollmentAssignment = Effect.fn(
   snapshot: EnrollmentSnapshot;
 }) {
   const database = yield* Database;
-  const clusterKey = crypto.createHash("sha256").update(input.pairing).digest("hex");
+  const clusterKey = sha256Hex(input.pairing);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const scope = and(

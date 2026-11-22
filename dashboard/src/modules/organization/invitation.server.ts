@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { user } from "#/modules/identity/tables";
 import { invitation, member, organization } from "#/modules/organization/tables";
@@ -12,7 +13,7 @@ import { Conflict, NotFound } from "#/server/public-error";
 export const INVITE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const hashInviteToken = (token: string) => createHash("sha256").update(token).digest("hex");
+const hashInviteToken = (token: string) => sha256Hex(token);
 
 type InviteState = "pending" | "accepted" | "revoked" | "expired";
 

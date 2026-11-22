@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { ServerRelease } from "#/modules/machines/machine-removal-states";
@@ -60,7 +60,7 @@ export const lockWitnessedPairing = Effect.fn("PairingRelease.lockWitnessed")(fu
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
   if (!pairing) return { kind: "gone" } as const;
-  const current = createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex");
+  const current = sha256Hex(yield* decrypt(pairing.encryptedPairingSecret));
   return current === generation && pairing.removalStartedAt === null ? { kind: "witnessed" } as const : { kind: "replaced" } as const;
 });
 

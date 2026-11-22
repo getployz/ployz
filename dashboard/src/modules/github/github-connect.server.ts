@@ -1,5 +1,4 @@
 import "@tanstack/react-start/server-only";
-import crypto from "node:crypto";
 import { Effect, Redacted, Schema } from "effect";
 import {
   linkGithubInstallation,
@@ -20,6 +19,7 @@ import { githubRepositoriesSyncRequested } from "#/modules/github/github.events"
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { AppConfig, type GithubOrigins } from "#/server/config.server";
 import { Forbidden, Validation } from "#/server/public-error";
+import { openToken, signToken } from "#/server/signed-token.server";
 
 const TOKEN_TTL_MS = 15 * 60_000;
 
@@ -43,24 +43,18 @@ type Signed<S extends Schema.Top> = { readonly purpose: string; readonly schema:
 const STATE: Signed<typeof ConnectState> = { purpose: "ployz:github-connect-state:v1", schema: ConnectState };
 const OFFER: Signed<typeof ConnectOffer> = { purpose: "ployz:github-connect-offer:v1", schema: ConnectOffer };
 
-const keyFor = (secret: string, purpose: string) =>
-  crypto.createHash("sha256").update(purpose).update("\0").update(secret).digest();
-
 const sign = Effect.fn("GithubConnect.sign")(function* <S extends Schema.Top>(kind: Signed<S>, value: S["Type"]) {
   const secret = Redacted.value((yield* AppConfig).encryptionSecret);
   const body = Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${body}.${crypto.createHmac("sha256", keyFor(secret, kind.purpose)).update(body).digest("base64url")}`;
+  return signToken(kind.purpose, secret, body);
 });
 
 const verify = Effect.fn("GithubConnect.verify")(function* <S extends Schema.Top & { readonly Type: { readonly expiresAt: number } }>(
   kind: Signed<S>, token: string,
 ) {
   const secret = Redacted.value((yield* AppConfig).encryptionSecret);
-  const [body, given, ...rest] = token.split(".");
-  if (body === undefined || given === undefined || rest.length > 0) return null;
-  const expected = Buffer.from(crypto.createHmac("sha256", keyFor(secret, kind.purpose)).update(body).digest("base64url"));
-  const actual = Buffer.from(given);
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return null;
+  const body = openToken(kind.purpose, secret, token);
+  if (body === null || body.includes(".")) return null;
   const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(kind.schema))(Buffer.from(body, "base64url").toString()).pipe(
     Effect.orElseSucceed(() => null),
   );

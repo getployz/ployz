@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
-import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
+import { sha256Hex } from "#/lib/hash.server";
 import { Effect, Redacted } from "effect";
 import { StoreRefused } from "#/lib/refusal";
 import { organizationToken, user } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { signature } from "#/server/signed-token.server";
 
 const CLAIM_KEY_PURPOSE = "ployz:claim:v1";
 
@@ -42,12 +43,11 @@ export const tokenRuns = sql`${organizationToken.expiresAt} > clock_timestamp()`
 /** The secret in the Organization's claim URL. Derived from its id, so every refusal names the same one. */
 export const claimSecretFor = Effect.fn("Identity.claimSecretFor")(function* (organizationId: string) {
   const config = yield* AppConfig;
-  const key = crypto.createHash("sha256").update(CLAIM_KEY_PURPOSE).update("\0").update(Redacted.value(config.encryptionSecret)).digest();
-  return crypto.createHmac("sha256", key).update(organizationId).digest("base64url");
+  return signature(CLAIM_KEY_PURPOSE, Redacted.value(config.encryptionSecret), organizationId);
 });
 
 /** What `organization.claim_secret_hash` holds, so the claim page finds the Organization without the secret at rest. */
-export const hashClaimSecret = (secret: string) => crypto.createHash("sha256").update(secret).digest("hex");
+export const hashClaimSecret = (secret: string) => sha256Hex(secret);
 
 export const claimUrlForSecret = Effect.fn("Identity.claimUrlForSecret")(function* (secret: string) {
   const config = yield* AppConfig;

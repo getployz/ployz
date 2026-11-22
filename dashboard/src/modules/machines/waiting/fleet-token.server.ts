@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, asc, eq, gt, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import type { Actor } from "#/modules/identity/actor";
 import {
   type CreateFleetTokenInput,
@@ -24,7 +25,7 @@ const LIFETIME_DAYS = { "1d": 1, "7d": 7, "30d": 30 } satisfies Record<FleetToke
 const NAME_ATTEMPTS = 5;
 
 export function hashFleetToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  return sha256Hex(token);
 }
 
 /** Makes a Fleet Token. The token is returned here and never again; Cloud keeps only its hash. */

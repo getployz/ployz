@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import { endClusterIngress } from "#/modules/ingress/cloudflare.cluster-gone.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/runtime/connections.server";
@@ -89,7 +89,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         : deadClaim && (pairing.founderMachineId !== null || (yield* foundingClaimLive(pairing)));
       if (kept) return "kept" as const;
       const secret = yield* decrypt(pairing.encryptedPairingSecret);
-      const generation = createHash("sha256").update(secret).digest("hex");
+      const generation = sha256Hex(secret);
       let attempt: RemovalAttempt;
       if (pairing.removalStartedAt !== null && pairing.removalEndpoints !== null) {
         const resumed = yield* decodeEndpoints(pairing.removalEndpoints);
@@ -198,7 +198,7 @@ const cluster = Effect.fn("PairingRemoval.cluster")(function* (organizationId: s
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
     .where(eq(organizationMachine.organizationId, organizationId));
-  const generation = pairing ? createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex") : null;
+  const generation = pairing ? sha256Hex(yield* decrypt(pairing.encryptedPairingSecret)) : null;
   return { pairing, seen: { generation, servers: rows.map((row) => row.machineId).sort() } satisfies ClusterSeen };
 });
 
@@ -304,7 +304,7 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         .from(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
       return { confirmed: candidates.length === 0, endpoints: candidates.map(({ machineId }) => ({ machineId, status: "unconfirmed" as const })) };
     }
-    const generation = createHash("sha256").update(yield* decrypt(attempt.encryptedPairingSecret)).digest("hex");
+    const generation = sha256Hex(yield* decrypt(attempt.encryptedPairingSecret));
     const expect = yield* releasingExpectation(organizationId, generation);
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
       if (endpoint.status !== "pending") return;

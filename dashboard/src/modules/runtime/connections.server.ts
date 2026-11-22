@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import crypto from "node:crypto";
 import type { Connection } from "@ployz/sdk";
 import { and, asc, count, desc, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -57,7 +57,7 @@ export const currentGeneration = Effect.fn("MachineConnections.generation")(func
   }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).limit(1);
   if (!pairing || pairing.removalStartedAt !== null) return null;
   const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
-  return crypto.createHash("sha256").update(secret).digest("hex");
+  return sha256Hex(secret);
 });
 
 /** The current pairing and the Machine that founded it, once one has; null without a current pairing. */
@@ -70,7 +70,7 @@ export const currentFounder = Effect.fn("MachineConnections.founder")(function* 
   }).from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).limit(1);
   if (!pairing || pairing.removalStartedAt !== null) return null;
   const secret = yield* decryptPairingSecret(pairing.encryptedPairingSecret);
-  return { generation: crypto.createHash("sha256").update(secret).digest("hex"), founder: pairing.founderMachineId };
+  return { generation: sha256Hex(secret), founder: pairing.founderMachineId };
 });
 
 /** How many Servers the current pairing has: the Machines `loadOrganizationConnections` would dial, counted. */
