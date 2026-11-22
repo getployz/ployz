@@ -41,7 +41,9 @@ pub(crate) use rows::server_names;
 pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
-pub use versions::{Pinned, PostedVersion, TagPin, VersionsQuery, VersionsView};
+pub use versions::{
+    Parent, ParentQuery, ParentView, Pinned, PostedVersion, TagPin, VersionsQuery, VersionsView,
+};
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,

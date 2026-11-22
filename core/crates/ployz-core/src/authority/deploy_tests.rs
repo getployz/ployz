@@ -124,6 +124,7 @@ fn statement(signer: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
         signed_at: Timestamp::from_millis(100_000).unwrap(),
         signer: SignerKey::Device(DeviceKey::from(signer.public())),
         proposal: None,
+        parent: None,
     }
 }
 

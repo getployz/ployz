@@ -82,9 +82,10 @@ pub use deployment::loss::{VolumeLoss, docker_volume};
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
-    NodeOutcome, NodeStatus, Outcome, Pinned, PostedVersion, RowPhase, RowState, RowTracker,
-    RowTransition, RunEvidence, ServerProgress, ServerRow, StoppedBy, TagPin, Unclaimed,
-    UploadBase, UploadedSource, VersionsQuery, VersionsView, WaitingService,
+    NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView, Pinned, PostedVersion,
+    RowPhase, RowState, RowTracker, RowTransition, RunEvidence, ServerProgress, ServerRow,
+    StoppedBy, TagPin, Unclaimed, UploadBase, UploadedSource, VersionsQuery, VersionsView,
+    WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,

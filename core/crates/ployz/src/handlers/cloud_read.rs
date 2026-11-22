@@ -29,6 +29,14 @@ fn ask<T: DeserializeOwned>(credential: &Credential, query: CloudQuery) -> Resul
     refusable(credential, query)?.map_err(Error::from)
 }
 
+/// Every Server of the credential's Organization, as Cloud last saw it.
+///
+/// # Errors
+/// Returns Cloud's refusal, or a Cloud failure.
+pub(super) fn servers(credential: &Credential) -> Result<ServersAnswer, Error> {
+    ask(credential, CloudQuery::Servers { only: None })
+}
+
 /// [`ask`], keeping Cloud's refusal as Cloud sent it.
 fn refusable<T: DeserializeOwned>(
     credential: &Credential,

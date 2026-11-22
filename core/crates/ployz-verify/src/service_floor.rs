@@ -332,6 +332,7 @@ impl ServiceFloor {
                 let signature = service_floor::Signature {
                     key: (),
                     at: time(approval.at()),
+                    signed: time(approval.at()),
                     forget: approval == Approval::V2 && !self.has(Mutation::NoRaiseAtAdmission),
                 };
                 service_floor::admit(&[signature], floor, now)

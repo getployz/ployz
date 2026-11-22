@@ -242,4 +242,7 @@ queries! {
     /// The signed versions kept for one spec of a Service.
     Versions(crate::VersionsQuery) -> crate::VersionsView
         => crate::deployment::versions::versions(tx, who.organization.as_str(), q);
+    /// The last version a person approved of each named Service, with the spec it ran.
+    Parent(crate::ParentQuery) -> crate::ParentView
+        => crate::deployment::versions::parents(tx, who, trusted, q);
 }
