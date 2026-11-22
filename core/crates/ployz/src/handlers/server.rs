@@ -68,7 +68,7 @@ pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
-    if leaf.get_one::<String>("connect").is_some() || leaf.get_one::<String>("context").is_some() {
+    if route::names_cluster(leaf) {
         return Err(Error::usage(
             "cache clearing runs on this execution host; run it there as the builder user without --connect or --context",
         ));

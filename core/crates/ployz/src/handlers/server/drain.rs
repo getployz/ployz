@@ -201,10 +201,7 @@ fn scope(matches: &ArgMatches, store: Option<&store::Store<'_>>) -> Result<Drain
     };
     // A Cloud Store owns the signed-in Organization's Namespaces; another Cluster
     // reached through --context or --connect is not that Organization's.
-    if matches!(store.backend(), store::Backend::Cloud(..))
-        && (matches.get_one::<String>("context").is_some()
-            || matches.get_one::<String>("connect").is_some())
-    {
+    if matches!(store.backend(), store::Backend::Cloud(..)) && route::names_cluster(matches) {
         return Ok(DrainScope::EveryNamespace);
     }
     Ok(DrainScope::Owned {

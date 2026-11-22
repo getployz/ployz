@@ -91,7 +91,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     // Ownership comes from the signed-in Organization, so the Servers read must be
     // that Organization's: another Cluster's owned Namespaces would read as stray.
     if matches!(store.backend(), store::Backend::Cloud(..))
-        && (context.is_some() || matches.get_one::<String>("connect").is_some())
+        && super::super::route::names_cluster(matches)
     {
         return Err(Error::usage(
             "server clean reads your Organization's Servers; drop --context and --connect",
