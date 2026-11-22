@@ -844,6 +844,10 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
             });
         };
         let (removed, gaps) = remove_everywhere(&client, &reach, key, &Removal::Grant).await;
+        if gaps.is_complete() {
+            // A rotation that stopped short of removing this key waits on nothing more.
+            rotate::forget(&config_path(leaf)?, code)?;
+        }
         let servers = answered(&reach, removed);
         ui::finish_fanout("servers", &servers, &gaps, || ui::rows(&results(&servers)))
     })
