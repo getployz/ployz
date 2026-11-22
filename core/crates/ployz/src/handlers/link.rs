@@ -294,12 +294,13 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
 
 // ponytail: whole-file rewrite; two `link`s racing can lose one. Lock the file if that bites.
 fn save(config: &Path, links: &BTreeMap<String, Link>) -> Result<(), Error> {
-    let path = links_path(config);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let mut file = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer_pretty(&mut file, links)?;
-    file.persist(&path).map_err(|error| error.error)?;
+    let contents = serde_json::to_vec_pretty(links)?;
+    crate::atomic_file::replace(
+        &links_path(config),
+        &contents,
+        crate::atomic_file::OWNER_ONLY,
+    )
+    .map_err(std::io::Error::from)?;
     Ok(())
 }
 

@@ -26,11 +26,6 @@ impl PinnedImage {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    #[must_use]
-    pub fn into_string(self) -> String {
-        self.0
-    }
 }
 
 #[derive(Debug, Error)]
@@ -49,19 +44,6 @@ pub enum PinError {
         #[source]
         source: OciDistributionError,
     },
-}
-
-impl PinError {
-    /// The registry the lookup went to.
-    #[must_use]
-    pub fn registry(&self) -> Option<&str> {
-        match self {
-            Self::NotATag { .. } => None,
-            Self::NeedsCredentials { registry, .. }
-            | Self::TimedOut { registry }
-            | Self::Unread { registry, .. } => Some(registry),
-        }
-    }
 }
 
 /// Pin `reference`, a tag on a public registry, to the digest of its manifest index or

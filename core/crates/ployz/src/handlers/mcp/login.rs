@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::account::in_cloud;
 use super::super::{Error, config_path, leaf_matches};
+use crate::atomic_file::ReplaceError;
 use crate::cloud_account::{self, Credential, TokenKind, TokenPreset};
 use crate::cloud_login::{LoginError, Secret};
 use crate::ui;
@@ -66,26 +67,15 @@ enum Saved {
 
 fn save(config: &Path, stored: &Stored) -> Result<Saved, LoginError> {
     let path = path(config);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(|source| failed(path.clone(), source))?;
-    // A named temp file is created 0600, so the secret is never world-readable.
-    let mut file =
-        tempfile::NamedTempFile::new_in(dir).map_err(|source| failed(path.clone(), source))?;
-    serde_json::to_writer_pretty(&mut file, stored)
+    let contents = serde_json::to_vec_pretty(stored)
         .map_err(|source| failed(path.clone(), io::Error::other(source)))?;
     // Durable before the caller revokes the token this replaces.
-    file.as_file()
-        .sync_all()
-        .map_err(|source| failed(path.clone(), source))?;
-    file.persist(&path)
-        .map_err(|error| failed(path.clone(), error.error))?;
-    // mcp.json now holds the new token, so a failure here must not revoke it.
-    Ok(
-        match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
-            Ok(()) => Saved::Durable,
-            Err(error) => Saved::Unflushed(error),
-        },
-    )
+    match crate::atomic_file::replace(&path, &contents, crate::atomic_file::OWNER_ONLY) {
+        Ok(()) => Ok(Saved::Durable),
+        // mcp.json now holds the new token, so a failure here must not revoke it.
+        Err(ReplaceError::Unflushed(error)) => Ok(Saved::Unflushed(error)),
+        Err(ReplaceError::Failed(source)) => Err(failed(path, source)),
+    }
 }
 
 pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {

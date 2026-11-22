@@ -397,6 +397,15 @@ pub enum ConnectionSource {
     Cloud,
 }
 
+impl ConnectionSource {
+    /// Whether a connection from this source over `transport` is the person's own Full
+    /// access: SSH or the local socket on a connection Cloud didn't hand over. Cloud's
+    /// Server Access can name an SSH endpoint of its own, so nothing from it is.
+    pub(crate) fn own_full_access(&self, transport: &Transport) -> bool {
+        !matches!(self, Self::Cloud) && transport.says_who_answers()
+    }
+}
+
 impl fmt::Display for ConnectionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -473,6 +482,15 @@ pub enum Transport {
     },
     Tcp(SocketAddr),
     Unix(PathBuf),
+}
+
+impl Transport {
+    /// SSH or the local socket: the transports that reach a Server's daemon as the person
+    /// themself, which Cloud doesn't carry. Plain TCP authenticates no one, and a
+    /// Management connection may be an Operator slot.
+    pub(crate) fn says_who_answers(&self) -> bool {
+        matches!(self, Self::Ssh { .. } | Self::Unix(_))
+    }
 }
 
 #[derive(Serialize, Deserialize)]

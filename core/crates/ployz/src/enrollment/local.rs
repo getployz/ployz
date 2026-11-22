@@ -5,8 +5,8 @@ use ployz_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
+    fs::{self, OpenOptions},
+    io,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::Path,
 };
@@ -101,11 +101,12 @@ pub fn save_assignment(
         }
     }
     scopes.push(merged);
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(&serde_json::to_vec(&scopes)?)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    File::open(directory)?.sync_all()?;
+    crate::atomic_file::replace(
+        &path,
+        &serde_json::to_vec(&scopes)?,
+        crate::atomic_file::OWNER_ONLY,
+    )
+    .map_err(io::Error::from)?;
     Ok(assignment)
 }
 

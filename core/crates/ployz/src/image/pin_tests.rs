@@ -156,10 +156,9 @@ async fn a_repository_that_wants_credentials_is_not_pinned() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, PinError::NeedsCredentials { .. }),
+        matches!(&error, PinError::NeedsCredentials { registry, .. } if *registry == host),
         "{error:?}"
     );
-    assert_eq!(error.registry(), Some(host.as_str()));
 }
 
 #[tokio::test]
@@ -198,8 +197,10 @@ async fn a_registry_that_never_answers_times_out() {
     let error = pin_on(&host, &format!("{host}/acme/web:1.0"))
         .await
         .unwrap_err();
-    assert!(matches!(error, PinError::TimedOut { .. }), "{error:?}");
-    assert_eq!(error.registry(), Some(host.as_str()));
+    assert!(
+        matches!(&error, PinError::TimedOut { registry } if *registry == host),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
