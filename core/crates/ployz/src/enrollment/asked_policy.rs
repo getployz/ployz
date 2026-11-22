@@ -2,7 +2,7 @@ use ployz_core::Region;
 use ployz_core::{Hint, InitialMachinePolicy, Machine, MachineLabelKey, MachineLabelValue};
 use ployz_store::region_key;
 
-use crate::handlers::Error;
+use crate::failure::Failure as Error;
 
 /// The policy the `server add` flags ask for. The region stays out of the labels until the
 /// Server is known: a new Server starts in the region asked, else in default, and a Server
@@ -17,12 +17,12 @@ pub(crate) struct AskedPolicy {
 impl AskedPolicy {
     /// The labels, `--region`, and the `--accepts-builds`, `--accepts-services` and
     /// `--accepts-ingress` values given, each on unless said off.
-    pub(super) fn parse(
+    pub(crate) fn parse(
         labels: &[String],
         region: Option<&str>,
         accepts: [Option<bool>; 3],
     ) -> Result<Self, Error> {
-        let mut labels = super::parse_labels(labels)?;
+        let mut labels = parse_labels(labels)?;
         let label = labels
             .remove(&region_label()?)
             .map(|label| region_key(label.as_str()))
@@ -102,4 +102,22 @@ fn elsewhere(
         "--label-add",
         &label,
     ])))
+}
+
+pub(crate) fn parse_labels(
+    given: &[String],
+) -> Result<
+    std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
+    Error,
+> {
+    let mut labels = std::collections::BTreeMap::new();
+    for label in given {
+        let (key, value) = label
+            .split_once('=')
+            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
+        if labels.insert(key.parse()?, value.parse()?).is_some() {
+            return Err(Error::usage(format!("duplicate label key {key:?}")));
+        }
+    }
+    Ok(labels)
 }

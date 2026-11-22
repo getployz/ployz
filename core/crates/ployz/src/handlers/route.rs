@@ -21,7 +21,7 @@ use crate::{
 /// Reach the Cluster for a live operation. `--connect` or `--context` win. Otherwise, signed in
 /// to Cloud or holding `PLOYZ_TOKEN`, it dials through this credential's own Server Access;
 /// signed out, through the current context or the local daemon.
-pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
+pub(crate) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
     connect_or_none(matches, context)
         .await?
         .ok_or_else(no_servers)
@@ -367,12 +367,15 @@ pub(super) fn cloud_runs(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
 ) -> Result<Option<Credential>, Error> {
-    if matches.get_one::<String>("connect").is_some()
-        || matches.get_one::<String>("context").is_some()
-    {
+    if names_cluster(matches) {
         return Ok(None);
     }
     signed_in(runtime, matches)
+}
+
+/// Whether `--connect` or `--context` names a Cluster to dial.
+pub(super) fn names_cluster(matches: &ArgMatches) -> bool {
+    matches.get_one::<String>("connect").is_some() || matches.get_one::<String>("context").is_some()
 }
 
 /// The signed-in Cloud credential, or `None` when signed out. Nothing on the command line

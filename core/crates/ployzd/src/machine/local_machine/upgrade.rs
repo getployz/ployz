@@ -19,7 +19,7 @@ impl LocalMachine {
     /// Returns [`Error::Upgrade`] for a conflicting retry identity, active mutation, release
     /// failure, an Operator's release off both channels, receipt failure, or worker launch
     /// uncertainty.
-    pub(crate) async fn request_upgrade(
+    pub(crate) async fn request_machine_upgrade(
         &self,
         request: RequestMachineUpgradeRequest,
     ) -> Result<MachineUpgradeAttempt, Error> {

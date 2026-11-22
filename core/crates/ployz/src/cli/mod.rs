@@ -3,7 +3,9 @@ use ployz_store::ReviewVersion;
 
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
-pub(crate) mod metrics;
+mod rerun;
+
+pub(crate) use rerun::{approved_rerun, config_flag, recovery_command, rerun};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -50,11 +52,11 @@ pub(crate) fn compiled() -> Command {
 }
 
 pub(crate) fn base(command: Command, about: &'static str) -> Command {
-    command.about(about).args(connection_args(true))
+    command.about(about).args(connection_args())
 }
 
-pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
-    let mut args = vec![
+fn connection_args() -> [Arg; 4] {
+    [
         value("connect", None)
             .env(env::CONNECT)
             .help("Reach the Servers through this connection instead of Cloud or a context")
@@ -74,15 +76,10 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
             .hide(true)
             .global(true),
-    ];
-    if include_context {
-        args.push(
-            value("context", Some('c'))
-                .env(env::CONTEXT)
-                .help("Act through this local context instead of the current one"),
-        );
-    }
-    args
+        value("context", Some('c'))
+            .env(env::CONTEXT)
+            .help("Act through this local context instead of the current one"),
+    ]
 }
 
 /// The subcommand words of `matches`, `server add`.
@@ -112,6 +109,29 @@ pub(crate) fn config_path(
         .ok_or_else(|| crate::failure::Failure::usage("Ployz config path is required"))
 }
 
+/// Whether the compiled command at `words` takes a value for the option `id`; a
+/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// unbuilt, so a global argument still sits on the ancestor that declares it.
+pub(crate) fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
+    let root = compiled();
+    let takes = |arg: &clap::Arg| {
+        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
+    };
+    let mut command = &root;
+    let mut inherited = false;
+    for word in words {
+        let Some(child) = command.find_subcommand(word) else {
+            break;
+        };
+        inherited |= id != "context"
+            && command
+                .get_arguments()
+                .any(|arg| arg.is_global_set() && takes(arg));
+        command = child;
+    }
+    inherited || command.get_arguments().any(takes)
+}
+
 /// This command line as typed, then `extra`.
 pub(crate) fn typed_with(extra: &[&str]) -> String {
     std::iter::once("ployz".to_owned())
@@ -120,6 +140,22 @@ pub(crate) fn typed_with(extra: &[&str]) -> String {
         .map(|arg| crate::ui::shell_word(&arg).into_owned())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The values given for `id` on the command line or from the environment, not its default.
+pub(crate) fn string_values(matches: &clap::ArgMatches, id: &str) -> Vec<String> {
+    if matches.try_contains_id(id).ok() != Some(true) {
+        return Vec::new();
+    }
+    if matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue) {
+        return Vec::new();
+    }
+    matches
+        .try_get_many::<String>(id)
+        .ok()
+        .flatten()
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
 }
 
 /// SSH setup budget shared by every CLI connection path.

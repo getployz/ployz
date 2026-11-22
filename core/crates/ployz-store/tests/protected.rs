@@ -21,7 +21,7 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-mod backend;
+use ployz_store::testing::backend;
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
 

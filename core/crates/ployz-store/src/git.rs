@@ -23,7 +23,7 @@ use crate::error;
 use crate::followup::FollowUp;
 use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
-use crate::settings::{Apply, Needs, ServiceSetting, Spec, command};
+use crate::settings::{Apply, Needs, ServiceSetting, Spec, access, command};
 use crate::storage::Tx;
 use crate::{Actor, ServiceStaged, Trusted};
 
@@ -117,6 +117,7 @@ impl GitSetting {
                 label: "Repository",
                 description: "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch.",
                 field: "source.repository",
+                access: None,
                 core: None,
                 apply: Apply::Staged,
                 needs: Needs::Git,
@@ -135,6 +136,7 @@ impl GitSetting {
                 label: "Branch",
                 description: "The branch the Service builds. Ployz checks it exists.",
                 field: "source.branch",
+                access: None,
                 core: Some(Setting::Branch),
                 apply: Apply::Staged,
                 needs: Needs::Git,
@@ -147,6 +149,7 @@ impl GitSetting {
                 label: "Root directory",
                 description: "The repository directory the build starts in. Unset means the repository root.",
                 field: "source.rootDir",
+                access: None,
                 core: None,
                 apply: Apply::Staged,
                 needs: Needs::Git,
@@ -159,6 +162,7 @@ impl GitSetting {
                 label: "Build method",
                 description: "How the image is built: Railpack detects it, or a Dockerfile.",
                 field: "build.buildMethod",
+                access: Some(access!(build.build_method)),
                 core: Some(Setting::BuildMethod),
                 apply: Apply::Staged,
                 needs: Needs::Built,
@@ -171,6 +175,7 @@ impl GitSetting {
                 label: "Dockerfile path",
                 description: "The Dockerfile to build, relative to the root directory. Unset means Dockerfile.",
                 field: "build.dockerfilePath",
+                access: Some(access!(build.dockerfile_path)),
                 core: Some(Setting::DockerfilePath),
                 apply: Apply::Staged,
                 needs: Needs::Built,
@@ -183,6 +188,7 @@ impl GitSetting {
                 label: "Build command",
                 description: "Overrides Railpack's build command. Unset keeps detection; Dockerfiles ignore it.",
                 field: "build.command",
+                access: Some(access!(build.command)),
                 core: Some(Setting::BuildCommand),
                 apply: Apply::Staged,
                 needs: Needs::Built,
@@ -193,18 +199,23 @@ impl GitSetting {
         }
     }
 
+    /// A source Setting's value; the build Settings read through their [`Spec::access`].
     pub(crate) fn value(self, config: &AuthoredServiceConfig) -> Value {
-        let build = &config.build;
         match (self, &config.source) {
             (Self::Repository, ServiceSource::Git { repository, .. }) => json!(repository),
             (Self::Branch, ServiceSource::Git { branch, .. }) => json!(branch_name(branch)),
             (Self::RootDir, ServiceSource::Git { root_dir, .. }) if root_dir != "/" => {
                 json!(root_dir)
             }
-            (Self::BuildMethod, _) => json!(build.build_method),
-            (Self::DockerfilePath, _) => json!(build.dockerfile_path),
-            (Self::BuildCommand, _) => json!(build.command),
-            (Self::Repository | Self::Branch | Self::RootDir, _) => Value::Null,
+            (
+                Self::Repository
+                | Self::Branch
+                | Self::RootDir
+                | Self::BuildMethod
+                | Self::DockerfilePath
+                | Self::BuildCommand,
+                _,
+            ) => Value::Null,
         }
     }
 

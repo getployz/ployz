@@ -136,6 +136,8 @@ impl Client {
                 Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
                     return Err(error);
                 }
+                // What this left goes with its Machines: each one's Leave below resets
+                // it, and one that can't leave is reported as a failure.
                 Err(_) => {}
             }
         }
@@ -162,6 +164,7 @@ impl Client {
                     return Err(error);
                 }
                 Err(error) => {
+                    // Best effort: the failure below already reports this Machine.
                     if machine_id != current {
                         let _ = forget(self, machine_id).await;
                     }

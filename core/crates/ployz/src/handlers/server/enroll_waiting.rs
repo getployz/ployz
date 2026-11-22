@@ -11,7 +11,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::super::waiting::{self, Waiting};
+use super::super::waiting::{self, State, Waiting};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
@@ -115,19 +115,6 @@ struct Attempt {
     queued: bool,
     ahead: Option<u64>,
     failure: Option<Failure>,
-}
-
-#[derive(Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum State {
-    AwaitingFounder,
-    Instructed,
-    Running,
-    Joined,
-    Failed,
-    Cancelled,
-    #[serde(other)]
-    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -296,7 +283,7 @@ fn request(matches: &ArgMatches, selected: &[&Waiting]) -> Result<Value, Error> 
         }
         None => None,
     };
-    let mut body = json!({ "ids": selected.iter().map(|host| &host.row.id).collect::<Vec<_>>(), "first": first, "names": names, "storage": storage, "runs": { "services": true, "ingress": true, "builds": true } });
+    let mut body = json!({ "ids": selected.iter().map(|host| &host.row.id).collect::<Vec<_>>(), "first": first, "names": names, "storage": storage, "runs": runs() });
     if let (Some(regions), Some(fields)) = (regions, body.as_object_mut()) {
         fields.insert("regions".to_owned(), regions.into());
     }
@@ -379,12 +366,17 @@ fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<()
                 if plan.plan.len() == 1 { "" } else { "s" }
             ),
             || {
-                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } })).hint(Hint::Retry(typed_with(&["--yes"])))
+                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": runs() })).hint(Hint::Retry(typed_with(&["--yes"])))
             },
             "Nothing enrolled.",
         )?;
     }
     Ok(())
+}
+
+/// What every planned Server runs; enrollment offers no other choice yet.
+fn runs() -> Value {
+    json!({ "services": true, "ingress": true, "builds": true })
 }
 
 async fn attempts(credential: &Credential) -> Result<Vec<Value>, Error> {
@@ -395,7 +387,7 @@ async fn attempts(credential: &Credential) -> Result<Vec<Value>, Error> {
 
 fn finish(rows: &[Value], plan: Option<&Plan>, interrupted: bool) -> Result<(), Error> {
     ui::finish(
-        &json!({ "enrollments": rows, "plan": plan.map(|plan| &plan.plan), "skipped": plan.map(|plan| &plan.skipped), "changes": plan.map(|plan| &plan.changes), "spread": plan.map(|plan| &plan.spread), "runs": plan.map(|_| json!({ "services": true, "ingress": true, "builds": true })), "waiting_servers": plan.map(|plan| &plan.waiting_servers), "interrupted": interrupted }),
+        &json!({ "enrollments": rows, "plan": plan.map(|plan| &plan.plan), "skipped": plan.map(|plan| &plan.skipped), "changes": plan.map(|plan| &plan.changes), "spread": plan.map(|plan| &plan.spread), "runs": plan.map(|_| runs()), "waiting_servers": plan.map(|plan| &plan.waiting_servers), "interrupted": interrupted }),
         || {},
     )
 }
@@ -487,7 +479,7 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let mut open = Vec::new();
     for raw in runtime.block_on(attempts(&credential))? {
         let row: Attempt = serde_json::from_value(raw.clone())?;
-        if !matches!(row.state, State::Joined | State::Failed | State::Cancelled)
+        if row.state.open()
             && (resume_only
                 || selected
                     .iter()
@@ -685,7 +677,7 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
         return runtime.block_on(follow(&credential, enrollments, Some(&plan)));
     }
     ui::finish(
-        &json!({ "enrollments": enrollments, "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } }),
+        &json!({ "enrollments": enrollments, "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": runs() }),
         || {
             for raw in &enrollments {
                 let name = raw

@@ -8,8 +8,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use clap::ArgMatches;
-use ployz_core::{Hint, MachineRelease, RpcErrorCode, StoragePreparation};
+use ployz_core::{Hint, RpcErrorCode, StoragePreparation};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -188,42 +187,6 @@ impl Coded for ProvisionError {
     }
 }
 
-/// Resolve Machine storage preparation once before provisioning or enrollment.
-pub(crate) fn resolve_storage(
-    matches: &ArgMatches,
-) -> Result<StoragePreparation, crate::failure::Failure> {
-    let storage = match matches.get_one::<StoragePreparation>("storage").cloned() {
-        Some(storage) => storage,
-        None if matches.get_flag("yes") || matches.get_flag("no-install") => {
-            StoragePreparation::None
-        }
-        None => {
-            let index = crate::ui::select(
-                "Storage preparation",
-                &["zfs (recommended)", "none (Docker only, not recommended)"],
-                0,
-                || {
-                    crate::failure::Failure::usage(
-                        "Choosing storage needs a terminal; pass --storage zfs or --storage none.",
-                    )
-                    .hint(Hint::Retry(crate::cli::typed_with(&["--storage", "zfs"])))
-                },
-                "Cancelled. Nothing was installed.",
-            )?;
-            if index == 0 {
-                StoragePreparation::Zfs { device: None }
-            } else {
-                StoragePreparation::None
-            }
-        }
-    };
-    if matches!(storage, StoragePreparation::Zfs { .. }) && matches.get_flag("no-install") {
-        return Err(ProvisionError::ZfsWithoutInstaller.into());
-    }
-    announce_storage(&storage);
-    Ok(storage)
-}
-
 /// Why `--storage none` is not recommended; said once when a Server starts without ZFS.
 const DOCKER_ONLY: &str = "Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.";
 
@@ -291,11 +254,15 @@ pub(crate) struct RemoteTarget {
 }
 
 impl RemoteTarget {
-    pub(crate) fn from_matches(matches: &ArgMatches) -> Self {
+    pub(crate) fn new(
+        destination: Option<String>,
+        ssh_key: Option<String>,
+        timeout: std::time::Duration,
+    ) -> Self {
         Self {
-            destination: matches.get_one::<String>("destination").cloned(),
-            ssh_key: matches.get_one::<String>("ssh-key").cloned(),
-            timeout: crate::cli::ssh_timeout(matches),
+            destination,
+            ssh_key,
+            timeout,
         }
     }
 }
@@ -634,18 +601,6 @@ fn finish_remote(
 /// invalid, when platform inspection, bootstrap acquisition, checksum or version
 /// verification fails, when staging or installation fails, or when the staged
 /// bootstrap cannot be removed.
-pub async fn provision(
-    matches: &ArgMatches,
-    storage: &StoragePreparation,
-) -> Result<(), ProvisionError> {
-    let version = matches
-        .get_one::<MachineRelease>("version")
-        .expect("version has a default")
-        .to_string();
-    provision_target(&RemoteTarget::from_matches(matches), &version, storage).await
-}
-
-/// [`provision`] to a target and release already read from the command line.
 pub(crate) async fn provision_target(
     target: &RemoteTarget,
     version: &str,
@@ -892,7 +847,9 @@ mod tests {
                 .unwrap()
                 .subcommand_matches("add")
                 .unwrap();
-            let remote = Remote::from_target(&RemoteTarget::from_matches(matches)).unwrap();
+            let remote =
+                Remote::from_target(&crate::handlers::server::provision::remote_target(matches))
+                    .unwrap();
             let ssh = remote.ssh();
             let scp = remote.scp();
             for command in [&ssh, &scp] {
@@ -996,67 +953,6 @@ mod tests {
                 ]))
             );
         }
-    }
-
-    #[test]
-    fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
-        assert_eq!(
-            storage_matches(["ployz", "server", "add", "root@host", "--storage", "zfs"]),
-            StoragePreparation::Zfs { device: None }
-        );
-        assert_eq!(
-            storage_matches([
-                "ployz",
-                "server",
-                "add",
-                "--standalone",
-                "root@host",
-                "--storage",
-                "none"
-            ]),
-            StoragePreparation::None
-        );
-        assert_eq!(
-            storage_matches(["ployz", "server", "add", "root@host", "--yes"]),
-            StoragePreparation::None
-        );
-    }
-
-    #[test]
-    fn zfs_requires_the_installer() {
-        let matches = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "server",
-                "add",
-                "root@host",
-                "--storage",
-                "zfs",
-                "--no-install",
-            ])
-            .unwrap();
-        assert_eq!(
-            resolve_storage(
-                matches
-                    .subcommand_matches("server")
-                    .unwrap()
-                    .subcommand_matches("add")
-                    .unwrap(),
-            )
-            .unwrap_err()
-            .to_string(),
-            "zfs storage preparation requires the installer; remove --no-install"
-        );
-    }
-
-    fn storage_matches<const N: usize>(args: [&str; N]) -> StoragePreparation {
-        let matches = crate::cli::command().try_get_matches_from(args).unwrap();
-        let (_, matches) = matches
-            .subcommand_matches("server")
-            .unwrap()
-            .subcommand()
-            .unwrap();
-        resolve_storage(matches).unwrap()
     }
 
     #[tokio::test]

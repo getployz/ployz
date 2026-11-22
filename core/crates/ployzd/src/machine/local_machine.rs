@@ -103,6 +103,7 @@ pub(crate) use sealing_recovery::Error as RecoveryError;
 pub(crate) use sealing_recovery::back_up;
 mod turns;
 mod upgrade;
+mod volume_copy;
 
 /// Failures from Local Machine operations. The RPC adapter maps these once.
 #[derive(Debug, Error)]
@@ -364,7 +365,7 @@ impl LocalMachine {
     /// This handle for work inside the switch `held` keeps, whose creates and starts of a
     /// Provisioned Volume's holder take no lock of their own.
     #[must_use]
-    pub(crate) fn inside_switch(&self, held: &SwitchGuard) -> Self {
+    fn inside_switch(&self, held: &SwitchGuard) -> Self {
         debug_assert!(Arc::ptr_eq(
             tokio::sync::OwnedMutexGuard::mutex(held),
             &self.switch
@@ -527,6 +528,20 @@ impl LocalMachine {
             .await
             .ok()
             .flatten()
+    }
+
+    /// The Cluster network, from this Machine's record or, once joined, from the
+    /// replicated Cluster record.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Cluster has not published its network to this Machine.
+    pub(crate) async fn cluster_network(&self) -> Result<ipnet::Ipv4Net, Error> {
+        let record = self.record();
+        if let Some(network) = record.cluster_network() {
+            return Ok(network);
+        }
+        published_network(&record, self.replicated()?).await
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -793,7 +808,10 @@ impl LocalMachine {
     /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when the update is not legal, and [`Error::Cluster`]
     /// when listing visible Machines fails.
-    pub async fn update(&self, request: UpdateMachineRequest) -> Result<MachineUpdated, Error> {
+    pub async fn update_machine(
+        &self,
+        request: UpdateMachineRequest,
+    ) -> Result<MachineUpdated, Error> {
         // Policy edits affect new admission without waiting for active Builds.
         // Ordinary mutations remain serialized; all updates exclude installation.
         if request.update.is_policy_edit() {

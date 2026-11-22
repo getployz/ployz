@@ -8,8 +8,7 @@
 //! Edit gives a riding variable the value it lands with. The merge lands the list
 //! in one Saved revision and deploys what it changed with the merge's push.
 
-#[path = "../backend/mod.rs"]
-mod backend;
+use ployz_store::testing::backend;
 mod merge;
 mod node_removals;
 mod review_findings;

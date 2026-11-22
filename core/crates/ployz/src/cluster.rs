@@ -39,7 +39,6 @@ use crate::{
         DeploySnapshot, VolumeSnapshot,
         cleanup::{self, UserStarted},
     },
-    service::ContainerOperationFailure,
 };
 
 mod call;
@@ -2047,3 +2046,9 @@ fn admitted(started: UserStarted) -> Result<(), RpcError> {
 #[cfg(test)]
 #[path = "cluster_tests.rs"]
 mod tests;
+
+#[derive(Clone, Debug)]
+pub struct ContainerOperationFailure {
+    pub container_id: ContainerId,
+    pub error: RpcError,
+}

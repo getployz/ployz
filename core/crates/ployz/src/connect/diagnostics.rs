@@ -7,13 +7,14 @@ use std::{
 };
 
 use serde::Serialize;
+use ts_rs::TS;
 
 tokio::task_local! {
     static CURRENT: Arc<Mutex<DialTimings>>;
 }
 
 /// The route selected when Iroh completes its QUIC connect. It can change later.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PathKind {
     Direct,
@@ -23,7 +24,7 @@ pub enum PathKind {
 }
 
 /// The last observation of a pending management dial.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DialOutcome {
     Answered,
@@ -58,30 +59,90 @@ impl PathKind {
 }
 
 /// Stages observed by the native SDK. A missing duration means the stage was not reached.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DialTimings {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub endpoint_bind_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub iroh_connect_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub proof_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub http2_channel_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub probe_describe_contract_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub entry_describe_contract_ms: Option<u64>,
     pub path_kind: PathKind,
     #[serde(skip)]
     pub(super) selected_connection: Option<iroh::endpoint::Connection>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     unfinished_stage: Option<Stage>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+/// One dial's record as the SDK hands it to JavaScript: its stages, total and outcome.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "DialTiming")]
+pub struct DialRecord {
+    /// The value the caller shares across one Cloud dial's records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    correlation: Option<String>,
+    total_ms: u64,
+    #[serde(flatten)]
+    timings: DialTimings,
+    outcome: DialOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    stopped_by: Option<StoppedBy>,
+}
+
+/// Who stopped a dial that did not settle on its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
+pub enum StoppedBy {
+    SdkDeadline,
+    Caller,
+}
+
+impl DialRecord {
+    /// The record of a dial that took `total_ms` and ended in `outcome`. Reads Iroh's
+    /// path, so build one only for a record that will be emitted.
+    #[must_use]
+    pub fn new(
+        mut timings: DialTimings,
+        total_ms: u64,
+        outcome: DialOutcome,
+        correlation: Option<String>,
+    ) -> Self {
+        timings.path_kind = timings.selected_path();
+        let stopped_by = match outcome {
+            DialOutcome::TimedOut => Some(StoppedBy::SdkDeadline),
+            DialOutcome::Cancelled => Some(StoppedBy::Caller),
+            DialOutcome::Answered | DialOutcome::Refused | DialOutcome::Unanswered => None,
+        };
+        Self {
+            correlation,
+            total_ms,
+            timings,
+            outcome,
+            stopped_by,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename = "DialStage")]
 pub(super) enum Stage {
     EndpointBind,
     IrohConnect,
@@ -135,9 +196,7 @@ impl StageGuard {
 }
 
 impl DialTimings {
-    /// Read Iroh's path only for a record that will be emitted.
-    #[must_use]
-    pub fn selected_path(&self) -> PathKind {
+    fn selected_path(&self) -> PathKind {
         self.selected_connection
             .as_ref()
             .map_or(PathKind::Unknown, |connection| {

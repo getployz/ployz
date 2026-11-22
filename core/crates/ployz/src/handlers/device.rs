@@ -405,7 +405,7 @@ fn grant_summary(grant: &ployz_core::authority::Grant) -> String {
 
 /// Where the join this CLI signs came from, which decides what the signed body may name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum JoinEntry {
+pub(crate) enum JoinEntry {
     /// Through Cloud, which could name a Cluster or a Device of its own.
     Relayed,
     /// Over a route the person chose, so the body is the entry's own word. `pins_its_devices`
@@ -415,7 +415,7 @@ pub(super) enum JoinEntry {
 
 /// Sign the join waiting for `expected`, narrowed to what the joiner's pin installs, so the
 /// summary shows what the Server will trust.
-pub(super) async fn sign_waiting_join(
+pub(crate) async fn sign_waiting_join(
     client: &mut Client,
     config: &Path,
     expected: &ployz_core::RegisterRequest,

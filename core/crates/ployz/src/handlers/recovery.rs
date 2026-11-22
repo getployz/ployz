@@ -57,7 +57,7 @@ pub(super) fn rotate_command(command: Command) -> Command {
 }
 
 /// Whether a person sees a fresh recovery code: on a terminal, or under `--json` only on request.
-pub(super) fn shows_code(requested: bool, json: bool, stdout_is_terminal: bool) -> bool {
+pub(crate) fn shows_code(requested: bool, json: bool, stdout_is_terminal: bool) -> bool {
     if json { requested } else { stdout_is_terminal }
 }
 
@@ -202,7 +202,7 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
     print_code(public_key, &code, KEEP_THE_CODE)
 }
 
-pub(super) async fn wrap_sealing_key(
+pub(crate) async fn wrap_sealing_key(
     client: &mut Client,
     code: &RecoveryCode,
 ) -> Result<RecoveryBackup, Error> {

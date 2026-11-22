@@ -14,7 +14,7 @@ use super::slot::unknown_eligibility;
 use crate::cluster::Call;
 use crate::connect::Client;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, RotationFailure};
+use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, Removal, RotationFailure};
 use crate::failure::Failure;
 
 /// A Machine's own view of itself while it participates.
@@ -175,7 +175,6 @@ pub(crate) async fn retire_ingress_proxy<C: CopyLifecycle>(
     machine_id: &MachineId,
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
-    let sentence = Sentence::Drain(&ServerNames::default());
     for door in [
         QualifiedService::system_tunnel(),
         QualifiedService::system_ingress(),
@@ -183,12 +182,16 @@ pub(crate) async fn retire_ingress_proxy<C: CopyLifecycle>(
     ] {
         for observed in client.target_copies(machine_id, &door).await? {
             if cancellation.is_cancelled() {
-                return Err(sentence.error(RotationFailure::Cancelled));
+                return Err(RpcError::unavailable(
+                    "the Ingress Proxy's removal was cancelled",
+                ));
             }
-            cleanup::remove(client, &Copy::observed(&observed), AnonymousVolumes::Remove)
-                .await?
-                .failure()
-                .map_err(|failure| sentence.error(failure))?;
+            if let Removal::Refused(refusal) =
+                cleanup::remove(client, &Copy::observed(&observed), AnonymousVolumes::Remove)
+                    .await?
+            {
+                return Err(refusal.into_error());
+            }
         }
     }
     Ok(())

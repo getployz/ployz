@@ -7,17 +7,17 @@ use std::collections::BTreeMap;
 
 use ployz_agent_tools::{Accept, Confirmation};
 use ployz_store::{
-    Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
-    EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
-    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName, VolumesQuery, Waiting,
+    DeploymentStatus, DeploymentSummary, DeploymentView, DestructiveEffect, DestructiveKind,
+    EnvironmentName, EnvironmentRef, EnvironmentSummary, EnvironmentsQuery, Left, ProjectName,
+    ProjectsQuery, Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery, VolumeName,
+    VolumesQuery, Waiting,
 };
 use serde_json::json;
 
 use super::Error;
 use super::deploy;
 use super::shared::accepted::{accepted, not_applied, with_accepted};
-use super::store::{self, Store, mint};
+use super::store::{self, Store};
 use crate::cloud::account::StoreCallError;
 
 use crate::ui::{self, Tree};
@@ -256,27 +256,11 @@ pub(super) fn remove(
                 }
                 return removed(&mut ran);
             }
-            store.sweep().map_err(|error| store.fail(error))?;
-            if gone(store, project, environment)? {
-                return removed(&mut ran);
-            }
-            for due in store.read(&DueQuery {})? {
-                let summary = due.environment;
-                if summary.project != *project
-                    || environment.is_some_and(|name| *name != summary.name)
-                {
-                    continue;
-                }
-                admitted.push(
-                    store
-                        .admit(&Admit::Remove(AdmitRemoval {
-                            id: DeploymentId::parse(mint())?,
-                            environment: at(&summary.name),
-                        }))
-                        .map_err(|error| store.fail(error))?,
-                );
-            }
+            admitted = store.admit_due_removals(project, environment)?;
             if admitted.is_empty() {
+                if gone(store, project, environment)? {
+                    return removed(&mut ran);
+                }
                 return Err(stalled(project, environment, &left).hint(Hint::Next(again.clone())));
             }
         }

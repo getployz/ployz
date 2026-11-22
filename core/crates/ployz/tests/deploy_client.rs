@@ -1104,6 +1104,7 @@ async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
     let observed = ployz::sdk::observe_volumes(
         vec![ployz::context::Connection::tcp(address).with_machine_id(server)],
         sought.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -1133,7 +1134,7 @@ async fn observing_a_server_that_fails_the_check_returns_without_asking_it_again
 
     let observed = tokio::time::timeout(
         Duration::from_secs(6),
-        ployz::sdk::observe_volumes(vec![ployz::context::Connection::tcp(address)], sought),
+        ployz::sdk::observe_volumes(vec![ployz::context::Connection::tcp(address)], sought, None),
     )
     .await
     .expect("a failed check returns its refusal")
@@ -1167,6 +1168,7 @@ async fn observing_through_a_daemon_that_refuses_does_not_name_a_server_it_did_n
             ployz::context::Connection::tcp(address),
         ],
         sought,
+        None,
     )
     .await
     .unwrap();
@@ -1197,6 +1199,7 @@ async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() 
     let observed = ployz::sdk::observe_volumes(
         vec![ployz::context::Connection::tcp(address).with_machine_id(one)],
         sought.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -1241,6 +1244,7 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
     let observed = ployz::sdk::observe_volumes(
         vec![ployz::context::Connection::tcp(address)],
         vec![name("slot"), name("unlisted-writer"), name("gone")],
+        None,
     )
     .await
     .unwrap();
@@ -1894,7 +1898,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         .into_iter()
         .map(|volume| volume.docker_volume)
         .collect();
-    let observed = ployz::sdk::observe_volumes(connections(), sought)
+    let observed = ployz::sdk::observe_volumes(connections(), sought, None)
         .await
         .unwrap();
     assert_eq!(observed.held.len(), 1);

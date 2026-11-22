@@ -196,20 +196,6 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// The Cluster network, from this Machine's record or, once joined, from the
-    /// replicated Cluster record.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the Cluster has not published its network to this Machine.
-    pub(crate) async fn cluster_network(&self) -> Result<ipnet::Ipv4Net, Error> {
-        let record = self.record();
-        if let Some(network) = record.cluster_network() {
-            return Ok(network);
-        }
-        super::published_network(&record, self.replicated()?).await
-    }
-
     /// Place this Machine's Private Access router, or remove it. An Operator's turn on
     /// needs an approval, as [`Self::admit_operator_private_access`] decides.
     ///

@@ -12,7 +12,7 @@ use ployz_core::MachineId;
 pub(crate) mod account;
 pub(crate) mod build;
 pub(crate) mod catalog;
-pub(crate) mod cloud;
+mod cloud;
 mod cloud_read;
 pub(crate) mod cluster;
 pub(crate) mod config;
@@ -41,13 +41,14 @@ pub(crate) mod project;
 pub(crate) mod recovery;
 pub(crate) mod region;
 pub(crate) mod review;
-mod route;
+pub(crate) mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
-use crate::cli::{command_path, config_path, leaf_matches, typed_with};
-pub(super) use shared::rerun::config_flag;
-use shared::rerun::{recovery_command, rerun};
+use crate::cli::{
+    command_path, config_path, leaf_matches, recovery_command, rerun, string_values, takes_value,
+    typed_with,
+};
 mod status;
 mod status_servers;
 pub(crate) mod store;
@@ -59,7 +60,7 @@ pub(crate) mod volume;
 #[doc(hidden)]
 pub use crate::provisioning::Installation;
 #[doc(hidden)]
-pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
+pub use server::enroll::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
 
@@ -399,29 +400,6 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         .map_err(|failure| context::with_context_next(failure, leaf_matches(matches)))
 }
 
-/// Whether the compiled command at `words` takes a value for the option `id`; a
-/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
-/// unbuilt, so a global argument still sits on the ancestor that declares it.
-fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
-    let root = crate::cli::compiled();
-    let takes = |arg: &clap::Arg| {
-        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
-    };
-    let mut command = &root;
-    let mut inherited = false;
-    for word in words {
-        let Some(child) = command.find_subcommand(word) else {
-            break;
-        };
-        inherited |= id != "context"
-            && command
-                .get_arguments()
-                .any(|arg| arg.is_global_set() && takes(arg));
-        command = child;
-    }
-    inherited || command.get_arguments().any(takes)
-}
-
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
 /// and Service names complete from the catalog and the Store.
 pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
@@ -450,21 +428,6 @@ pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn string_values(matches: &ArgMatches, id: &str) -> Vec<String> {
-    if matches.try_contains_id(id).ok() != Some(true) {
-        return Vec::new();
-    }
-    if matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue) {
-        return Vec::new();
-    }
-    matches
-        .try_get_many::<String>(id)
-        .ok()
-        .flatten()
-        .map(|values| values.cloned().collect())
-        .unwrap_or_default()
 }
 
 fn required(matches: &ArgMatches, name: &str) -> Result<String, Error> {
@@ -906,10 +869,7 @@ mod tests {
                 .map(std::ffi::OsString::from)
                 .collect::<Vec<_>>();
             let root = parse(&crate::cli::command(), &argv).unwrap();
-            let mut leaf = &root;
-            while let Some((_, child)) = leaf.subcommand() {
-                leaf = child;
-            }
+            let leaf = leaf_matches(&root);
             assert_eq!(
                 leaf.ids().any(|id| id == "context"),
                 context.is_some(),
