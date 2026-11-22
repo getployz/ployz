@@ -1,3 +1,4 @@
+/** @data-source org-store: table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via utils.writeUpsert */
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
 import { BasicIndex, collectionOptions, type Collection, type CollectionStatus } from "@tanstack/react-db";
 import { environmentManager, hashKey, type QueryClient } from "@tanstack/react-query";

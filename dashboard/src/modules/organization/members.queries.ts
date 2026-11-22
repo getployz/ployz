@@ -1,3 +1,4 @@
+/** @data-source remote: an Organization's members and pending invites, prefetched by Organization Settings and refetched after this tab's member writes; the change stream refetches it when a member or invite row changes. An invite link's Organization and state, prefetched by its page, which joining leaves */
 import { queryOptions, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
 import { can, type Permission } from "#/modules/organization/permissions";

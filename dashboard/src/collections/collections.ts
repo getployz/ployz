@@ -1,3 +1,4 @@
+/** @data-source org-store: table default for every table */
 import type { OrgCollection } from "./change-log/declare";
 import type { CollectionName, CollectionRead } from "./read.contract";
 import { createChangeCollection } from "#/collections/query-collection";

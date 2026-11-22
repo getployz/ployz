@@ -18,12 +18,14 @@ import {
   isStringLiteral,
   isVariableDeclaration,
 } from "typescript/unstable/ast/is";
-import { dataSources } from "./data-sources";
 
 const root = process.cwd();
 const SRC = join(root, "src");
 const DATA_FILE = /^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
 const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
+// The first line of a data file: /** @data-source <kind>: <freshness> */
+const DATA_SOURCE_HEADER = /^\/\*\* @data-source (\S+?): (.+) \*\/$/;
+const DATA_SOURCE_KINDS = ["org-store", "runtime", "remote"];
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
@@ -186,9 +188,14 @@ function filesMatching(pattern: RegExp) {
 }
 
 describe("data boundaries", () => {
-  it("creates every data source in a registered data file", () => {
-    expect(filesMatching(CREATES_SOURCE), "Register the source in collections/data-sources.ts").toEqual(Object.keys(dataSources).sort());
-    expect(Object.keys(dataSources).filter((path) => !DATA_FILE.test(path)), "Name data files *.collection.ts, *.queries.ts, or *.stream.ts").toEqual([]);
+  it("creates every data source in a data file that declares its kind", () => {
+    const declared = sources.flatMap(({ path, text }) => {
+      const header = DATA_SOURCE_HEADER.exec(text.split("\n", 1)[0] ?? "");
+      return header ? [{ path, kind: header[1] ?? "", freshness: header[2] ?? "" }] : [];
+    });
+    expect(filesMatching(CREATES_SOURCE), "Start the file with `/** @data-source <kind>: <freshness> */`").toEqual(declared.map(({ path }) => path).sort());
+    expect(declared.filter(({ kind }) => !DATA_SOURCE_KINDS.includes(kind)).map(({ path }) => path), `The kind is one of ${DATA_SOURCE_KINDS.join(", ")}`).toEqual([]);
+    expect(declared.filter(({ path }) => !DATA_FILE.test(path)).map(({ path }) => path), "Name data files *.collection.ts, *.queries.ts, or *.stream.ts").toEqual([]);
   });
 
   it("derives views in live queries, never as collections", () => {
@@ -217,8 +224,8 @@ describe("data boundaries", () => {
   });
 
   it("prefetches every Remote Read in a loader unless it is read on demand", () => {
-    const remoteFiles = Object.entries(dataSources).filter(([path, source]) => source.kind === "remote" && path.endsWith(".queries.ts")).map(([path]) => path);
-    const factories = remoteFiles.flatMap((path) => [...readFileSync(join(SRC, path), "utf8").matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
+    const remoteFiles = sources.filter(({ path, text }) => path.endsWith(".queries.ts") && text.startsWith("/** @data-source remote:"));
+    const factories = remoteFiles.flatMap(({ text }) => [...text.matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
     const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
     // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
     const unprefetched = factories.filter((name) => !new RegExp(`((prefetchRemote\\w*|streamRemote\\w*)\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));

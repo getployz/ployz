@@ -1,3 +1,4 @@
+/** @data-source remote: each Server's latest web traffic change, the latest-of over history computed on the server; the change stream refetches it when a change's row changes */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { listLatestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { defineChange } from "#/collections/change-log/declare";

@@ -1,3 +1,4 @@
+/** @data-source remote: user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens */
 import { githubRepoAccessQueryOptions } from "./github.queries";
 import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";

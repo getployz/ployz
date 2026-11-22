@@ -1,3 +1,4 @@
+/** @data-source remote: proposals waiting on a human, and each one a card shows, polled every 2s while waiting or running: an agent can present, another tab decide, and each step end at any moment */
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import {
   decideProposalServerFn,

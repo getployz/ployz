@@ -1,3 +1,4 @@
+/** @data-source remote: the Organization's tokens the member can reach, prefetched by Organization Settings, fresh for 30s and refetched after this tab mints or revokes one; a token made elsewhere shows on the next refetch */
 import { queryOptions } from "@tanstack/react-query";
 import { listTokensServerFn } from "#/modules/identity/organization-token.functions";
 

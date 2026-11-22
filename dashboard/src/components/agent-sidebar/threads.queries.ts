@@ -1,3 +1,4 @@
+/** @data-source remote: the member's latest 30 chats, newest first, titled on the server; refetched when a turn in the open chat ends, the only writer of a member's own chats */
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { listAgentThreadsServerFn } from "#/modules/agent/agent.functions";
 

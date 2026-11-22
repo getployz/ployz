@@ -1,3 +1,4 @@
+/** @data-source remote: each Server's latest Drain, the latest-of over history computed on the server; the change stream refetches it when a Drain's row changes */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { listLatestServerDrainsServerFn } from "./server-drain.functions";
 import { defineChange } from "#/collections/change-log/declare";

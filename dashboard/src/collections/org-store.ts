@@ -1,3 +1,4 @@
+/** @data-source org-store: readiness only, once per organization; the change stream keeps tables fresh */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { preloadCollections } from "./query-collection";
 import { orgStoreKey, type CollectionScope } from "./scope";

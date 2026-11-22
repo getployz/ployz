@@ -1,3 +1,4 @@
+/** @data-source remote: every Volume's mirrors and staged placement; the change stream refetches them when a row changes */
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { listPlacementsServerFn } from "./volume-placement.functions";
 import { defineChange } from "#/collections/change-log/declare";

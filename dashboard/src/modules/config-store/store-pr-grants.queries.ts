@@ -1,3 +1,4 @@
+/** @data-source remote: installation permissions cached a minute: an owner approves them in GitHub, not here */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { listMissingStorePrGrantsServerFn } from "./store-pr-grants.functions";
 

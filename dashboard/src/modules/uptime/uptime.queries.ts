@@ -1,3 +1,4 @@
+/** @data-source remote: each Environment's checks with their open incidents, streamed by the canvas loader; one Service's summary and its response time for the shown range, streamed by the drawer on the Monitoring tab and prefetched on hover of the tab or a range. Never awaited, so a slow read never holds the page. Stale after 30s and polled every minute because the checker writes without a Cloud write to invalidate on. An Organization without Production reads a needs-Production answer, which stops the polling; the billing page invalidates these reads after a checkout */
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";

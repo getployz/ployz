@@ -1,3 +1,4 @@
+/** @data-source remote: whether the Organization seals in the browser, streamed by the Environment loader and cached a minute for display only; every Sealed write reads it afresh before it seals */
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { isUnauthorized } from "#/lib/error-message";
 import { readSealingFn } from "./sealing.functions";

@@ -1,3 +1,4 @@
+/** @data-source remote: the Waiting list, Enrollment attempts and the Fleet Tokens with their counts, prefetched by the Servers and Tokens pages and polled every 5s: a host checking in writes no row the change stream carries; Enroll, Cancel, Reject, Revoke and Create refetch them. The detail sheet alone polls the full report and probe. Waiting and enrollment polls use clock phases half a period apart, including after invalidation. Enrollment plans are on demand when the Enroll sheet opens or its inputs change */
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { listFleetTokensServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";

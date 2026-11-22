@@ -1,3 +1,4 @@
+/** @data-source remote: organization state: fresh on every mount; the change stream invalidates it when the organization changes */
 import { toast } from "sonner";
 import { environmentManager, queryOptions, useSuspenseQuery, type QueryClient } from "@tanstack/react-query";
 import { getOrganizationStateServerFn, syncOrganizationSlugServerFn } from "./organization-state.functions";

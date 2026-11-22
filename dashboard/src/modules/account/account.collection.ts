@@ -1,3 +1,4 @@
+/** @data-source remote: the signed-in user's live sessions and sign-in methods, prefetched by the Account page; stale after a minute; only this user revokes, and each revoke leaves at once */
 import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection } from "#/collections/query-collection";
 import type { CollectionScope } from "#/collections/scope";

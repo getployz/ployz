@@ -1,3 +1,4 @@
+/** @data-source remote: keyed by the Namespaces the Servers report, so a new one is checked afresh; an Environment deleted elsewhere shows within a minute */
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { listStrayNamespacesServerFn } from "./namespace-cleanup.functions";
 

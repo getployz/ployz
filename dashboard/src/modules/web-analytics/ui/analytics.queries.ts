@@ -1,3 +1,4 @@
+/** @data-source remote: one Environment's analytics for the shown range and page filter, prefetched by the Analytics page loader; stale after a minute because pageviews land without a Cloud write to invalidate on; a goal or turn-on write shows at once and refetches. An Organization without Production reads a needs-Production gate; the billing page invalidates these reads after a checkout */
 import { type QueryKey, queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";

@@ -1,3 +1,4 @@
+/** @data-source remote: approvals waiting on a human, and each one a chat names, polled every 2s while pending: any CLI, tab or device can ask or answer, and no change stream carries them */
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { ApprovalDecision } from "#/modules/approvals/approvals";
 import {

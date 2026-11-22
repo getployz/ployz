@@ -1,3 +1,4 @@
+/** @data-source remote: whether Cloud keeps log history and when each Server last sent logs, polled every 30s; the Services of an Environment with stored lines, fresh for 30s */
 import { queryOptions } from "@tanstack/react-query";
 import { Schema } from "effect";
 import type { RuntimeContainerRecord } from "./runtime.collection";

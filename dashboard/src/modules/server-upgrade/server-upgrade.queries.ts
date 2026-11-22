@@ -1,3 +1,4 @@
+/** @data-source remote: each Server's latest Upgrade attempt and when the latest success ended, latest-ofs over history computed on the server; the change stream refetches it when an attempt changes. The stable Release Channel pointer is cached five minutes here and in Cloud: releases are rare */
 import { queryOptions, skipToken, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import type { ChannelPointer } from "./server-upgrade";
 import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn } from "./server-upgrade.functions";

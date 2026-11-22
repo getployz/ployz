@@ -1,3 +1,4 @@
+/** @data-source runtime: SSE runtime watch */
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { collectionOptions, localOnlyCollectionOptions, type Collection, type VirtualRowProps } from "@tanstack/react-db";
 import { Schema } from "effect";

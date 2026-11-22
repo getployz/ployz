@@ -1,3 +1,4 @@
+/** @data-source remote: a Service's latest restart, start or stop and how many containers it moved; the change stream refetches it as each container's move is written */
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { latestServiceActServerFn } from "./service-act.functions";
 import { defineChange } from "#/collections/change-log/declare";

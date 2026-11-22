@@ -1,3 +1,4 @@
+/** @data-source remote: access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly; build workflow readiness cached 30s, refetched on focus and polled while a workflow commit is awaited; a repository's owner cached a minute, read when the automatic deploys dialog opens */
 import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { awaitsWorkflowCommit, githubBuildRepositoryKey } from "#/modules/github/github-build-workflow";
 import {

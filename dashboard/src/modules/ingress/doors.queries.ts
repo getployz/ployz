@@ -1,3 +1,4 @@
+/** @data-source remote: the Cluster's Cloudflare setup and latest switch, prefetched by Settings › Network and refetched by the change stream when a row changes; what the Servers hold now is asked of them live once the section shows, polled every 4s while a switch runs or the tunnel is in use; a switch review is read when its dialog opens and kept no longer */
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import type { DoorsWant } from "./doors";
 import { observeClusterIngressServerFn, readClusterIngressServerFn, reviewDoorsSwitchServerFn } from "./doors.functions";
