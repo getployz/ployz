@@ -1337,7 +1337,7 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 /// the copy checks against the content before writing. Image Cleanup alone reads those
 /// names, so an Operator may write them; any other name a Full creation may run.
 fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
-    let Some((_, digest)) = pull.image().split_once('@') else {
+    let Some(digest) = ployz_core::ImageRef::new(pull.image()).digest else {
         return false;
     };
     pull.tag().is_none_or(|tag| {

@@ -931,8 +931,8 @@ pub(super) fn machine() -> Machine {
 fn image_id(image: &str) -> String {
     use sha2::Digest as _;
 
-    match image.split_once('@') {
-        Some((_, digest)) => digest.to_owned(),
+    match ployz_core::ImageRef::new(image).digest {
+        Some(digest) => digest.to_owned(),
         // Docker takes a bare image ID as itself.
         None if image.starts_with("sha256:") => image.to_owned(),
         None => format!("sha256:{}", hex::encode(sha2::Sha256::digest(image))),

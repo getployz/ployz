@@ -13,11 +13,56 @@ use crate::{ValueError, is_lower_hex, value::validated_string_newtype};
 /// daemon of another version reads these tags, so the text does not change.
 pub const RETENTION_TAG: &str = ":ployz-sha256-";
 
+/// An image reference split where Docker splits it: the name before its first `@`, and the
+/// digest after. Docker allows one `@`, so a digest that holds another names no content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImageRef<'image> {
+    /// The repository and tag, as written.
+    pub name: &'image str,
+    /// The text after the first `@`, unchecked.
+    pub digest: Option<&'image str>,
+}
+
+impl<'image> ImageRef<'image> {
+    #[must_use]
+    pub fn new(image: &'image str) -> Self {
+        match image.split_once('@') {
+            Some((name, digest)) => Self {
+                name,
+                digest: Some(digest),
+            },
+            None => Self {
+                name: image,
+                digest: None,
+            },
+        }
+    }
+
+    /// The text that names this reference's content, unchecked: the digest after a
+    /// nonempty name, or the whole reference when it is a bare `sha256:` image ID.
+    #[must_use]
+    pub fn content_text(self) -> Option<&'image str> {
+        match self.digest {
+            Some(digest) if !self.name.is_empty() => Some(digest),
+            Some(_) => None,
+            None => self.name.starts_with("sha256:").then_some(self.name),
+        }
+    }
+
+    /// The content this reference names: `name@sha256:<64 lowercase hex>`, or a bare
+    /// `sha256:<64 lowercase hex>` image ID. Any other reference resolves through a tag the
+    /// image store's writers choose.
+    #[must_use]
+    pub fn content(self) -> Option<ImageDigest> {
+        ImageDigest::parse(self.content_text()?).ok()
+    }
+}
+
 /// `image` without its tag or digest, as written, registry and port kept:
 /// `registry:5000/api` of `registry:5000/api:v1@sha256:…`.
 #[must_use]
 pub fn image_repository(image: &str) -> &str {
-    let name = image.split_once('@').map_or(image, |(name, _)| name);
+    let name = ImageRef::new(image).name;
     match name.rsplit_once(':') {
         Some((repository, tag)) if !tag.contains('/') => repository,
         _ => name,
@@ -29,7 +74,7 @@ pub fn image_repository(image: &str) -> &str {
 /// A daemon prunes only these names, and a drain delivers a copied image under one.
 #[must_use]
 pub fn retention_tag(image: &str) -> Option<String> {
-    let (_, hex) = image.split_once("@sha256:")?;
+    let hex = ImageRef::new(image).digest?.strip_prefix("sha256:")?;
     Some(format!("{}{RETENTION_TAG}{hex}", image_repository(image)))
 }
 
@@ -264,6 +309,90 @@ mod tests {
             ("nginx:1.29@sha256:aa", "nginx"),
         ] {
             assert_eq!(image_repository(image), repository, "{image}");
+        }
+    }
+
+    #[test]
+    fn a_reference_names_content_only_by_one_lowercase_digest() {
+        let hex = "0123456789abcdef".repeat(4);
+        let upper = hex.to_uppercase();
+        let digest = format!("sha256:{hex}");
+        let upper_digest = format!("sha256:{upper}");
+        let two_at = format!("b@{digest}");
+        let content = ImageDigest::parse(digest.clone()).ok();
+        for (image, name, at, repository, named, retained) in [
+            ("nginx".to_owned(), "nginx", None, "nginx", None, None),
+            ("nginx:1.29".into(), "nginx:1.29", None, "nginx", None, None),
+            (
+                "registry:5000/web".into(),
+                "registry:5000/web",
+                None,
+                "registry:5000/web",
+                None,
+                None,
+            ),
+            (
+                format!("registry:5000/web:2@{digest}"),
+                "registry:5000/web:2",
+                Some(digest.as_str()),
+                "registry:5000/web",
+                content.clone(),
+                Some(format!("registry:5000/web{RETENTION_TAG}{hex}")),
+            ),
+            (
+                format!("web@{digest}"),
+                "web",
+                Some(digest.as_str()),
+                "web",
+                content.clone(),
+                Some(format!("web{RETENTION_TAG}{hex}")),
+            ),
+            (
+                digest.clone(),
+                digest.as_str(),
+                None,
+                "sha256",
+                content,
+                None,
+            ),
+            (
+                format!("web@{upper_digest}"),
+                "web",
+                Some(upper_digest.as_str()),
+                "web",
+                None,
+                Some(format!("web{RETENTION_TAG}{upper}")),
+            ),
+            (
+                format!("a@{two_at}"),
+                "a",
+                Some(two_at.as_str()),
+                "a",
+                None,
+                None,
+            ),
+            (
+                format!("@{digest}"),
+                "",
+                Some(digest.as_str()),
+                "",
+                None,
+                Some(format!("{RETENTION_TAG}{hex}")),
+            ),
+            (
+                "web@sha256:abc".into(),
+                "web",
+                Some("sha256:abc"),
+                "web",
+                None,
+                Some(format!("web{RETENTION_TAG}abc")),
+            ),
+        ] {
+            let reference = ImageRef::new(&image);
+            assert_eq!((reference.name, reference.digest), (name, at), "{image}");
+            assert_eq!(image_repository(&image), repository, "{image}");
+            assert_eq!(reference.content(), named, "{image}");
+            assert_eq!(retention_tag(&image), retained, "{image}");
         }
     }
 }

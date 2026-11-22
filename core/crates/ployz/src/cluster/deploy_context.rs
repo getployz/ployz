@@ -101,7 +101,7 @@ impl KeptVersions {
             namespace: new.slot.namespace.clone(),
             service: new.slot.service.clone(),
             digest,
-            image: image_of(&new.resolved_spec.container.image),
+            image: BuiltImageDigest::named_by(&new.resolved_spec.container.image),
         };
         let read = match self {
             Self::Local {
@@ -135,12 +135,6 @@ impl KeptVersions {
             }
         }
     }
-}
-
-/// The content digest `image` names, when it names one.
-fn image_of(image: &str) -> Option<BuiltImageDigest> {
-    let digest = image.rsplit_once('@').map_or(image, |(_, digest)| digest);
-    BuiltImageDigest::parse(digest).ok()
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in
