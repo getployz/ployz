@@ -529,6 +529,20 @@ impl LocalMachine {
             .flatten()
     }
 
+    /// The Cluster network, from this Machine's record or, once joined, from the
+    /// replicated Cluster record.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Cluster has not published its network to this Machine.
+    pub(crate) async fn cluster_network(&self) -> Result<ipnet::Ipv4Net, Error> {
+        let record = self.record();
+        if let Some(network) = record.cluster_network() {
+            return Ok(network);
+        }
+        published_network(&record, self.replicated()?).await
+    }
+
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
         self.cluster
             .as_ref()
