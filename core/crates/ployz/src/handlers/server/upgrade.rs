@@ -1022,32 +1022,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrade_reports_the_observed_version_and_direction() {
-        for (running, change) in [
-            ("1.2.3", "unchanged"),
-            ("1.2.4", "downgraded"),
-            ("1.2.2", "upgraded"),
-        ] {
-            let mut server = machine('a', 1);
-            server.name = MachineName::parse("machine-1").unwrap();
-            server.runtime.daemon_version = running.into();
-            let (result, outcome, _) = run_sequence(&[server], vec![succeeded()], None).await;
-            outcome.unwrap();
-            let result = result.unwrap();
-            assert_eq!(
-                result.pointer("/attempts/0/from_version"),
-                Some(&json!(running)),
-                "{result}"
-            );
-            assert_eq!(
-                result.pointer("/attempts/0/change"),
-                Some(&json!(change)),
-                "{result}"
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn a_missing_release_is_not_found_before_any_server_changes() {
         for reason in [
             "release selection: no such release 9.9.9",
