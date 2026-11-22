@@ -1006,7 +1006,7 @@ impl MachineRpc for MachineService {
         let provenance = Provenance::of(&request);
         let operator = provenance.operator();
         let request = expect::<op::MintBuildGrant>(request)?;
-        // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
+        // Refused before `Mint::check_admitted`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
         let admitted = match &request.rule {
             None => {
@@ -1035,11 +1035,10 @@ impl MachineRpc for MachineService {
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
-        let scope = provenance.scope();
         let mint = match crate::management::build_grant::Mint::check_admitted(
             request, key_dir, admitted,
         ) {
-            Ok(mint) => mint.minted_by(scope),
+            Ok(mint) => mint,
             Err(refused) => return respond(refused),
         };
         match crate::management::build_grant::mint_for(
