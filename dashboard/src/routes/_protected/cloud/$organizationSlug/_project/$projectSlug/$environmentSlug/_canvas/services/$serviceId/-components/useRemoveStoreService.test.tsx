@@ -7,7 +7,7 @@ import { expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as writes from "#/modules/config-store/store-write";
 import * as views from "#/modules/config-store/store-view.queries";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useRemoveStoreService } from "./useRemoveStoreService";
 
 const environment = { project: "shop", environment: "production" };

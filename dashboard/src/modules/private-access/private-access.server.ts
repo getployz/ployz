@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { PrivateAccessOn } from "@ployz/sdk";
 import { Data, Effect } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { approveKeyed, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
@@ -12,7 +13,6 @@ import { Conflict, Validation } from "#/server/public-error";
 
 const ROUTER_SETTLE_MS = 45_000;
 const SET_LIMIT_MS = 2 * ROUTER_SETTLE_MS;
-const UNANSWERED = "Your servers aren't answering. Try again once they are.";
 
 const refuse = (message: string) => new Validation({ message, userFacing: true });
 
@@ -28,7 +28,7 @@ export const observePrivateAccess = Effect.fn("PrivateAccess.observe")(function*
 
 const connectedSession = Effect.fn("PrivateAccess.session")(function* (organizationId: string) {
   const opened = yield* (yield* OrganizationRuntime).open(organizationId);
-  return opened.status === "connected" ? opened.connected : yield* refuse(UNANSWERED);
+  return opened.status === "connected" ? opened.connected : yield* refuse(SERVERS_UNANSWERED_MESSAGE);
 });
 
 const send = (session: PloyzSession, on: PrivateAccessOn | null) => session.setPrivateAccess(on).pipe(
@@ -78,6 +78,6 @@ export const approvePrivateAccess = Effect.fn("PrivateAccess.approve")(function*
 export const runPrivateAccess = Effect.fn("PrivateAccess.run")(function* (organizationId: string, to: PrivateAccessWant): Effect.fn.Return<PrivateAccessChanged, Validation | Error, Database | OrganizationRuntime> {
   if (to === "off") return yield* setPrivateAccess(organizationId, null);
   const observed = yield* observePrivateAccess(organizationId);
-  if (observed === null) return yield* refuse(UNANSWERED);
+  if (observed === null) return yield* refuse(SERVERS_UNANSWERED_MESSAGE);
   return { servers: observed.servers.map((server) => ({ ...server, router: server.router === "running" })), failures: [] };
 });

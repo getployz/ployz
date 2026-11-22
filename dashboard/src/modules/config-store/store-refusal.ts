@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, statusForRefusal, Unavailable, Validation } from "#/server/public-error";
 
 /**

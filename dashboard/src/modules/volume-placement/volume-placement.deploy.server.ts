@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners as allOwners, ownerOf, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";

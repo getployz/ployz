@@ -6,7 +6,7 @@ import type { ApprovalDecision, ServiceApply, VolumeApply } from "#/modules/appr
 import { type ApprovalView, type Decider, decideApproval, onceFor, type OperationDigest, readAsker, undoApproval } from "#/modules/approvals/approvals.server";
 import { callStore, writePermission } from "#/modules/config-store/config-store.server";
 import { findService } from "#/modules/config-store/store-lookup.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import type { Caller } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";

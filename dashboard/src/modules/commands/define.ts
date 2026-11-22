@@ -4,7 +4,8 @@ import { Effect, Schema, SchemaIssue } from "effect";
 import type { JsonObject } from "#/db/tables";
 import { asRecord, asString } from "#/lib/json";
 import { carriedInto, gateOperation, type OperationAsked, unspendApproval } from "#/modules/approvals/approvals.server";
-import { type CommandRefusal, type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
+import { type CommandRefusal } from "#/modules/config-store/store.contract";
+import { refused, type StoreRefusal, StoreRefused } from "#/lib/refusal";
 import type { Caller } from "#/modules/identity/actor";
 import { lacks } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
@@ -76,9 +77,6 @@ export type Command<N extends string = string, O extends Schema.Top = Schema.Top
   readonly output: O;
   readonly invoke: (caller: Caller, raw: JsonValue, call: CommandCall) => Effect.Effect<Called<O["Type"]>, Exclude<E, Refusable>, R | Database>;
 };
-
-export const refused = (code: string, message: string, details: JsonValue = null) =>
-  ({ ok: false, refusal: { code, message, details } }) as const;
 
 const issues = SchemaIssue.makeFormatterStandardSchemaV1();
 

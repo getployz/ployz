@@ -4,7 +4,7 @@ import type { ConfigCommand } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { anonymousTeardown } from "#/modules/sandbox/tables";
 import { callStore } from "#/modules/config-store/config-store.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { type RemovalConsent, removeTarget } from "#/modules/config-store/store-workspace";
 import { tokenRuns } from "#/modules/sandbox/claim-required.server";

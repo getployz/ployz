@@ -17,6 +17,7 @@ import {
 import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } from "@tanstack/ai-anthropic";
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { refused } from "#/lib/refusal";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
 import { type CallOrigin, sessionIdOf } from "#/modules/analytics/agent-calls.server";
@@ -45,8 +46,6 @@ import { canonicalJson, projectJsonValue } from "#/lib/json";
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
-
-const invalid = (message: string): ToolOutcome => ({ ok: false, refusal: { code: "invalid_argument", message, details: null } });
 
 /** A gated call as the sidebar shows it. */
 const shown = (result: AgentResult): Gated =>
@@ -127,7 +126,7 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
       const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
       const refuse = async (call: (typeof calls)[number], message: string) => {
         await run(ended(call, ctx.runId, { type: "validation", message }));
-        outcomes.set(call.id, invalid(message));
+        outcomes.set(call.id, refused("invalid_argument", message));
       };
       if (staged.length > 1) {
         for (const call of staged) await refuse(call, "Stage one step at a time.");

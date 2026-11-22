@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { DrainReport, DrainScope, MachineId, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schedule } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
@@ -10,7 +11,7 @@ import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server"
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { DRAIN_PENDING_LIMIT_MS, DRAIN_RUNNING_LIMIT_MS, type LatestDrain, type RequestedServerDrain, type RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { DRAIN_END_CODES, type DrainEndCode, type DrainEndCodeWithoutMessage, type DrainState } from "#/modules/machines/server-drain-states";
-import { drainPlan, planDrain, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
@@ -278,7 +279,7 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   // No Cluster paired is nothing to wait for.
-  if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: UNREACHABLE_MESSAGE });
+  if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
   if (session.status !== "connected") {
     return yield* new ServerDrainUnreachable({ operation: "open organization runtime", cause: session.status });
   }

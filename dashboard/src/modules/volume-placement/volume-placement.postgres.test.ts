@@ -4,7 +4,7 @@ import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { refusedPublicly } from "#/modules/config-store/store-refusal";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";

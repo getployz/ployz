@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { refused, type StoreRefusal } from "#/lib/refusal";
 import type { OperationTool } from "#/modules/operations/operations";
 import { operationRequest } from "#/modules/operations/tables";
 import { Database } from "#/server/database.server";
@@ -21,15 +21,12 @@ export type Admit<E, R> = (attemptId: string) => Effect.Effect<Admission, E, R>;
 
 class AdmissionRefused extends Data.TaggedError("AdmissionRefused")<{ readonly refused: Refused }> {}
 
-const refuse = (code: string, message: string, details: StoreRefusal["details"] = null): Refused =>
-  ({ ok: false, refusal: { code, message, details } });
-
 /** The request key a header carries, or a refusal when it isn't one. */
 export function requestKeyOf(header: string | null): { ok: true; key: string | null } | Refused {
   if (header === null) return { ok: true, key: null };
   return REQUEST_KEY.test(header)
     ? { ok: true, key: header }
-    : refuse("invalid_argument", "A request key is 8 to 64 letters, digits, '-' or '_'.");
+    : refused("invalid_argument", "A request key is 8 to 64 letters, digits, '-' or '_'.");
 }
 
 export const bodyDigest = <B>(tool: OperationTool, body: B) =>
@@ -42,7 +39,7 @@ export const attemptIdOf = (organizationId: string, tool: OperationTool, key: st
 const replay = (stored: typeof operationRequest.$inferSelect, tool: OperationTool, digest: string): Admission =>
   stored.tool === tool && stored.digest === digest
     ? { ok: true, id: stored.attemptId }
-    : refuse("conflict", "This request key already names a different request. Send a new key.", { attempt: stored.attemptId });
+    : refused("conflict", "This request key already names a different request. Send a new key.", { attempt: stored.attemptId });
 
 const storedRequest = (organizationId: string, key: string) =>
   Effect.flatMap(Database, ({ drizzle }) =>

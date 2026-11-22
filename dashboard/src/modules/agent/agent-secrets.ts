@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import type { BatchCommand, Change, ConfigCommand, JsonValue } from "@ployz/sdk";
 import type { JsonObject } from "#/db/tables";
 import { asRecord } from "#/lib/json";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 
 const holdsText = Schema.is(Schema.Struct({ secret: Schema.String }));
 const holdsCredential = Schema.is(Schema.Struct({ value: Schema.Struct({ secret: Schema.String }) }));

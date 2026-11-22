@@ -11,7 +11,7 @@ import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { SERVERS_UNANSWERED_MESSAGE, StoreRefused } from "#/lib/refusal";
 import {
   type CloudflareSetup,
   type ClusterIngressObservation,
@@ -437,7 +437,7 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
     .where(and(owned, eq(ingressDoorsAttempt.state, "pending"))).returning({ id: ingressDoorsAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
   const end = session === null
-    ? failed("Your servers aren't answering. Try again once they are.")
+    ? failed(SERVERS_UNANSWERED_MESSAGE)
     : yield* applySwitch(session, request, runId, row.want).pipe(
       Effect.map((ended) => ended.ok ? finished() : failed(ended.failure)),
       Effect.catch((error) => Effect.succeed(failed(failureWords(error)))),

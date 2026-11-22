@@ -19,7 +19,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 /**
  * The one review of a Sync, "Make into match from": each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,

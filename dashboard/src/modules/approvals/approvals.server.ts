@@ -22,7 +22,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import { user } from "#/modules/identity/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
+import { StoreRefused, type StoreRefusal } from "#/lib/refusal";
 import { type Actor, type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { beyondEnvironments, lacks, refusalOf } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";

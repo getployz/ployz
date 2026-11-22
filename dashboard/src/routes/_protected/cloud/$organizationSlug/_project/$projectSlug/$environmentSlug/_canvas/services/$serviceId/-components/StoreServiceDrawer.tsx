@@ -1,5 +1,5 @@
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";

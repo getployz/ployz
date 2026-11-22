@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { organizationToken, user } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";

@@ -4,7 +4,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.review";
 type Action = "deploy" | "publish";

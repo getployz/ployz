@@ -13,7 +13,8 @@ import { resolvePreferredBuilders } from "#/modules/config-store/preferred-build
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { cancelStoreGithubBuilds } from "#/modules/config-store/store-github-builds.server";
 import { githubMembers } from "#/modules/config-store/store-sources.server";
-import { commandEnvironments, isResealPending, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
+import { commandEnvironments, isResealPending, MAX_SHOWN_VIEWS } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";

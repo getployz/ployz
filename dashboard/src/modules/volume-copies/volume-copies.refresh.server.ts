@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { type CopyAsk, failureLines, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { type BlockerReader, placementRefusal, readPlacementBlockers } from "#/modules/volume-placement/volume-placement.deploy.server";

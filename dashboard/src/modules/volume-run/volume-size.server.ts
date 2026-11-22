@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { SetVolumeSizeRequest } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
-import type { StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
+import type { StoreRefusal, StoreRefused } from "#/lib/refusal";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Bytes, deployingMessage, gb, gbAtLeast, type SizeDirection, type SizeOutcome, type Unheld } from "#/modules/volume-run/resize";

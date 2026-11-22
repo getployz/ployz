@@ -2,8 +2,9 @@ import type { Client, ConfigStore, Connection, MachineId } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
-import { planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { planClean, planRemove } from "#/modules/machines/server-operations.server";
 import { freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { makeOrganizationRuntimeLayer, ORGANIZATION_CONNECT_TIMEOUT } from "#/modules/runtime/organization-runtime.server";
@@ -55,7 +56,7 @@ it.effect("Servers that refuse the connection are reported as not answering", ()
       Effect.provide(runtime(async () => { throw new Error("connection refused"); })),
       Effect.flip,
     );
-    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
+    assert.isTrue(error instanceof Conflict && error.message === SERVERS_UNANSWERED_MESSAGE);
   }),
 );
 
@@ -70,7 +71,7 @@ it.effect("Servers that never answer the connection are reported as not answerin
     yield* Deferred.await(dialing);
     yield* TestClock.adjust(ORGANIZATION_CONNECT_TIMEOUT);
     const error = yield* Fiber.join(planning);
-    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
+    assert.isTrue(error instanceof Conflict && error.message === SERVERS_UNANSWERED_MESSAGE);
   }),
 );
 
@@ -100,7 +101,7 @@ it.effect("a clean whose data loss never comes back is reported as not answering
     yield* TestClock.adjust("10 seconds");
     // The test clock stands still from here, so a plan that settles at all settled by 10 seconds.
     const error = yield* Fiber.join(planning);
-    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
+    assert.isTrue(error instanceof Conflict && error.message === SERVERS_UNANSWERED_MESSAGE);
   }),
 );
 

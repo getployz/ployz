@@ -7,7 +7,8 @@ import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organization/access.server";
 import { can, type Permission } from "#/modules/organization/permissions";
-import { type EnvironmentRef, StoreRefused, type StoreRead, type StoreRefusal } from "./store.contract";
+import { type EnvironmentRef, type StoreRead } from "./store.contract";
+import { StoreRefused, type StoreRefusal } from "#/lib/refusal";
 
 const notProtector: StoreRefusal = { code: "forbidden", message: refusalOf("environments:protect"), details: null };
 

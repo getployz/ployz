@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { ClusterName } from "#/modules/cluster-name/cluster-name";
 import { renameAsked, renameCluster } from "#/modules/cluster-name/cluster-name.server";
-import { defineCommand, refused } from "#/modules/commands/define";
+import { refused } from "#/lib/refusal";
+import { defineCommand } from "#/modules/commands/define";
 import { OPERATIONS } from "#/modules/operations/operations";
 
 const rename = OPERATIONS["cluster.rename"];

@@ -22,7 +22,7 @@ import {
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { useDeploymentCleanup } from "#/modules/config-store/retire-old.queries";

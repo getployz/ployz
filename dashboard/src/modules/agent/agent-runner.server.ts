@@ -13,7 +13,8 @@ import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
-import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
+import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
+import { refused, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
@@ -175,8 +176,6 @@ const KNOWN_TOOLS = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
 /** The proposal a call stages into, when its input names one. */
 export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
-
-const refused = (code: string, message: string): ToolOutcome => ({ ok: false, refusal: { code, message, details: null } });
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
 const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });

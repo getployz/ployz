@@ -10,7 +10,7 @@ import { hasApprover } from "#/modules/approvals/approvals.server";
 import { createCustomerPortal } from "#/modules/billing/billing.server";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { cliRefusalResponse } from "#/server/public-error";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { startGithubConnect } from "#/modules/github/github-connect.server";
 import type { Caller } from "#/modules/identity/actor";
 import { type ClaimedAction, claimUrlFor, requireClaimed } from "#/modules/sandbox/claim-required.server";
