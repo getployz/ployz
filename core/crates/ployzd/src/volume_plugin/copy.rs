@@ -5,7 +5,7 @@
 
 use crate::{
     dataset_layout::DatasetLayout,
-    faults::{Identity, Want},
+    faults::{Identity, Point, Want},
     machine_pool::MachinePool,
     volume_copy::{
         CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest, WriterRequest,
@@ -14,7 +14,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use ployz_core::{
-    CopyRefusal, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
+    CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
     SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 
@@ -293,7 +293,7 @@ impl VolumeStorage {
                 .await?;
         }
         crate::faults::kill_inside(
-            "SetVolumeCopy.WriterToMirror",
+            Point::Copy(CopyTransition::WriterToMirror),
             Some(Identity {
                 volume: &request.name,
                 want: Want::Mirror {
@@ -331,7 +331,7 @@ impl VolumeStorage {
             }
         }
         crate::faults::kill_inside(
-            "SetVolumeCopy.WriterToSnapshot",
+            Point::Copy(CopyTransition::WriterToSnapshot),
             Some(Identity {
                 volume: &request.name,
                 want: Want::Snapshot {
@@ -359,7 +359,7 @@ impl VolumeStorage {
                 .await?;
             if index == 0 {
                 crate::faults::kill_inside(
-                    "SetVolumeCopy.WriterToForget",
+                    Point::Copy(CopyTransition::WriterToForget),
                     Some(forgetting(name, request.r#gen)),
                 );
             }
@@ -619,7 +619,7 @@ impl VolumeStorage {
                     .map_err(internal)?;
                 self.create_slot(&parent, bound).await.map_err(internal)?;
                 crate::faults::kill_inside(
-                    "SetVolumeCopy.NoneToMirror",
+                    Point::Copy(CopyTransition::NoneToMirror),
                     Some(Identity {
                         volume: &request.name,
                         want: Want::Mirror {
@@ -756,9 +756,8 @@ impl VolumeStorage {
         r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), String> {
-        let fault = "SetVolumeCopy.MirrorToMirror";
         match self
-            .receive(from, &stream, (parent, fs), bound, fault, r#gen, stop)
+            .receive(from, &stream, (parent, fs), bound, r#gen, stop)
             .await
         {
             Ok(()) => return Ok(()),
@@ -798,7 +797,7 @@ impl VolumeStorage {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.receive_opened(opened, fs, bound, fault, pulling(&full, r#gen), stop)
+        self.receive_opened(opened, fs, bound, pulling(&full, r#gen), stop)
             .await
             .map_err(|failure| failure.to_string())
     }
@@ -904,7 +903,7 @@ impl VolumeStorage {
                 .map_err(internal)?
             {
                 crate::faults::kill_inside(
-                    "SetVolumeCopy.SeedToForget",
+                    Point::Copy(CopyTransition::SeedToForget),
                     Some(forgetting(wire, request.r#gen)),
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
@@ -942,7 +941,7 @@ impl VolumeStorage {
                 .await);
         }
         crate::faults::kill_inside(
-            "SetVolumeCopy.MirrorToForget",
+            Point::Copy(CopyTransition::MirrorToForget),
             Some(forgetting(wire, request.r#gen)),
         );
         self.z(&[

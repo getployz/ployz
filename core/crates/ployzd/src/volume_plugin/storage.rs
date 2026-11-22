@@ -176,7 +176,7 @@ impl VolumeStorage {
             let marks = self.marks(&existing.name);
             if marks.unregistered().await? {
                 marks.clear_promote().await?;
-                crate::faults::kill_inside("Create", None);
+                crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
             return Ok(());
         }

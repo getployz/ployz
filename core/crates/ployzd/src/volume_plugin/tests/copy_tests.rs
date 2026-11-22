@@ -2075,7 +2075,6 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
                     &stream,
                     ("tank/ployz-mirror/data", SLOT_FS),
                     BOUND,
-                    "test",
                     ployz_core::VolumeGen::default(),
                     &Stop::unowned(),
                 )
