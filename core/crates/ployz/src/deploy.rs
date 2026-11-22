@@ -1106,41 +1106,22 @@ pub enum PlanError {
 
 impl Coded for PlanError {
     fn code(&self) -> RpcErrorCode {
-        match self {
-            PlanError::Service { source, .. } => source.code(),
-            PlanError::ConflictingHostPublications { .. }
-            | PlanError::VolumeInSeveralRegions { .. }
-            | PlanError::ConflictingDockerVolumeDefinitions { .. }
-            | PlanError::DuplicateTargetService { .. }
-            | PlanError::MixedVolumeModes { .. }
-            | PlanError::DependencyCycle { .. }
-            | PlanError::RemovalInTarget { .. }
-            | PlanError::RemovalNotSelected { .. }
-            | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
-            PlanError::Storage { .. }
-            | PlanError::HostPortConflict { .. }
-            | PlanError::InsufficientCapacity
-            | PlanError::NoEligibleMachines { .. }
-            | PlanError::ServiceModeCannotChange
-            | PlanError::ProvisionedVolumeStorageRequired { .. }
-            | PlanError::ProvisionedVolumeStorageUnavailable
-            | PlanError::ExistingPlainVolume { .. }
-            | PlanError::ExistingProvisionedVolumeMismatch { .. }
-            | PlanError::NoWriter { .. }
-            | PlanError::VolumeServerTakesNoServices { .. }
-            | PlanError::FirstCopyUnfit { .. }
-            | PlanError::VolumeOriginsUnchecked { .. }
-            | PlanError::RegionUnmatched { .. }
-            | PlanError::VolumeOutsideRegion { .. }
-            | PlanError::VolumesApart { .. }
-            | PlanError::VolumeSharedAcrossRegions { .. }
-            | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
-            PlanError::CapacityUnknown
-            | PlanError::CopiesUnknown { .. }
-            | PlanError::VolumeHolderUnknown { .. }
-            | PlanError::ProvisionedVolumeStorageUnknown { .. } => RpcErrorCode::Unavailable,
-        }
+        self.refusal().cli
     }
+}
+
+/// How each surface codes a plan refusal, and whether deploying the same thing again
+/// is refused the same way. The surfaces disagree on some refusals; each code is what
+/// that surface has always sent, so each is kept.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Refusal {
+    /// The CLI's `--json` error.
+    pub(crate) cli: RpcErrorCode,
+    /// A Machine RPC reply, and a blocked Service's error.
+    pub(crate) rpc: RpcErrorCode,
+    /// The SDK's Deploy preparation failure.
+    pub(crate) preparation: RpcErrorCode,
+    pub(crate) same_again: bool,
 }
 
 /// Why a hostname another Service publishes can't be claimed in this Deploy.
@@ -1274,11 +1255,24 @@ impl PlanError {
     /// Deploying the same thing again is refused this way again: the refusal was
     /// decided from this Deploy's intent alone, so it holds until something staged
     /// changes. A refusal the snapshot, placement or a Server's labels take part in
-    /// stays false, since another Deploy landing or a label changing can clear it, as
-    /// does every refusal not listed here: the retry it keeps is the safe default.
+    /// stays false, since another Deploy landing or a label changing can clear it.
     #[must_use]
     pub fn same_again(&self) -> bool {
+        self.refusal().same_again
+    }
+
+    /// This refusal's row: its code on each surface and whether it holds again.
+    pub(crate) fn refusal(&self) -> Refusal {
+        use RpcErrorCode::{Conflict, Internal, InvalidArgument as Invalid, Unavailable};
+        use ployz_core::CodedRefusal as _;
+        let row = |cli, rpc, preparation, same_again| Refusal {
+            cli,
+            rpc,
+            preparation,
+            same_again,
+        };
         match self {
+            Self::Service { source, .. } => source.refusal(),
             Self::ConflictingHostPublications { .. }
             | Self::VolumeInSeveralRegions { .. }
             | Self::DuplicateTargetService { .. }
@@ -1286,38 +1280,51 @@ impl PlanError {
             | Self::DependencyCycle { .. }
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
-            | Self::RemovalInReservedNamespace { .. } => true,
-            Self::HostnameConflict { refusal, .. } => refusal.same_again(),
-            Self::Service { source, .. } => source.same_again(),
+            | Self::RemovalInReservedNamespace { .. } => row(Invalid, Invalid, Invalid, true),
             // Two Services may disagree about one Docker Volume only on a Server both
             // are placed on, which its labels decide.
-            Self::ConflictingDockerVolumeDefinitions { .. }
-            | Self::Storage { .. }
-            | Self::HostPortConflict { .. }
-            | Self::CapacityUnknown
+            Self::ConflictingDockerVolumeDefinitions { .. } => {
+                row(Invalid, Invalid, Invalid, false)
+            }
+            Self::HostnameConflict { refusal, .. } => {
+                row(Conflict, Invalid, Invalid, refusal.same_again())
+            }
+            Self::HostPortConflict { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
             | Self::ServiceModeCannotChange
-            | Self::NoWriter { .. }
-            | Self::VolumeServerTakesNoServices { .. }
-            | Self::FirstCopyUnfit { .. }
-            | Self::VolumeOriginsUnchecked { .. }
-            | Self::RegionUnmatched { .. }
-            | Self::VolumeOutsideRegion { .. }
-            | Self::VolumesApart { .. }
-            | Self::VolumeSharedAcrossRegions { .. }
-            | Self::CopiesUnknown { .. }
-            | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
             | Self::ProvisionedVolumeStorageUnavailable
-            | Self::ProvisionedVolumeStorageUnknown { .. }
             | Self::ExistingPlainVolume { .. }
-            | Self::ExistingProvisionedVolumeMismatch { .. } => false,
+            | Self::ExistingProvisionedVolumeMismatch { .. } => {
+                row(Conflict, Invalid, Invalid, false)
+            }
+            Self::CapacityUnknown | Self::ProvisionedVolumeStorageUnknown { .. } => {
+                row(Unavailable, Invalid, Invalid, false)
+            }
+            Self::Storage { source, .. } => row(Conflict, source.code(), Internal, false),
+            Self::NoWriter { .. } => row(
+                Conflict,
+                ployz_core::SwitchError::NoWriter.code(),
+                Internal,
+                false,
+            ),
+            Self::VolumeServerTakesNoServices { .. }
+            | Self::FirstCopyUnfit { .. }
+            | Self::VolumeOriginsUnchecked { .. } => row(Conflict, Conflict, Internal, false),
+            Self::RegionUnmatched { .. }
+            | Self::VolumeOutsideRegion { .. }
+            | Self::VolumesApart { .. }
+            | Self::VolumeSharedAcrossRegions { .. } => row(Conflict, Conflict, Invalid, false),
+            Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. } => {
+                row(Unavailable, Unavailable, Internal, false)
+            }
         }
     }
 
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
+        let refusal = self.refusal();
         match self {
             Self::Storage {
                 machine_id,
@@ -1342,57 +1349,95 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
-            error @ Self::VolumeServerTakesNoServices { .. } => RpcError::conflict(
-                error.to_string(),
-            )
-            .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
-            error @ Self::FirstCopyUnfit { .. } => RpcError::conflict(error.to_string())
-                .with_details(serde_json::json!({ "reason": "first_copy_unfit" })),
-            Self::VolumeOriginsUnchecked { ref names, .. } => {
-                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
-                    "reason": "upgrade_required",
-                    "servers": names,
-                }))
+            error @ (Self::ConflictingHostPublications { .. }
+            | Self::VolumeInSeveralRegions { .. }
+            | Self::DuplicateTargetService { .. }
+            | Self::MixedVolumeModes { .. }
+            | Self::DependencyCycle { .. }
+            | Self::RemovalInTarget { .. }
+            | Self::RemovalNotSelected { .. }
+            | Self::RemovalInReservedNamespace { .. }
+            | Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::HostnameConflict { .. }
+            | Self::HostPortConflict { .. }
+            | Self::InsufficientCapacity
+            | Self::NoEligibleMachines { .. }
+            | Self::ServiceModeCannotChange
+            | Self::ProvisionedVolumeStorageRequired { .. }
+            | Self::ProvisionedVolumeStorageUnavailable
+            | Self::ExistingPlainVolume { .. }
+            | Self::ExistingProvisionedVolumeMismatch { .. }
+            | Self::CapacityUnknown
+            | Self::ProvisionedVolumeStorageUnknown { .. }
+            | Self::CopiesUnknown { .. }
+            | Self::VolumeHolderUnknown { .. }
+            | Self::VolumeServerTakesNoServices { .. }
+            | Self::FirstCopyUnfit { .. }
+            | Self::VolumeOriginsUnchecked { .. }
+            | Self::RegionUnmatched { .. }
+            | Self::VolumeOutsideRegion { .. }
+            | Self::VolumesApart { .. }
+            | Self::VolumeSharedAcrossRegions { .. }) => {
+                let rpc = RpcError::new(refusal.rpc, error.to_string());
+                match error.rpc_details() {
+                    Some(details) => rpc.with_details(details),
+                    None if refusal.same_again => rpc.with_evidence(
+                        &crate::sdk::preparation_failure::PreparationFailure::same_again(),
+                    ),
+                    None => rpc,
+                }
             }
-            Self::RegionUnmatched { ref regions } => RpcError::conflict(self.to_string())
-                .with_details(serde_json::json!({
-                    "reason": "region_unmatched",
-                    "regions": regions.iter().map(|away| &away.region).collect::<Vec<_>>(),
-                })),
+        }
+    }
+
+    /// What a Machine RPC reply carries in `details` beside the message.
+    fn rpc_details(&self) -> Option<serde_json::Value> {
+        Some(match self {
+            Self::VolumeServerTakesNoServices { .. } => {
+                serde_json::json!({ "reason": "volume_server_takes_no_services" })
+            }
+            Self::FirstCopyUnfit { .. } => serde_json::json!({ "reason": "first_copy_unfit" }),
+            Self::VolumeOriginsUnchecked { names, .. } => serde_json::json!({
+                "reason": "upgrade_required",
+                "servers": names,
+            }),
+            Self::RegionUnmatched { regions } => serde_json::json!({
+                "reason": "region_unmatched",
+                "regions": regions.iter().map(|away| &away.region).collect::<Vec<_>>(),
+            }),
             Self::VolumeOutsideRegion {
-                ref volume,
-                ref machine,
-                ref region,
-                ref beside,
+                volume,
+                machine,
+                region,
+                beside,
             } => {
                 let (volume_region, replicas) = match beside {
                     BesideVolume::RunIn { region, replicas } => (Some(region), *replicas),
                     BesideVolume::Label => (None, None),
                 };
-                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                serde_json::json!({
                     "reason": "volume_outside_region",
                     "volume": volume,
                     "server": machine,
                     "region": region,
                     "volume_region": volume_region,
                     "replicas": replicas,
-                }))
+                })
             }
-            Self::VolumesApart { ref volumes, .. } => RpcError::conflict(self.to_string())
-                .with_details(serde_json::json!({
-                    "reason": "volumes_apart",
-                    "volumes": volumes
-                        .iter()
-                        .map(|(volume, region)| serde_json::json!({ "volume": volume, "region": region }))
-                        .collect::<Vec<_>>(),
-                })),
+            Self::VolumesApart { volumes, .. } => serde_json::json!({
+                "reason": "volumes_apart",
+                "volumes": volumes
+                    .iter()
+                    .map(|(volume, region)| serde_json::json!({ "volume": volume, "region": region }))
+                    .collect::<Vec<_>>(),
+            }),
             Self::VolumeSharedAcrossRegions {
-                ref volume,
-                ref service,
-                ref region,
-                ref sharers,
-                ref home,
-            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                volume,
+                service,
+                region,
+                sharers,
+                home,
+            } => serde_json::json!({
                 "reason": "volume_shared_across_regions",
                 "volume": volume,
                 "service": service,
@@ -1406,40 +1451,33 @@ impl PlanError {
                     SharedHome::Server(machine) => serde_json::json!({ "server": machine }),
                     SharedHome::Unmade => serde_json::json!("unmade"),
                 },
-            })),
-            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
-                RpcError::unavailable(error.to_string())
-            }
-            error @ (Self::ConflictingHostPublications { .. }
+            }),
+            Self::Storage { .. }
+            | Self::Service { .. }
+            | Self::NoWriter { .. }
+            | Self::ConflictingHostPublications { .. }
             | Self::VolumeInSeveralRegions { .. }
+            | Self::DuplicateTargetService { .. }
+            | Self::MixedVolumeModes { .. }
+            | Self::DependencyCycle { .. }
+            | Self::RemovalInTarget { .. }
+            | Self::RemovalNotSelected { .. }
+            | Self::RemovalInReservedNamespace { .. }
+            | Self::ConflictingDockerVolumeDefinitions { .. }
+            | Self::HostnameConflict { .. }
             | Self::HostPortConflict { .. }
-            | Self::CapacityUnknown
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
             | Self::ServiceModeCannotChange
-            | Self::ConflictingDockerVolumeDefinitions { .. }
-            | Self::DuplicateTargetService { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
             | Self::ProvisionedVolumeStorageUnavailable
-            | Self::ProvisionedVolumeStorageUnknown { .. }
             | Self::ExistingPlainVolume { .. }
             | Self::ExistingProvisionedVolumeMismatch { .. }
-            | Self::MixedVolumeModes { .. }
-            | Self::DependencyCycle { .. }
-            | Self::HostnameConflict { .. }
-            | Self::RemovalInTarget { .. }
-            | Self::RemovalNotSelected { .. }
-            | Self::RemovalInReservedNamespace { .. }) => {
-                let refusal = RpcError::invalid_argument(error.to_string());
-                if error.same_again() {
-                    refusal.with_evidence(
-                        &crate::sdk::preparation_failure::PreparationFailure::same_again(),
-                    )
-                } else {
-                    refusal
-                }
-            }
-        }
+            | Self::CapacityUnknown
+            | Self::ProvisionedVolumeStorageUnknown { .. }
+            | Self::CopiesUnknown { .. }
+            | Self::VolumeHolderUnknown { .. } => return None,
+        })
     }
 
     pub(crate) fn no_eligible_machines(constraints: Vec<EliminatingConstraint>) -> Self {
