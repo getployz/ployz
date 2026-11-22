@@ -184,8 +184,7 @@ pub(crate) fn sync(
 ) -> Result<Synced, RpcError> {
     let side = (&request.from, request.into.as_ref());
     let target = target(tx, who, side)?;
-    scope::lock_project(tx, &target.from)?;
-    let (from, mut into) = scope::load_pair(tx, who, (&target.from, &target.into), true)?;
+    let (from, mut into) = scope::lock_pair(tx, who, (&target.from, &target.into))?;
     let identity = proposal::identity(tx, &from, &into.summary.id)?;
     let mut found = proposal::find(tx, &into.summary.id, &identity)?;
     let close_after = request.close_after;
@@ -292,7 +291,7 @@ pub(crate) fn sync_view(
 ) -> Result<SyncView, RpcError> {
     let side = (&query.from, query.into.as_ref());
     let target = target(tx, who, side)?;
-    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
+    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into))?;
     let (sync, found, owners) = proposal::planned(tx, &from, &into)?;
     let plan = sync.plan(&into.working);
     let (from_names, into_names) = (from.names(), into.names());
@@ -483,7 +482,7 @@ pub(crate) fn sealing_targets(
     RpcError,
 > {
     let target = target(tx, who, side)?;
-    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
+    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into))?;
     let (sync, _, _) = proposal::planned(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(version))?;
     let sides = [&from.working, &into.working];
@@ -669,7 +668,7 @@ pub(crate) fn undo(
         return Err(missing());
     };
     let receiver = receiver.parse::<EnvironmentId>(0, "Sync")?;
-    scope::lock_project(tx, &receiver)?;
+    scope::lock_project_of(tx, &receiver)?;
     let mut receiver = scope::lock_id(tx, who, &receiver)?;
     if !pair::undo(tx, &mut receiver, id, trusted)? {
         return Err(missing());
