@@ -5,7 +5,8 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { checkStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
-import { recordStoreDeploymentRun, type StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
+import { recordStoreDeploymentRun, type StoreServices } from "#/modules/config-store/store-deployment.server";
+import type { EffectRunner } from "#/modules/inngest/run.server";
 import { disconnectGithub } from "#/modules/config-store/store-github-repositories.server";
 import { executeProcessGithubInstallationReceived } from "#/modules/github/inngest-sync/webhook";
 import type { Caller } from "#/modules/identity/actor";
@@ -52,7 +53,7 @@ for (const { stop, failed } of cases) {
       const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
       const services = yield* storeTestCloud({ github: github.service, authority: authority.service, inngest });
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
-      const run: StoreEffectRunner = (program) => Effect.runPromise(provided(program));
+      const run: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
       const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
       const store = yield* provided(seedStoreGitService(ORGANIZATION, {
         project: "00000000-0000-4000-8000-00000000c002", environment: "00000000-0000-4000-8000-00000000c003", service: "00000000-0000-4000-8000-00000000c004",
