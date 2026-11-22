@@ -4,7 +4,7 @@ import { EyeIcon, EyeOffIcon, LockIcon } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
-import { VariableValueInput } from "#/components/variables/VariableValueInput";
+import { VariableValueInput } from "./VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 
 const MASK = "*******";

@@ -17,15 +17,12 @@ import {
 } from "#/components/ui/empty";
 import { Separator } from "#/components/ui/separator";
 import { TabsContent } from "#/components/ui/tabs";
-import {
-  VariablesPanel,
-  type SealedControls,
-  type VariableAddInput,
-} from "#/components/variables/variables-panel";
+import type { SealedControls, VariableAddInput } from "./variables/variable-types";
+import { VariablesPanel } from "./variables/variables-panel";
 import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modules/variables/variables";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
-import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/ServiceVariablesRawEditor";
+import { ServiceVariablesRawEditor } from "./ServiceVariablesRawEditor";
 
 const LINK = buttonVariants({ variant: "link", size: "sm", className: "h-auto p-0" });
 

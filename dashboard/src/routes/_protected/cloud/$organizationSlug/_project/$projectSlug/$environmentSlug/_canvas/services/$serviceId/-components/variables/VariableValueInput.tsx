@@ -1,6 +1,6 @@
 import { Input } from "#/components/ui/input";
-import { ReferenceSuggestionList } from "#/components/variables/reference-suggestions";
-import { useVariableAutocomplete } from "#/components/variables/use-variable-autocomplete";
+import { ReferenceSuggestionList } from "./reference-suggestions";
+import { useVariableAutocomplete } from "./use-variable-autocomplete";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 
 type InputProps = Omit<React.ComponentProps<typeof Input>, "value" | "onChange">;

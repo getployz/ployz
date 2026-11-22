@@ -3,12 +3,12 @@ import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import {
   initialVariableRowState,
   variableRowReducer,
-} from "#/components/variables/variable-row-state";
-import { VariableRowActions } from "#/components/variables/variable-row-actions";
+} from "./variable-row-state";
+import { VariableRowActions } from "./variable-row-actions";
 import { ConfirmDialog } from "#/components/confirm-dialog";
-import { VariableRowHeading } from "#/components/variables/variable-row-heading";
-import { VariableRowValue } from "#/components/variables/variable-row-value";
-import { VariableRenameDialog } from "#/components/variables/variable-rename-dialog";
+import { VariableRowHeading } from "./variable-row-heading";
+import { VariableRowValue } from "./variable-row-value";
+import { VariableRenameDialog } from "./variable-rename-dialog";
 import type { Write } from "#/modules/config-store/store-write";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { referencesDeletedOwner } from "#/modules/variables/variable-template";

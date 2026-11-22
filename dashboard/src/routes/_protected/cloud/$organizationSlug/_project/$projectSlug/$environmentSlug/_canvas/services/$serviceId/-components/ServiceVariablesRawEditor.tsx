@@ -7,7 +7,7 @@ import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { VariableValueTextarea } from "#/components/variables/VariableValueTextarea";
+import { VariableValueTextarea } from "./variables/VariableValueTextarea";
 import {
   Dialog,
   DialogContent,

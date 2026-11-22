@@ -9,26 +9,14 @@ import {
   DialogTrigger,
 } from "#/components/ui/dialog";
 import { Separator } from "#/components/ui/separator";
-import { VariableAddForm } from "#/components/variables/variable-add-form";
-import { VariableRow } from "#/components/variables/variable-row";
+import { VariableAddForm } from "./variable-add-form";
+import type { SealedControls, VariableAddInput } from "./variable-types";
+import { VariableRow } from "./variable-row";
 import type { Write } from "#/modules/config-store/store-write";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { PlainVariableRecord } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
-
-/** How Sealed shows: offered unless no server disables it beside `addServer`, a link to add one. */
-export type SealedControls = {
-  state: "no_server" | "ready" | undefined;
-  addServer: ReactNode;
-};
-
-export type VariableAddInput = {
-  key: string;
-  value: string;
-  sealed: boolean;
-  exported: boolean;
-};
 
 export function VariablesPanel({
   variables,

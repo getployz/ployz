@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VariableRecord } from "#/modules/variables/variables";
 import { VariableAddForm } from "./variable-add-form";
-import type { SealedControls } from "./variables-panel";
+import type { SealedControls } from "./variable-types";
 
 afterEach(cleanup);
 

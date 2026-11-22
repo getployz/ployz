@@ -6,13 +6,13 @@ import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { VariableValueInput } from "#/components/variables/VariableValueInput";
+import { VariableValueInput } from "./VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { sealedValueProblem, warmSealing } from "#/modules/variables/seal-value";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";
-import type { SealedControls, VariableAddInput } from "#/components/variables/variables-panel";
+import type { SealedControls, VariableAddInput } from "./variable-types";
 
 type VariableAddFormState = {
   key: string;
