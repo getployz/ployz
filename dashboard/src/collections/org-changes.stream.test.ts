@@ -8,6 +8,11 @@ import { organizationKeys } from "#/modules/organization/organization-state.quer
 import { environmentSettingsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { orgStoreSeed, orgStoreTableNames, subscribeOrgStoreTables } from "#/test/org-store-tables";
 
+// The Org Store read answers with nothing new, so rereads settle without a network.
+vi.mock("#/collections/read.functions", () => ({
+  readCollectionServerFn: async () => ({ full: false, rows: [], deleted: [], cursor: "1" }),
+}));
+
 class FakeEventSource extends EventTarget {
   static latest: FakeEventSource | undefined;
   constructor() { super(); FakeEventSource.latest = this; }
@@ -53,20 +58,30 @@ it("reloads a tab holding a removed Organization's caches once the stream names 
   }
 });
 
-it("refetches every change-log collection on every open", async () => {
+it("rereads every change-log collection on every open", async () => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
-  const refetches = Object.values(orgStoreTables).map((get) => vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]));
+  for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
+  const active = subscribeOrgStoreTables("acme", scope);
+  await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
+  const fetched = new Set<unknown>();
+  queryClient.getQueryCache().subscribe((event) => {
+    if (event.type === "updated" && event.action.type === "fetch") fetched.add(event.query.queryKey.at(-1));
+  });
   const stop = watchOrganizationChanges("acme", ORG_A, scope);
   try {
     FakeEventSource.latest?.dispatchEvent(new Event("open"));
-    for (const refetch of refetches) expect(refetch).toHaveBeenCalledOnce();
-    // A reconnect never resumes, so it refetches again.
+    expect(fetched).toEqual(new Set(orgStoreTableNames));
+    // A reconnect never resumes, so it rereads again.
+    await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    fetched.clear();
     FakeEventSource.latest?.dispatchEvent(new Event("open"));
-    for (const refetch of refetches) expect(refetch).toHaveBeenCalledTimes(2);
+    expect(fetched).toEqual(new Set(orgStoreTableNames));
+    await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
   } finally {
     stop();
+    for (const subscription of active) subscription.unsubscribe();
     await getDbClient(queryClient).cleanup();
     queryClient.clear();
   }
@@ -101,6 +116,7 @@ it("refetches only the named collections and re-reads a renamed organization's s
   for (const table of orgStoreTableNames) queryClient.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   queryClient.setQueryData(organizationKeys.state("acme"), { name: "Acme" });
   const active = subscribeOrgStoreTables("acme", scope);
+  await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
   const fetched: unknown[] = [];
   queryClient.getQueryCache().subscribe((event) => {
     if (event.type === "updated" && event.action.type === "fetch") fetched.push(event.query.queryKey.at(-1));
