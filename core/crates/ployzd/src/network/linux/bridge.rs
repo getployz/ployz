@@ -15,16 +15,56 @@ use bollard::{
 use ployz_core::{DOCKER_NETWORK_CONFLICT_RECOVERY, MachineSubnet, labels};
 use ployz_decide::bridge::{self, Settle};
 
+use crate::docker::Door;
 use crate::docker_image::is_not_found;
 
 use crate::network::{
-    DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, checked_command,
+    NetworkError, WIREGUARD_INTERFACE_NAME, checked_command,
     docker_firewall::Ipv6Off,
     firewall::{BridgeFence, docker_ipv6_firewall, fence_container_ipv6},
 };
 
 use super::NetworkPlane;
-use super::{pins::Pins, stopped::Stopped};
+
+pub(crate) mod address;
+mod pins;
+mod stopped;
+
+use pins::Pins;
+use stopped::Stopped;
+
+/// The Docker network every Service Container and the Ingress Proxy join.
+pub const DOCKER_NETWORK_NAME: &str = "ployz";
+
+/// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
+/// reach it by DNAT with their own address (#2837). So does a container created
+/// with [`labels::BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
+/// publishes a host port stays IPv4-only, so its ports keep reaching an app that
+/// listens on IPv4 alone through docker-proxy. One created before the label stays
+/// IPv4-only until it is replaced. A labelled one follows the bridge, so it gains or
+/// loses IPv6 when the bridge does.
+///
+/// The holder owns the Ingress Proxy's netns, so it takes IPv6 though it publishes
+/// host ports, as the Caddy did before it (#2837). A Caddy from before the holder
+/// still publishes the ports itself and keeps that endpoint.
+#[must_use]
+pub(crate) fn takes_ipv6(labels: &HashMap<String, String>) -> bool {
+    labels.get(labels::BRIDGE_IPV6).map(String::as_str) == Some("true")
+        || matches!(Door::of_labels(labels), Some(Door::Proxy | Door::Holder))
+            && !labels.contains_key(labels::HOOK)
+}
+
+/// The ployz bridge endpoint for a container that does or does not take IPv6.
+#[must_use]
+pub(crate) fn base_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSettings> {
+    (!ipv6).then(|| bollard::models::EndpointSettings {
+        driver_opts: Some(HashMap::from([(
+            "com.docker.network.endpoint.sysctls".into(),
+            "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
+        )])),
+        ..Default::default()
+    })
+}
 
 /// The static address each member takes: its own, or the next free one.
 pub(super) fn addresses<'a>(
@@ -37,7 +77,7 @@ pub(super) fn addresses<'a>(
         .into_iter()
         .map(|member| {
             let ipv4 = member.ipv4.or_else(|| {
-                let next = crate::docker::bridge_address::next(subnet, &taken, last);
+                let next = address::next(subnet, &taken, last);
                 last = next.or(last);
                 next
             });
@@ -133,15 +173,10 @@ pub(super) fn bridge_members(containers: &[ContainerSummary]) -> Vec<BridgeMembe
                 ipv4: endpoint
                     .and_then(|endpoint| endpoint.ip_address.as_deref())
                     .and_then(|address| address.parse().ok())
-                    .or_else(|| endpoint.and_then(crate::docker::bridge_address::pinned)),
+                    .or_else(|| endpoint.and_then(address::pinned)),
                 attached: endpoint.is_some(),
-                pinned: endpoint
-                    .and_then(crate::docker::bridge_address::pinned)
-                    .is_some(),
-                ipv6: container
-                    .labels
-                    .as_ref()
-                    .is_some_and(crate::docker::takes_bridge_ipv6),
+                pinned: endpoint.and_then(address::pinned).is_some(),
+                ipv6: container.labels.as_ref().is_some_and(takes_ipv6),
             })
         })
         .filter(|member| !member.id.is_empty())
@@ -762,7 +797,7 @@ impl NetworkPlane {
         };
         let mut members = bridge_members(&containers);
         pins.restore(&mut members);
-        let mut taken = crate::docker::bridge_address::taken(&containers);
+        let mut taken = address::taken(&containers);
         taken.extend(members.iter().filter_map(|member| member.ipv4));
         let detaches = members
             .iter()
@@ -779,7 +814,7 @@ impl NetworkPlane {
         let unpinned = members.iter().filter(|member| member.needs_pin());
         let mut unjoined = BTreeSet::new();
         for (member, ipv4) in addresses(unpinned, taken, self.machine.subnet) {
-            let mut endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
+            let mut endpoint = address::endpoint(member.ipv6, None);
             if member.attached {
                 if !recorded {
                     continue;
@@ -791,7 +826,7 @@ impl NetworkPlane {
                             .and_then(|settings| settings.networks)
                             .and_then(|mut networks| networks.remove(DOCKER_NETWORK_NAME))
                         {
-                            endpoint = crate::docker::bridge_address::reconnect(current);
+                            endpoint = address::reconnect(current);
                         }
                     }
                     Err(error) => {
@@ -894,7 +929,7 @@ impl NetworkPlane {
     }
 
     async fn rejoin(&self, member: &BridgeMember, ipv4: Option<Ipv4Addr>, stopped: &mut Stopped) {
-        let endpoint = crate::docker::bridge_address::endpoint(member.ipv6, None);
+        let endpoint = address::endpoint(member.ipv6, None);
         let _ = self.rejoin_with(member, endpoint, ipv4, stopped).await;
     }
 
@@ -910,7 +945,7 @@ impl NetworkPlane {
     ) -> bool {
         let connect = |ipv4| NetworkConnectRequest {
             container: member.id.clone(),
-            endpoint_config: Some(crate::docker::bridge_address::pin(endpoint.clone(), ipv4)),
+            endpoint_config: Some(address::pin(endpoint.clone(), ipv4)),
         };
         let mut result = self
             .docker

@@ -1,4 +1,3 @@
-pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod doors;
@@ -66,6 +65,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use crate::network::DOCKER_NETWORK_NAME;
 use crate::observe::collector::Collector;
 use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
@@ -90,44 +90,11 @@ use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 #[cfg(test)]
 use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand, Namespace, ServiceId};
 
-/// The Docker network every Service Container and the Ingress Proxy join.
-pub const DOCKER_NETWORK_NAME: &str = "ployz";
 /// The Docker network the Tunnel Origin alone joins, with the Tunnel Connector in its
 /// network namespace, and its bridge's name, which the Machine's firewall fences to DNS
 /// and Cloudflare's edge.
 pub const TUNNEL_NETWORK_NAME: &str = "ployz-tunnel";
 
-/// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
-/// reach it by DNAT with their own address (#2837). So does a container created
-/// with [`labels::BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
-/// publishes a host port stays IPv4-only, so its ports keep reaching an app that
-/// listens on IPv4 alone through docker-proxy. One created before the label stays
-/// IPv4-only until it is replaced. A labelled one follows the bridge, so it gains or
-/// loses IPv6 when the bridge does.
-///
-/// The holder owns the Ingress Proxy's netns, so it takes IPv6 though it publishes
-/// host ports, as the Caddy did before it (#2837). A Caddy from before the holder
-/// still publishes the ports itself and keeps that endpoint.
-#[must_use]
-pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
-    labels.get(labels::BRIDGE_IPV6).map(String::as_str) == Some("true")
-        || matches!(
-            doors::Door::of_labels(labels),
-            Some(doors::Door::Proxy | doors::Door::Holder)
-        ) && !labels.contains_key(labels::HOOK)
-}
-
-/// The ployz bridge endpoint for a container that does or does not take IPv6.
-#[must_use]
-pub(crate) fn bridge_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSettings> {
-    (!ipv6).then(|| bollard::models::EndpointSettings {
-        driver_opts: Some(HashMap::from([(
-            "com.docker.network.endpoint.sysctls".into(),
-            "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
-        )])),
-        ..Default::default()
-    })
-}
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
@@ -2203,7 +2170,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                takes_bridge_ipv6(body.labels.as_ref().unwrap())
+                crate::network::bridge::takes_ipv6(body.labels.as_ref().unwrap())
                     == (*namespace == ingress.namespace)
             );
             body.networking_config
@@ -2234,7 +2201,9 @@ mod tests {
             &crate::machine::AdmittedSpec::test_signed(&ingress.namespace, &holder),
         )
         .unwrap();
-        assert!(takes_bridge_ipv6(body.labels.as_ref().unwrap()));
+        assert!(crate::network::bridge::takes_ipv6(
+            body.labels.as_ref().unwrap()
+        ));
         assert!(
             body.networking_config.is_none(),
             "the holder takes IPv6 though it publishes the ports"
@@ -2293,7 +2262,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(
-                    takes_bridge_ipv6(body.labels.as_ref().unwrap()),
+                    crate::network::bridge::takes_ipv6(body.labels.as_ref().unwrap()),
                     ipv6,
                     "{kind:?} publishing {ports}"
                 );
@@ -2319,10 +2288,10 @@ mod tests {
             (labels::SERVICE_ID.to_owned(), "a".repeat(32)),
             (labels::SERVICE_NAME.to_owned(), "web".to_owned()),
         ]);
-        assert!(!takes_bridge_ipv6(&labels));
+        assert!(!crate::network::bridge::takes_ipv6(&labels));
         let mut opted_out = labels;
         opted_out.insert(labels::BRIDGE_IPV6.to_owned(), "false".to_owned());
-        assert!(!takes_bridge_ipv6(&opted_out));
+        assert!(!crate::network::bridge::takes_ipv6(&opted_out));
     }
 
     #[test]

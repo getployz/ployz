@@ -24,7 +24,7 @@ use ployz_core::MachineGateway;
 use crate::{
     docker_image::{ImagePull, UnsignedImage, prepare_image},
     machine::AdmittedSpec,
-    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME},
+    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME, bridge},
 };
 
 use super::{
@@ -957,7 +957,7 @@ impl Lifecycle {
                 .config
                 .as_ref()
                 .and_then(|config| config.labels.as_ref())
-                .is_some_and(super::takes_bridge_ipv6);
+                .is_some_and(bridge::takes_ipv6);
             self.docker.join_bridge(container_id, ipv6).await
         } else {
             self.docker.ensure_tunnel_network().await?;
@@ -1167,7 +1167,7 @@ impl super::LocalDocker {
         let address = match self.bridge().await {
             Ok(bridge) => bridge
                 .subnet
-                .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last)),
+                .and_then(|subnet| bridge::address::next(subnet, &bridge.taken, *last)),
             Err(_) => None,
         };
         if address.is_some() {
@@ -1178,7 +1178,7 @@ impl super::LocalDocker {
                 DOCKER_NETWORK_NAME,
                 NetworkConnectRequest {
                     container: container_id.to_string(),
-                    endpoint_config: Some(super::bridge_address::endpoint(ipv6, address)),
+                    endpoint_config: Some(bridge::address::endpoint(ipv6, address)),
                 },
             )
             .await
@@ -1201,7 +1201,7 @@ impl super::LocalDocker {
             return Err(Error::EndpointCapacity);
         }
         if on_bridge && let Some(subnet) = bridge.subnet {
-            let address = super::bridge_address::next(subnet, &bridge.taken, *last)
+            let address = bridge::address::next(subnet, &bridge.taken, *last)
                 .ok_or(Error::EndpointCapacity)?;
             let endpoints = body
                 .networking_config
@@ -1209,8 +1209,7 @@ impl super::LocalDocker {
                 .endpoints_config
                 .get_or_insert_default();
             let endpoint = endpoints.entry(DOCKER_NETWORK_NAME.to_owned()).or_default();
-            endpoint.ipam_config =
-                super::bridge_address::endpoint(false, Some(address)).ipam_config;
+            endpoint.ipam_config = bridge::address::endpoint(false, Some(address)).ipam_config;
             *last = Some(address);
         }
         let _creating = super::Creating::new(&self.creates);

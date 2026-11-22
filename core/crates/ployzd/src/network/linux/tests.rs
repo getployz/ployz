@@ -17,7 +17,7 @@ use ipnet::IpNet;
 use ployz_core::{Machine, MachineId, MachineSubnet, SelectedEndpoint, WireGuardPublicKey};
 use ployz_decide::bridge::Settle;
 
-use super::{docker_network::*, wireguard::*, *};
+use super::{bridge::*, wireguard::*, *};
 use crate::corrosion::ReplicatedObservations;
 use crate::network::{
     DOCKER_NETWORK_NAME, MeshPeer, NetworkError, WIREGUARD_INTERFACE_NAME,
@@ -1344,7 +1344,7 @@ fn a_member_between_restarts_rejoins_at_the_address_it_is_pinned_to() {
         network_settings: Some(ContainerSummaryNetworkSettings {
             networks: Some(HashMap::from([(
                 DOCKER_NETWORK_NAME.to_owned(),
-                crate::docker::bridge_address::endpoint(false, Some("10.210.1.7".parse().unwrap())),
+                bridge::address::endpoint(false, Some("10.210.1.7".parse().unwrap())),
             )])),
         }),
         ..Default::default()
