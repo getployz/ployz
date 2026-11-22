@@ -226,7 +226,9 @@ impl Joined<'_> {
         .filter(|_| !fresh);
         let kept_id = kept.map(|entry| entry.facts.id);
         let step = match (reserved::step(kept, entries.iter().copied()), kept) {
-            (Step::Keep(id), Some(entry)) if entry.facts.running() && self.stale(entry) => {
+            (Step::Keep(id), Some(entry))
+                if entry.facts.runtime.is_running() && self.stale(entry) =>
+            {
                 JoinedStep::Rejoin(id)
             }
             (Step::Keep(id), _) => JoinedStep::Keep(id),
@@ -829,7 +831,7 @@ impl LocalMachine {
                 .await?
                 .runtime
                 .clone();
-            if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+            if runtime.is_running() {
                 return Ok(());
             }
             if runtime.at_rest() || tokio::time::Instant::now() >= deadline {

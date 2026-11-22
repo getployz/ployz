@@ -3,10 +3,10 @@
 
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
-    ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
-    CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, OpaquePayload, RpcError,
-    RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply, SetVolumeCopyRequest, Start,
-    VolumeCopy, VolumeGen, WantedCopy,
+    ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
+    EnsuredContainer, HealthVerdict, OpaquePayload, RpcError, RunRotation, RunTarget,
+    SetVolumeCopyRefused, SetVolumeCopyReply, SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen,
+    WantedCopy,
 };
 use tonic::{Response, Status};
 
@@ -354,12 +354,10 @@ impl MachineService {
         name: &DockerVolumeName,
     ) -> Result<StartState, LocalMachineError> {
         let observed = self.start_container(start).await?;
-        if observed.as_ref().is_some_and(|observed| {
-            matches!(
-                observed.runtime,
-                ContainerRuntimeObservation::Running { .. }
-            )
-        }) || self.local.volume_holder_running(name).await?
+        if observed
+            .as_ref()
+            .is_some_and(|observed| observed.runtime.is_running())
+            || self.local.volume_holder_running(name).await?
         {
             return Ok(StartState::Running);
         }
@@ -431,9 +429,9 @@ impl MachineService {
             return Ok(());
         };
         let created = self.start_container(start).await?;
-        let running = created.as_ref().is_some_and(|created| {
-            matches!(created.runtime, ContainerRuntimeObservation::Running { .. })
-        });
+        let running = created
+            .as_ref()
+            .is_some_and(|created| created.runtime.is_running());
         // A resend lands here too when another holder runs; only this Create's own copy is
         // routed. A copy that exited is started again by its In want, which reports health.
         if !running && self.local.volume_holder_running(name).await? {

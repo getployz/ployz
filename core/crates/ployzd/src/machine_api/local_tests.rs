@@ -1358,7 +1358,7 @@ mod ingress_doors {
                     .unwrap()
                     .iter()
                     .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
-                    .all(|entry| entry.facts.running())
+                    .all(|entry| entry.facts.runtime.is_running())
             }
         };
         let untouched = service.local.restore_doors().await.unwrap().unwrap();
@@ -1441,7 +1441,7 @@ mod ingress_doors {
                 .unwrap()
                 .iter()
                 .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
-                .any(|entry| entry.facts.running())
+                .any(|entry| entry.facts.runtime.is_running())
         };
         assert!(!connector_running().await);
 
@@ -1524,7 +1524,7 @@ mod ingress_doors {
             panic!("the connector Docker refused to remove stays: {left:?}")
         });
         assert_eq!(stayed.facts.id, connector);
-        assert!(!stayed.facts.running(), "it is stopped");
+        assert!(!stayed.facts.runtime.is_running(), "it is stopped");
         assert!(!token.exists(), "the token goes with the Tunnel Door");
 
         let restored = service.local.restore_doors().await.unwrap().unwrap();
@@ -1536,7 +1536,10 @@ mod ingress_doors {
         let [stayed] = connectors().await.try_into().unwrap_or_else(|left| {
             panic!("the connector still stays while Docker refuses: {left:?}")
         });
-        assert!(!stayed.facts.running(), "a reboot never starts it");
+        assert!(
+            !stayed.facts.runtime.is_running(),
+            "a reboot never starts it"
+        );
         assert!(!token.exists(), "a reboot writes no token for it");
 
         fake.refuse_remove_of.lock().unwrap().remove(&service_name);

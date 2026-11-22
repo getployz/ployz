@@ -476,7 +476,7 @@ impl LocalMachine {
                 .map(|observed| observed.runtime.clone())
                 .ok()?;
             let output = containers.router_output(&id, since).await;
-            let alive = matches!(runtime, ContainerRuntimeObservation::Running { .. });
+            let alive = runtime.is_running();
             if let Some(problem) = classify(&output) {
                 return Some(PrivateAccessFailure {
                     problem,

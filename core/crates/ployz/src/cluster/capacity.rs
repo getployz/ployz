@@ -9,27 +9,32 @@ use ployz_core::{
 
 use super::{Call, Client, fan_out};
 
+impl Client {
+    pub(crate) async fn bridge_capacity(
+        &mut self,
+        machine_id: &MachineId,
+    ) -> Result<Option<BridgeEndpointCapacity>, RpcError> {
+        let details = self
+            .call::<op::Inspect>(
+                InspectRequest {
+                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
+                    ..Default::default()
+                },
+                Call::target_read(&MachineTarget::from(machine_id)),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?;
+        Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
+    }
+}
+
 pub(super) async fn observe(
     client: &Client,
     machines: &[MachineObservation],
 ) -> BTreeMap<MachineId, BridgeEndpointCapacity> {
     let observed = fan_out(machines, |machine| {
         let mut client = client.clone();
-        async move {
-            let response = client
-                .call::<op::Inspect>(
-                    InspectRequest {
-                        telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
-                        ..Default::default()
-                    },
-                    Call::read()
-                        .to(&MachineTarget::from(&machine.machine.id))
-                        .budget(crate::connect::target_read_timeout()),
-                )
-                .await
-                .map_err(crate::connect::rpc_error)?;
-            Ok::<_, RpcError>(response.telemetry.map(|telemetry| telemetry.into_bridge()))
-        }
+        async move { client.bridge_capacity(&machine.machine.id).await }
     })
     .await;
     observed
