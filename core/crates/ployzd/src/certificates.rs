@@ -27,7 +27,7 @@ use ployz_core::{
 };
 use ployz_decide::issuance::{
     Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, action_due, issued, machine_rank,
-    step, wake,
+    records_refusal, step, wake,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -548,7 +548,7 @@ async fn issue_wanted(
         };
         hosts.insert(hostname.clone(), host);
         match host.issuance {
-            Issuance::Refused { refusal, clock } if rank == 0 => {
+            Issuance::Refused { refusal, clock } if records_refusal(rank) => {
                 let reason = refusal_reason(hostname, refusal, &cluster);
                 let tried = row.and_then(CertificateRow::material);
                 match store

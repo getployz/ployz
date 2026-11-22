@@ -15,7 +15,7 @@
 //! or refused the hostname, or since a pass stopped before the gate: the policy refused, no
 //! directory, every Server on the Tunnel Door, or this Machine's Public Door closed
 //! (and `issue_wanted`'s `hosts.clear()`). A read that returns Err keeps it. Only rank 0 records a
-//! refusal (`issue_wanted`'s `Issuance::Refused` arm).
+//! refusal (`ployz_decide::issuance::records_refusal`, in `issue_wanted`'s `Issuance::Refused` arm).
 //!
 //! The code before this change, `as_it_was` in the tests, kept the first pass's instant through
 //! a hold and through a pass that stopped before the gate.
@@ -34,7 +34,7 @@ use ployz_core::{
 };
 use ployz_decide::issuance::{
     Held, Issuance, IssuanceAction, Pass, Prev, RANK_STEP, action_due, issuance_step, issued,
-    machine_rank, rank_delay, step, wake,
+    machine_rank, rank_delay, records_refusal, step, wake,
 };
 use stateright::{Model, Property};
 
@@ -1184,7 +1184,7 @@ impl AcmeIssuance {
                 let over_authority = snapshot
                     .clock()
                     .is_some_and(|clock| clock.last == Failure::Authority);
-                let record = if rank == 0 || self.broken.any_rank_records {
+                let record = if records_refusal(rank) || self.broken.any_rank_records {
                     record_failure(
                         &mut state.row,
                         Reason::DoesNotResolve,
