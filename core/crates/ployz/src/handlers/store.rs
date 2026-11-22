@@ -11,7 +11,7 @@ pub(crate) use args::{
     environment, named_environment, project, project_arg, scoped, service_name, service_names,
     volume_name, volume_names,
 };
-pub(crate) use hints::{broken_line, fix_broken, next};
+pub(crate) use hints::{broken_line, fix_broken, next, next_in, scope_args};
 pub(crate) use refusal::{Refusal, with_next, with_refresh_hint};
 pub(crate) use render::{
     DomainLine, changed, config_field_changed, domain_changes, domain_list, plain, shown, valued,

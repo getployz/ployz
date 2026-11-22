@@ -85,6 +85,43 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
     args
 }
 
+/// The subcommand words of `matches`, `server add`.
+pub(crate) fn command_path(mut matches: &clap::ArgMatches) -> String {
+    let mut parts = Vec::new();
+    while let Some((name, child)) = matches.subcommand() {
+        parts.push(name);
+        matches = child;
+    }
+    parts.join(" ")
+}
+
+pub(crate) fn leaf_matches(mut matches: &clap::ArgMatches) -> &clap::ArgMatches {
+    while let Some((_, child)) = matches.subcommand() {
+        matches = child;
+    }
+    matches
+}
+
+pub(crate) fn config_path(
+    matches: &clap::ArgMatches,
+) -> Result<std::path::PathBuf, crate::failure::Failure> {
+    matches
+        .get_one::<String>("ployz-config")
+        .map(std::path::Path::new)
+        .map(crate::context::expand_home)
+        .ok_or_else(|| crate::failure::Failure::usage("Ployz config path is required"))
+}
+
+/// This command line as typed, then `extra`.
+pub(crate) fn typed_with(extra: &[&str]) -> String {
+    std::iter::once("ployz".to_owned())
+        .chain(std::env::args().skip(1))
+        .chain(extra.iter().map(|arg| (*arg).to_owned()))
+        .map(|arg| crate::ui::shell_word(&arg).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// SSH setup budget shared by every CLI connection path.
 pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
     std::time::Duration::from_secs(u64::from(
@@ -136,6 +173,46 @@ pub(crate) fn yes(help: &'static str) -> Arg {
         .value_parser(clap::builder::BoolishValueParser::new())
         .env(env::AUTO_CONFIRM)
         .help(help)
+}
+
+/// A flag that takes one of `table`'s words and reads back as the value beside it:
+/// `matches.get_one::<T>(id)`.
+pub(crate) const fn choice<T>(table: &'static [(&'static str, T)]) -> Choice<T> {
+    Choice(table)
+}
+
+#[derive(Clone)]
+pub(crate) struct Choice<T: 'static>(&'static [(&'static str, T)]);
+
+impl<T: Clone + Send + Sync + 'static> clap::builder::TypedValueParser for Choice<T> {
+    type Value = T;
+
+    fn parse_ref(
+        &self,
+        command: &Command,
+        arg: Option<&Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<T, clap::Error> {
+        // The words' own parser, so a wrong word is refused in clap's usual words.
+        let word = clap::builder::PossibleValuesParser::new(self.0.iter().map(|(word, _)| *word))
+            .parse_ref(command, arg, value)?;
+        Ok(self
+            .0
+            .iter()
+            .find(|(known, _)| *known == word)
+            .map(|(_, chosen)| chosen.clone())
+            .expect("the words' parser admits only the table's words"))
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            self.0
+                .iter()
+                .map(|(word, _)| clap::builder::PossibleValue::new(*word)),
+        ))
+    }
 }
 
 pub(crate) fn positional(name: &'static str, required: bool) -> Arg {

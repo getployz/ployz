@@ -215,10 +215,7 @@ pub(crate) fn resolve_storage(
                     crate::failure::Failure::usage(
                         "Choosing storage needs a terminal; pass --storage zfs or --storage none.",
                     )
-                    .hint(Hint::Retry(crate::handlers::typed_with(&[
-                        "--storage",
-                        "zfs",
-                    ])))
+                    .hint(Hint::Retry(crate::cli::typed_with(&["--storage", "zfs"])))
                 },
                 "Cancelled. Nothing was installed.",
             )?;

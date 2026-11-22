@@ -710,7 +710,10 @@ async fn selected_machines(
     let mut selected = Vec::with_capacity(selectors.len());
     let mut ids = BTreeSet::new();
     for selector in selectors {
-        let machine = super::remove::select_machine(&visible, selector)?;
+        let selector = ployz_core::MachineTarget::parse(selector)?;
+        let machine = crate::cluster::visible_machine(&selector, &visible)?
+            .machine
+            .clone();
         if !ids.insert(machine.id) {
             return Err(Error::usage(format!(
                 "Server {} was selected more than once",

@@ -732,14 +732,7 @@ fn run_here(
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
 /// the scope, so an unlinked directory never founds a new Project.
 fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
-    shell_words::join([
-        "ployz",
-        "up",
-        "--project",
-        environment.project.as_str(),
-        "--env",
-        environment.name.as_str(),
-    ])
+    super::store::next_in(&environment.project, &environment.name, &["up"])
 }
 
 struct OwnedRunner<'store, 'matches> {
@@ -1177,19 +1170,7 @@ fn plan(
         if plan.changes.is_empty() && plan.regions.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
         }
-        for change in &plan.changes {
-            crate::ui::stream(format_args!(
-                "{} ({})",
-                change.name,
-                super::store::word(&change.lifecycle)
-            ));
-            for row in &change.settings {
-                for line in super::store::changed(row, &change.settings) {
-                    crate::ui::stream(format_args!("  {line}"));
-                }
-            }
-            super::review::restarts(change);
-        }
+        plan.changes.iter().for_each(super::review::say_change);
         for (service, region) in &plan.regions {
             match region {
                 Some(region) if unplaced(region) => crate::ui::stream(format_args!(

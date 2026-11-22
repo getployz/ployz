@@ -5,7 +5,7 @@ use ployz_core::{ReleaseChannel, RpcErrorCode};
 use serde_json::{Map, Value, json};
 
 use super::super::{Error, leaf_matches, runtime};
-use crate::cli::value;
+use crate::cli::{choice, value};
 use crate::cloud::http::Via;
 
 pub(in crate::handlers) fn group(command: Command) -> Command {
@@ -17,7 +17,10 @@ pub(in crate::handlers) fn set_command(command: Command) -> Command {
         .about("Change the Release Channel or automatic upgrades")
         .arg(
             value("channel", None)
-                .value_parser(["stable", "beta"])
+                .value_parser(choice(&[
+                    ("stable", ReleaseChannel::Stable),
+                    ("beta", ReleaseChannel::Beta),
+                ]))
                 .help("The Release Channel every upgrade follows"),
         )
         .arg(
@@ -29,12 +32,7 @@ pub(in crate::handlers) fn set_command(command: Command) -> Command {
 
 pub(in crate::handlers) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let channel = matches
-        .get_one::<String>("channel")
-        .map(|channel| match channel.as_str() {
-            "beta" => ReleaseChannel::Beta,
-            _ => ReleaseChannel::Stable,
-        });
+    let channel = matches.get_one::<ReleaseChannel>("channel").copied();
     let automatic = matches.get_one::<bool>("automatic").copied();
     if channel.is_none() && automatic.is_none() {
         return Err(Error::usage("Give --channel, --automatic, or both."));

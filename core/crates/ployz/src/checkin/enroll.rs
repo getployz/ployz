@@ -31,16 +31,6 @@ pub(crate) struct Committed {
     pub(crate) follow_up: Option<String>,
 }
 
-impl Committed {
-    fn from_setup(setup: crate::handlers::cloud::Setup) -> Result<Self, String> {
-        setup
-            .map_err(|error| failure_message(&error))
-            .map(|follow_up| Self {
-                follow_up: follow_up.err().map(|error| failure_message(&error)),
-            })
-    }
-}
-
 pub(super) struct Report<'a> {
     pub(super) report: &'a HostReport,
     pub(super) prep: Prep,
@@ -270,7 +260,12 @@ pub(super) async fn server_add(
         progress,
     )
     .await;
-    Committed::from_setup(setup)
+    match setup {
+        Ok(enrolled) => Ok(Committed {
+            follow_up: enrolled.follow_up.as_ref().map(failure_message),
+        }),
+        Err(error) => Err(failure_message(&error)),
+    }
 }
 
 /// The config enrolling keeps on this host: the one `ployz` reads under `HOME`, or root's when

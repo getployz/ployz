@@ -381,8 +381,9 @@ pub(super) fn metrics(
 pub(super) fn processes(
     credential: &Credential,
     scoped: Option<Scoped>,
-    sort: &str,
+    sort: super::service::ProcessOrder,
 ) -> Result<(), Error> {
+    use super::service::ProcessOrder;
     let scoped = scoped.ok_or_else(|| Error::usage(NO_SCOPE))?;
     let mut answer: ContainersAnswer = ask(
         credential,
@@ -395,9 +396,9 @@ pub(super) fn processes(
         let service = scoped.service_name(&container.service).to_string();
         let server = container.server.to_string();
         match sort {
-            "machine" => (server, service, String::new()),
-            "health" => (word(&container.health), service, server),
-            _ => (service, server, String::new()),
+            ProcessOrder::Machine => (server, service, String::new()),
+            ProcessOrder::Health => (word(&container.health), service, server),
+            ProcessOrder::Service => (service, server, String::new()),
         }
     });
     let mut table = Table::new(

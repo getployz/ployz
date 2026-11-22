@@ -6840,7 +6840,7 @@ fn history_names_a_config_and_its_mount_by_name() {
     let preview = human(&["history", "undo", "3", "--preview"]);
     assert!(preview.contains("  web.configs.app: "), "{preview}");
     assert!(
-        preview.contains("  configs.app.files.app.yml: "),
+        preview.contains("app (update)\n  files: changed app.yml\n"),
         "{preview}"
     );
     assert!(!preview.contains("configs.@"), "{preview}");
