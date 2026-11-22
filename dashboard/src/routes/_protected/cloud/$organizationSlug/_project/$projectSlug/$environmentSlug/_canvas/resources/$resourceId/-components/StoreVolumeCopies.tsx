@@ -30,7 +30,7 @@ import { appliedMirrors, editPlacement, observePlacement, type Placement, type P
 import { lossMoment } from "#/utils/relative-time";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
-import { holdersOf } from "#/modules/volume-run/resize-check";
+import { holdersOf } from "#/modules/volume-placement/resize-check";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers, useVolumeOwed } from "#/modules/volume-run/volume-run.queries";
 

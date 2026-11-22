@@ -21,7 +21,7 @@ import * as copies from "./StoreVolumeCopies";
 import { StoreVolumeDrawer } from "./StoreVolumeDrawer";
 import { volumeSearchSchema } from "./volume-pages";
 import * as runs from "#/modules/volume-run/volume-run.functions";
-import type { CopyHolder } from "#/modules/volume-run/resize-check";
+import type { CopyHolder } from "#/modules/volume-placement/resize-check";
 import type { VolumeRunView } from "#/modules/volume-run/volume-run";
 import { run } from "#/modules/volume-run/volume-run.test-fixture";
 

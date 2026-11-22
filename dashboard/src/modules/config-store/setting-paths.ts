@@ -16,8 +16,8 @@ export const configNodePath = (id: string) => `configs.@${id}`;
 /** A node's path in the Store: what Discard names to put the whole node back. */
 export const nodePath = (node: NodeRef) => node.type === "volume" ? volumeNodePath(node.name) : node.type === "config" ? configNodePath(node.id) : node.name;
 
-/** A Setting's path within `node`. */
-export const settingPathIn = (node: NodeRef, setting: string) => `${nodePath(node)}.${setting}`;
+/** The Environment's region, which no node holds. */
+export const REGION_PATH = "@environment.region";
 
 /** A Setting's name within its node, from its full path. */
 export const settingWithin = (node: NodeRef, path: string) => path.slice(nodePath(node).length + 1);

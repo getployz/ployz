@@ -130,8 +130,12 @@ export type AnsweredMember = Extract<Member, { answered: true }>;
 
 type RunServer = { readonly id: MachineId; readonly name: MachineName | null };
 
+/** Whether a run's args name this Server: by its machine id, or by its name in rows from before runs recorded the id. */
+export const namesServer = (args: Destination | VolumeRunArgs["restore"], server: RunServer) =>
+  args.machine === undefined ? server.name === ("to" in args ? args.to : args.from) : server.id === args.machine;
+
 export const isDestination = (run: VolumeLaneInput, machine: RunServer) =>
-  (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
+  (run.kind === "move" || run.kind === "mirror") && namesServer(run.args, machine);
 
 /** Whether a run needs the generation floor on a Server: one that holds a copy, or the run's destination. */
 export const needsFloor = (run: VolumeLaneInput, machine: RunServer, copy: VolumeCopyView["copy"]) => copy !== null || isDestination(run, machine);

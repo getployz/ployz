@@ -4,7 +4,7 @@ import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudflareHttp } from "#/modules/ingress/cloudflare.api.server";
-import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/ingress/cloudflare.setup.server";
+import { checkCloudflareSetup, CloudflareApi, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/ingress/cloudflare.setup.server";
 import { endClusterIngress } from "#/modules/ingress/cloudflare.cluster-gone.server";
 import { requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -139,7 +139,8 @@ const foundedClosed = (state: "running" | "joined" = "joined") => harness.pool.q
 `, [ORG, state]);
 
 const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
-  harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }, http).pipe(
+  harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }).pipe(
+    Effect.provideService(CloudflareApi, http),
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(InngestClient, inngest),
   ));
@@ -595,20 +596,20 @@ it("accepts a wildcard that already points at the account's tunnel of that name,
 
 it("checks a token can set a zone up before any Server exists, creating nothing", async () => {
   const { http, calls } = cloudflare();
-  expect(await harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, http))).toEqual({ zone: "example.com" });
+  expect(await harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }).pipe(Effect.provideService(CloudflareApi, http)))).toEqual({ zone: "example.com" });
   expect(writesOf(calls)).toEqual([]);
   const taken = cloudflare({ existingRecord: "elsewhere.example.net" });
-  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, taken.http)))
+  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }).pipe(Effect.provideService(CloudflareApi, taken.http))))
     .rejects.toMatchObject({ message: expect.stringContaining("*.example.com already has a DNS record") });
   const weak = cloudflare({ dnsStatus: 403 });
-  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, weak.http)))
+  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }).pipe(Effect.provideService(CloudflareApi, weak.http))))
     .rejects.toMatchObject({ message: expect.stringContaining("DNS") });
   expect(await setupRows()).toEqual([]);
 });
 
 it("lists the zone names a token can see without changing anything", async () => {
   const { http, calls } = cloudflare();
-  expect(await harness.runEffect(listCloudflareZoneNames(Redacted.make(API_TOKEN), http))).toEqual(["example.com"]);
+  expect(await harness.runEffect(listCloudflareZoneNames(Redacted.make(API_TOKEN)).pipe(Effect.provideService(CloudflareApi, http)))).toEqual(["example.com"]);
   expect(calls).toHaveLength(1);
 });
 
