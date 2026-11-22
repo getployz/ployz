@@ -278,7 +278,8 @@ async fn a_member_that_misses_a_later_batch_names_its_services() {
 }
 
 /// Machine 4 joins through machine 2 once the forget reached machine 2, sealed the floors
-/// machine 2 held before it. The fan-out lists the Members again, so machine 4 forgets too.
+/// machine 2 held before it. The fan-out lists the Members again, so machine 4 forgets too,
+/// though machine 2 doesn't see it up yet.
 #[tokio::test(start_paused = true)]
 async fn a_member_that_joins_while_the_forget_runs_forgets_too() {
     let forgot_on = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -305,7 +306,11 @@ async fn a_member_that_joins_while_the_forget_runs_forgets_too() {
                                 .map(|hex| {
                                     MachineObservation::new(
                                         machine(hex, &format!("machine-{hex}")),
-                                        MembershipObservation::Up,
+                                        if hex == '4' {
+                                            MembershipObservation::Unknown
+                                        } else {
+                                            MembershipObservation::Up
+                                        },
                                     )
                                 })
                                 .collect(),

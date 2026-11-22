@@ -11,18 +11,22 @@ use ployz_decide::service_floor::Raise;
 use super::{Error, LocalMachine, admission};
 
 impl LocalMachine {
-    /// Raise the floor of each forget's Service that opens here, and answer each one.
+    /// Raise the floor of each forget's Service that opens here, and answer each one. A
+    /// Server still joining takes it too: its admitting Server may have read the floors it
+    /// answered the join with before this forget reached it.
     ///
     /// # Errors
     /// Returns [`Error::ForgetRefused`] with the first refusal when no forget opens,
-    /// [`Error::NotParticipating`], and [`Error::ApprovalRecord`] when the floors cannot
-    /// be kept.
+    /// [`Error::NotParticipating`] on a Machine in no Cluster, and [`Error::ApprovalRecord`]
+    /// when the floors cannot be kept.
     pub(crate) async fn forget_versions(
         &self,
         request: ForgetVersionsRequest,
     ) -> Result<VersionsForgotten, Error> {
         let record = self.record();
-        record.require_participating()?;
+        if !record.has_cluster_identity() {
+            return Err(Error::NotParticipating);
+        }
         let cluster = self.cluster_key(record.phase());
         let opened = version::verify_forget(&request.versions, &record.trusted_keys(), cluster);
         let forgets: Vec<_> = opened

@@ -1090,6 +1090,29 @@ async fn a_change_scoped_to_one_server_reports_no_other_member_as_missed() {
     server.abort();
 }
 
+/// A change scoped to one Server with `--connect` reaches that Server only, even when a
+/// Member joins while it runs: that Member is no gap either.
+#[tokio::test]
+async fn a_change_scoped_to_one_server_never_follows_a_member_that_joins() {
+    let (client, sent, server) = fleet(|_| (vec![key(1)], Vec::new()), 1).await;
+    let connection =
+        crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
+    let mut client =
+        client.with_full_routes(crate::cluster::FullRoutes::chosen(vec![connection], true));
+    client.enter_at(id('1'));
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    assert_eq!(
+        sent.iter()
+            .map(|(machine_id, _)| *machine_id)
+            .collect::<Vec<_>>(),
+        [id('1')]
+    );
+    assert!(settled.gaps.is_complete(), "{:?}", settled.gaps);
+    server.abort();
+}
+
 /// A first `device rm` removed Device 1 on machine 1 while machine 2, which never held it,
 /// was away. Now no Server trusts it, and the run again still hands machine 2 the full key
 /// from machine 1's removal record, so an approval of it still on its way there is refused.
@@ -1330,6 +1353,7 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
         silent: Vec::new(),
         entry: None,
         names: [(id('1'), MachineName::parse("machine-1").unwrap())].into(),
+        follows_joins: true,
     };
     let [device, passkey] = roster.as_slice() else {
         panic!("one device and one passkey");

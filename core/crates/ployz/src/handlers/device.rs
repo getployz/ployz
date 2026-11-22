@@ -3,7 +3,7 @@
 //! [`CheckCode`], which Cloud can't grind a second key to match.
 
 use crate::cloud;
-use crate::cluster::{Call, fan_out_entry_last};
+use crate::cluster::{Call, Deadline, fan_out_entry_last};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -861,6 +861,9 @@ pub(super) struct Reach {
     silent: Vec<MachineId>,
     entry: Option<MachineId>,
     names: BTreeMap<MachineId, MachineName>,
+    /// Whether the fan-out also asks the Members that joined while it ran. A change the
+    /// person aimed at one Server never reaches past it.
+    follows_joins: bool,
 }
 
 impl Reach {
@@ -870,6 +873,7 @@ impl Reach {
         if client.full_routes().single() {
             reach.asked.retain(|machine| Some(*machine) == reach.entry);
             reach.silent.retain(|machine| Some(*machine) == reach.entry);
+            reach.follows_joins = false;
         } else if !direct.is_empty() {
             reach.silent.extend(
                 reach
@@ -896,6 +900,7 @@ impl Reach {
                 .iter()
                 .map(|observed| (observed.machine.id, observed.machine.name.clone()))
                 .collect(),
+            follows_joins: true,
         })
     }
 
@@ -913,6 +918,9 @@ impl Reach {
         Fut: Future<Output = Result<Option<T>, RpcError>>,
     {
         let (mut answers, mut gaps) = self.fan_out(&call).await;
+        if !self.follows_joins {
+            return (answers, gaps);
+        }
         let unlisted = loop {
             let (joined, unlisted) = self
                 .joined_since(client, answers.iter().map(|(machine_id, _)| *machine_id))
@@ -932,8 +940,10 @@ impl Reach {
     }
 
     /// The Members the `answered` Servers list now that this reach never named, and the
-    /// Servers that answered but couldn't list theirs: a gap, since a Member one of them
-    /// knows of may then go unreached.
+    /// Servers that answered but couldn't list theirs within the target deadline: a gap,
+    /// since a Member one of them knows of may then go unreached. A Member found here is
+    /// asked whatever its membership reads: a joiner is listed before peers see it up, and a
+    /// call it can't answer is a gap too.
     async fn joined_since(
         &self,
         client: &Client,
@@ -945,7 +955,9 @@ impl Reach {
                 client
                     .call_shared::<op::ListMachines>(
                         ployz_core::ListMachinesRequest {},
-                        Call::once().to(&MachineTarget::from(&machine_id)),
+                        Call::once()
+                            .to(&MachineTarget::from(&machine_id))
+                            .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
                     )
                     .await
                     .map(|list| Some(list.machines))
@@ -959,6 +971,7 @@ impl Reach {
             silent: Vec::new(),
             entry: None,
             names: BTreeMap::new(),
+            follows_joins: true,
         };
         for observed in listed
             .successes
@@ -970,7 +983,7 @@ impl Reach {
                 continue;
             }
             joined.names.insert(id, observed.machine.name.clone());
-            if observed.invites_rpc() && (direct.is_empty() || direct.contains(&id)) {
+            if direct.is_empty() || direct.contains(&id) {
                 joined.asked.push(id);
             } else {
                 joined.silent.push(id);
