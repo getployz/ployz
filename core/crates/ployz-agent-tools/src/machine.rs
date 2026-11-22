@@ -1,0 +1,967 @@
+//! The step machine. A tool is a plan replayed from the start on every resume:
+//! each read, write or wait it reaches either takes its recorded answers or
+//! stops the run with the step that gets them. Replay keeps a plan straight-line
+//! code while [`State`] stays plain data a host can store between steps.
+
+use std::collections::BTreeSet;
+
+use ployz_core::decode::{DecodeError, decode};
+use ployz_core::{RpcError, RpcErrorCode};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use ts_rs::TS;
+
+use super::ToolId;
+use super::cloud::Operation;
+use super::input::HasPlace;
+use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
+use super::schema::{self, FieldPath};
+use super::step::{
+    Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
+};
+use ployz_store::{
+    Batch, BatchCommand, Command, DestructiveEffect, DestructiveKind, DiffQuery, EnvironmentName,
+    EnvironmentRef, EnvironmentSummary, OrganizationId, ProjectName, Query, Revision,
+    ServicesQuery, Tell, View, Written,
+};
+
+/// Whether the next deploy destroys, among `effects`, a `kinds` thing with ID `node`:
+/// the deployed identity, which a rename since the last Deploy leaves alone.
+pub(crate) fn effects_ask(
+    effects: &BTreeSet<DestructiveEffect>,
+    kinds: &[DestructiveKind],
+    node: &str,
+) -> bool {
+    effects
+        .iter()
+        .any(|effect| kinds.contains(&effect.kind) && effect.node == node)
+}
+
+/// Read and write steps one call may take; waits are bounded by time instead.
+pub const STEP_BUDGET: u8 = 3;
+
+/// The most a call may wait, in seconds.
+pub const WAIT_CAP_SECONDS: u32 = 300;
+
+/// Where a call runs: the Environment open in the client, and which Store
+/// answers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Place {
+    pub project: Option<ProjectName>,
+    pub environment: Option<EnvironmentName>,
+    pub store: StoreAt,
+}
+
+/// Which Store a call reaches.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "at", rename_all = "snake_case")]
+pub enum StoreAt {
+    /// Ployz Cloud, acting in one Organization: it also answers about
+    /// Servers and GitHub.
+    Cloud { organization: OrganizationId },
+    /// A Config Store on this computer: Store reads and writes only.
+    Local,
+}
+
+/// A call between steps: what it was asked and every answer so far.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct State {
+    tool: String,
+    input: Value,
+    place: Place,
+    call_key: String,
+    rounds: Vec<Round>,
+    pending: Option<Kind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Round {
+    kind: Kind,
+    answers: Vec<Result<Value, RpcError>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Kind {
+    Read { count: usize },
+    Write,
+    Wait { ms: u32, count: usize },
+}
+
+impl Kind {
+    const fn answers(self) -> usize {
+        match self {
+            Self::Read { count } | Self::Wait { count, .. } => count,
+            Self::Write => 1,
+        }
+    }
+}
+
+/// Why a plan stopped before answering.
+pub(crate) enum Stop {
+    /// It needs this step's answers.
+    Step(Box<Step>, Kind),
+    Refuse(Box<Refusal>),
+}
+
+impl From<Refusal> for Stop {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refuse(Box::new(refusal))
+    }
+}
+
+/// What a tool does to what it names. `idempotent`: the same call made again,
+/// with the same input, changes nothing more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    Read,
+    Change {
+        idempotent: bool,
+    },
+    /// Removes or deletes something when it runs; a staged removal is a Change.
+    Remove {
+        idempotent: bool,
+    },
+}
+
+impl Effect {
+    const fn idempotent(self) -> bool {
+        match self {
+            Self::Read => true,
+            Self::Change { idempotent } | Self::Remove { idempotent } => idempotent,
+        }
+    }
+}
+
+/// Where a tool can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Anywhere,
+    /// It needs Ployz Cloud: a call against a local Store is refused before the
+    /// tool plans anything, pointing to `local_next`, the Store read to make
+    /// instead. `None` is a choice: nothing local says what the Cloud tool would.
+    CloudOnly {
+        local_next: Option<ToolId>,
+    },
+}
+
+impl Reach {
+    const fn local_next(self) -> Option<ToolId> {
+        match self {
+            Self::Anywhere => None,
+            Self::CloudOnly { local_next } => local_next,
+        }
+    }
+}
+
+/// One tool: its input type, how it describes itself, and its plan.
+pub(crate) trait Tool: DeserializeOwned + JsonSchema {
+    const NAME: &'static str;
+    /// A short label for people, in sentence case: `Show Service logs`.
+    const TITLE: &'static str;
+    const DESCRIPTION: &'static str;
+    const GATE: Gate = Gate::Never;
+    const EFFECT: Effect;
+    /// Where it can run, declared once; a tool that only Cloud can run says so here.
+    const REACH: Reach = Reach::Anywhere;
+
+    /// The read that shows what a call to this tool started or changed; a call that
+    /// outlasts its deadline points to it.
+    const STATUS: ToolId = ToolId::DeploymentShow;
+
+    /// It reaches past Ployz and the member's servers: GitHub, public DNS, or
+    /// an address on the internet.
+    const OPEN_WORLD: bool = false;
+
+    /// A complete input that decodes.
+    fn example() -> Value;
+
+    /// What a human approves when a write of this tool waits on an approval whose diff
+    /// names no verb.
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Deploy
+    }
+
+    /// Read, write and wait through `cx`, then render the answer.
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop>;
+}
+
+/// The word for a Store write held for approval, when its diff names no verb.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffVerb {
+    Publish,
+    Deploy,
+    Retry,
+    Remove,
+}
+
+/// What a host needs to know about a tool beyond what a model is told.
+#[derive(Clone, Copy)]
+pub struct ToolFacts {
+    /// The read that shows what a call to the tool started or changed.
+    pub status: ToolId,
+    verb: fn(&Value) -> DiffVerb,
+}
+
+impl ToolFacts {
+    /// What a human approves when `input`'s write waits on an approval.
+    #[must_use]
+    pub fn verb(&self, input: &Value) -> DiffVerb {
+        (self.verb)(input)
+    }
+}
+
+const fn facts<T: Tool>() -> ToolFacts {
+    ToolFacts {
+        status: T::STATUS,
+        verb: T::verb,
+    }
+}
+
+/// What a model is told about one tool.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+pub struct ToolDef {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: String,
+    pub input_schema: Value,
+    pub output_schema: Value,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub idempotent: bool,
+    pub open_world: bool,
+    pub gate: Gate,
+}
+
+/// What one run of a plan sees: the recorded rounds and what it has used.
+pub(crate) struct Cx<'run> {
+    rounds: &'run [Round],
+    cursor: usize,
+    steps: u8,
+    waited_ms: u32,
+    slot: Option<WriteSlot>,
+    place: &'run Place,
+    call: Call,
+    call_key: &'run str,
+    local_next: Option<ToolId>,
+}
+
+impl Cx<'_> {
+    pub(crate) const fn call(&self) -> &Call {
+        &self.call
+    }
+
+    /// `project` and `environment` as the call named them: the arguments of a
+    /// `next` or retry call that stays in the same place.
+    pub(crate) fn place_args(&self) -> Map<String, Value> {
+        ["project", "environment"]
+            .into_iter()
+            .filter_map(|key| Some((key.to_owned(), self.call.input.get(key)?.clone())))
+            .collect()
+    }
+
+    /// A local call's next: the Store read, in the same place.
+    fn local_next(&self) -> Option<Call> {
+        self.local_next
+            .map(|tool| Call::to(tool, self.place_args().into()))
+    }
+
+    /// The Environment `place` names, else the place the call is in.
+    pub(crate) fn scope(&self, place: &impl HasPlace) -> EnvironmentRef {
+        self.scope_in(place.project(), place.environment())
+    }
+
+    /// The Environment `project` and `environment` name, else the place's.
+    pub(crate) fn scope_in(
+        &self,
+        project: Option<&ProjectName>,
+        environment: Option<&EnvironmentName>,
+    ) -> EnvironmentRef {
+        // A Project named alone means its default Environment, not the place's.
+        let environment = match (environment, project) {
+            (Some(environment), _) => Some(environment.clone()),
+            (None, Some(_)) => None,
+            (None, None) => self.place.environment.clone(),
+        };
+        EnvironmentRef {
+            project: project.cloned().or_else(|| self.place.project.clone()),
+            environment,
+        }
+    }
+
+    /// The key this call's write lands under.
+    pub(crate) fn request_key(&self, given: Option<RequestKey>) -> RequestKey {
+        RequestKey::effective(given, self.call_key)
+    }
+
+    pub(crate) const fn is_local(&self) -> bool {
+        matches!(self.place.store, StoreAt::Local)
+    }
+
+    /// Answers to `asks`, read in one step.
+    pub(crate) fn read(&mut self, asks: Vec<Ask>) -> Result<Vec<Result<Value, RpcError>>, Stop> {
+        if self.is_local() && asks.iter().any(|ask| matches!(ask, Ask::Cloud(_))) {
+            return Err(Refusal::not_here(self.local_next()).into());
+        }
+        self.steps += 1;
+        let kind = Kind::Read { count: asks.len() };
+        match self.recorded(kind)? {
+            Some(answers) => Ok(answers),
+            None => self.next_step(Step::Read { asks }, kind),
+        }
+    }
+
+    /// One Store query's answer.
+    pub(crate) fn one<Q: ployz_store::Ask>(&mut self, query: &Q) -> Result<Q::View, Stop> {
+        let mut answers = self.read(vec![store(query)?])?.into_iter();
+        self.view::<Q>(answers.next())
+    }
+
+    /// A Store answer as `Q`'s view; a Store error becomes the refusal.
+    pub(crate) fn view<Q: ployz_store::Ask>(
+        &self,
+        answer: Option<Result<Value, RpcError>>,
+    ) -> Result<Q::View, Stop> {
+        self.view_after::<Q>(answer, Writes::None)
+    }
+
+    /// [`Cx::view`], its refusal naming what the call already wrote.
+    fn view_after<Q: ployz_store::Ask>(
+        &self,
+        answer: Option<Result<Value, RpcError>>,
+        writes: Writes,
+    ) -> Result<Q::View, Stop> {
+        let internal = |message: &str| Refusal {
+            writes,
+            ..Refusal::internal(message)
+        };
+        let answer = answer.ok_or_else(|| internal("A read came back short"))?;
+        let value = answer.map_err(|error| from_store(error, &self.call, writes))?;
+        let view = serde_json::from_value::<View>(value)
+            .map_err(|_| internal("The Config Store answered in an unknown shape"))?;
+        Q::view(view).map_err(|error| from_store(error, &self.call, writes).into())
+    }
+
+    /// What the next deploy of `environment` destroys, read after this call's
+    /// write: a refusal here says the write committed.
+    pub(crate) fn effects_after_write(
+        &mut self,
+        environment: EnvironmentRef,
+    ) -> Result<BTreeSet<DestructiveEffect>, Stop> {
+        let mut answers = self
+            .read(vec![store(&DiffQuery { environment })?])
+            .map_err(|stop| match stop {
+                Stop::Refuse(refusal) => Stop::Refuse(Box::new(Refusal {
+                    writes: Writes::Committed,
+                    ..*refusal
+                })),
+                step @ Stop::Step(..) => step,
+            })?
+            .into_iter();
+        let diff = self.view_after::<DiffQuery>(answers.next(), Writes::Committed)?;
+        Ok(diff.effects)
+    }
+
+    /// A Cloud answer decoded as `T`.
+    pub(crate) fn cloud<T: DeserializeOwned>(
+        &self,
+        answer: Option<Result<Value, RpcError>>,
+    ) -> Result<T, Stop> {
+        let answer = answer.ok_or_else(|| Refusal::internal("A read came back short"))?;
+        let value = answer.map_err(|error| from_store(error, &self.call, Writes::None))?;
+        serde_json::from_value(value)
+            .map_err(|_| Refusal::internal("Ployz Cloud answered in an unknown shape").into())
+    }
+
+    /// The call's one write: a Store command.
+    pub(crate) fn write<C: Tell>(&mut self, command: &C) -> Result<C::Written, Stop> {
+        self.write_with(command, from_store)
+    }
+
+    /// The call's one write, a Store refusal read by `refuse` instead of
+    /// [`from_store`], for a refusal whose details the tool reshapes.
+    pub(crate) fn write_with<C: Tell>(
+        &mut self,
+        command: &C,
+        refuse: impl FnOnce(RpcError, &Call, Writes) -> Refusal,
+    ) -> Result<C::Written, Stop> {
+        let Some(slot) = self.slot.take() else {
+            return Err(Refusal::internal("A call writes at most once").into());
+        };
+        self.steps += 1;
+        let Some(answers) = self.recorded(Kind::Write)? else {
+            let command = serde_json::from_value::<Command>(command.to_command())
+                .map_err(|_| Refusal::internal("A command did not encode"))?;
+            return self.next_step(slot.spend(Write::Store(command)), Kind::Write);
+        };
+        let answer = answers
+            .into_iter()
+            .next()
+            .ok_or_else(|| Refusal::internal("A write came back without an answer"))?;
+        let value = answer.map_err(|error| {
+            let writes = writes_of(&error);
+            refuse(error, &self.call, writes)
+        })?;
+        let written = serde_json::from_value::<Written>(value)
+            .map_err(|_| Refusal::internal("The Config Store answered in an unknown shape"))?;
+        C::written(written).map_err(|error| from_store(error, &self.call, Writes::Committed).into())
+    }
+
+    /// The call's one write: an operation Cloud runs on Servers, keyed so a
+    /// retry with the same key returns the same run. A refusal names `subject`,
+    /// the read that shows what happened.
+    pub(crate) fn act(
+        &mut self,
+        action: Action,
+        given: Option<RequestKey>,
+        subject: Call,
+    ) -> Result<Operation, Stop> {
+        if self.is_local() {
+            return Err(Refusal::not_here(self.local_next()).into());
+        }
+        let Some(slot) = self.slot.take() else {
+            return Err(Refusal::internal("A call writes at most once").into());
+        };
+        self.steps += 1;
+        let Some(answers) = self.recorded(Kind::Write)? else {
+            let key = self.request_key(given);
+            let act = Act {
+                attempt: AttemptId::derive(&self.call.tool, &key),
+                digest: BodyDigest::of(&self.call.tool, &self.call.input),
+                action,
+            };
+            return self.next_step(slot.spend(Write::Act(act)), Kind::Write);
+        };
+        let answer = answers
+            .into_iter()
+            .next()
+            .ok_or_else(|| Refusal::internal("A write came back without an answer"))?;
+        let value = answer.map_err(|error| refused_act(error, &self.call, subject))?;
+        serde_json::from_value(value)
+            .map_err(|_| Refusal::internal("Ployz Cloud answered in an unknown shape").into())
+    }
+
+    /// Wait the next backoff (1, 2, 4, then 10 s) within `wait_seconds`, then read
+    /// `then`; `None` once the time is spent. A wait never decides an outcome.
+    pub(crate) fn poll(
+        &mut self,
+        wait_seconds: u32,
+        attempt: u32,
+        then: Vec<Ask>,
+    ) -> Result<Option<Vec<Result<Value, RpcError>>>, Stop> {
+        let cap = wait_seconds.min(WAIT_CAP_SECONDS).saturating_mul(1000);
+        let left = cap.saturating_sub(self.waited_ms);
+        let backoff = match attempt {
+            0 => 1_000,
+            1 => 2_000,
+            2 => 4_000,
+            _ => 10_000,
+        };
+        let ms = backoff.min(left);
+        if ms == 0 {
+            return Ok(None);
+        }
+        self.waited_ms += ms;
+        let kind = Kind::Wait {
+            ms,
+            count: then.len(),
+        };
+        match self.recorded(kind)? {
+            Some(answers) => Ok(Some(answers)),
+            None => self.next_step(Step::Wait { ms, then }, kind),
+        }
+    }
+
+    /// Follow `state` to its end: while `ask` names the read that moves it on, wait
+    /// as [`Cx::poll`] does within `wait_seconds`, read it, and fold the answer into
+    /// the next state with `absorb`. It stops when `ask` has no read left, or when
+    /// the time is spent.
+    pub(crate) fn follow<S>(
+        &mut self,
+        wait_seconds: u32,
+        mut state: S,
+        ask: impl Fn(&S) -> Result<Option<Ask>, Stop>,
+        absorb: impl Fn(&mut Self, S, Option<Result<Value, RpcError>>) -> Result<S, Stop>,
+    ) -> Result<S, Stop> {
+        let mut attempt = 0;
+        while let Some(read) = ask(&state)? {
+            let Some(answers) = self.poll(wait_seconds, attempt, vec![read])? else {
+                break;
+            };
+            state = absorb(self, state, answers.into_iter().next())?;
+            attempt += 1;
+        }
+        Ok(state)
+    }
+
+    /// The call's one write, refused as stale when the Store finds the
+    /// Environment moved past `expect`, and any other refusal read by `refuse`.
+    pub(crate) fn write_expecting<C: Tell>(
+        &mut self,
+        command: &C,
+        expect: Option<u64>,
+        refuse: impl FnOnce(RpcError, &Call, Writes) -> Refusal,
+    ) -> Result<C::Written, Stop> {
+        let stale = expect.map(|_| self.stale());
+        self.write_with(command, |error, call, writes| {
+            let moved =
+                error.code == RpcErrorCode::Conflict && error.details.get("revision").is_some();
+            match (stale, moved) {
+                (Some(stale), true) => stale,
+                _ => refuse(error, call, writes),
+            }
+        })
+    }
+
+    /// The call's one write: `commands` applied together, only while the
+    /// Environment is still at `expect`.
+    pub(crate) fn batch(
+        &mut self,
+        environment: &EnvironmentRef,
+        expect: Option<u64>,
+        commands: Vec<BatchCommand>,
+    ) -> Result<Vec<Written>, Stop> {
+        let batch = Batch {
+            environment: environment.clone(),
+            commands,
+            expect: expect.map(Revision),
+        };
+        self.write_expecting(&batch, expect, from_store)
+            .map(|batched| batched.results)
+    }
+
+    /// An ID for what this call creates, the same on every retry of the call.
+    pub(crate) fn mint<I: TryFrom<String>>(&self, given: Option<RequestKey>) -> Result<I, Stop> {
+        let key = self.request_key(given);
+        self.mint_as(&self.call.tool, &key)
+    }
+
+    /// An ID for `what` under `key`. Cloud IDs are global, so two
+    /// Organizations using one key must not mint the same ID.
+    pub(crate) fn mint_as<I: TryFrom<String>>(
+        &self,
+        what: &str,
+        key: &RequestKey,
+    ) -> Result<I, Stop> {
+        let seed = match &self.place.store {
+            StoreAt::Cloud { organization } => format!("{organization}:{what}"),
+            StoreAt::Local => what.to_owned(),
+        };
+        I::try_from(AttemptId::derive(&seed, key).to_string())
+            .map_err(|_| Refusal::internal("An ID did not mint").into())
+    }
+
+    /// Refuse before writing when the Environment moved past `expect`. For a
+    /// command no batch takes: another write can still land between the read
+    /// and this call's write.
+    pub(crate) fn expect(
+        &mut self,
+        scope: &EnvironmentRef,
+        expect: Option<u64>,
+    ) -> Result<(), Stop> {
+        if expect.is_none() {
+            return Ok(());
+        }
+        let view = self.one(&ServicesQuery {
+            environment: scope.clone(),
+        })?;
+        self.fresh(&view.environment, expect)
+    }
+
+    /// Refuse as stale when `environment` moved past `expect`, the revision the
+    /// caller read; no `expect` never refuses.
+    pub(crate) fn fresh(
+        &self,
+        environment: &EnvironmentSummary,
+        expect: Option<u64>,
+    ) -> Result<(), Stop> {
+        match expect.is_some_and(|expect| environment.revision != Revision(expect)) {
+            true => Err(self.stale().into()),
+            false => Ok(()),
+        }
+    }
+
+    /// `conflict` for a write whose `expect_revision` no longer holds: read again.
+    fn stale(&self) -> Refusal {
+        let mut next = self.place_args();
+        let tool = match self.call.input.get("service") {
+            Some(service) => {
+                next.insert("service".into(), service.clone());
+                ToolId::ServiceInspect
+            }
+            None => ToolId::EnvironmentShow,
+        };
+        Refusal::conflict("The Environment changed since you read it; read it again before writing")
+            .with_next(Call::to(tool, next.into()))
+    }
+
+    fn recorded(&mut self, kind: Kind) -> Result<Option<Vec<Result<Value, RpcError>>>, Stop> {
+        if usize::from(self.steps) > usize::from(STEP_BUDGET) {
+            return Err(Refusal::internal("A call takes at most three reads and writes").into());
+        }
+        let Some(round) = self.rounds.get(self.cursor) else {
+            return Ok(None);
+        };
+        self.cursor += 1;
+        if round.kind != kind {
+            return Err(Refusal::internal("A resumed call took another path").into());
+        }
+        Ok(Some(round.answers.clone()))
+    }
+
+    fn next_step<T>(&self, step: Step, kind: Kind) -> Result<T, Stop> {
+        Err(Stop::Step(Box::new(step), kind))
+    }
+}
+
+/// A Store query as an ask.
+pub(crate) fn store<Q: ployz_store::Ask>(query: &Q) -> Result<Ask, Stop> {
+    serde_json::from_value::<Query>(query.to_query())
+        .map(Ask::Store)
+        .map_err(|_| Refusal::internal("A query did not encode").into())
+}
+
+/// A refused act: what it wrote, the run it met, and the read that shows the
+/// subject now.
+fn refused_act(error: RpcError, call: &Call, subject: Call) -> Stop {
+    let writes = writes_of(&error);
+    let kept = ["run", "move_to"].map(|key| (key, error.details.get(key).cloned()));
+    let fix = error
+        .details
+        .get("fix")
+        .and_then(|fix| serde_json::from_value::<Fix>(fix.clone()).ok());
+    let mut refusal = from_store(error, call, writes).with_next(subject);
+    for (key, value) in kept {
+        if let Some(value) = value {
+            refusal = refusal.with_detail(key, value);
+        }
+    }
+    if let Some(fix) = fix {
+        refusal = refusal.with_fix(&fix);
+    }
+    refusal.into()
+}
+
+/// What a refused write says it wrote.
+fn writes_of(error: &RpcError) -> Writes {
+    match error.details.get("writes").and_then(Value::as_str) {
+        Some("unknown") => Writes::Unknown,
+        Some("committed") => Writes::Committed,
+        _ => Writes::None,
+    }
+}
+
+/// The one result a batch wrote that `pick` takes, the last when several do.
+pub(crate) fn written<T>(
+    results: Vec<Written>,
+    pick: impl FnMut(Written) -> Option<T>,
+) -> Result<T, Stop> {
+    results
+        .into_iter()
+        .rev()
+        .find_map(pick)
+        .ok_or_else(|| Refusal::internal("The Config Store answered in an unknown shape").into())
+}
+
+/// `project` and `environment` as a Store view resolved them: the arguments of
+/// a `next` call to where the view was read.
+pub(crate) fn place_of(environment: &EnvironmentSummary) -> Value {
+    json!({ "project": environment.project, "environment": environment.name })
+}
+
+/// One registered tool, as plain functions so the table is `const`.
+pub(crate) struct Entry {
+    pub(crate) name: &'static str,
+    pub(crate) def: fn() -> ToolDef,
+    pub(crate) example: fn() -> Value,
+    run: fn(&mut Cx<'_>, &Value) -> Result<Value, Stop>,
+    pub(crate) reach: Reach,
+    pub(crate) facts: ToolFacts,
+}
+
+pub(crate) const fn entry<T: Tool>() -> Entry {
+    Entry {
+        name: T::NAME,
+        def: def::<T>,
+        example: T::example,
+        run: run::<T>,
+        reach: T::REACH,
+        facts: facts::<T>(),
+    }
+}
+
+fn def<T: Tool>() -> ToolDef {
+    ToolDef {
+        name: T::NAME,
+        title: T::TITLE,
+        description: format!("{} {}", T::DESCRIPTION, T::GATE.sentence())
+            .trim_end()
+            .to_owned(),
+        input_schema: schema::input::<T>(),
+        output_schema: json!({ "type": "object" }),
+        read_only: T::EFFECT == Effect::Read,
+        destructive: matches!(T::EFFECT, Effect::Remove { .. }),
+        idempotent: T::EFFECT.idempotent(),
+        open_world: T::OPEN_WORLD,
+        gate: T::GATE,
+    }
+}
+
+fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
+    if let Some((field, reason)) = schema::out_of_range(&schema::input::<T>(), input) {
+        return Err(Refusal::invalid(
+            format!("This input does not fit: {reason}"),
+            &field.to_string(),
+        )
+        .into());
+    }
+    let decoded =
+        decode::<T>(input).map_err(|error| match unknown_tool_key::<T>(&error, input) {
+            Some(key) => {
+                let named = format!("unknown field {key}");
+                let reason = error.reason().replacen("unknown field", &named, 1);
+                Refusal::invalid(format!("This input does not fit: {reason}"), &key)
+            }
+            None => Refusal::invalid(
+                format!("This input does not fit: {}", error.reason()),
+                &declared(&schema::input::<T>(), error.path().unwrap_or_default()).to_string(),
+            ),
+        })?;
+    if T::REACH != Reach::Anywhere && cx.is_local() {
+        return Err(Refusal::not_here(cx.local_next()).into());
+    }
+    decoded.plan(cx)
+}
+
+/// The longest start of `path` that `schema` names, so a map key, which is the
+/// caller's text, leaves only its map: `files.<name>` is `files`.
+fn declared(schema: &Value, path: &str) -> FieldPath {
+    let mut named = FieldPath::default();
+    let mut node = schema;
+    let mut rest = path;
+    while !rest.is_empty() {
+        if let Some(index) = rest.strip_prefix('[') {
+            let Some((digits, after)) = index.split_once(']') else {
+                break;
+            };
+            let Some(items) = node.get("items") else {
+                break;
+            };
+            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                break;
+            }
+            let Ok(position) = digits.parse() else {
+                break;
+            };
+            named.push_index(position);
+            (node, rest) = (items, after);
+            continue;
+        }
+        let key = match named.is_empty() {
+            true => rest,
+            false => match rest.strip_prefix('.') {
+                Some(key) => key,
+                None => break,
+            },
+        };
+        let found = properties(node)
+            .into_iter()
+            .filter(|(name, _)| {
+                key.strip_prefix(name.as_str())
+                    .is_some_and(|after| after.is_empty() || after.starts_with(['.', '[']))
+            })
+            .max_by_key(|(name, _)| name.len());
+        let Some((name, inner)) = found else {
+            break;
+        };
+        named.push_key(name);
+        (node, rest) = (inner, &key[name.len()..]);
+    }
+    named
+}
+
+/// The properties `schema` declares, in it or any of its alternatives.
+fn properties(schema: &Value) -> Vec<(&String, &Value)> {
+    let mut found: Vec<_> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .collect();
+    for alternatives in ["anyOf", "oneOf", "allOf"] {
+        for alternative in schema
+            .get(alternatives)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            found.extend(properties(alternative));
+        }
+    }
+    found
+}
+
+/// The top-level key `T` refused as unknown, when another tool takes a key by that
+/// name. Any other key is the caller's own text and is never echoed.
+fn unknown_tool_key<T: Tool>(error: &DecodeError, input: &Value) -> Option<String> {
+    if error.path().is_some() || !error.reason().starts_with("unknown field") {
+        return None;
+    }
+    let own = schema::input::<T>();
+    let takes = |schema: &Value, key: &str| {
+        schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_some_and(|properties| properties.contains_key(key))
+    };
+    let catalog = super::catalog();
+    input.as_object()?.keys().find_map(|key| {
+        let elsewhere = catalog.iter().any(|tool| takes(&tool.input_schema, key));
+        (!takes(&own, key) && elsewhere).then(|| key.clone())
+    })
+}
+
+/// Start `tool` on `input` at `place`. `call_key` is the transport's ID for this
+/// call, stable across its retries.
+#[must_use]
+pub fn start(tool: &str, input: Value, place: &Place, call_key: &str) -> (Step, State) {
+    let state = State {
+        tool: tool.to_owned(),
+        input,
+        place: place.clone(),
+        call_key: call_key.to_owned(),
+        rounds: Vec::new(),
+        pending: None,
+    };
+    advance(state)
+}
+
+/// Resume a call with the answers to the step it last returned, in order.
+#[must_use]
+pub fn resume(mut state: State, answers: Vec<Result<Value, RpcError>>) -> (Step, State) {
+    let Some(kind) = state.pending.take() else {
+        return done(
+            state,
+            Refusal::internal("This call is not waiting for answers"),
+        );
+    };
+    if answers.len() != kind.answers() {
+        let wrote = state
+            .rounds
+            .iter()
+            .any(|round| round.kind == Kind::Write && matches!(round.answers.first(), Some(Ok(_))));
+        let refusal = Refusal::internal("The answers do not match the step that asked for them");
+        return done(
+            state,
+            Refusal {
+                writes: if wrote {
+                    Writes::Committed
+                } else {
+                    refusal.writes
+                },
+                ..refusal
+            },
+        );
+    }
+    state.rounds.push(Round { kind, answers });
+    advance(state)
+}
+
+fn advance(mut state: State) -> (Step, State) {
+    let tools = super::TOOLS;
+    let Some(entry) = tools.iter().find(|entry| entry.name == state.tool) else {
+        let known = tools.iter().map(|entry| entry.name);
+        let refusal = Refusal::not_found("There is no tool by that name")
+            .with_did_you_mean(ployz_store::did_you_mean(&state.tool, known.clone()))
+            .with_valid(known);
+        return done(state, refusal);
+    };
+    let mut cx = Cx {
+        rounds: &state.rounds,
+        cursor: 0,
+        steps: 0,
+        waited_ms: 0,
+        slot: Some(WriteSlot::new()),
+        place: &state.place,
+        call: Call::new(&state.tool, state.input.clone()),
+        call_key: &state.call_key,
+        local_next: entry.reach.local_next(),
+    };
+    let outcome = (entry.run)(&mut cx, &state.input);
+    let call = cx.call;
+    match outcome {
+        Ok(value) => (
+            Step::Done {
+                result: ToolResult::Ok(value),
+            },
+            state,
+        ),
+        Err(Stop::Step(step, kind)) => {
+            state.pending = Some(kind);
+            (*step, state)
+        }
+        Err(Stop::Refuse(refusal)) => {
+            let refusal = finish(*refusal, entry, &call, &state.call_key);
+            (
+                Step::Done {
+                    result: ToolResult::Refused(Box::new(refusal)),
+                },
+                state,
+            )
+        }
+    }
+}
+
+fn done(state: State, refusal: Refusal) -> (Step, State) {
+    let call = Call::new(&state.tool, state.input.clone());
+    let refusal = match refusal.retry.is_same() && refusal.retries() {
+        true => refusal.with_retry(call),
+        false => refusal,
+    };
+    (
+        Step::Done {
+            result: ToolResult::Refused(Box::new(refusal)),
+        },
+        state,
+    )
+}
+
+/// Fill what every refusal carries: a complete retry, and for a bad argument
+/// what fits there and an example.
+fn finish(mut refusal: Refusal, entry: &Entry, call: &Call, call_key: &str) -> Refusal {
+    if refusal.retry.is_same() && refusal.retries() {
+        refusal.retry = call.clone();
+    }
+    let input_schema = (entry.def)().input_schema;
+    let keyed = input_schema.pointer("/properties/request_key").is_some();
+    if refusal.writes == Writes::Unknown && keyed {
+        // The same key lands the write once, so the retry repeats it.
+        let given = call
+            .input
+            .get("request_key")
+            .and_then(Value::as_str)
+            .and_then(|key| RequestKey::parse(key).ok());
+        if let Value::Object(input) = &mut refusal.retry.input {
+            input.insert(
+                "request_key".into(),
+                RequestKey::effective(given, call_key).as_str().into(),
+            );
+        }
+    }
+    if refusal.code == RpcErrorCode::InvalidArgument {
+        let field = refusal.field.get_or_insert_with(String::new).clone();
+        if refusal.expected.is_none() {
+            refusal.expected = Some(schema::at(&input_schema, &FieldPath::parse(&field)));
+        }
+        if refusal.example.is_none() {
+            refusal.example = Some((entry.example)());
+        }
+    }
+    refusal
+}
+
+#[cfg(test)]
+#[path = "machine_tests.rs"]
+mod tests;

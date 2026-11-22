@@ -22,6 +22,7 @@ use ployz_core::{ConfigFileName, EnvPart, EnvValue, RpcError, SealedScope, Servi
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
+use crate::EnvironmentId;
 use crate::followup::{FollowUp, Place};
 use crate::scope::Environment;
 use crate::sealing::plain_fingerprint;
@@ -764,7 +765,7 @@ pub(crate) fn unset(
 /// Whether `value` holds a secret's plain text: text anywhere under a `secret`
 /// field, whatever its other fields and however deep, whether or not [`set`] takes
 /// it.
-pub(crate) fn holds_secret_text(value: &Value) -> bool {
+pub fn holds_secret_text(value: &Value) -> bool {
     match value {
         Value::Object(fields) => fields.iter().any(|(field, value)| {
             (field == "secret" && holds_text(value)) || holds_secret_text(value)
@@ -1115,7 +1116,7 @@ pub(crate) enum LegacyReader {
 /// environment or a Config file that reads a value sealed in the browser.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
-    environment: &str,
+    environment: &EnvironmentId,
 ) -> Result<Resolved, RpcError> {
     let mut resolved = resolve_values(compiled, environment)?;
     resolved.legacy = legacy_reads(compiled);
@@ -1124,16 +1125,16 @@ pub(crate) fn resolve(
 
 fn resolve_values(
     compiled: &CompiledEnvironmentIntent,
-    environment: &str,
+    environment: &EnvironmentId,
 ) -> Result<Resolved, RpcError> {
-    let environment = uuid::Uuid::parse_str(environment).ok();
+    let environment = environment.uuid();
     let stored = |sealed: Option<&SecretCiphertext>| match sealed {
-        Some(SecretCiphertext::ClientSealed(client)) => match environment {
-            Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
+        Some(SecretCiphertext::ClientSealed(client)) if client.sealed_for == environment => {
+            Ok(ResolverValue::Sealed {
                 value: client.value.clone(),
-            }),
-            _ => Ok(ResolverValue::NotSet),
-        },
+            })
+        }
+        Some(SecretCiphertext::ClientSealed(_)) => Ok(ResolverValue::NotSet),
         Some(SecretCiphertext::Legacy(_)) => Ok(ResolverValue::NotSet),
         None => Err(error::corrupt("sealed secret")),
     };
@@ -1145,7 +1146,7 @@ fn resolve_values(
         if let SavedVariableValue::Secret {
             encrypted_value: Some(SecretCiphertext::ClientSealed(client)),
         } = &producer.value
-            && environment != Some(client.sealed_for)
+            && environment != client.sealed_for
             && !compiled
                 .node_snapshots
                 .iter()
@@ -1660,9 +1661,12 @@ mod tests {
                 },
             }],
         };
-        let error = resolve(&compiled, &environment.to_string())
-            .map(|_| ())
-            .unwrap_err();
+        let error = resolve(
+            &compiled,
+            &crate::EnvironmentId::parse(environment.to_string()).unwrap(),
+        )
+        .map(|_| ())
+        .unwrap_err();
         assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
         assert!(error.message.contains("sentry"), "{error:?}");
         assert!(error.message.contains("secret.yml"), "{error:?}");
@@ -1712,7 +1716,7 @@ mod tests {
                 },
             }],
         };
-        let mut resolved = resolve(&compiled, "env").unwrap();
+        let mut resolved = resolve(&compiled, &crate::EnvironmentId::fresh()).unwrap();
         assert!(
             resolved.legacy.is_empty(),
             "web is no Service here, as a live value"

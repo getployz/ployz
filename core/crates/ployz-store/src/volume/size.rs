@@ -314,7 +314,7 @@ pub(crate) fn check_storage<'a>(
                 format!(
                     "{name} is deployed at {fixed}; {} it with ployz volume set {name} --size {}",
                     if asked > fixed { "grow" } else { "shrink" },
-                    gb(*asked)
+                    asked.gb()
                 ),
                 json!({ "volume": name, "storage_locked": true, "recorded": fixed }),
             ),
@@ -344,16 +344,11 @@ fn fits(fixed: &VolumeKind, asked: &VolumeKind, edited: bool) -> bool {
     }
 }
 
-/// `bytes` as `volume set --size` takes it: the GB number without its unit.
-fn gb(bytes: ProvisionedVolumeMaximumBytes) -> String {
-    bytes.to_string().trim_end_matches(" GB").to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::config::VolumeKind;
 
-    use super::{fits, gb};
+    use super::fits;
 
     fn managed(gb: u64) -> VolumeKind {
         VolumeKind::Provisioned {
@@ -384,11 +379,5 @@ mod tests {
                 "fixed {fixed:?}, asked {asked:?}, edited {edited}"
             );
         }
-    }
-
-    #[test]
-    fn the_size_flag_takes_the_gb_number_alone() {
-        assert_eq!(gb(20_000_000_000.try_into().unwrap()), "20");
-        assert_eq!(gb(1_500_000_000.try_into().unwrap()), "1.5");
     }
 }

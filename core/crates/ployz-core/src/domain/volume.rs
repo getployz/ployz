@@ -596,15 +596,23 @@ impl ProvisionedVolumeMaximumBytes {
     }
 }
 
+impl ProvisionedVolumeMaximumBytes {
+    /// The limit as a GB number without its unit, exact: `5`, `1.5`.
+    #[must_use]
+    pub fn gb(self) -> String {
+        let (whole, fraction) = (self.get() / GB, self.get() % GB);
+        if fraction == 0 {
+            return whole.to_string();
+        }
+        let fraction = format!("{fraction:09}");
+        format!("{whole}.{}", fraction.trim_end_matches('0'))
+    }
+}
+
 /// The limit in GB, exact: `5 GB`, `1.5 GB`.
 impl Display for ProvisionedVolumeMaximumBytes {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        let (whole, fraction) = (self.get() / GB, self.get() % GB);
-        if fraction == 0 {
-            return write!(formatter, "{whole} GB");
-        }
-        let fraction = format!("{fraction:09}");
-        write!(formatter, "{whole}.{} GB", fraction.trim_end_matches('0'))
+        write!(formatter, "{} GB", self.gb())
     }
 }
 

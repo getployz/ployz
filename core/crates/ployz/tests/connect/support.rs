@@ -9,10 +9,8 @@ use std::{
 };
 
 use ployz::{
-    connect::{
-        BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
-    },
-    context::{Connection, ConnectionSource, SelectedConnections},
+    connect::{BoxProxyStream, ConnectError, Connector, SystemConnector},
+    context::Connection,
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerList, ContractDescription, CreateVolumeRequest,
@@ -25,7 +23,7 @@ use ployz_core::{
     VolumeInventory, VolumeObservationFailure, VolumeRemoved, WireGuardPublicKey,
     encode_runtime_watch_frame, labels, op,
 };
-use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
+use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream, Proxies, reply, target};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -37,6 +35,10 @@ use tonic::{
 
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
+
+#[path = "../support/memory.rs"]
+mod memory;
+pub(super) use memory::connected_in_memory as connected_client;
 
 pub(super) async fn serve_discovery(
     service: DiscoveryService,
@@ -189,8 +191,7 @@ pub(super) struct DiscoveryService {
     /// Copies a want touched, with their rotation; removed copies leave. A listed
     /// Container no want touched keeps the rotation it was listed with.
     copies: Arc<Mutex<BTreeMap<ContainerId, ployz_core::ContainerObservation>>>,
-    /// What each proxy last routed, kept by the real rule.
-    served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
+    proxies: Arc<Proxies>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
@@ -297,7 +298,7 @@ impl DiscoveryService {
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::default(),
-            served: Arc::default(),
+            proxies: Arc::default(),
             management_clients: Arc::default(),
             inspect_fails: false,
             leave_unavailable: false,
@@ -421,7 +422,7 @@ impl DiscoveryService {
         Ok((ployz_core::ContainerNow::Present(copy), health))
     }
 
-    /// Each Machine's proxy routes by the real proxy rule, seeing every copy addressed.
+    /// Each Machine's proxy routes by the real proxy rule, seeing every copy.
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
         let mut copies: BTreeMap<ContainerId, ployz_core::ContainerObservation> = self
             .listed_containers
@@ -431,44 +432,11 @@ impl DiscoveryService {
             .map(|listed| (listed.container_id, listed.clone()))
             .collect();
         copies.extend(self.copies.lock().unwrap().clone());
-        let siblings = ployz_core::service_containers(
-            copies
-                .into_values()
-                .filter(|copy| copy.identity() == *service)
-                .map(|mut copy| {
-                    copy.try_update(|parts| {
-                        parts.address = parts.address.or(Some(ployz_core::ContainerAddress(
-                            "10.210.1.2".parse().unwrap(),
-                        )));
-                    })
-                    .unwrap();
-                    copy
-                }),
-        );
-        let mut served = self.served.lock().unwrap();
-        RoutesRead {
-            routes: self
-                .machines
-                .iter()
-                .map(|observed| {
-                    let current = served.entry(observed.machine.id).or_default();
-                    let next = ployz_core::proxy_routes(&siblings, |_| false, current);
-                    let route = next.get(service).cloned().unwrap_or_default();
-                    let listed = route
-                        .iter()
-                        .map(|serving| serving.as_observation().container_id)
-                        .collect();
-                    if next.contains_key(service) {
-                        current.insert(service.clone(), route);
-                    } else {
-                        current.remove(service);
-                    }
-                    (observed.machine.id, Some(listed))
-                })
-                .collect(),
-            complete: true,
-            ..RoutesRead::default()
-        }
+        self.proxies.read(
+            service,
+            self.machines.iter().map(|observed| observed.machine.id),
+            copies.into_values(),
+        )
     }
 }
 
@@ -670,7 +638,7 @@ impl FakeMachine for DiscoveryService {
         match outcome {
             Some(DescribeOutcome::Status(status)) => return Err(status),
             Some(DescribeOutcome::Remote(error)) => {
-                return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
+                return reply(error);
             }
             Some(DescribeOutcome::Hang(received)) => {
                 received.send(()).unwrap();
@@ -696,11 +664,7 @@ impl FakeMachine for DiscoveryService {
                 .and_then(|observation| self.descriptions.get(&observation.machine.id)),
             _ => None,
         };
-        Ok(Response::new(
-            RpcResponse::from(routed.unwrap_or(&self.description).clone())
-                .encode()
-                .unwrap(),
-        ))
+        reply(routed.unwrap_or(&self.description).clone())
     }
 
     async fn inspect(
@@ -719,30 +683,26 @@ impl FakeMachine for DiscoveryService {
             return Err(Status::invalid_argument("expected Inspect"));
         };
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
-        Ok(Response::new(
-            RpcResponse::from(MachineDetails {
-                devices: Vec::new(),
-                removed_keys: Vec::new(),
-                id: self.description.machine_id,
-                phase: LocalMachinePhase::Participating,
-                machine: None,
-                public_key: WireGuardPublicKey([0; 32]),
-                advertised_endpoints: Vec::new(),
-                store_version: Default::default(),
-                rtts: Vec::new(),
-                passkeys: Vec::new(),
-                management_clients: self.management_clients.lock().unwrap().clone(),
-                telemetry,
-                storage: inspect.include_storage.then_some(self.storage),
-                upgrade: None,
-                token: None,
-                sealing: None,
-                founding: Default::default(),
-                grants: Vec::new(),
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(MachineDetails {
+            devices: Vec::new(),
+            removed_keys: Vec::new(),
+            id: self.description.machine_id,
+            phase: LocalMachinePhase::Participating,
+            machine: None,
+            public_key: WireGuardPublicKey([0; 32]),
+            advertised_endpoints: Vec::new(),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            passkeys: Vec::new(),
+            management_clients: self.management_clients.lock().unwrap().clone(),
+            telemetry,
+            storage: inspect.include_storage.then_some(self.storage),
+            upgrade: None,
+            token: None,
+            sealing: None,
+            founding: Default::default(),
+            grants: Vec::new(),
+        })
     }
 
     async fn register(
@@ -762,7 +722,7 @@ impl FakeMachine for DiscoveryService {
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         if let Some(error) = self.register_error.lock().unwrap().clone() {
-            return Ok(Response::new(RpcResponse::from(error).encode().unwrap()));
+            return reply(error);
         }
         let RpcRequestBody::Register(body) = request.body else {
             return Err(Status::invalid_argument("expected Register"));
@@ -796,9 +756,7 @@ impl FakeMachine for DiscoveryService {
             grants: Vec::new(),
             restrictions: None,
         };
-        Ok(Response::new(
-            RpcResponse::from(registered).encode().unwrap(),
-        ))
+        reply(registered)
     }
 
     async fn set_management_client(
@@ -845,24 +803,20 @@ impl FakeMachine for DiscoveryService {
             .filter(|observation| !removed.contains(&observation.machine.id))
             .cloned()
             .collect();
-        Ok(Response::new(
-            RpcResponse::from(MachineList {
-                enrollment: self
-                    .advertises_enrollment
-                    .then(|| ployz_core::EnrollmentSnapshot {
-                        network: "10.210.0.0/16".parse().unwrap(),
-                        machines: machines
-                            .iter()
-                            .map(|observation| observation.machine.clone())
-                            .collect(),
-                        target_versions: BTreeMap::new(),
-                        doors: None,
-                    }),
-                machines,
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(MachineList {
+            enrollment: self
+                .advertises_enrollment
+                .then(|| ployz_core::EnrollmentSnapshot {
+                    network: "10.210.0.0/16".parse().unwrap(),
+                    machines: machines
+                        .iter()
+                        .map(|observation| observation.machine.clone())
+                        .collect(),
+                    target_versions: BTreeMap::new(),
+                    doors: None,
+                }),
+            machines,
+        })
     }
 
     async fn metrics_live(
@@ -879,11 +833,11 @@ impl FakeMachine for DiscoveryService {
         else {
             return Err(Status::invalid_argument("expected metrics_live"));
         };
-        let reply = match self.metric_replies.lock().unwrap().get(&machine_id) {
-            Some(reply) => reply.clone()?,
+        let answer = match self.metric_replies.lock().unwrap().get(&machine_id) {
+            Some(answer) => answer.clone()?,
             None => return Err(Status::unimplemented("no metrics for this Machine")),
         };
-        Ok(Response::new(RpcResponse::from(reply).encode().unwrap()))
+        reply(answer)
     }
 
     async fn list_containers(
@@ -910,18 +864,12 @@ impl FakeMachine for DiscoveryService {
                 .get_mut(&machine_id)
                 .and_then(VecDeque::pop_front)
             {
-                return outcome.map(|containers| {
-                    Response::new(RpcResponse::from(containers).encode().unwrap())
-                });
+                return outcome.and_then(reply);
             }
         }
-        Ok(Response::new(
-            RpcResponse::from(ContainerList {
-                containers: self.listed_containers.lock().unwrap().clone(),
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(ContainerList {
+            containers: self.listed_containers.lock().unwrap().clone(),
+        })
     }
 
     async fn request_machine_upgrade(
@@ -945,7 +893,7 @@ impl FakeMachine for DiscoveryService {
                 .clone()
                 .unwrap_or(ployz_core::MachineUpgradeOutcome::Accepted),
         });
-        let reply = if attempt.attempt_id == body.attempt_id {
+        let answer = if attempt.attempt_id == body.attempt_id {
             RpcResponse::from(attempt.clone())
         } else {
             RpcResponse::from(RpcError::conflict(
@@ -955,7 +903,7 @@ impl FakeMachine for DiscoveryService {
         if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("reply lost after dispatch"));
         }
-        Ok(Response::new(reply.encode().unwrap()))
+        reply(answer)
     }
 
     async fn inspect_container(
@@ -966,7 +914,7 @@ impl FakeMachine for DiscoveryService {
             .inspect_container_result
             .clone()
             .ok_or_else(|| Status::unimplemented("unused"))?;
-        Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
+        reply(details)
     }
 
     async fn inspect_storage(
@@ -1007,9 +955,7 @@ impl FakeMachine for DiscoveryService {
                 .unwrap()
                 .remove(&volume.id.machine_id);
         }
-        Ok(Response::new(
-            RpcResponse::from(capacity.clone()).encode().unwrap(),
-        ))
+        reply(capacity.clone())
     }
 
     async fn list_volumes(
@@ -1018,25 +964,20 @@ impl FakeMachine for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.list_rpc_calls.fetch_add(1, Ordering::SeqCst);
         self.volume_list_calls.fetch_add(1, Ordering::SeqCst);
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let machine_id = target(&request)?;
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::ListVolumes(_)));
         if let Some(volumes) = self.listed_volumes.lock().unwrap().get(&machine_id) {
-            return Ok(Response::new(
-                RpcResponse::from(VolumeInventory {
-                    volumes: volumes.clone(),
-                    failures: self
-                        .volume_observation_failures
-                        .lock()
-                        .unwrap()
-                        .get(&machine_id)
-                        .cloned()
-                        .unwrap_or_default(),
-                })
-                .encode()
-                .unwrap(),
-            ));
+            return reply(VolumeInventory {
+                volumes: volumes.clone(),
+                failures: self
+                    .volume_observation_failures
+                    .lock()
+                    .unwrap()
+                    .get(&machine_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
         }
         let response = if machine_id.as_str().starts_with('b') {
             RpcResponse::from(RpcError::unavailable("target unavailable"))
@@ -1056,15 +997,14 @@ impl FakeMachine for DiscoveryService {
                 failures: Vec::new(),
             })
         };
-        Ok(Response::new(response.encode().unwrap()))
+        reply(response)
     }
 
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let machine_id = target(&request)?;
         let request = request.into_inner().decode_request().unwrap();
         let RpcRequestBody::RemoveVolume(remove) = request.body else {
             return Err(Status::invalid_argument("expected remove_volume"));
@@ -1085,15 +1025,14 @@ impl FakeMachine for DiscoveryService {
             });
             RpcResponse::from(VolumeRemoved {})
         };
-        Ok(Response::new(response.encode().unwrap()))
+        reply(response)
     }
 
     async fn ensure_container(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let machine_id = target(&request)?;
         let request = request.into_inner().decode_request().unwrap();
         let RpcRequestBody::EnsureContainer(ensure) = request.body else {
             return Err(Status::invalid_argument("expected ensure_container"));
@@ -1129,9 +1068,7 @@ impl FakeMachine for DiscoveryService {
                     std::future::pending::<()>().await;
                 }
                 if let Some(error) = &self.create_container_error {
-                    return Ok(Response::new(
-                        RpcResponse::from(error.clone()).encode().unwrap(),
-                    ));
+                    return reply(error.clone());
                 }
                 let copy = created_container(machine_id, container_id, resolved_spec);
                 self.copies
@@ -1151,7 +1088,7 @@ impl FakeMachine for DiscoveryService {
                 match self.turn(copy, &want) {
                     Ok(turned) => turned,
                     Err(refused) => {
-                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                        return reply(refused);
                     }
                 }
             }
@@ -1159,22 +1096,18 @@ impl FakeMachine for DiscoveryService {
                 if let Ok(copy) = self.copy(&container) {
                     let container_id = copy.container_id;
                     if let Err(refused) = self.turn(copy, &want) {
-                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                        return reply(refused);
                     }
                     self.copies.lock().unwrap().remove(&container_id);
                 }
                 (ployz_core::ContainerNow::Absent { of: container }, None)
             }
         };
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
-                now,
-                health,
-                verified: None,
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(ployz_core::EnsuredContainer::Ensured {
+            now,
+            health,
+            verified: None,
+        })
     }
 
     #[expect(
@@ -1277,23 +1210,19 @@ impl FakeMachine for DiscoveryService {
             .filter(|builds| builds.retain_images)
             .ok_or_else(|| Status::unimplemented("unused"))?;
         assert!(builds.retained.load(Ordering::SeqCst));
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::MachineImages {
-                containerd_store: true,
-                images: vec![ployz_core::ImageSummary {
-                    id: format!("sha256:{}", "1".repeat(64)),
-                    repo_tags: vec!["example.test/api:built".into()],
-                    created: 0,
-                    size: 0,
-                    containers: 0,
-                    platforms: vec!["linux/amd64".into()],
-                    last_tagged: None,
-                }],
-                docker_root: None,
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(ployz_core::MachineImages {
+            containerd_store: true,
+            images: vec![ployz_core::ImageSummary {
+                id: format!("sha256:{}", "1".repeat(64)),
+                repo_tags: vec!["example.test/api:built".into()],
+                created: 0,
+                size: 0,
+                containers: 0,
+                platforms: vec!["linux/amd64".into()],
+                last_tagged: None,
+            }],
+            docker_root: None,
+        })
     }
 
     async fn ensure_image_ingest(
@@ -1304,16 +1233,12 @@ impl FakeMachine for DiscoveryService {
             .as_ref()
             .filter(|builds| builds.retain_images)
             .ok_or_else(|| Status::unimplemented("unused"))?;
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::ImageIngestOpened {
-                destination: ployz_core::ImageIngestDestination {
-                    management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
-                    port: 5000,
-                },
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(ployz_core::ImageIngestOpened {
+            destination: ployz_core::ImageIngestDestination {
+                management_address: ployz_core::ManagementAddress("fd00::1".parse().unwrap()),
+                port: 5000,
+            },
+        })
     }
 
     async fn read_routes(
@@ -1326,11 +1251,7 @@ impl FakeMachine for DiscoveryService {
         };
         // real-wait: a slow routes reply is what a CLI process under test must wait out.
         tokio::time::sleep(self.routes_delay).await;
-        Ok(Response::new(
-            RpcResponse::from(self.routes(&read.service))
-                .encode()
-                .unwrap(),
-        ))
+        reply(self.routes(&read.service))
     }
     async fn read_routed_addresses(
         &self,
@@ -1342,11 +1263,7 @@ impl FakeMachine for DiscoveryService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled::default())
-                .encode()
-                .unwrap(),
-        ))
+        reply(ployz_core::ImagePulled::default())
     }
     async fn pull_image_from_machine(
         &self,
@@ -1370,11 +1287,7 @@ impl FakeMachine for DiscoveryService {
             std::future::pending::<()>().await;
         }
         builds.delivered.store(true, Ordering::SeqCst);
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled::default())
-                .encode()
-                .unwrap(),
-        ))
+        reply(ployz_core::ImagePulled::default())
     }
 
     async fn select_endpoint(
@@ -1392,14 +1305,10 @@ impl FakeMachine for DiscoveryService {
             .lock()
             .unwrap()
             .push(request.clone());
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::EndpointSelected {
-                peer: request.peer,
-                endpoint: request.endpoint,
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(ployz_core::EndpointSelected {
+            peer: request.peer,
+            endpoint: request.endpoint,
+        })
     }
 
     async fn update_machine(
@@ -1412,9 +1321,7 @@ impl FakeMachine for DiscoveryService {
             ));
         }
         if let Some(error) = &self.update_refusal {
-            return Ok(Response::new(
-                RpcResponse::from(error.clone()).encode().unwrap(),
-            ));
+            return reply(error.clone());
         }
         let target = ployz_core::MachineTarget::parse(
             request.metadata().get("machine").unwrap().to_str().unwrap(),
@@ -1433,19 +1340,14 @@ impl FakeMachine for DiscoveryService {
             .ok_or_else(|| Status::not_found("unknown Machine"))?;
         let machine = ployz_core::apply_machine_update(&observed.machine, &[], update)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        Ok(Response::new(
-            RpcResponse::from(ployz_core::MachineUpdated { machine })
-                .encode()
-                .unwrap(),
-        ))
+        reply(ployz_core::MachineUpdated { machine })
     }
 
     async fn set_volume_copy(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let machine_id = target(&request)?;
         match self.set_volume_copy_failures.get(&machine_id) {
             Some(SwitchFailure::Refused(status)) => Err(status.clone()),
             Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
@@ -1469,27 +1371,20 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let machine_id = target(&request)?;
         let request = request.into_inner().decode_request().unwrap();
         assert!(matches!(request.body, RpcRequestBody::Leave(_)));
         if self.leave_unavailable {
             return Err(Status::unavailable("target unavailable"));
         }
         if let Some(error) = &self.leave_error {
-            return Ok(Response::new(
-                RpcResponse::from(error.clone()).encode().unwrap(),
-            ));
+            return reply(error.clone());
         }
         self.reset_machines.lock().unwrap().push(machine_id);
-        Ok(Response::new(
-            RpcResponse::from(Left::Left {
-                phase: LeftPhase::Resetting,
-                reset_warning: self.reset_warning.lock().unwrap().clone(),
-            })
-            .encode()
-            .unwrap(),
-        ))
+        reply(Left::Left {
+            phase: LeftPhase::Resetting,
+            reset_warning: self.reset_warning.lock().unwrap().clone(),
+        })
     }
 
     async fn forget(
@@ -1507,16 +1402,10 @@ impl FakeMachine for DiscoveryService {
             })
             .is_ok()
         {
-            return Ok(Response::new(
-                RpcResponse::from(RpcError::unavailable("the Cluster store is unavailable"))
-                    .encode()
-                    .unwrap(),
-            ));
+            return reply(RpcError::unavailable("the Cluster store is unavailable"));
         }
         self.removed_machines.lock().unwrap().push(machine_id);
-        Ok(Response::new(
-            RpcResponse::from(Forgotten::Forgotten).encode().unwrap(),
-        ))
+        reply(Forgotten::Forgotten)
     }
 }
 
@@ -1677,67 +1566,6 @@ pub(super) fn test_description() -> ContractDescription {
         capabilities: Default::default(),
         sealing: None,
     }
-}
-
-pub(super) async fn connected_client(
-    service: DiscoveryService,
-) -> (
-    Client,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    Arc<AtomicUsize>,
-) {
-    // Keep semantic RPC tests inside Tokio so paused time never outruns OS I/O.
-    // Transport tests use serve_discovery / SystemConnector directly.
-    struct MemoryConnector {
-        incoming: mpsc::UnboundedSender<Result<tokio::io::DuplexStream, std::io::Error>>,
-        connects: Arc<AtomicUsize>,
-    }
-    #[tonic::async_trait]
-    impl Connector for MemoryConnector {
-        async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
-            self.connects.fetch_add(1, Ordering::SeqCst);
-            let incoming = self.incoming.clone();
-            Channel::from_static("http://memory.invalid")
-                .connect_with_connector(tower::service_fn(move |_| {
-                    let (client, server) = tokio::io::duplex(64 * 1024);
-                    incoming.send(Ok(server)).unwrap();
-                    async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client)) }
-                }))
-                .await
-                .map_err(Into::into)
-        }
-
-        async fn dial_proxy(
-            &self,
-            _: &Connection,
-            _: &str,
-            _: &str,
-        ) -> Result<BoxProxyStream, ConnectError> {
-            Err(ConnectError::Attempt("unused".into()))
-        }
-    }
-    let (incoming, receiver) = mpsc::unbounded_channel();
-    let server = tokio::spawn(
-        Server::builder()
-            .add_service(MachineRpcServer::new(Fake(service)))
-            .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
-                receiver,
-            )),
-    );
-    let connects = Arc::new(AtomicUsize::new(0));
-    let client = connect_selected_with(
-        SelectedConnections {
-            source: ConnectionSource::Direct,
-            connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
-        },
-        Arc::new(MemoryConnector {
-            incoming,
-            connects: connects.clone(),
-        }),
-    )
-    .await
-    .unwrap();
-    (client, server, connects)
 }
 
 /// Records the owned Build transport. It never invokes a build tool and makes

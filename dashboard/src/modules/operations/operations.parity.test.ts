@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { OPERATION_TOOLS, OPERATIONS } from "#/modules/operations/operations";
 import { OPERATION_PARITY } from "#/modules/operations/operations.parity";
 
-const AGENT_TOOLS = new URL("../../../../core/crates/ployz-store/tests/snapshots/agent_tools.json", import.meta.url);
+const AGENT_TOOLS = new URL("../../../../core/crates/ployz-agent-tools/tests/snapshots/agent_tools.json", import.meta.url);
 const SRC = new URL("../../", import.meta.url);
 
 const CONFIG_STORE_TOOLS = new Set(["environment_protect", "volume_add", "volume_update", "volume_remove"]);

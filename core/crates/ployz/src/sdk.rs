@@ -40,6 +40,7 @@ pub(crate) mod prepare;
 mod run_support;
 mod running;
 mod sealed;
+pub mod stderr_log;
 mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};

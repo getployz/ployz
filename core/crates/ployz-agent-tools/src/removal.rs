@@ -1,0 +1,407 @@
+//! Tools that remove an Environment or a Project: one Store `remove` each.
+
+use std::collections::BTreeMap;
+
+use ployz_core::{RpcError, RpcErrorCode};
+use serde_json::{Map, Value, json};
+
+use super::ToolId;
+use super::act::{server_show, servers};
+use super::cloud::ServersAnswer;
+use super::deployment::FOLLOW_WAIT_SECONDS;
+use super::input::tool_input;
+use super::machine::{Cx, DiffVerb, Effect, Stop, Tool, store};
+use super::refusal::{Call, Refusal, Writes, from_store_with, retry_accepting};
+use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
+use ployz_store::Accept;
+use ployz_store::catalog::NODE_NAME;
+use ployz_store::{
+    EnvironmentName, EnvironmentsQuery, Left, ProjectName, Removal, Remove, RemovedQuery,
+    VolumeName, Waiting,
+};
+
+/// Volumes by Environment, as `remove` takes them.
+type Volumes = BTreeMap<EnvironmentName, Vec<VolumeName>>;
+
+/// What is removed, and how the tool's Volume lists name a Volume.
+#[derive(Clone, Copy)]
+enum Target {
+    /// One Environment: a Volume by its name.
+    Environment,
+    /// A Project: a Volume as `environment/volume`.
+    Project,
+}
+
+impl Target {
+    const fn tool(self) -> ToolId {
+        match self {
+            Self::Environment => ToolId::EnvironmentRemove,
+            Self::Project => ToolId::ProjectRemove,
+        }
+    }
+
+    /// The tool's Volume list for `volumes`.
+    fn list(self, volumes: &Volumes) -> Vec<String> {
+        volumes
+            .iter()
+            .flat_map(|(environment, names)| {
+                names.iter().map(move |volume| match self {
+                    Self::Environment => volume.to_string(),
+                    Self::Project => format!("{environment}/{volume}"),
+                })
+            })
+            .collect()
+    }
+}
+
+/// `environment/volume` lines as `remove` takes them.
+fn by_environment(lines: &[String], field: &str) -> Result<Volumes, Stop> {
+    let mut volumes = Volumes::new();
+    for line in lines {
+        let parsed = line.split_once('/').and_then(|(environment, volume)| {
+            Some((
+                EnvironmentName::parse(environment).ok()?,
+                VolumeName::parse(volume).ok()?,
+            ))
+        });
+        let Some((environment, volume)) = parsed else {
+            return Err(Refusal::invalid("Name a Volume as environment/volume", field).into());
+        };
+        volumes.entry(environment).or_default().push(volume);
+    }
+    Ok(volumes)
+}
+
+/// The Volume map a Store refusal carries at `key`, as the tool's list.
+fn listed(target: Target, details: &Value, key: &str) -> Value {
+    let volumes = details
+        .get(key)
+        .cloned()
+        .and_then(|volumes| serde_json::from_value::<Volumes>(volumes).ok())
+        .unwrap_or_default();
+    json!(target.list(&volumes))
+}
+
+/// The Store's fix for a waiting Server, named as the tools name it.
+fn fix(fix: &ployz_store::Fix, names: &BTreeMap<String, ServerName>) -> Option<Fix> {
+    Some(match fix {
+        ployz_store::Fix::UseCloud => Fix::UseCloud,
+        ployz_store::Fix::ConnectServers => Fix::ConnectServers,
+        ployz_store::Fix::UpdateClient => Fix::UpdateClient,
+        ployz_store::Fix::OpenDashboard { page } => Fix::OpenDashboard {
+            page: serde_json::from_value::<DashboardPage>(json!(page)).ok()?,
+        },
+        ployz_store::Fix::ServerRemove { server } => Fix::ServerRemove {
+            server: names.get(server)?.clone(),
+        },
+    })
+}
+
+fn waiting(waiting: &[Waiting], names: &BTreeMap<String, ServerName>) -> Vec<Value> {
+    waiting
+        .iter()
+        .map(|waiting| {
+            let id = waiting
+                .server_id
+                .map_or_else(|| waiting.server.clone(), |id| id.to_string());
+            let server = names
+                .get(&id)
+                .map_or(waiting.server.as_str(), ServerName::as_str);
+            let mut shown = json!({ "server": server, "why": waiting.why });
+            if let (Some(fix), Value::Object(shown)) = (fix(&waiting.fix, names), &mut shown) {
+                shown.insert("fix".into(), json!(fix));
+            }
+            shown
+        })
+        .collect()
+}
+
+/// The Servers `waiting` names by id, by their names. Only Cloud knows them.
+fn names(cx: &mut Cx<'_>, waiting: &[Waiting]) -> Result<BTreeMap<String, ServerName>, Stop> {
+    if waiting.is_empty() || cx.is_local() {
+        return Ok(BTreeMap::new());
+    }
+    let mut answers = cx.read(vec![servers()])?.into_iter();
+    let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+    Ok(answer
+        .servers
+        .into_iter()
+        .map(|server| (server.machine.to_string(), server.name))
+        .collect())
+}
+
+/// A Store refusal of `remove` in the tool's words: a confirmation's retry and
+/// an every-copy offer list Volumes as the tool takes them.
+fn refused(target: Target, error: RpcError, call: &Call, writes: Writes) -> Refusal {
+    let details = error.details.clone();
+    let mut refusal = from_store_with(error, call, writes, |confirmation, call| {
+        let volumes = match &confirmation.accept {
+            Some(Accept::ByEnvironment(volumes)) => target.list(volumes),
+            Some(Accept::Names(_)) | None => Vec::new(),
+        };
+        retry_accepting(confirmation, call, json!(volumes))
+    });
+    if let Some(offer) = details
+        .get("every_copy")
+        .and_then(|offer| offer.get("input"))
+    {
+        // Deleting every copy is the member's choice: offered, never the retry.
+        let mut input = call.input.as_object().cloned().unwrap_or_default();
+        input.insert(
+            "accept_volume_loss".into(),
+            listed(target, offer, "accept_volume_loss"),
+        );
+        input.insert("every_copy".into(), listed(target, offer, "every_copy"));
+        input.insert(
+            "version".into(),
+            offer.get("version").cloned().unwrap_or(Value::Null),
+        );
+        refusal = refusal.with_detail("every_copy", json!(Call::to(target.tool(), input.into())));
+    }
+    if let Some(waiting) = details.get("waiting_on") {
+        refusal = refusal.with_detail("waiting_on", waiting.clone());
+    }
+    refusal
+}
+
+/// The waiting Servers a refusal carries, named, with the read that shows them.
+fn named(cx: &mut Cx<'_>, mut refusal: Refusal) -> Result<Refusal, Stop> {
+    let Some(raw) = refusal.details.get("waiting_on").cloned() else {
+        return Ok(refusal);
+    };
+    let waiting_on = serde_json::from_value::<Vec<Waiting>>(raw).unwrap_or_default();
+    let names = names(cx, &waiting_on)?;
+    refusal = refusal.with_detail("waiting_on", json!(self::waiting(&waiting_on, &names)));
+    if !cx.is_local() {
+        refusal = refusal.with_next(server_show(None));
+    }
+    Ok(refusal)
+}
+
+fn left(left: &Left) -> Value {
+    json!({
+        "environment": left.environment.name,
+        "deployment": left.deployment.as_ref().map(|deployment| deployment.number),
+        "status": left.status,
+        "why": left.why,
+        "services": left.services,
+    })
+}
+
+/// Run `remove`, follow it within `wait_seconds`, and say where it stands.
+fn remove(
+    cx: &mut Cx<'_>,
+    target: Target,
+    command: &Remove,
+    wait_seconds: u32,
+) -> Result<Map<String, Value>, Stop> {
+    let removal = match cx.write_with(command, |error, call, writes| {
+        refused(target, error, call, writes)
+    }) {
+        Ok(removal) => removal,
+        Err(Stop::Refuse(refusal)) => return Err(named(cx, *refusal)?.into()),
+        Err(step) => return Err(step),
+    };
+    let (id, left, waiting_on, mut residuals) = match removal {
+        Removal::Removed { residuals } => (None, Vec::new(), Vec::new(), residuals),
+        Removal::Removing {
+            id,
+            left,
+            waiting_on,
+        } => (Some(id), left, waiting_on, Vec::new()),
+    };
+    let query = EnvironmentsQuery {
+        project: Some(command.project.clone()),
+    };
+    let left = cx.follow(
+        wait_seconds,
+        left,
+        |left| {
+            if left.is_empty() {
+                return Ok(None);
+            }
+            store(&query).map(Some)
+        },
+        |cx, mut left, answer| {
+            if matches!(&answer, Some(Err(error)) if error.code == RpcErrorCode::NotFound) {
+                left.clear();
+                return Ok(left);
+            }
+            let view = cx.view::<EnvironmentsQuery>(answer)?;
+            left.retain(|left| {
+                view.environments
+                    .iter()
+                    .any(|listed| listed.id == left.environment.id)
+            });
+            Ok(left)
+        },
+    )?;
+    if let (Some(id), true) = (id, left.is_empty()) {
+        residuals = cx.one(&RemovedQuery { id })?.residuals;
+    }
+    let names = names(cx, &waiting_on)?;
+    let mut shown = Map::new();
+    let removing = !left.is_empty();
+    shown.insert(
+        "state".into(),
+        match removing {
+            true => "removing",
+            false => "removed",
+        }
+        .into(),
+    );
+    shown.insert("left".into(), left.iter().map(self::left).collect());
+    shown.insert(
+        "waiting_on".into(),
+        match removing {
+            true => waiting(&waiting_on, &names).into(),
+            false => Value::Array(Vec::new()),
+        },
+    );
+    shown.insert("residuals".into(), json!(residuals));
+    if let Some(first) = left.first() {
+        shown.insert(
+            "next".into(),
+            json!(Call::to(
+                ToolId::DeploymentShow,
+                json!({
+                    "project": command.project,
+                    "environment": first.environment.name,
+                    "wait_seconds": FOLLOW_WAIT_SECONDS,
+                }),
+            )),
+        );
+    }
+    Ok(shown)
+}
+
+/// The Project a call names, else the one it is in.
+fn project(cx: &Cx<'_>, named: Option<&ProjectName>) -> Result<ProjectName, Stop> {
+    cx.scope_in(named, None)
+        .project
+        .ok_or_else(|| Refusal::invalid("Name the Project", "project").into())
+}
+
+tool_input! {
+    pub(crate) struct EnvironmentRemove {
+        /// The Environment to remove, e.g. `preview`.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        environment: EnvironmentName,
+        /// Project name. Defaults to the one you are in.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+        project: Option<ProjectName>,
+        /// Volumes whose data the member agreed to lose, named as the refusal listed them.
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        accept_volume_loss: Vec<VolumeName>,
+        /// Volumes the member agreed to delete every copy of, Mirrors included, exactly as a refusal offered them.
+        #[serde(default)]
+        #[schemars(with = "Vec<String>")]
+        every_copy: Vec<VolumeName>,
+        /// The version the refusal gave. Fails if what it covers changed since.
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
+}
+
+impl Tool for EnvironmentRemove {
+    const NAME: &'static str = "environment_remove";
+    const TITLE: &'static str = "Remove an Environment";
+    const DESCRIPTION: &'static str = "Remove an Environment right away. Its Services come off the Servers, then it is deleted with its Volumes and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on.";
+    const GATE: Gate = Gate::Store;
+    // A second call goes on with the removal under way; once it is gone, no
+    // Environment has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
+
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Remove
+    }
+
+    fn example() -> Value {
+        json!({ "environment": "preview", "wait_seconds": 120 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let project = project(cx, self.project.as_ref())?;
+        AcceptedLoss::from_input(
+            self.accept_volume_loss
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            self.version.clone(),
+        )?;
+        let one = |volumes: Vec<VolumeName>| match volumes.is_empty() {
+            true => Volumes::new(),
+            false => Volumes::from([(self.environment.clone(), volumes)]),
+        };
+        let command = Remove {
+            project,
+            environment: Some(self.environment.clone()),
+            version: self.version,
+            accept_volume_loss: one(self.accept_volume_loss),
+            every_copy: one(self.every_copy),
+        };
+        let mut shown = remove(cx, Target::Environment, &command, self.wait_seconds)?;
+        shown.insert(
+            "at".into(),
+            format!("{}/{}", command.project, self.environment).into(),
+        );
+        Ok(shown.into())
+    }
+}
+
+tool_input! {
+    pub(crate) struct ProjectRemove {
+        /// The Project to remove, e.g. `trial`.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        project: ProjectName,
+        /// Volumes whose data the member agreed to lose, as `environment/volume`, as a refusal listed them.
+        #[serde(default)]
+        accept_volume_loss: Vec<String>,
+        /// Volumes the member agreed to delete every copy of, Mirrors included, as `environment/volume`, as a refusal offered them.
+        #[serde(default)]
+        every_copy: Vec<String>,
+        /// The version the refusal gave. Fails if what it covers changed since.
+        #[serde(default)]
+        version: Option<String>,
+        @wait,
+    }
+}
+
+impl Tool for ProjectRemove {
+    const NAME: &'static str = "project_remove";
+    const TITLE: &'static str = "Remove a Project";
+    const DESCRIPTION: &'static str = "Remove a Project right away. Its Services come off the Servers, then it is deleted with every Environment, Volume and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on.";
+    const GATE: Gate = Gate::Store;
+    // A second call goes on with the removal under way; once it is gone, no
+    // Project has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
+
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Remove
+    }
+
+    fn example() -> Value {
+        json!({ "project": "trial", "wait_seconds": 120 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        AcceptedLoss::from_input(self.accept_volume_loss.clone(), self.version.clone())?;
+        let command = Remove {
+            project: self.project,
+            environment: None,
+            version: self.version,
+            accept_volume_loss: by_environment(&self.accept_volume_loss, "accept_volume_loss")?,
+            every_copy: by_environment(&self.every_copy, "every_copy")?,
+        };
+        let mut shown = remove(cx, Target::Project, &command, self.wait_seconds)?;
+        shown.insert("at".into(), command.project.to_string().into());
+        Ok(shown.into())
+    }
+}
+
+#[cfg(test)]
+#[path = "removal_tests.rs"]
+mod tests;

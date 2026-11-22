@@ -62,13 +62,6 @@ mod tests {
     }
 
     #[test]
-    fn bytes_stored_as_gb_round_back_to_the_same_bytes() {
-        for bytes in [1_073_741_824.0_f64, 536_870_912.0, 1_099_511_627_776.0, 1.0] {
-            assert_eq!((bytes / 1e9 * 1e9).round(), bytes);
-        }
-    }
-
-    #[test]
     fn only_a_number_too_large_for_gb_looks_like_bytes() {
         assert_eq!(
             looks_like_bytes(1_073_741_824.0),

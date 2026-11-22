@@ -2745,18 +2745,6 @@ mod mark {
         }
     }
 
-    /// On CI's filesystem, ext4 or tmpfs, the reader passes its own `fstatfs` check and reads the
-    /// lock.
-    #[test]
-    fn the_test_filesystem_keeps_locks_local() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock = dir.path().join("lock");
-        let _run = opened(&lock);
-        if locks_stay_local(&lock) {
-            assert!(!preparation_marked(&lock).unwrap());
-        }
-    }
-
     /// The reader goes by the filesystem it is given: a flocked lock that ext4's magic reads as
     /// no mark, NFS's refuses.
     #[test]

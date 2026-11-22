@@ -163,7 +163,6 @@ pub enum Fault {
 pub struct LedgerEntry {
     /// Starts at 1.
     pub seq: u64,
-    /// The target Machine's name.
     pub machine: MachineName,
     /// The RPC command, as in `RpcRequestBody::command`; an EnsureContainer adds its
     /// wanted state, as in `ensure_container:stopped`.

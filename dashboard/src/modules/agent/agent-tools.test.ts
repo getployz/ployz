@@ -26,7 +26,7 @@ describe("agent tools", () => {
     const mcp = rust("ployz/src/agent_call/mcp.rs");
     expect(mcp).toContain(`const INTENT_DESCRIPTION: &str = ${JSON.stringify(INTENT_DESCRIPTION)};`);
     expect(mcp).toContain(`const INTENT_REQUIRED: &str = ${JSON.stringify(INTENT_REFUSAL)};`);
-    expect(rust("ployz-store/src/tools/step.rs")).toContain(JSON.stringify(ASKS));
+    expect(rust("ployz-agent-tools/src/step.rs")).toContain(JSON.stringify(ASKS));
   });
 
   it("marks destructive the tools that delete something when they run, and never a read", () => {

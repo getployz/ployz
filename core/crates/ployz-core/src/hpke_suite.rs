@@ -52,7 +52,6 @@ pub enum OpenFailed {
     Unopenable,
 }
 
-/// A new X25519 private key.
 #[must_use]
 pub fn generate_private() -> Zeroizing<[u8; 32]> {
     let (private, _) = <Kem as hpke::Kem>::gen_keypair(&mut OsRng.unwrap_err());

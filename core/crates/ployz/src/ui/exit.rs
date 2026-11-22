@@ -13,10 +13,8 @@ pub const PARTIAL_EXIT: u8 = 3;
 
 const SUCCESS_EXIT: u8 = 0;
 
-/// It ran and failed.
 const FAILED_EXIT: u8 = 1;
 
-/// The command line is wrong.
 const USAGE_EXIT: u8 = 2;
 
 pub(crate) const CANCELLED_EXIT: u8 = 130;

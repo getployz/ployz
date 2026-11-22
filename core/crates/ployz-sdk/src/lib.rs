@@ -57,7 +57,7 @@ pub fn start_connections(
     #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
 ) -> Result<PendingConnection> {
     // Cloud's container log keeps stderr; its own logger never sees these (#3786).
-    ployz_store::stderr_log::install();
+    ployz::sdk::stderr_log::install();
     let connections = parse_connections(connections)?;
     let expect = parse_expect(expect)?;
     if connections.is_empty() {

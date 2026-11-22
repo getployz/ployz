@@ -12,11 +12,8 @@ use ployz_core::{
     QualifiedService,
 };
 
-use crate::{
-    corrosion::{
-        AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
-    },
-    mesh_peer::sample_membership,
+use crate::corrosion::{
+    AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
 };
 
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -32,6 +29,11 @@ pub(crate) enum Ackers {
 }
 
 impl Ackers {
+    /// Every Machine that must ack is known, and there is at least one.
+    pub(crate) fn complete(&self) -> bool {
+        matches!(self, Self::Known(machines) if !machines.is_empty())
+    }
+
     pub(crate) fn unacked(&self, acked: impl Fn(&MachineId) -> bool) -> Vec<String> {
         let unacked_names = |machines: &BTreeMap<MachineId, MachineName>| {
             machines
@@ -72,7 +74,8 @@ pub(crate) async fn sample_ackers(
     local: &MachineId,
     admin: &AdminClient,
 ) -> Membership {
-    let states = sample_membership(admin, MEMBERSHIP_SAMPLE_TIMEOUT)
+    let states = admin
+        .membership(MEMBERSHIP_SAMPLE_TIMEOUT)
         .await
         .inspect_err(|error| {
             tracing::warn!(
@@ -97,7 +100,7 @@ pub(crate) async fn load_down(
             "the Machine view has not observed the store yet",
         ))
     })?;
-    let states = sample_membership(admin, MEMBERSHIP_SAMPLE_TIMEOUT).await?;
+    let states = admin.membership(MEMBERSHIP_SAMPLE_TIMEOUT).await?;
     Ok(machines
         .observations
         .iter()

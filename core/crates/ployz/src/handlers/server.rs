@@ -99,7 +99,10 @@ pub(super) fn cloud_machine(
     runtime.block_on(async {
         let mut client = route::connect(matches, None).await?;
         let machines = client.machines().await?;
-        remove::select_machine(&machines, selector)
+        let selector = MachineTarget::parse(selector)?;
+        Ok(crate::cluster::visible_machine(&selector, &machines)?
+            .machine
+            .clone())
     })
 }
 

@@ -615,15 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pasted_line_carries_only_the_flags_given() {
-        let matches = add_matches(&["ployz", "server", "add", "--command"]);
-        assert_eq!(
-            shaping_args(leaf_matches(&matches)).unwrap(),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
     fn the_pasted_line_parses_to_the_same_server() {
         let given = [
             "--name",

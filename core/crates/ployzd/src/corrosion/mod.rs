@@ -17,7 +17,7 @@ mod integration_tests;
 #[cfg(test)]
 pub(crate) mod store_tests;
 
-pub(crate) use admin::membership_states_by_address;
+pub(crate) use admin::MembershipStates;
 pub use admin::{AdminClient, MembershipState};
 use api::Statement;
 pub(crate) use api::{ApiClient, Subscription};
@@ -78,12 +78,17 @@ pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) async fn within_io_timeout<T>(
     work: impl std::future::Future<Output = Result<T, Error>>,
 ) -> Result<T, Error> {
-    tokio::time::timeout(IO_TIMEOUT, work)
-        .await
-        .unwrap_or_else(|_| {
-            Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Corrosion I/O timed out",
-            )))
-        })
+    within(IO_TIMEOUT, work).await
+}
+
+pub(crate) async fn within<T>(
+    bound: Duration,
+    work: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(bound, work).await.unwrap_or_else(|_| {
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Corrosion I/O timed out",
+        )))
+    })
 }

@@ -19,7 +19,6 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
-    // Any record while it runs shows the runner is still there.
     if matches!(
         stored.summary.status,
         DeploymentStatus::Running | DeploymentStatus::Cancelling
@@ -39,7 +38,6 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
-            // Redacted before anything keeps it.
             let preview = serde_json::to_value(preview)
                 .ok()
                 .and_then(|preview| parse_runtime_preview(preview).ok())

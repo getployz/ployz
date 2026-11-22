@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        AdminClient, CertificateRow, ChangeWatch, Debounce, Error as CorrosionError,
-        IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore, Retry, Wake,
+        CertificateRow, ChangeWatch, ClusterContext, ClusterLink, Debounce,
+        Error as CorrosionError, IngressRouteAck, IngressRouteChange, ReplicatedStore, Retry, Wake,
         WatchPolicy,
     },
     filesystem::set_ployz_group,
@@ -64,22 +64,21 @@ pub(crate) struct PublishedRoutes {
         Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
 }
 
-/// Run the Caddy watcher.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each is a distinct daemon handle the watcher owns"
-)]
+/// Run the Caddy watcher over `link`, with its files under the daemon's `data_dir` and
+/// the Ingress Proxy's runtime mount at `runtime_dir`.
 pub(crate) async fn run(
     machine: Machine,
-    replicated: ReplicatedStore,
-    machines: MachineView,
-    admin: AdminClient,
+    link: ClusterLink,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
     route_publishes: watch::Sender<PublishedRoutes>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local = machine.id;
+    let ClusterLink {
+        context: ClusterContext { replicated, admin },
+        view: machines,
+    } = link;
     caddy::prepare_origin_directory(&runtime_dir.join("tunnel"))?;
     caddy::run(
         machine,

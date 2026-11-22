@@ -18,12 +18,9 @@ webpki-roots = "1.0.9"
 regex = "1.13.1"
 ring = "0.17.14"
 rusqlite.workspace = true
-schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tantivy = { version = "0.26.2", default-features = false, features = ["stemmer"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "registry", "std"] }
 ts-rs.workspace = true
 uuid = { version = "1.24.0", features = ["serde", "v4", "v5"] }
 

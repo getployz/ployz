@@ -382,10 +382,7 @@ impl Checked<'_> {
 /// `plan` landing in Environment `environment`, so a value the browser sealed for
 /// another Environment arrives Not set.
 pub(crate) fn landing_in(plan: Plan, environment: &EnvironmentId) -> Plan {
-    match uuid::Uuid::parse_str(environment.as_str()) {
-        Ok(id) => plan.receiving(id),
-        Err(_) => plan,
-    }
+    plan.receiving(environment.uuid())
 }
 
 /// A Sync's guard: the receiver's revision and the rows as planned, ticks included.

@@ -4,13 +4,13 @@ use std::{
     time::Duration,
 };
 
+use ployz_agent_tools::cloud::{ContainerState, LogsAnswer};
+use ployz_agent_tools::{CloudQuery, LineCap, LogText, LogsQuery, ServerRef, Withheld};
 use ployz_core::{
     ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
     DeploymentLogId, HealthcheckCommand, HealthcheckSpec, Namespace, RpcError, RpcErrorCode,
     ServiceName,
 };
-use ployz_store::tools::cloud::{ContainerState, LogsAnswer};
-use ployz_store::tools::{CloudQuery, LineCap, LogText, LogsQuery, ServerRef, Withheld};
 
 use super::{
     Readable, ServiceCopy, Started, ask, copies_of, logs, remove_one, report, start_one, stop_one,

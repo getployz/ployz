@@ -200,11 +200,7 @@ impl ContainerRuntime {
             .docker
             .client
             .logs(container, Some(docker_options))
-            .map(|entry| {
-                entry
-                    .map(parse_log_output)
-                    .map_err(|error| JournalError::Docker(ployz_core::error_chain::inline(&error)))
-            })
+            .map(|entry| entry.map(parse_log_output).map_err(JournalError::from))
             .filter(move |entry| {
                 std::future::ready(
                     entry

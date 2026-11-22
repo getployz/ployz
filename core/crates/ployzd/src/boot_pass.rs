@@ -119,7 +119,7 @@ fn candidates<'a>(
     }: &'a Observed,
     own: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 ) -> Vec<Candidate<'a>> {
-    if !matches!(&membership.ackers, Ackers::Known(proxies) if !proxies.is_empty()) {
+    if !membership.ackers.complete() {
         return Vec::new();
     }
     let serving = |copy: &&ContainerObservation| {

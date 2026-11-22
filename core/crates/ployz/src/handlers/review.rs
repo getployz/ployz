@@ -5,12 +5,14 @@ use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{Hint, RpcErrorCode, ServiceName};
-use ployz_store::{DiffQuery, DiffView, Discard, Discarded, SettingPath};
+use ployz_store::{
+    DiffQuery, DiffView, Discard, DiscardTarget, Discarded, HistoryAction, SettingPath,
+};
 use serde::Serialize;
 
 use super::store::{environment, next, scoped, store, with_next, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{positional, switch, value};
+use crate::cli::{choice, positional, switch, value};
 use crate::ui::Table;
 
 pub(super) fn diff_command(command: Command) -> Command {
@@ -58,6 +60,18 @@ fn history_action(command: Command, about: &'static str) -> Command {
         )
 }
 
+const DISCARD_TARGETS: &[(&str, DiscardTarget)] = &[
+    ("head", DiscardTarget::Head),
+    ("saved", DiscardTarget::Saved),
+    ("review", DiscardTarget::Review),
+];
+
+/// `history`'s actions, by subcommand name.
+const HISTORY_ACTIONS: &[(&str, HistoryAction)] = &[
+    ("restore", HistoryAction::Restore),
+    ("undo", HistoryAction::Undo),
+];
+
 pub(super) fn discard_command(command: Command) -> Command {
     scoped(command.about("Undo staged Service, Volume, Config or Setting changes"))
         .arg(
@@ -65,7 +79,7 @@ pub(super) fn discard_command(command: Command) -> Command {
                 .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),
         )
         .arg(version())
-        .arg(value("target", None).value_parser(["head", "saved", "review"])
+        .arg(value("target", None).value_parser(choice(DISCARD_TARGETS))
             .help("Head resets deploy changes; saved abandons draft reversals; review returns everything to the latest save [default: head, or saved for a path only saved lists]"))
 }
 
@@ -208,13 +222,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let discard = Discard {
         environment: environment(matches)?,
-        target: matches
-            .get_one::<String>("target")
-            .map(|target| match target.as_str() {
-                "saved" => ployz_store::DiscardTarget::Saved,
-                "review" => ployz_store::DiscardTarget::Review,
-                _ => ployz_store::DiscardTarget::Head,
-            }),
+        target: matches.get_one::<DiscardTarget>("target").copied(),
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
@@ -474,7 +482,13 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
     let environment = environment(matches)?;
     let action = root
         .subcommand()
-        .and_then(|(_, history)| history.subcommand_name());
+        .and_then(|(_, history)| history.subcommand_name())
+        .and_then(|name| {
+            HISTORY_ACTIONS
+                .iter()
+                .find(|(word, _)| *word == name)
+                .map(|(_, action)| *action)
+        });
     let Some(action) = action else {
         let view = store.read(&ployz_store::HistoryQuery {
             environment,
@@ -513,11 +527,6 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 crate::ui::note("Older versions not shown.");
             }
         });
-    };
-    let action = match action {
-        "restore" => ployz_store::HistoryAction::Restore,
-        "undo" => ployz_store::HistoryAction::Undo,
-        _ => unreachable!("history command admits only Restore and Undo"),
     };
     let revision = ployz_store::Revision(
         *matches

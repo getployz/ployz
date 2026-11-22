@@ -106,13 +106,11 @@ struct Body<'report> {
 pub(crate) struct SetupReport {
     started: Instant,
     finished: Vec<StepTime>,
-    /// The running step and when it started.
     current: (Step, Instant),
     profile: Profile,
 }
 
 impl SetupReport {
-    /// Start timing at the `install` step.
     pub(crate) fn start() -> Self {
         let now = Instant::now();
         Self {
@@ -228,7 +226,6 @@ fn read_trimmed(path: &Path) -> Option<String> {
     trimmed(std::fs::read_to_string(path).ok()?)
 }
 
-/// A non-empty profile string, trimmed.
 fn trimmed(value: String) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())

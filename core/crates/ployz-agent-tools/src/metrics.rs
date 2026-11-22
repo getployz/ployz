@@ -1,0 +1,265 @@
+//! Tools on what a Service or Server used over a range, and what Docker did to
+//! its containers: the table `ployz metrics` prints.
+
+use std::collections::BTreeMap;
+
+use ployz_core::ServiceName;
+use ployz_core::metrics::MarkerKind;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
+
+use super::ToolId;
+use super::act::{resolve, roster, servers};
+use super::cloud::{MetricEvent, MetricsAnswer};
+use super::input::tool_input;
+use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
+use super::refusal::Refusal;
+use super::runtime::deployed;
+use super::step::{
+    Ask, CloudQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName, Timestamp,
+};
+use ployz_store::catalog::NODE_NAME;
+use ployz_store::did_you_mean;
+use ployz_store::{
+    DeploymentId, DeploymentsQuery, NamespaceQuery, NamespacesQuery, NumberedDeploymentQuery,
+};
+
+const DEFAULT_MINUTES: u32 = 60;
+
+fn ask(cx: &mut Cx<'_>, query: MetricsQuery) -> Result<MetricsAnswer, Stop> {
+    let mut answers = cx
+        .read(vec![Ask::Cloud(CloudQuery::Metrics(query))])?
+        .into_iter();
+    cx.cloud::<MetricsAnswer>(answers.next())
+}
+
+/// `event` as a tool shows it: when, where, and the kind with its exit code.
+/// An exit's OOM and stop evidence stays out, as in every other reader: the
+/// OOM kill is its own event.
+fn event(event: &MetricEvent) -> Map<String, Value> {
+    let mut shown = Map::new();
+    shown.insert("at".into(), json!(event.at));
+    shown.insert("server".into(), json!(event.server.as_str()));
+    match event.kind {
+        MarkerKind::Oom => {
+            shown.insert("kind".into(), json!("oom"));
+        }
+        MarkerKind::Restart => {
+            shown.insert("kind".into(), json!("restart"));
+        }
+        MarkerKind::Exit { exit_code, .. } => {
+            shown.insert("kind".into(), json!("exit"));
+            if let Some(code) = exit_code {
+                shown.insert("exit_code".into(), json!(code));
+            }
+        }
+    }
+    shown
+}
+
+fn shown(answer: MetricsAnswer, events: Vec<Map<String, Value>>) -> Map<String, Value> {
+    let Value::Object(shown) = json!({
+        "since": answer.since,
+        "until": answer.until,
+        "metrics": answer.metrics,
+        "oom_kills": answer.oom_kills,
+        "exits": answer.exits,
+        "restarts": answer.restarts,
+        "events": events,
+        "notes": answer.notes,
+        "seen": answer.seen,
+    }) else {
+        unreachable!("json! of an object literal is an object")
+    };
+    shown
+}
+
+tool_input! {
+    pub(crate) struct ServiceMetrics {
+        /// Service name, e.g. `web`. It must be deployed, or deployed by the Deployment named.
+        #[schemars(with = "String", pattern(NODE_NAME))]
+        service: ServiceName,
+        /// Deployment number from the Deployment list, e.g. `12`. Counts only its OOM kills, exits and restarts, and starts the range when it started.
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        deployment: Option<u64>,
+        /// How many minutes back the range starts (default 60, or the Deployment's start when one is named).
+        #[serde(default)]
+        #[schemars(range(min = 1, max = 10080))]
+        since_minutes: Option<u32>,
+        @place,
+    }
+}
+
+impl Tool for ServiceMetrics {
+    const NAME: &'static str = "service_metrics";
+    const STATUS: ToolId = ToolId::ServiceState;
+    const TITLE: &'static str = "Show Service metrics";
+    const DESCRIPTION: &'static str = "Show what a Service used over a time range: CPU, memory, network and disk, each as now, average and peak. Also counts its OOM kills, exits and restarts, and lists the newest with time, Server, exit code and Deployment.";
+    const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::CloudOnly {
+        local_next: Some(ToolId::DeploymentShow),
+    };
+
+    fn example() -> Value {
+        json!({ "service": "web", "deployment": 12 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(&self);
+        let mut asks = vec![
+            store(&NamespaceQuery {
+                environment: scope.clone(),
+            })?,
+            store(&DeploymentsQuery {
+                environment: scope.clone(),
+                limit: Some(20),
+                cursor: None,
+            })?,
+        ];
+        let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
+            environment: scope,
+            number: Some(number),
+        });
+        if let Some(query) = &numbered {
+            asks.push(store(query)?);
+        }
+        let mut answers = cx.read(asks)?.into_iter();
+        let namespace = cx.view::<NamespaceQuery>(answers.next())?;
+        let page = cx.view::<DeploymentsQuery>(answers.next())?;
+        let deployment = match numbered {
+            Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
+            None => None,
+        };
+        // A Deployment's containers carry the name it ran them under. Its events say nothing
+        // about a Service it did not deploy.
+        let carried = match &deployment {
+            Some(view) => view
+                .runtime_names
+                .get(&self.service)
+                .cloned()
+                .ok_or_else(|| {
+                    let names = || view.runtime_names.keys().map(ServiceName::as_str);
+                    Stop::from(
+                        Refusal::not_found("That Deployment did not deploy this Service")
+                            .with_did_you_mean(did_you_mean(self.service.as_str(), names()))
+                            .with_valid(names()),
+                    )
+                })?,
+            None => deployed(&namespace, &self.service).cloned()?,
+        };
+        let since = match (self.since_minutes, &deployment) {
+            (Some(minutes), _) => MetricsSince::MinutesAgo { minutes },
+            (None, Some(view)) => MetricsSince::At {
+                at: Timestamp(
+                    view.deployment
+                        .started_at
+                        .unwrap_or(view.deployment.admitted_at),
+                ),
+            },
+            (None, None) => MetricsSince::MinutesAgo {
+                minutes: DEFAULT_MINUTES,
+            },
+        };
+        let answer = ask(
+            cx,
+            MetricsQuery {
+                subject: MetricsSubject::Service {
+                    namespace: namespace.namespace.clone(),
+                    service: carried,
+                },
+                since,
+                deployment: deployment.map(|view| view.deployment.id),
+            },
+        )?;
+        let numbers: BTreeMap<&DeploymentId, u64> = page
+            .deployments
+            .iter()
+            .filter_map(|deployment| Some((&deployment.id, deployment.number?)))
+            .collect();
+        let events = answer
+            .events
+            .iter()
+            .map(|marker| {
+                let mut shown = event(marker);
+                shown.insert(
+                    "deployment".into(),
+                    json!(marker.deployment.as_ref().and_then(|id| numbers.get(id))),
+                );
+                shown
+            })
+            .collect();
+        let mut shown = shown(answer, events);
+        shown.insert("at".into(), json!(namespace.environment.to_string()));
+        Ok(Value::Object(shown))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServerMetrics {
+    /// Server name, e.g. `web-1`.
+    #[schemars(with = "String", pattern(NODE_NAME))]
+    server: ServerName,
+    /// How many minutes back the range starts (default 60).
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 10080))]
+    since_minutes: Option<u32>,
+}
+
+impl Tool for ServerMetrics {
+    const NAME: &'static str = "server_metrics";
+    const STATUS: ToolId = ToolId::ServerShow;
+    const TITLE: &'static str = "Show Server metrics";
+    const DESCRIPTION: &'static str = "Show what a Server used over a time range: CPU, memory, network and disk, each as now, average and peak. Also counts its containers' OOM kills, exits and restarts, and lists the newest with time, Service, and Environment or leftover.";
+    const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
+
+    fn example() -> Value {
+        json!({ "server": "web-1", "since_minutes": 180 })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let mut answers = cx
+            .read(vec![store(&NamespacesQuery {})?, servers()])?
+            .into_iter();
+        let owned = cx.view::<NamespacesQuery>(answers.next())?;
+        let listed = roster(cx, answers.next())?;
+        let server = resolve(&listed, &self.server, "server", false)?.reference();
+        let answer = ask(
+            cx,
+            MetricsQuery {
+                subject: MetricsSubject::Server { server },
+                since: MetricsSince::MinutesAgo {
+                    minutes: self.since_minutes.unwrap_or(DEFAULT_MINUTES),
+                },
+                deployment: None,
+            },
+        )?;
+        let owners: BTreeMap<_, _> = owned
+            .namespaces
+            .iter()
+            .map(|owned| (&owned.namespace, owned))
+            .collect();
+        let events = answer
+            .events
+            .iter()
+            .map(|marker| {
+                let mut shown = event(marker);
+                shown.insert("service".into(), json!(marker.service.as_str()));
+                match owners.get(&marker.namespace) {
+                    Some(owned) => {
+                        shown.insert("project".into(), json!(owned.project));
+                        shown.insert("environment".into(), json!(owned.environment));
+                    }
+                    None => {
+                        shown.insert("leftover".into(), json!(marker.namespace.as_str()));
+                    }
+                }
+                shown
+            })
+            .collect();
+        Ok(Value::Object(shown(answer, events)))
+    }
+}

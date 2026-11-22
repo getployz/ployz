@@ -262,7 +262,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         );
     }
     crate::ui::finish(&view, || {
-        let _ = record.write(&mut crate::ui::stdout(), crate::ui::stdout_is_terminal());
+        crate::ui::record(&record);
         for file in &listing.config.files {
             crate::ui::stream(format_args!(
                 "\n{} ({} bytes, mode {}, uid {}, gid {})",
@@ -302,7 +302,7 @@ pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn mount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let dir = mount_dir(matches)?;
-    let service = service_name(matches)?;
+    let service = store::service_name(matches, "service")?;
     let mounted = store::store(root)?.write(&AttachConfig {
         environment: store::environment(matches)?,
         service: service.clone(),
@@ -339,7 +339,7 @@ fn mount_dir(matches: &ArgMatches) -> Result<String, Error> {
 
 pub(super) fn unmount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let service = service_name(matches)?;
+    let service = store::service_name(matches, "service")?;
     let unmounted = store::store(root)?.write(&DetachConfig {
         environment: store::environment(matches)?,
         service: service.clone(),
@@ -409,11 +409,6 @@ fn file_name(matches: &ArgMatches) -> Result<ConfigFileName, Error> {
             "Expected a file path inside the Config: up to 4 segments, none empty, . or .., like conf.d/site.conf",
         )
     })
-}
-
-fn service_name(matches: &ArgMatches) -> Result<ServiceName, Error> {
-    ServiceName::parse(required(matches, "service")?)
-        .map_err(|_| Error::usage("Expected a Service name, like web"))
 }
 
 #[cfg(test)]

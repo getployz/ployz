@@ -292,16 +292,9 @@ impl Host for Scripted {
             }
         }
         self.events.lock().unwrap().push("finished");
-        Committed::from_setup(
-            self.result
-                .clone()
-                .map_err(crate::handlers::Error::usage)
-                .map(|()| {
-                    self.follow_up.clone().map_or(Ok(()), |message| {
-                        Err(crate::handlers::Error::usage(message))
-                    })
-                }),
-        )
+        self.result.clone().map(|()| Committed {
+            follow_up: self.follow_up.clone(),
+        })
     }
 
     async fn participating(&self) -> Option<String> {

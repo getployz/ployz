@@ -30,7 +30,6 @@ pub enum BackupError {
     WrongCode,
 }
 
-/// Wrap `secret` under `code`.
 #[must_use]
 pub fn back_up(secret: &[u8; 32], code: &RecoveryCode) -> SealingKeyBackup {
     let mut rng = OsRng.unwrap_err();

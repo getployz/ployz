@@ -1,7 +1,7 @@
 use std::io::{BufRead, Read, Write as _};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use ployz_store::tools::{Answer as Answered, RequestKey};
+use ployz_agent_tools::{Answer as Answered, RequestKey};
 use ployz_store::{
     CreateProject, EnvironmentId, OrganizationId, ProjectId, ProjectName, SealingKey,
 };
@@ -27,7 +27,7 @@ struct Turn {
 
 fn transcripts() -> Vec<Transcript> {
     serde_json::from_str(include_str!(
-        "../../../../ployz-store/tests/snapshots/agent_transcripts.json"
+        "../../../../ployz-agent-tools/tests/snapshots/agent_transcripts.json"
     ))
     .unwrap()
 }

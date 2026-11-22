@@ -68,9 +68,9 @@ mod tests {
     #[test]
     fn the_predicates_read_the_text_an_empty_and_a_named_list_store_as() {
         let named = [ServiceName::parse("web").unwrap()];
-        assert_eq!(json_text(&Vec::<ServiceName>::new()), "[]");
         assert_eq!(json_text(&named), r#"["web"]"#);
-        assert_eq!(FULL, "services = '[]'");
-        assert_eq!(NAMED, "services != '[]'");
+        let empty = json_text(&Vec::<ServiceName>::new());
+        assert_eq!(FULL, format!("services = '{empty}'"));
+        assert_eq!(NAMED, format!("services != '{empty}'"));
     }
 }

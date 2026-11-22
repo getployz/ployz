@@ -26,7 +26,6 @@ pub const VOLUME_ORIGIN: &str = "ployz.origin";
 pub const VOLUME_ORIGINS: &str = "ployz.origins";
 /// The Service's deployment identity.
 pub const SERVICE_ID: &str = "ployz.service.id";
-/// The Service's name.
 pub const SERVICE_NAME: &str = "ployz.service.name";
 /// Present on a pre-deploy hook container, with any value.
 pub const HOOK: &str = "ployz.service.hook";
@@ -56,7 +55,6 @@ pub const MANAGEMENT_PREFIX: &str = "ployz.";
 
 /// A read-only map of Docker labels.
 pub trait LabelMap {
-    /// The value under `key`.
     fn label(&self, key: &str) -> Option<&str>;
 
     /// Whether `key` is present, with any value.

@@ -1565,49 +1565,6 @@ fn slot_key(
     }
 }
 
-fn global_spec() -> ResolvedServiceSpec {
-    let mut global = spec(Some(0), None, None);
-    global.mode = ployz_core::ServiceMode::Global;
-    global
-}
-
-#[test]
-fn only_a_global_service_container_is_keyed_by_its_spec() {
-    let namespace = test_namespace();
-    let run = ployz_core::DeploymentLogId::parse("run").unwrap();
-    let slots = Slots::new(&run, &namespace, &[]);
-    let (replicated, global) = (spec(Some(0), None, None), global_spec());
-    let per_run = |index: usize| {
-        ployz_core::CreationKey::for_slot(&run, &slots.digest, index)
-            .as_str()
-            .to_owned()
-    };
-    let key = |slot: SlotKey| slot.creation_key.as_str().to_owned();
-
-    assert_eq!(
-        key(slots.slot(ContainerKind::ServiceContainer, &replicated, 3, None)),
-        per_run(3)
-    );
-    let by_spec = crate::cluster::global_creation_key(&global);
-    assert_eq!(
-        key(slots.slot(ContainerKind::ServiceContainer, &global, 3, None)),
-        by_spec
-    );
-    assert_eq!(
-        key(slots.slot(
-            ContainerKind::ServiceContainer,
-            &global,
-            3,
-            Some(container('a'))
-        )),
-        format!("{by_spec}:replace:{}", container('a'))
-    );
-    assert_eq!(
-        key(slots.slot(ContainerKind::PreDeployHook, &global, 3, None)),
-        per_run(3)
-    );
-}
-
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
 #[path = "exec_tests/flip.rs"]

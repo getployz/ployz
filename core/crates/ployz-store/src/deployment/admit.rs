@@ -565,7 +565,6 @@ fn deploy(
             )?
         }
     };
-    // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
         uploader: who.principal.clone(),
         ..upload

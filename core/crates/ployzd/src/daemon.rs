@@ -456,9 +456,7 @@ impl Daemon {
                     |(machine, link)| {
                         ingress::run(
                             machine,
-                            link.context.replicated,
-                            link.view,
-                            link.context.admin,
+                            link,
                             ingress_data_dir,
                             ingress_runtime_dir,
                             route_publishes,

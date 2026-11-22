@@ -181,7 +181,6 @@ impl LocalDocker {
             .is_some_and(containerd_store))
     }
 
-    /// Creates finished so far.
     fn creates(&self) -> u64 {
         self.creates
             .finished
@@ -428,13 +427,11 @@ impl ContainerRuntime {
         self.configured(|settings| settings.machine_root = root)
     }
 
-    /// What Docker holds as images on this Machine.
     #[must_use]
     pub fn images(&self) -> &Images {
         &self.images
     }
 
-    /// What Docker holds as Volumes on this Machine.
     #[must_use]
     pub fn volumes(&self) -> &Volumes {
         &self.volumes
@@ -452,7 +449,6 @@ impl ContainerRuntime {
         &self.doors
     }
 
-    /// Creating, starting, stopping and removing the managed Containers.
     #[must_use]
     pub fn lifecycle(&self) -> &Lifecycle {
         &self.lifecycle

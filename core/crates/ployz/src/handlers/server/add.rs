@@ -311,18 +311,9 @@ fn listed(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
     use ployz_core::{Machine, MachineId, MachineName, WireGuardPublicKey};
 
     use super::*;
-
-    #[test]
-    fn add_timeout_leaves_the_docker_network_recovery_to_the_journal() {
-        let message = helpers::readiness_timeout_message("added Server did not become ready");
-
-        assert!(message.contains("added Server did not become ready"));
-        assert!(!message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
 
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {

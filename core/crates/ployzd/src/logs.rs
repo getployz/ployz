@@ -27,8 +27,8 @@ pub enum JournalError {
     Exit(ExitStatus),
     #[error("wait for journalctl: {0}")]
     Wait(io::Error),
-    #[error("{0}")]
-    Docker(String),
+    #[error(transparent)]
+    Docker(#[from] bollard::errors::Error),
 }
 
 pub type LogSource = Pin<Box<dyn Stream<Item = Result<RawLogEntry, JournalError>> + Send>>;
@@ -273,7 +273,11 @@ mod tests {
             .await
             .unwrap();
         sender
-            .send(Err(JournalError::Docker("docker died".into())))
+            .send(Err(JournalError::Docker(
+                bollard::errors::Error::DockerStreamError {
+                    error: "docker died".into(),
+                },
+            )))
             .await
             .unwrap();
 
@@ -287,7 +291,7 @@ mod tests {
         );
         assert_eq!(
             decode_next(&mut stream).await.body,
-            LogBody::Error("docker died".into())
+            LogBody::Error("Docker stream error: docker died".into())
         );
         assert!(stream.next().await.is_none());
     }

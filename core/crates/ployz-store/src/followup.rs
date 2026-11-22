@@ -3,8 +3,9 @@
 //! A Store function returns an [`RpcError`](ployz_core::RpcError), so a follow-up
 //! travels in its details twice: as `next`, the command line a CLI user runs or the
 //! `{tool, input}` object a dashboard acts on, and as `follow_up`, the typed form
-//! that `tools::refusal` turns into a call or a fix for an agent. Both are written
-//! from one [`FollowUp`], so the line and the agent's step cannot drift apart.
+//! that ployz-agent-tools' `refusal` turns into a call or a fix for an agent. Both
+//! are written from one [`FollowUp`], so the line and the agent's step cannot drift
+//! apart.
 
 use std::fmt;
 
@@ -19,9 +20,9 @@ const NEXT: &str = "next";
 
 /// An Environment, by the names a command line gives it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Place {
-    pub(crate) project: ProjectName,
-    pub(crate) environment: EnvironmentName,
+pub struct Place {
+    pub project: ProjectName,
+    pub environment: EnvironmentName,
 }
 
 impl Place {
@@ -46,7 +47,7 @@ impl Place {
 /// Whether the Setup Commands left name one Service or several.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SetupLeft {
+pub enum SetupLeft {
     One,
     Several,
 }
@@ -55,7 +56,7 @@ pub(crate) enum SetupLeft {
 /// with what that command takes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum FollowUp {
+pub enum FollowUp {
     ServerAdd {
         /// The region the Server joins, when the command names one.
         #[serde(
@@ -181,7 +182,8 @@ enum Cli {
 impl FollowUp {
     /// `details.next`: a command line, or the `{tool, input}` object where the Store
     /// names a Store tool.
-    pub(crate) fn cli(&self) -> Value {
+    #[must_use]
+    pub fn cli(&self) -> Value {
         match self.render() {
             Cli::Line(line) => Value::String(line),
             Cli::Tool(tool, input) => json!({ "tool": tool, "input": input }),
@@ -189,7 +191,8 @@ impl FollowUp {
     }
 
     /// `fields` with this follow-up written beside them, as both readers expect it.
-    pub(crate) fn within(&self, fields: Value) -> Value {
+    #[must_use]
+    pub fn within(&self, fields: Value) -> Value {
         let mut details = fields.as_object().cloned().unwrap_or_default();
         details.insert(NEXT.into(), self.cli());
         details.insert(KEY.into(), json!(self));
@@ -197,18 +200,20 @@ impl FollowUp {
     }
 
     /// The details of a refusal that carries only this follow-up.
-    pub(crate) fn details(&self) -> Value {
+    #[must_use]
+    pub fn details(&self) -> Value {
         self.within(Value::Null)
     }
 
     /// The typed form `details` carry, if they carry one.
-    pub(crate) fn of(details: &Value) -> Option<Self> {
+    #[must_use]
+    pub fn of(details: &Value) -> Option<Self> {
         serde_json::from_value(details.get(KEY)?.clone()).ok()
     }
 
     /// `details` without a follow-up: one that read what writes before it left, and
     /// the refusal rolled those back.
-    pub(crate) fn remove_from(details: &mut Value) {
+    pub fn remove_from(details: &mut Value) {
         if let Some(details) = details.as_object_mut() {
             details.remove(NEXT);
             details.remove(KEY);

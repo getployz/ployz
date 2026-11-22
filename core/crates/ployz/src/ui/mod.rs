@@ -22,8 +22,8 @@ pub(crate) use prompt::{can_prompt, confirm, confirm_name, input, secret, select
 pub use result::json;
 pub(crate) use result::{
     Gaps, Next, captured, done, emit, emit_committed, emit_line, emitted, fields, finish,
-    finish_fanout, hint, interactive, list, note, note_inline, printed, record_warning, rows, show,
-    stream, unanswered, warn, write_fields,
+    finish_fanout, hint, interactive, list, note, note_inline, printed, record, record_warning,
+    rows, show, stream, unanswered, warn, write_fields,
 };
 pub(crate) use stdout::{async_stdout, stdout, stdout_bytes, stdout_is_terminal};
 pub use table::{Cell, Fields, Table};

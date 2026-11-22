@@ -70,7 +70,7 @@ KINDS = {
 }
 WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml")
 # Files outside core/ a crate's build script embeds, keyed by crate.
-EMBEDDED = {"ployz-store": ("../docs/user",)}
+EMBEDDED = {"ployz-agent-tools": ("../docs/user",)}
 # A Linux host's Incus VMs share its arch; every Boat sandbox is x86_64.
 MACHINE_ARCH = platform.machine() if platform.system() == "Linux" else "x86_64"
 

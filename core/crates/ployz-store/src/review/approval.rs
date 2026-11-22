@@ -83,7 +83,8 @@ pub enum DestructiveKind {
 
 impl DestructiveKind {
     /// What this kind does, in the third person, before the name it acts on.
-    pub(crate) const fn verb(self) -> &'static str {
+    #[must_use]
+    pub const fn verb(self) -> &'static str {
         match self {
             Self::RemovesService => "removes service",
             Self::DeletesVolume => "deletes volume data",
@@ -383,16 +384,32 @@ impl ApprovalDigest {
 /// required does not exempt it. Cloud's own
 /// writes name no caller, so they never ask here.
 ///
-/// A protector's token is `exempt` rather than unasked everywhere: its grant still
-/// decides what it may destroy, and a retry, which may replay what someone else
-/// destroyed, still asks unless it destroys nothing.
+/// A protector's token is [`Protection::Exempt`] rather than unasked everywhere: its
+/// grant still decides what it may destroy, and a retry, which may replay what someone
+/// else destroyed, still asks unless it destroys nothing.
 pub(crate) struct Gate<'a> {
     trusted: &'a Trusted,
-    protected: bool,
-    exempt: bool,
-    /// A retry gate whose caller was `exempt`: its retry that destroys nothing passes
-    /// as its plain Deploy does.
-    spares_harmless: bool,
+    protection: Protection,
+}
+
+/// What an Environment's protection asks of one caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Protection {
+    /// It asks nothing: the Environment isn't Protected, or the caller may protect it.
+    Unasked,
+    /// Every write that ships asks an admin.
+    Asks,
+    /// A protector's token: nothing asks, but its grant decides what it may destroy.
+    Exempt,
+    /// A protector's retry: it asks, unless it destroys nothing, which passes as its
+    /// plain Deploy does.
+    AsksUnlessHarmless,
+}
+
+impl Protection {
+    const fn asks(self) -> bool {
+        matches!(self, Self::Asks | Self::AsksUnlessHarmless)
+    }
 }
 
 impl<'a> Gate<'a> {
@@ -409,28 +426,36 @@ impl<'a> Gate<'a> {
         // An agent asks on every deploy anyway; its ask stays Protected, so only an
         // admin answers it.
         let protector = trusted.protector && trusted.asks != Asks::EveryDeploy;
+        let protection = match (asks, protector) {
+            (false, _) => Protection::Unasked,
+            (true, false) => Protection::Asks,
+            (true, true) => Protection::Exempt,
+        };
         Ok(Self {
             trusted,
-            protected: asks && !protector,
-            exempt: asks && protector,
-            spares_harmless: false,
+            protection,
         })
+    }
+
+    /// Whether the Environment's protection asks this caller.
+    const fn protected(&self) -> bool {
+        self.protection.asks()
     }
 
     /// The gate a Deploy's retry passes: a protector's token asks there too, unless
     /// its retry destroys nothing.
     pub(crate) const fn retrying(self) -> Self {
-        Self {
-            protected: self.protected || self.exempt,
-            exempt: false,
-            spares_harmless: self.exempt,
-            ..self
-        }
+        let protection = match self.protection {
+            Protection::Unasked => Protection::Unasked,
+            Protection::Exempt => Protection::AsksUnlessHarmless,
+            Protection::Asks | Protection::AsksUnlessHarmless => Protection::Asks,
+        };
+        Self { protection, ..self }
     }
 
     /// Whether a retry asks a human at all.
     pub(crate) fn asks_retry(&self) -> bool {
-        self.protected
+        self.protected()
             || (self.trusted.asks == Asks::EveryDeploy
                 && self.trusted.approval != Approval::NotRequired)
     }
@@ -453,14 +478,14 @@ impl<'a> Gate<'a> {
         message: String,
         (effects, diff): (&BTreeSet<DestructiveEffect>, &'d DiffView),
     ) -> Result<(), Asking<'d>> {
-        if self.protected
+        if self.protected()
             && let Some(bound) = bound.as_object_mut()
         {
             bound.insert("protected".to_owned(), json!(true));
         }
         let digest = ApprovalDigest::bind(&diff.version, &bound);
         match &self.trusted.approval {
-            Approval::NotRequired if !self.protected => Ok(()),
+            Approval::NotRequired if !self.protected() => Ok(()),
             Approval::Approved(approved) if *approved == digest => Ok(()),
             Approval::NotRequired | Approval::Required | Approval::Approved(_) => Err(Asking {
                 message,
@@ -470,7 +495,7 @@ impl<'a> Gate<'a> {
                     effects: effects.iter().cloned().collect(),
                     subject: ApprovalSubject::Diff(diff),
                     organization: None,
-                    protected: self.protected.then_some(json!(true)),
+                    protected: self.protected().then_some(json!(true)),
                     prunes: false,
                     dropped: Vec::new(),
                     redeploy: None,
@@ -480,7 +505,7 @@ impl<'a> Gate<'a> {
     }
 
     fn message(&self, diff: &DiffView, what: &str, otherwise: impl FnOnce() -> String) -> String {
-        if self.protected {
+        if self.protected() {
             let name = &diff.environment.name;
             format!("{name} is Protected; an admin must approve this {what}.")
         } else {
@@ -507,9 +532,11 @@ fn refuse_destroying(
         .map(DestructiveEffect::describe)
         .collect::<Vec<_>>()
         .join(", ");
-    let who = match gate.protected || gate.exempt {
-        true => "an owner or admin",
-        false => "a member, owner or admin",
+    let who = match gate.protection {
+        Protection::Unasked => "a member, owner or admin",
+        Protection::Asks | Protection::Exempt | Protection::AsksUnlessHarmless => {
+            "an owner or admin"
+        }
     };
     Err(error::forbidden(
         format!("Needs {destroy}: {what} would {destroys}. Have {who} {then}."),
@@ -543,8 +570,8 @@ pub(crate) fn approve(
         .as_ref()
         .is_some_and(|saved| saved.intent == *target);
     let asks = match shipping {
-        Shipping::Publish if gate.protected && !resaves => Asks::EveryDeploy,
-        Shipping::Deploy { .. } if gate.protected => Asks::EveryDeploy,
+        Shipping::Publish if gate.protected() && !resaves => Asks::EveryDeploy,
+        Shipping::Deploy { .. } if gate.protected() => Asks::EveryDeploy,
         Shipping::Publish => Asks::Destroys,
         Shipping::Deploy { .. } => gate.trusted.asks,
     };
@@ -552,7 +579,7 @@ pub(crate) fn approve(
         Shipping::Publish => ("this publish", "publish it"),
         Shipping::Deploy { .. } => ("this deploy", "deploy it"),
     };
-    if gate.exempt {
+    if gate.protection == Protection::Exempt {
         refuse_destroying(gate, effects, what, then)?;
     }
     // A prune's removals, named or not, are new to every Deploy, even one that resaves.
@@ -842,7 +869,7 @@ pub(crate) fn approve_cancel(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let gate = Gate::new(tx, &deployment.environment_id, trusted)?;
-    if !gate.protected {
+    if !gate.protected() {
         return Ok(());
     }
     let environment = crate::scope::load_by_id(tx, &deployment.environment_id)?;
@@ -914,7 +941,7 @@ pub(crate) fn approve_retry(
     }
     // A protector's retry that destroys nothing, nor replays anything its source's
     // review accepted destroying, passes as its plain Deploy does.
-    if gate.spares_harmless
+    if gate.protection == Protection::AsksUnlessHarmless
         && effects.is_empty()
         && !pruning.unseen()
         && rollback.rolls_back.is_empty()
@@ -1014,7 +1041,7 @@ pub(crate) fn move_asks<'a>(
     trusted: &'a Trusted,
 ) -> Result<Option<MoveAsks<'a>>, RpcError> {
     let gate = Gate::new(tx, &into.summary.id, trusted)?;
-    if !gate.protected {
+    if !gate.protected() {
         return Ok(None);
     }
     trusted.writes(&into.summary.name)?;
