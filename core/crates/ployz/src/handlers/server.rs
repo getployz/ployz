@@ -19,7 +19,7 @@ use ployz_core::{
     UpdateMachineRequest, op,
 };
 
-use ployz_store::{REGION_LABEL, RegionKey};
+use ployz_store::region_key;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -758,8 +758,8 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
     let mut label_changes = std::collections::BTreeMap::new();
     for (key, value) in parse_label_add(matches)? {
-        let value = if key.as_str() == REGION_LABEL {
-            RegionKey::parse(value.as_str())?.as_str().parse()?
+        let value = if key.as_str() == ployz_core::Region::LABEL {
+            region_key(value.as_str())?.as_str().parse()?
         } else {
             value
         };

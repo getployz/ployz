@@ -107,8 +107,8 @@ pub use pull_request::{
 };
 pub use query::*;
 pub use region::{
-    NameRegion, NewRegionQuery, NewRegionView, REGION_LABEL, Region, RegionKey, RegionName,
-    RegionsQuery, RegionsView, region_servers,
+    NameRegion, NewRegionQuery, NewRegionView, Region, RegionName, RegionsQuery, RegionsView,
+    region_key, region_servers,
 };
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
