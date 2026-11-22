@@ -118,7 +118,6 @@ impl VolumeStorage {
         }
     }
 
-    /// The pending record on a slot parent.
     pub(super) async fn record(&self, parent: &str) -> Result<Origin> {
         self.local_origin(parent, Mark::PullOrigin).await
     }

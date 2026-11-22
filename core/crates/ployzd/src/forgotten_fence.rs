@@ -80,7 +80,6 @@ pub(crate) trait FenceHost: Send + Sync {
     /// Every other Machine in this Machine's view. None when liveness cannot be read
     /// this round, which changes nothing.
     fn peers(&self) -> impl Future<Output = Option<Vec<Peer>>> + Send;
-    /// Ask these peers, in parallel.
     fn ask(&self, peers: &[Peer]) -> impl Future<Output = Vec<Asked>> + Send;
     /// Depart keeping every copy. Err names why it did not happen; it is retried.
     fn fence(&self) -> impl Future<Output = Result<(), LocalMachineError>> + Send;
