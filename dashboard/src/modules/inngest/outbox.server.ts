@@ -58,8 +58,8 @@ export const sweepOutbox = Effect.fn("Outbox.sweep")(function* (now: Date) {
   return rows.length;
 });
 
-export const createSweepOperationOutbox = (inngest: PloyzInngest, runEffect: typeof runInngestEffect = runInngestEffect) =>
+export const createSweepOperationOutbox = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "sweep-operation-outbox", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => ({ sent: await step.run("send-unsent", () => runEffect(sweepOutbox(new Date()))) }),
+    async ({ step }) => ({ sent: await step.run("send-unsent", () => runInngestEffect(sweepOutbox(new Date()))) }),
   );
