@@ -12,6 +12,7 @@ use ployz_core::{
     StorageChoice, op,
 };
 
+use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::{AskedPolicy, EnrollPlan, founding, machine};
 use crate::cloud::enroll::{
     CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
@@ -22,7 +23,6 @@ use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::failure::Failure as Error;
 use crate::handlers::device::{self, JoinEntry};
-use crate::handlers::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
 use crate::ui::{self, Fields};
@@ -726,11 +726,7 @@ enum FounderLocalState {
 
 fn shows_code(plan: &EnrollPlan, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
     reader == Reader::Person
-        && crate::handlers::recovery::shows_code(
-            plan.shows_recovery_code(),
-            json,
-            stdout_is_terminal,
-        )
+        && super::recovery::shows_code(plan.shows_recovery_code(), json, stdout_is_terminal)
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.

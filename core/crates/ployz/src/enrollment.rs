@@ -9,6 +9,7 @@ pub mod local;
 pub(crate) mod machine;
 pub(crate) mod output;
 pub(crate) mod plan;
+pub(crate) mod recovery;
 
 pub(crate) use asked_policy::AskedPolicy;
 pub(crate) use plan::EnrollPlan;
