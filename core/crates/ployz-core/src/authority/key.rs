@@ -3,11 +3,11 @@
 //!
 //! A trust widens what a Machine accepts, so it is one-shot: it rides in a bundle, holds
 //! only inside the bundle's window on the Machine's floored clock, and names the Members
-//! that may apply it. A trust of a CI or agent key the Machine already holds as the same
-//! kind edits its scope and Volumes, when its bundle was issued after the one that set
-//! them, so an older and wider step can't be replayed. A removal only narrows, so it has no
-//! window and may be sent again at any time. Each Machine applies a step to its own record
-//! and nothing else.
+//! that may apply it. A trust that edits a CI or agent key's grant, or rotates it to a new
+//! key, names the grant its signer read, and a Machine applies it only while it still
+//! holds that grant, so a write from a stale read never lands. A removal only narrows, so
+//! it has no window and may be sent again at any time. Each Machine applies a step to its
+//! own record and nothing else.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -67,9 +67,30 @@ pub enum KeyChange {
     Trust {
         key: NewKey,
         members: Vec<KeyMember>,
+        /// The grant this trust edits or replaces, as its signer read it. Absent for a key
+        /// no Machine holds yet.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        prior: Option<Prior>,
     },
     /// Stop trusting `key` for good. A Machine that applied it never trusts the key again.
     Remove { key: KeyRef },
+}
+
+/// The grant a person read before signing a change to it. A Machine applies the change
+/// only while it holds that grant as read, under its record's lock, so a narrowing or
+/// rotation signed from a stale read is refused and its signer reads again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Prior {
+    /// The key the trust names holds the grant a bundle issued at `issued_at` set.
+    Edit { issued_at: Timestamp },
+    /// `key` holds the grant a bundle issued at `issued_at` set, and the trust's new key
+    /// takes its place.
+    Replace {
+        key: SigningPublicKey,
+        issued_at: Timestamp,
+    },
 }
 
 /// A key to trust. A Device and a passkey carry no scope: they hold their kind's ceiling
@@ -210,10 +231,11 @@ pub struct KeyFacts<'a> {
 /// A Key step this Machine accepted.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyVerified {
-    /// Trust `key`, under a bundle issued at `issued_at`.
+    /// Trust `key`, under a bundle issued at `issued_at`, over the grant `prior` names.
     Trust {
         key: NewKey,
         issued_at: Timestamp,
+        prior: Option<Prior>,
     },
     Remove {
         key: KeyRef,
@@ -257,13 +279,14 @@ pub fn verify(
         ),
     ])?;
     let verified = match body.change {
-        KeyChange::Trust { key, .. } => {
+        KeyChange::Trust { key, prior, .. } => {
             let bundle = step.proposal.as_deref().ok_or(AuthorityRefusal::Mismatch {
                 field: "a proposal",
             })?;
             KeyVerified::Trust {
                 key,
                 issued_at: bundle.open()?.issued_at,
+                prior,
             }
         }
         KeyChange::Remove { key } => KeyVerified::Remove { key },

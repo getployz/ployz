@@ -446,6 +446,7 @@ fn admit(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: false,
         })),
         trusted,
     )
@@ -1376,6 +1377,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        recreate: false,
     }));
     store.write_trusted(&who, &staging, &trusted).unwrap();
     let refused = admit(
@@ -1814,6 +1816,7 @@ fn a_reapply_refuses_a_revision_that_ships_a_referenced_service_otherwise_than_i
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             })),
             &cloud(),
         )
@@ -1902,6 +1905,7 @@ fn deploy_only(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             })),
             &cloud(),
         )
@@ -2116,6 +2120,7 @@ fn a_deploy_with_generated_domains_and_no_cluster_domain_says_how_to_remove_them
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             }),
             &Trusted::default(),
         )

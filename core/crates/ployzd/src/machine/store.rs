@@ -1005,49 +1005,99 @@ impl LocalMachineStore {
         })
     }
 
-    /// Trust `trusted` as a CI or agent key, or edit the grant it holds as the same kind
-    /// when `trusted` was issued after it: its scope, Volumes and approver become the new
-    /// ones, so a narrowing lands the same way. An older or equal issue time changes nothing, so an
-    /// older and wider step can't be replayed. Returns whether the record changed.
+    /// Trust `trusted` as a CI or agent key, edit the grant it holds, or trust it in place
+    /// of another key's grant, as `prior` says the signer read this Machine's grants. The
+    /// check and the write are one record write, so a narrowing or rotation signed from a
+    /// read another change has since moved never lands. Returns whether the record changed.
+    ///
+    /// - No `prior`: trust a key this Machine holds no grant of. The same bundle again
+    ///   changes nothing.
+    /// - [`Prior::Edit`]: the key holds the grant a bundle issued at that time set, and the
+    ///   new one, issued later, takes its scope, Volumes and approver. The same bundle
+    ///   again changes nothing.
+    /// - [`Prior::Replace`]: the source key holds the grant a bundle issued at that time
+    ///   set, and the new key takes the same kind beside it. A new key already held
+    ///   changes nothing, so a rotation resumes with it.
     ///
     /// # Errors
     /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed,
-    /// [`StoreError::GrantKind`] for a key granted here as the other kind, and a storage
-    /// error if the updated record cannot be saved atomically.
+    /// [`StoreError::GrantKind`] for a key granted here as the other kind,
+    /// [`StoreError::GrantHeld`] for a trust with no `prior` of a key already granted
+    /// here, [`StoreError::GrantMoved`] when the grant `prior` names isn't the one held
+    /// here, and a storage error if the updated record cannot be saved atomically.
+    ///
+    /// [`Prior::Edit`]: ployz_core::authority::Prior::Edit
+    /// [`Prior::Replace`]: ployz_core::authority::Prior::Replace
     pub fn approve_grant(
         &mut self,
         trusted: ployz_core::authority::TrustedGrant,
+        prior: Option<ployz_core::authority::Prior>,
     ) -> Result<bool, StoreError> {
+        use ployz_core::authority::Prior;
         let removed = KeyRef::Signing {
             key: trusted.grant.key.into(),
         };
         if self.record.removes_key(&removed) {
             return Err(StoreError::KeyRemoved(removed));
         }
-        if let Some(held) = self.record.grants.iter().find(|held| {
-            held.grant.key == trusted.grant.key && held.grant.kind != trusted.grant.kind
-        }) {
+        let grant_of = |key| {
+            self.record
+                .grants
+                .iter()
+                .find(move |held| held.grant.key == key)
+        };
+        let held = grant_of(trusted.grant.key);
+        if let Some(held) = held.filter(|held| held.grant.kind != trusted.grant.kind) {
             return Err(StoreError::GrantKind {
                 code: held.grant.key.code(),
                 held: held.grant.kind.into(),
             });
         }
-        self.commit_if_changed(|record| {
-            match record
-                .grants
-                .iter_mut()
-                .find(|held| held.grant.key == trusted.grant.key)
+        let issued_at = trusted.grant.issued_at;
+        let replays = held.is_some_and(|held| held.grant.issued_at == issued_at);
+        let edits = match (held, prior) {
+            (_, None | Some(Prior::Edit { .. })) if replays => return Ok(false),
+            (None, None) => false,
+            (Some(_), None) => return Err(StoreError::GrantHeld(trusted.grant.key.code())),
+            (Some(held), Some(Prior::Edit { issued_at: read }))
+                if held.grant.issued_at == read && read < issued_at =>
             {
-                Some(held) if held.grant.issued_at < trusted.grant.issued_at => {
-                    *held = trusted;
-                    Ok(true)
-                }
-                Some(_) => Ok(false),
-                None => {
-                    record.grants.push(trusted);
-                    Ok(true)
-                }
+                true
             }
+            (_, Some(Prior::Edit { .. })) => {
+                return Err(StoreError::GrantMoved(trusted.grant.key.code()));
+            }
+            (
+                _,
+                Some(Prior::Replace {
+                    key,
+                    issued_at: read,
+                }),
+            ) => {
+                let source = grant_of(key).filter(|source| {
+                    key != trusted.grant.key
+                        && source.grant.kind == trusted.grant.kind
+                        && source.grant.issued_at == read
+                });
+                if source.is_none() {
+                    return Err(StoreError::GrantMoved(key.code()));
+                }
+                if held.is_some() {
+                    return Ok(false);
+                }
+                false
+            }
+        };
+        self.commit_if_changed(|record| {
+            match edits {
+                true => record
+                    .grants
+                    .iter_mut()
+                    .filter(|held| held.grant.key == trusted.grant.key)
+                    .for_each(|held| *held = trusted.clone()),
+                false => record.grants.push(trusted),
+            }
+            Ok(true)
         })
     }
 
@@ -1321,6 +1371,14 @@ pub enum StoreError {
     },
     #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
     AmbiguousCode(DeviceCode),
+    #[error(
+        "Key {0} already holds a grant on this Server, and the change doesn't name it. Run ployz key scope to change it."
+    )]
+    GrantHeld(DeviceCode),
+    #[error(
+        "Key {0}'s grant changed on this Server after it was read. Nothing changed here. Read it again and retry."
+    )]
+    GrantMoved(DeviceCode),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]

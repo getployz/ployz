@@ -308,6 +308,7 @@ fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             }),
         )
         .unwrap();
@@ -1020,6 +1021,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: false,
         }),
         &none_left,
     ));
@@ -1045,6 +1047,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             }),
         )
         .unwrap();
@@ -2170,6 +2173,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            recreate: false,
         }))),
         Some("production"),
     );

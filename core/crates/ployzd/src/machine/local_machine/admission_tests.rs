@@ -118,11 +118,22 @@ fn grant(
     }
 }
 
+/// Trust `grant`, over the grant its key holds when it holds one.
 async fn trust(fixture: &Fixture, grant: TrustedGrant) {
     fixture
         .machine
         .owner
-        .mutate(move |store| store.approve_grant(grant).unwrap())
+        .mutate(move |store| {
+            let prior = store
+                .record()
+                .grants()
+                .iter()
+                .find(|held| held.grant.key == grant.grant.key)
+                .map(|held| ployz_core::authority::Prior::Edit {
+                    issued_at: held.grant.issued_at,
+                });
+            store.approve_grant(grant, prior).unwrap()
+        })
         .await
         .unwrap();
 }
@@ -246,6 +257,35 @@ async fn a_kept_start_stops_once_the_grant_narrows_to_its_service_or_moves_to_an
     assert_eq!(
         start(&fixture, &kept),
         Err(out_of_scope("a version of this Service"))
+    );
+}
+
+/// A rotation removes the old key once the new one is in place, and `key rm` removes a
+/// leaked one. A Container only that key admitted no longer starts, and its refusal says
+/// why and what heals it.
+#[tokio::test]
+async fn a_kept_start_after_its_key_is_removed_says_the_key_went_and_to_deploy_again() {
+    let fixture = fixture().await;
+    trust(&fixture, grant(&fixture, None, Vec::new(), 1)).await;
+    let kept = admitted_by_ci(&fixture, &opening_shared(&fixture)).await;
+    assert_eq!(start(&fixture, &kept), Ok(()));
+
+    fixture
+        .machine
+        .owner
+        .mutate(|store| {
+            store
+                .remove_key(ployz_core::authority::KeyRef::Signing {
+                    key: ci().public().into(),
+                })
+                .unwrap()
+        })
+        .await
+        .unwrap();
+    let refused = start(&fixture, &kept).unwrap_err();
+    assert_eq!(
+        super::refusal_text(&refused),
+        "The key that approved this was rotated or removed; deploy again."
     );
 }
 

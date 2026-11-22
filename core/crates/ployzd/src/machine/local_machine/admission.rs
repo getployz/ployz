@@ -161,10 +161,11 @@ impl Standing {
                     Some(floor) if keys.iter().any(|(key, _)| covers(key).is_ok()) => {
                         Err(AuthorityRefusal::Forgotten { floor })
                     }
-                    _ => Err(keys
-                        .first()
-                        .and_then(|(key, _)| covers(key).err())
-                        .unwrap_or(AuthorityRefusal::UnknownPasskey)),
+                    _ => Err(gone_key(
+                        keys.first()
+                            .and_then(|(key, _)| covers(key).err())
+                            .unwrap_or(AuthorityRefusal::UnknownPasskey),
+                    )),
                 }
             }
             AdmittedBy::Rule {
@@ -186,6 +187,19 @@ impl Standing {
             AdmittedBy::Local { service, at } => stands(*at, floor(service)?),
             AdmittedBy::Free => Ok(()),
         })
+    }
+}
+
+/// A kept admission's refusal for keys this Machine no longer trusts, which says they
+/// went away rather than that they never approved: a rotation or removal took them.
+fn gone_key(refusal: AuthorityRefusal) -> AuthorityRefusal {
+    match refusal {
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
+            AuthorityRefusal::Mismatch {
+                field: field::KEPT_KEY,
+            }
+        }
+        refusal => refusal,
     }
 }
 
@@ -765,6 +779,9 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
                 "The {kind} key {code} that approved this deploy may not mount volume {volume}. A person adds the volume to the key's grant, or deploys this version themselves."
             );
         }
+        AuthorityRefusal::Mismatch {
+            field: field::KEPT_KEY,
+        } => "The key that approved this was rotated or removed; deploy again.",
         AuthorityRefusal::Mismatch {
             field: field::KEPT_REACH,
         } => {

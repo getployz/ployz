@@ -308,6 +308,7 @@ impl Tool for DeployInput {
             prune: false,
             no_prune: self.no_prune,
             versions: Vec::new(),
+            recreate: false,
         }))?;
         Ok(json!({
             "at": here.environment.to_string(),

@@ -245,4 +245,7 @@ queries! {
     /// The last version a person approved of each named Service, with the spec it ran.
     Parent(crate::ParentQuery) -> crate::ParentView
         => crate::deployment::versions::parents(tx, who, trusted, q);
+    /// What each named Service runs now, with every signed version kept for it.
+    Running(crate::RunningQuery) -> crate::RunningView
+        => crate::deployment::versions::running(tx, who, trusted, q);
 }

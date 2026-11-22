@@ -130,6 +130,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -393,6 +394,7 @@ fn a_credential_lost_from_the_store_says_to_set_it_again() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                recreate: false,
             }),
             &ployz_store::Trusted::default(),
         )

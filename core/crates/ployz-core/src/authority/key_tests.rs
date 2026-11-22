@@ -39,6 +39,7 @@ fn trust(members: Vec<KeyMember>, signer: SignerKey) -> KeyStep {
                 key: DeviceKey::from_bytes([3; 32]),
             },
             members,
+            prior: None,
         },
         signer,
         proposal: None,

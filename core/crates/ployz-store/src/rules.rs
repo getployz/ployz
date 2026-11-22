@@ -1026,6 +1026,7 @@ pub(crate) mod tests {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: false,
                 }),
             )
         };
@@ -1076,6 +1077,7 @@ pub(crate) mod tests {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: false,
                 }),
             )
         };
@@ -1112,6 +1114,7 @@ pub(crate) mod tests {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    recreate: false,
                 }),
             )
             .unwrap();

@@ -162,6 +162,7 @@ fn admit(
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        recreate: false,
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))

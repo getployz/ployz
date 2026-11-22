@@ -106,6 +106,12 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PostedVersion>>")]
     pub versions: Vec<PostedVersion>,
+    /// Replace every running Container of the Services it ships, even one whose spec is
+    /// unchanged, so each Server admits it again under the versions this Deploy posts. A
+    /// key rotation sends it, so no Container stays kept under the key it retires.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub recreate: bool,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -622,6 +628,9 @@ fn deploy(
     )?;
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
     deployment::versions::post(tx, &summary.id, &admit.versions)?;
+    if admit.recreate {
+        deployment::versions::recreate(tx, &summary.id)?;
+    }
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {
         true => Shipped::All(&saved_intent),

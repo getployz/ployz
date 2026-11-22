@@ -402,6 +402,7 @@ fn trust(key: NewKey) -> KeyChange {
     KeyChange::Trust {
         key,
         members: vec![here()],
+        prior: None,
     }
 }
 
@@ -465,7 +466,8 @@ fn a_ci_trust_carries_the_issue_time_of_its_bundle() {
         ),
         Ok(KeyVerified::Trust {
             key,
-            issued_at: at(NOW - 5)
+            issued_at: at(NOW - 5),
+            prior: None,
         }),
     );
 }
