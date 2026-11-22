@@ -219,7 +219,7 @@ impl State {
         matches!(self, Self::Pending | Self::Running(_))
     }
 
-    fn word(&self) -> &'static str {
+    pub(crate) fn word(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running(phase) => match phase {
@@ -720,7 +720,7 @@ fn word(row: &Row, frame: &Frame) -> String {
 
 /// Copies a completed Service's cleanup left running, with why: a switch whose
 /// Deploy did not finish, or a removal that could not reach a Server.
-fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'a String> {
+fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'a str> {
     let Subject::Service(graph) = &row.subject else {
         return BTreeMap::new();
     };
@@ -730,32 +730,15 @@ fn left_running<'a>(row: &Row, frame: &'a Frame) -> BTreeMap<&'a ContainerId, &'
     frame
         .notices
         .iter()
-        .filter_map(|warning| match warning {
-            DeployWarning::LeftRunning {
-                service,
-                container_id,
-                reason,
-                ..
-            } if *service == graph.service => Some((container_id, reason)),
-            DeployWarning::LeftRunning { .. }
-            | DeployWarning::StorageHeadroom { .. }
-            | DeployWarning::UnbudgetedDiskUsage
-            | DeployWarning::ObservationFailed { .. }
-            | DeployWarning::ObservationOmitted { .. }
-            | DeployWarning::StorageObservationUnknown { .. }
-            | DeployWarning::IngressHostname { .. }
-            | DeployWarning::ObserverRelativeHostnameConflict
-            | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. }
-            | DeployWarning::NotInStore { .. } => None,
-        })
+        .filter_map(DeployWarning::left_running)
+        .filter(|(service, ..)| **service == graph.service)
+        .map(|(_, container_id, _, reason)| (container_id, reason))
         .collect()
 }
 
 /// Servers a completed removal could not check for a copy of its Service, by name,
 /// less those a copy left running already names.
-fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &String>) -> BTreeSet<String> {
+fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &str>) -> BTreeSet<String> {
     let Subject::Service(graph) = &row.subject else {
         return BTreeSet::new();
     };
@@ -765,25 +748,9 @@ fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &String>) -
     let named: BTreeSet<&str> = frame
         .notices
         .iter()
-        .filter_map(|warning| match warning {
-            DeployWarning::LeftRunning {
-                container_id,
-                machine,
-                ..
-            } if left.contains_key(container_id) => Some(machine.as_str()),
-            DeployWarning::LeftRunning { .. }
-            | DeployWarning::StorageHeadroom { .. }
-            | DeployWarning::UnbudgetedDiskUsage
-            | DeployWarning::ObservationFailed { .. }
-            | DeployWarning::ObservationOmitted { .. }
-            | DeployWarning::StorageObservationUnknown { .. }
-            | DeployWarning::IngressHostname { .. }
-            | DeployWarning::ObserverRelativeHostnameConflict
-            | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. }
-            | DeployWarning::NotInStore { .. } => None,
-        })
+        .filter_map(DeployWarning::left_running)
+        .filter(|(_, container_id, ..)| left.contains_key(container_id))
+        .map(|(_, _, machine, _)| machine)
         .collect();
     frame
         .notices

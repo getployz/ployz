@@ -11,7 +11,7 @@ mod forget;
 pub(crate) mod progress;
 
 use crate::ui::Next;
-use crate::ui::progress::{Disposition, Progress};
+use crate::ui::progress::{Disposition, Progress, State};
 use crate::ui::{self, Cell, Table, Tone};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -622,14 +622,17 @@ pub(super) fn execute(
             ui::note(builder);
         }
     }
+    // A detached Deploy's result prints these with the rest of its view.
     for warning in progress::value_warnings(&followed.view)
         .into_iter()
         .chain(progress::ingress_warnings(&followed.view))
+        .chain(progress::waiting(&followed.view))
     {
-        ui::warn(warning);
-    }
-    for line in progress::waiting(&followed.view) {
-        ui::warn(line);
+        if detached {
+            ui::record_warning(warning);
+        } else {
+            ui::warn(warning);
+        }
     }
     // A Deploy that failed carries these on its failure instead.
     if followed.view.deployment.status == DeploymentStatus::Applied {
@@ -1717,21 +1720,15 @@ pub(super) fn say_view(view: &DeploymentView) {
     if let Some(line) = prune_line(&view.deployment, view.preview.as_ref()) {
         crate::ui::stream(format_args!("{line}"));
     }
-    for warning in view.preview.iter().flat_map(|preview| &preview.warnings) {
-        if let ployz_core::DeployWarning::NotInStore { .. } = warning {
-            crate::ui::stream(format_args!("  ! {warning}"));
-        }
-    }
-    if let Some(
-        ployz_store::Outcome::NotExecuted { reason, cause, .. }
-        | ployz_store::Outcome::Executed {
-            reason: Some(reason),
-            cause,
-            cancelled: false,
-            ..
-        },
-    ) = &view.deployment.outcome
+    for warning in progress::notices(view)
+        .iter()
+        .map(ToString::to_string)
+        .chain(progress::value_warnings(view))
+        .chain(progress::ingress_warnings(view))
     {
+        crate::ui::stream(format_args!("  ! {}", crate::ui::escaped(&warning)));
+    }
+    if let Some((reason, cause)) = progress::failed_because(&view.deployment) {
         crate::ui::stream(format_args!("  {reason}"));
         if let Some(cause) = cause.last() {
             crate::ui::stream(format_args!("    cause: {cause}"));
@@ -1761,19 +1758,16 @@ pub(super) fn say_view(view: &DeploymentView) {
             .commit
             .as_ref()
             .map_or("the upload", ployz_store::CommitSha::short);
-        let reason = build.message.as_deref().unwrap_or_default();
-        let on = build
-            .server
+        let reason = build
+            .message
             .as_deref()
-            .map_or_else(String::new, |server| format!(" on {server}"));
-        let status = if build.is_interrupted() {
-            "interrupted".to_owned()
-        } else {
-            super::store::word(&build.status)
-        };
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| format!(": {reason}"))
+            .unwrap_or_default();
         crate::ui::stream(format_args!(
-            "  build {} from {commit}: {status}{on} {reason}",
-            build.service
+            "  {} {} from {commit}{reason}",
+            build.service,
+            progress::build_word(build)
         ));
         if let Some(why) = &build.github_skipped {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
@@ -1783,8 +1777,16 @@ pub(super) fn say_view(view: &DeploymentView) {
 
 /// One node's outcome, with the replicas of a Service the Deploy left waiting.
 fn node_line(view: &DeploymentView, node: &ployz_store::NodeOutcome) -> String {
-    let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
-        "cancelled".to_owned()
+    let build = match &node.node {
+        DeployedNode::Service { name, .. } => {
+            view.builds.iter().find(|build| build.service == *name)
+        }
+        DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
+    };
+    // A Pending node reads as the build that stopped it; the rest keep the Store's word.
+    let state = progress::node_state(node, build);
+    let outcome = if matches!(state, State::Cancelled | State::Failed | State::Interrupted) {
+        state.word().to_owned()
     } else {
         super::store::word(&node.outcome)
     };
