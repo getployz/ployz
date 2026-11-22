@@ -1101,7 +1101,8 @@ impl ReplicatedStore {
             .await
     }
 
-    pub async fn certificate(
+    #[cfg(test)]
+    pub(crate) async fn certificate(
         &self,
         hostname: &IngressHost,
     ) -> Result<Option<CertificateMaterial>, Error> {
@@ -1242,34 +1243,42 @@ impl ReplicatedStore {
         .await
     }
 
-    /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
-    /// try again.
-    ///
-    /// With `tried` `None`, this keeps a row that holds material. With `tried`, it writes only the
-    /// failure fields, and answers `Moved` when the row no longer held `tried`, unpublished.
+    /// Record why a hostname has no certificate and when the Cluster may try again. Keeps a row
+    /// that holds material.
     ///
     /// # Errors
     ///
     /// Returns if the row cannot be read or written.
-    pub(crate) async fn record_certificate_failure(
+    pub(crate) async fn record_order_failure(
         &self,
         hostname: &IngressHost,
-        tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
     ) -> Result<AcmeWrite, Error> {
         let last_error = last_error.into();
-        let Some(tried) = tried else {
-            return self
-                .write_acme_row(hostname, |latest| {
-                    if latest.material().is_some() {
-                        AcmeEdge::Keep
-                    } else {
-                        AcmeEdge::Write(latest.clone().with_backoff(last_error.clone(), clock))
-                    }
-                })
-                .await;
-        };
+        self.write_acme_row(hostname, |latest| {
+            if latest.material().is_some() {
+                AcmeEdge::Keep
+            } else {
+                AcmeEdge::Write(latest.clone().with_backoff(last_error.clone(), clock))
+            }
+        })
+        .await
+    }
+
+    /// Record why the renewal of `tried` failed and when the Cluster may try again. Writes only
+    /// the failure fields, and answers `Moved` when the row no longer holds `tried`, unpublished.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub(crate) async fn record_renewal_failure(
+        &self,
+        hostname: &IngressHost,
+        tried: &CertificateMaterial,
+        last_error: impl Into<String>,
+        clock: IssuanceClock,
+    ) -> Result<AcmeWrite, Error> {
         let Some(AcmeRowRead {
             key, row: latest, ..
         }) = self.acme_row(hostname).await?
@@ -1279,25 +1288,25 @@ impl ReplicatedStore {
         // A failed renewal keeps serving its material and backs off like a first order. Only the
         // failure fields change, and only over the ACME material that failed, so a renewal, a
         // publication or another Machine's challenge landing after the read survives.
-        let failed: serde_json::Value =
-            serde_json::from_str(&latest.with_backoff(last_error, clock).encode()?)?;
-        let field = |name: &str| failed.get(name).cloned().unwrap_or_default();
+        let patch = latest.with_backoff(last_error, clock).failure_patch();
+        let set = patch
+            .iter()
+            .map(|(path, _)| format!("'{path}', ?"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let counts = self
             .api
             .execute_counted([Statement::new(
-                "UPDATE certificates SET body = json_set(body, \
-                   '$.last_error', ?, '$.next_attempt_at', ?, '$.failures', ?, '$.last_failure', ?) \
-                 WHERE hostname = ? \
-                 AND json_extract(body, '$.certificate') = ? \
-                 AND NOT coalesce(json_extract(body, '$.published'), 0)",
-                [
-                    field("last_error"),
-                    field("next_attempt_at"),
-                    field("failures"),
-                    field("last_failure"),
-                    json!(key.as_str()),
-                    json!(tried.certificate()),
-                ],
+                format!(
+                    "UPDATE certificates SET body = json_set(body, {set}) \
+                     WHERE hostname = ? \
+                     AND json_extract(body, '$.certificate') = ? \
+                     AND NOT coalesce(json_extract(body, '$.published'), 0)"
+                ),
+                patch
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .chain([json!(key.as_str()), json!(tried.certificate())]),
             )])
             .await?;
         acme_written(counts)
@@ -1407,7 +1416,8 @@ impl ReplicatedStore {
         Ok(())
     }
 
-    pub async fn certificates(
+    #[cfg(test)]
+    pub(crate) async fn certificates(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateMaterial>, Error> {
         Ok(self

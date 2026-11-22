@@ -1142,9 +1142,8 @@ async fn replica_under(
 /// The row holds a failed order's Authority clock, which passes `left` from now.
 async fn authority_clock(store: &ReplicatedStore, hostname: &IngressHost, left: Duration) {
     store
-        .record_certificate_failure(
+        .record_order_failure(
             hostname,
-            None,
             "order for the hostname is invalid",
             IssuanceClock::new(1, SystemTime::now() + left, IssuanceFailure::Authority),
         )
@@ -1236,12 +1235,7 @@ async fn only_rank_0_records_a_refusal() {
         IssuanceFailure::Authority,
     );
     store
-        .record_certificate_failure(
-            &hostname,
-            None,
-            "order for the hostname is invalid",
-            backed_off,
-        )
+        .record_order_failure(&hostname, "order for the hostname is invalid", backed_off)
         .await
         .unwrap();
     let account_dir =
