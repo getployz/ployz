@@ -89,7 +89,7 @@ use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The disk the installer was given (`StoragePreparation::Zfs { device: Some(..) }`,
 /// installer/storage.rs `prepare_storage`).
@@ -399,10 +399,6 @@ struct Fix {
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 type Coverage = harness::Coverage<PoolOwnership>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// Each branch the bounds reach on both the code and the fix, and each branch the fix
 /// adds. `current_code_breaks_only_the_findings` and `an_intent_keeps_one_owner` expect
 /// every row reached.
@@ -411,50 +407,54 @@ const COVERAGE: &[Coverage] = &[
         name: "the gate refuses a Volume create while the installer runs",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::InstallationActive) && state.installer.running(),
+        reached: |_, state| {
+            took(state.took, Branch::InstallationActive) && state.installer.running()
+        },
     },
     Coverage {
         name: "the gate refuses the installer while a Volume create runs",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::InstallerBusy) && state.plugin.holds_gate(),
+        reached: |_, state| took(state.took, Branch::InstallerBusy) && state.plugin.holds_gate(),
     },
     Coverage {
         name: "the installer refuses beside a root-backed Pool",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::InstallerRefusesRoot) && state.host.root,
+        reached: |_, state| took(state.took, Branch::InstallerRefusesRoot) && state.host.root,
     },
     Coverage {
         name: "the installer records CONFIRMED after its check",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Records) && state.disk.label,
+        reached: |_, state| took(state.took, Branch::Records) && state.disk.label,
     },
     Coverage {
         name: "one_usable confirms a device Pool the installer stopped before recording",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Confirms) && state.installer == Installer::Stopped,
+        reached: |_, state| {
+            took(state.took, Branch::Confirms) && state.installer == Installer::Stopped
+        },
     },
     Coverage {
         name: "one_usable returns the recorded device Pool",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::UsesDevice) && state.host.marker,
+        reached: |_, state| took(state.took, Branch::UsesDevice) && state.host.marker,
     },
     Coverage {
         name: "recover imports the device Pool once its disk returns",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::RecoverImports) && state.went_missing,
+        reached: |_, state| took(state.took, Branch::RecoverImports) && state.went_missing,
     },
     Coverage {
         name: "recover refuses a root-backed Pool while the recorded device is missing",
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RefusesOwned) && state.host.marker && !state.disk.present
+            took(state.took, Branch::RefusesOwned) && state.host.marker && !state.disk.present
         },
     },
     Coverage {
@@ -462,7 +462,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RefusesOwned)
+            took(state.took, Branch::RefusesOwned)
                 && state.disk.imported
                 && state.last == Some(Action::ListRecover)
         },
@@ -472,7 +472,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::CreatesRoot) && state.host.root && !state.disk.label
+            took(state.took, Branch::CreatesRoot) && state.host.root && !state.disk.label
         },
     },
     Coverage {
@@ -480,7 +480,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RefusesIntent)
+            took(state.took, Branch::RefusesIntent)
                 && state.host.intent
                 && !state.host.marker
                 && state.disk.label
@@ -492,7 +492,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RefusesIntent)
+            took(state.took, Branch::RefusesIntent)
                 && state.host.intent
                 && !state.disk.label
                 && !state.disk.present
@@ -503,7 +503,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RefusesIntent)
+            took(state.took, Branch::RefusesIntent)
                 && state.host.intent
                 && state.disk.imported
                 && state.last == Some(Action::ListRecover)
@@ -514,7 +514,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ClearsStale)
+            took(state.took, Branch::ClearsStale)
                 && !state.host.intent
                 && state.disk.present
                 && !state.disk.label
@@ -525,7 +525,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::KeepsIntent)
+            took(state.took, Branch::KeepsIntent)
                 && state.host.intent
                 && state.installer == Installer::Intended
         },
@@ -535,7 +535,7 @@ const COVERAGE: &[Coverage] = &[
         on: |model| model.fix.is_proposed(),
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ObservesUnresolved)
+            took(state.took, Branch::ObservesUnresolved)
                 && state.observed == Some(Observed::Unresolved)
                 && state.disk.label
                 && !state.disk.present
@@ -1323,7 +1323,9 @@ mod tests {
         let created = first_path(
             fresh,
             "a Volume create's one_usable returns the recorded device Pool",
-            |_, state| took(state, Branch::UsesDevice) && state.last == Some(Action::OneUsable),
+            |_, state| {
+                took(state.took, Branch::UsesDevice) && state.last == Some(Action::OneUsable)
+            },
             true,
             |_| true,
             None,

@@ -39,7 +39,7 @@ use ployz_core::RestartPolicy;
 use ployz_decide::bridge::{self, Settle};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
 /// core/crates/ployzd/src/docker/mod.rs).
@@ -1908,10 +1908,6 @@ const ADDRESS_NOTED_BEFORE_DETACH: &str =
 
 type Coverage = harness::Coverage<BridgeNotes>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// A member is attached on a dynamic address while `bridge-member-addresses.json` owes it
 /// another: the model section's risk 3.
 fn owes_another(state: &State, member: Member, address: Addr) -> bool {
@@ -1938,19 +1934,19 @@ const COVERAGE: &[Coverage] = &[
         name: "the start finds the bridge's IPv6 shape wrong and readdresses it",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Shape(Bridge::Old)),
+        reached: |_, state| took(state.took, Branch::Shape(Bridge::Old)),
     },
     Coverage {
         name: "the start finds the bridge fitting",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Shape(Bridge::New)),
+        reached: |_, state| took(state.took, Branch::Shape(Bridge::New)),
     },
     Coverage {
         name: "the start finds no bridge and creates one",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Created { readdress: false }),
+        reached: |_, state| took(state.took, Branch::Created { readdress: false }),
     },
     // readdress_docker_network.
     Coverage {
@@ -1959,7 +1955,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Listed {
                     phase: Phase::Readdress,
                     ok: false,
@@ -1973,7 +1969,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::Written,
@@ -1987,7 +1983,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::Failed,
@@ -2001,7 +1997,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Readdress,
                     write: Write::FailedAfterRename,
@@ -2163,7 +2159,7 @@ const COVERAGE: &[Coverage] = &[
         name: "the readdress replaces the bridge",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Created { readdress: true }),
+        reached: |_, state| took(state.took, Branch::Created { readdress: true }),
     },
     Coverage {
         name: "a readdress rejoin pins the member at its address",
@@ -2216,7 +2212,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Listed {
                     phase: Phase::Pin,
                     ok: false,
@@ -2230,7 +2226,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Recorded {
                     phase: Phase::Pin,
                     write: Write::Written,
@@ -2297,7 +2293,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Finished {
                     kept: false,
                     write: Write::Written,
@@ -2311,7 +2307,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Finished {
                     kept: true,
                     write: Write::Written,
@@ -2416,7 +2412,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Updated {
                     kept: false,
                     write: Write::Written,
@@ -2430,7 +2426,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Updated {
                     kept: true,
                     write: Write::Written,
@@ -2546,7 +2542,7 @@ const COVERAGE: &[Coverage] = &[
         name: "a daemon start dies",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Crashed),
+        reached: |_, state| took(state.took, Branch::Crashed),
     },
     Coverage {
         name: "Docker's restart policy runs a held member again",

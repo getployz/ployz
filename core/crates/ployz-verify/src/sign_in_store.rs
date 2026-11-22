@@ -35,7 +35,7 @@ use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The most `ployz login` processes a model runs. The default model runs two.
 const MAX_LOGINS: usize = 3;
@@ -415,12 +415,8 @@ struct Fix {
 /// reached only on the code as it is when it is a removal the fix takes away.
 type Coverage = harness::Coverage<SignInStore>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 fn polled(state: &State, by: Poller, answer: Answer) -> bool {
-    took(state, Branch::Polled { by, answer })
+    took(state.took, Branch::Polled { by, answer })
 }
 
 fn forgot(state: &State, role: Role, found: Found, removed: bool) -> bool {
@@ -445,13 +441,13 @@ const COVERAGE: &[Coverage] = &[
         name: "start finds no cloud.json and requests a code",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::StartRequests(File::Absent)),
+        reached: |_, state| took(state.took, Branch::StartRequests(File::Absent)),
     },
     Coverage {
         name: "start reads an unreadable cloud.json as none and requests a code",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::StartRequests(File::Unreadable)),
+        reached: |_, state| took(state.took, Branch::StartRequests(File::Unreadable)),
     },
     Coverage {
         name: "start skips an expired Pending and requests a code",
@@ -470,7 +466,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Requested) && matches!(state.file, File::Pending(_))
+            took(state.took, Branch::Requested) && matches!(state.file, File::Pending(_))
         },
     },
     Coverage {
@@ -478,7 +474,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Refreshed)
+            took(state.took, Branch::Refreshed)
                 && matches!(state.file, File::SignedIn(code) if state.honoured(code))
         },
     },
@@ -487,7 +483,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Refreshed)
+            took(state.took, Branch::Refreshed)
                 && matches!(state.file, File::SignedIn(code) if !state.honoured(code))
         },
     },
@@ -525,7 +521,8 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Finished(Role::Login)) && matches!(state.file, File::SignedIn(_))
+            took(state.took, Branch::Finished(Role::Login))
+                && matches!(state.file, File::SignedIn(_))
         },
     },
     Coverage {
@@ -556,19 +553,19 @@ const COVERAGE: &[Coverage] = &[
         name: "signed_in answers SignedOut with no cloud.json",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::CommandSignedOut),
+        reached: |_, state| took(state.took, Branch::CommandSignedOut),
     },
     Coverage {
         name: "signed_in fails on an unreadable cloud.json",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::CommandUnreadable),
+        reached: |_, state| took(state.took, Branch::CommandUnreadable),
     },
     Coverage {
         name: "signed_in returns a stored SignedIn",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::CommandReturnsStored),
+        reached: |_, state| took(state.took, Branch::CommandReturnsStored),
     },
     Coverage {
         name: "signed_in's poll_once answers AwaitingApproval",
@@ -584,7 +581,8 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Finished(Role::Command)) && matches!(state.file, File::SignedIn(_))
+            took(state.took, Branch::Finished(Role::Command))
+                && matches!(state.file, File::SignedIn(_))
         },
     },
     Coverage {
@@ -598,7 +596,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::LogoutSignsOut)
+            took(state.took, Branch::LogoutSignsOut)
                 && matches!(state.pc(LOGOUT), Pc::Clearing(File::SignedIn(code)) if !state.honoured(code))
         },
     },
@@ -660,7 +658,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Finished(Role::Login))
+            took(state.took, Branch::Finished(Role::Login))
                 && matches!(
                     (state.file, state.pc(LOGOUT)),
                     (File::SignedIn(signed), Pc::Done(Outcome::LoggedOut(File::Pending(read))))
@@ -722,7 +720,7 @@ const COVERAGE: &[Coverage] = &[
         name: "the fix's request_code finds cloud.json changed and start reads it again",
         on: |model| model.fix.is_proposed(),
         omit: None,
-        reached: |_, state| took(state, Branch::RequestRereads),
+        reached: |_, state| took(state.took, Branch::RequestRereads),
     },
     Coverage {
         name: "under the fix, a waiter whose poll got invalid_grant still fails Expired beside the SignedIn",

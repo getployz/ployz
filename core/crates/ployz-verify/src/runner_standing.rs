@@ -57,7 +57,7 @@ use std::fmt::Write as _;
 use ployz_decide::standing::{self as decide, Latch, Over, Read};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The Deployment's status as `record` reads it. `stored` (deployment/mod.rs) remaps a
 /// lapsed lease to Unknown, which the model leaves out.
@@ -428,10 +428,6 @@ enum Omit {
 type Coverage = harness::Coverage<RunnerStanding, Omit>;
 
 /// The last step took `branch`.
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// Each branch the bounds reach, once. `every_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
 const COVERAGE: &[Coverage] = &[
@@ -439,14 +435,14 @@ const COVERAGE: &[Coverage] = &[
         name: "connecting reads a cancel: Cancelled before connecting",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::ConnectingCancelled)),
-        reached: |_, state| took(state, Branch::ConnectingCancelled),
+        reached: |_, state| took(state.took, Branch::ConnectingCancelled),
     },
     Coverage {
         name: "renewing aborts the prepare",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
+            took(state.took, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
         },
     },
     Coverage {
@@ -454,7 +450,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
+            took(state.took, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
         },
     },
     Coverage {
@@ -462,7 +458,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts)
+            took(state.took, Branch::Aborts)
                 && matches!(state.phase, Phase::Filling { stopped: true, .. })
         },
     },
@@ -471,33 +467,36 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Unprepared)),
         reached: |_, state| {
-            took(state, Branch::Unprepared) && state.store.outcome == Some(Outcome::NotExecuted)
+            took(state.took, Branch::Unprepared)
+                && state.store.outcome == Some(Outcome::NotExecuted)
         },
     },
     Coverage {
         name: "record(Prepared) refuses a run that is over",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::PreparedRefused)),
-        reached: |_, state| took(state, Branch::PreparedRefused),
+        reached: |_, state| took(state.took, Branch::PreparedRefused),
     },
     Coverage {
         name: "record(Prepared) reads a cancel: Cancelled before it executed",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::PreparedCancelling)),
-        reached: |_, state| took(state, Branch::PreparedCancelling),
+        reached: |_, state| took(state.took, Branch::PreparedCancelling),
     },
     Coverage {
         name: "the session ends mid-execution and Abandoned leaves the run Unknown",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Abandons)),
-        reached: |_, state| took(state, Branch::Abandons) && state.store.status == Status::Unknown,
+        reached: |_, state| {
+            took(state.took, Branch::Abandons) && state.store.status == Status::Unknown
+        },
     },
     Coverage {
         name: "the read after executing reads the takeover and the run records Interrupted",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::CheckFindsLost)),
         reached: |_, state| {
-            took(state, Branch::CheckFindsLost) && state.last_read == Some(Read::Unknown)
+            took(state.took, Branch::CheckFindsLost) && state.last_read == Some(Read::Unknown)
         },
     },
     Coverage {
@@ -505,7 +504,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::Check(Call::Fails)])),
         reached: |_, state| {
-            took(state, Branch::CheckGoesOn) && state.last_read == Some(Read::Unavailable)
+            took(state.took, Branch::CheckGoesOn) && state.last_read == Some(Read::Unavailable)
         },
     },
     Coverage {
@@ -513,7 +512,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
-            took(state, Branch::GateSkips) && state.last_read == Some(Read::Cancelling)
+            took(state.took, Branch::GateSkips) && state.last_read == Some(Read::Cancelling)
         },
     },
     Coverage {
@@ -521,7 +520,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::Removed])),
         reached: |_, state| {
-            took(state, Branch::Records)
+            took(state.took, Branch::Records)
                 && state.store.outcome
                     == Some(Outcome::Executed {
                         interrupted: false,
@@ -535,7 +534,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::CancelInFlight])),
         reached: |_, state| {
-            took(state, Branch::Records)
+            took(state.took, Branch::Records)
                 && state
                     .sent
                     .is_some_and(|sent| sent.answer == Answer::RefusedEnded)
@@ -553,26 +552,28 @@ const COVERAGE: &[Coverage] = &[
         name: "renewing latches a takeover during remove_volumes",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::Latches)),
-        reached: |_, state| took(state, Branch::Latches) && state.standing == Standing::Lost,
+        reached: |_, state| took(state.took, Branch::Latches) && state.standing == Standing::Lost,
     },
     Coverage {
         name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
         on: |model| model.store_fix.is_proposed(),
         omit: Some(Omit::Branch(Branch::Converted)),
-        reached: |_, state| took(state, Branch::Converted) && state.store.shows_removed,
+        reached: |_, state| took(state.took, Branch::Converted) && state.store.shows_removed,
     },
     Coverage {
         name: "renewing aborts once a read says the run ended",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::Aborts)),
-        reached: |_, state| took(state, Branch::Aborts) && state.last_read == Some(Read::Ended),
+        reached: |_, state| {
+            took(state.took, Branch::Aborts) && state.last_read == Some(Read::Ended)
+        },
     },
     Coverage {
         name: "the gate skips fill_ingress once the latch says the run is over",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
-            took(state, Branch::GateSkips)
+            took(state.took, Branch::GateSkips)
                 && state.standing != Standing::Keep
                 && state.last_read != Some(Read::Cancelling)
         },
@@ -582,7 +583,7 @@ const COVERAGE: &[Coverage] = &[
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::StopsOver)),
         reached: |_, state| {
-            took(state, Branch::StopsOver)
+            took(state.took, Branch::StopsOver)
                 && state.standing == Standing::Lost
                 && matches!(state.last, Some(Action::Poll(_)))
         },
@@ -591,14 +592,16 @@ const COVERAGE: &[Coverage] = &[
         name: "the run stops once a read says it ended",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::StopsOver)),
-        reached: |_, state| took(state, Branch::StopsOver) && state.standing == Standing::Ended,
+        reached: |_, state| {
+            took(state.took, Branch::StopsOver) && state.standing == Standing::Ended
+        },
     },
     Coverage {
         name: "record refuses a lost run's Executed and keeps it sent again as Interrupted",
         on: |model| model.store_fix.is_shipped() && !model.broken.no_resend,
         omit: Some(Omit::Branch(Branch::Resends)),
         reached: |_, state| {
-            took(state, Branch::Resends)
+            took(state.took, Branch::Resends)
                 && state.store.outcome
                     == Some(Outcome::Executed {
                         interrupted: true,

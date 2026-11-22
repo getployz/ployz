@@ -28,7 +28,7 @@ use std::fmt::Write as _;
 use ployz_decide::fate::{self as decide, Durability, Previous};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The most `ployz mcp login` processes a model runs. The default model runs two.
 const MAX_LOGINS: usize = 2;
@@ -450,10 +450,6 @@ fn listed_as_agent(token: Token) -> bool {
 /// while another is between its read and its note; the fix's lock takes these away.
 type Coverage = harness::Coverage<McpLogin>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// The last step printed a note after leaving the token before live for `why`.
 fn noted_left(state: &State, why: Why) -> bool {
     matches!(state.took, Some(Branch::Noted { left: Some(left), .. }) if left == why)
@@ -467,7 +463,7 @@ const COVERAGE: &[Coverage] = &[
         name: "a login reads no mcp.json",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Read(File::Absent)),
+        reached: |_, state| took(state.took, Branch::Read(File::Absent)),
     },
     Coverage {
         name: "a login reads the agent token mcp.json holds",
@@ -479,13 +475,13 @@ const COVERAGE: &[Coverage] = &[
         name: "a login reads an unreadable mcp.json, warns \"Replacing it.\" and goes on with none",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Read(File::Unreadable)),
+        reached: |_, state| took(state.took, Branch::Read(File::Unreadable)),
     },
     Coverage {
         name: "Cloud mints an agent token",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Minted(Kind::Agent)),
+        reached: |_, state| took(state.took, Branch::Minted(Kind::Agent)),
     },
     Coverage {
         name: "Cloud answers a cli token, and the login refuses it and revokes it",
@@ -493,7 +489,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Unmade {
                     why: Unmake::Refused,
                     revoked: true,
@@ -507,7 +503,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Unmade {
                     why: Unmake::SaveFailed,
                     revoked: true,

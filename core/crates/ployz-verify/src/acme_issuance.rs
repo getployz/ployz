@@ -38,7 +38,7 @@ use ployz_decide::issuance::{
 };
 use stateright::{Model, Property};
 
-use crate::harness::{self, everywhere};
+use crate::harness::{self, everywhere, took};
 
 /// Machines in the model. Slot `who` holds the Machine whose id sorts `who`th, so its rank is
 /// `who`.
@@ -515,10 +515,6 @@ impl State {
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 type Coverage = harness::Coverage<AcmeIssuance>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// Each branch the bounds reach, on every model or only on those a row's `on` names.
 /// `the_code_keeps_every_property` and `the_code_as_it_was_breaks_only_the_rank_delay` expect
 /// every row their model reaches.
@@ -875,7 +871,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Pushed {
                     who: 1,
                     gate: Gate::Passed,
@@ -890,7 +886,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Pushed {
                     who: 1,
                     gate: Gate::VerdictChanged,

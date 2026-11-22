@@ -55,7 +55,7 @@ use std::fmt::Write as _;
 use ployz_core::{MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The outcome `upgrade-attempt.json` holds (installer/upgrade.rs `StoredAttempt`). The model
 /// has one attempt, so the receipt and the marker always name it.
@@ -526,10 +526,6 @@ struct Fix {
 /// reached only on the code as it is when it is a refusal the fix removes.
 type Coverage = harness::Coverage<UpgradeAttempt>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// Each branch the bounds reach, on the code as it is, on the fix, or on both.
 /// `current_code_breaks_only_the_finding` and `the_fix_answers_from_the_receipt` expect
 /// every row their model reaches.
@@ -557,14 +553,14 @@ const COVERAGE: &[Coverage] = &[
         name: "the worker clears the marker after its terminal write",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::WorkerClears) && !state.marker,
+        reached: |_, state| took(state.took, Branch::WorkerClears) && !state.marker,
     },
     Coverage {
         name: "request_locked clears the marker after Failed{Launching}",
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ClearsAfterLaunchFailure)
+            took(state.took, Branch::ClearsAfterLaunchFailure)
                 && !state.marker
                 && state.receipt == Some(Outcome::Failed)
         },
@@ -573,20 +569,20 @@ const COVERAGE: &[Coverage] = &[
         name: "the worker refuses an attempt whose receipt is already terminal",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::WorkerNotActive) && state.receipt_terminal(),
+        reached: |_, state| took(state.took, Branch::WorkerNotActive) && state.receipt_terminal(),
     },
     Coverage {
         name: "settle returns a running worker's receipt as it stands",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::SettleSeesActive) && state.worker.active(),
+        reached: |_, state| took(state.took, Branch::SettleSeesActive) && state.worker.active(),
     },
     Coverage {
         name: "settle leaves the marker of a terminal receipt while the worker holds the lock",
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::SettleBusy)
+            took(state.took, Branch::SettleBusy)
                 && state.receipt_terminal()
                 && state.marker
                 && state.holder == Some(Holder::Worker)
@@ -597,7 +593,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::Interrupts)
+            took(state.took, Branch::Interrupts)
                 && state.receipt == Some(Outcome::Interrupted)
                 && !state.worker.active()
         },
@@ -607,7 +603,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ReconcileSeesActive)
+            took(state.took, Branch::ReconcileSeesActive)
                 && state.worker.active()
                 && state.receipt_live()
         },
@@ -616,21 +612,21 @@ const COVERAGE: &[Coverage] = &[
         name: "clear_active fails before removing the marker of a finished attempt",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::ClearFails) && state.stale_marker(),
+        reached: |_, state| took(state.took, Branch::ClearFails) && state.stale_marker(),
     },
     Coverage {
         name: "clear_active removes the marker and then fails its directory sync",
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ClearFailsAfterRemoval) && !state.marker && state.lock_free()
+            took(state.took, Branch::ClearFailsAfterRemoval) && !state.marker && state.lock_free()
         },
     },
     Coverage {
         name: "a clear_active that finds no marker removes nothing",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::ClearsNothing) && !state.marker,
+        reached: |_, state| took(state.took, Branch::ClearsNothing) && !state.marker,
     },
     Coverage {
         name: "Inspect's settle removes the marker a stopped writer left",
@@ -673,7 +669,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::DepartsAfterItsClear)
+            took(state.took, Branch::DepartsAfterItsClear)
                 && state.answered(Asker::Daemon, Answer::Admitted)
         },
     },
@@ -681,44 +677,44 @@ const COVERAGE: &[Coverage] = &[
         name: "Leave refuses while the attempt is live",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::LeaveRefuses) && state.receipt_live(),
+        reached: |_, state| took(state.took, Branch::LeaveRefuses) && state.receipt_live(),
     },
     Coverage {
         name: "a new request refuses while the attempt is live",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::NewRequestBusy) && state.receipt_live(),
+        reached: |_, state| took(state.took, Branch::NewRequestBusy) && state.receipt_live(),
     },
     Coverage {
         name: "a new request goes on after a finished attempt",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::NewRequestGoesOn) && state.receipt_terminal(),
+        reached: |_, state| took(state.took, Branch::NewRequestGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "ployzd install refuses while the attempt is live",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::InstallBusy) && state.receipt_live(),
+        reached: |_, state| took(state.took, Branch::InstallBusy) && state.receipt_live(),
     },
     Coverage {
         name: "ployzd install goes on after a finished attempt",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::InstallGoesOn) && state.receipt_terminal(),
+        reached: |_, state| took(state.took, Branch::InstallGoesOn) && state.receipt_terminal(),
     },
     Coverage {
         name: "a caller's try_installation refuses while another process holds the lock",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::CallerBusy) && !state.lock_free(),
+        reached: |_, state| took(state.took, Branch::CallerBusy) && !state.lock_free(),
     },
     Coverage {
         name: "request_locked refuses .upgrade-active with no receipt",
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::RequestFindsMarker) && state.marker && state.receipt.is_none()
+            took(state.took, Branch::RequestFindsMarker) && state.marker && state.receipt.is_none()
         },
     },
     Coverage {
@@ -1342,7 +1338,7 @@ impl Model for UpgradeAttempt {
                 state.first_terminal.is_none() || state.receipt == state.first_terminal
             }),
             Property::always(INTERRUPTED_ONLY_STOPPED, |_, state: &State| {
-                !(took(state, Branch::Interrupts) && state.worker.active())
+                !(took(state.took, Branch::Interrupts) && state.worker.active())
             }),
             Property::always(DAEMON_START_SETTLES_FIRST, |_, state: &State| {
                 !(state.answered(Asker::Daemon, Answer::Busy)

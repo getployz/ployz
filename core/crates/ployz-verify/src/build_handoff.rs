@@ -71,7 +71,7 @@ use ployz_decide::github_build::{
 };
 use stateright::{Model, Property};
 
-use crate::harness::{self, everywhere};
+use crate::harness::{self, everywhere, took};
 
 /// The most looks the walk takes (`for (let check = 0; ; check += 1)`,
 /// `store-deployment.inngest.ts::walkGithub`). Check 0 is the start
@@ -736,12 +736,8 @@ struct Broken {
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 type Coverage = harness::Coverage<BuildHandoff>;
 
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 fn finished(state: &State, by: Finisher, look: GithubLook, step: FinishStep) -> bool {
-    took(state, Branch::Finish { by, look, step })
+    took(state.took, Branch::Finish { by, look, step })
 }
 
 fn walk_settled(state: &State, look: GithubLook, end: End) -> bool {
@@ -802,25 +798,25 @@ const COVERAGE: &[Coverage] = &[
         name: "github-open finds the build on GitHub and the walk waits",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Open { open: true }),
+        reached: |_, state| took(state.took, Branch::Open { open: true }),
     },
     Coverage {
         name: "github-open finds the build no longer on GitHub and the walk ends",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Open { open: false }),
+        reached: |_, state| took(state.took, Branch::Open { open: false }),
     },
     Coverage {
         name: "github-wait ends with the run's event",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::WaitEnded { woken: true }),
+        reached: |_, state| took(state.took, Branch::WaitEnded { woken: true }),
     },
     Coverage {
         name: "github-wait times out",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::WaitEnded { woken: false }),
+        reached: |_, state| took(state.took, Branch::WaitEnded { woken: false }),
     },
     // checkStoreGithubBuild.
     Coverage {
@@ -872,25 +868,25 @@ const COVERAGE: &[Coverage] = &[
         name: "the walk finds the Deployment cancelled and stops its GitHub builds",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::DeploymentCancelled),
+        reached: |_, state| took(state.took, Branch::DeploymentCancelled),
     },
     Coverage {
         name: "the walk finds a run past its budget",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::PastBudget),
+        reached: |_, state| took(state.took, Branch::PastBudget),
     },
     Coverage {
         name: "the wait saw the run end, so a run with no grant gets finish(\"ended\")",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::SeenEnded { grant: false }),
+        reached: |_, state| took(state.took, Branch::SeenEnded { grant: false }),
     },
     Coverage {
         name: "the wait saw the run end, or its final report came, so a run that checked in gets finish(\"ended\")",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::SeenEnded { grant: true }),
+        reached: |_, state| took(state.took, Branch::SeenEnded { grant: true }),
     },
     Coverage {
         name: "runEnded says a run with no grant completed, and it gets finish(\"ended\")",
@@ -963,25 +959,35 @@ const COVERAGE: &[Coverage] = &[
         name: "the budget cancels the run",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Cancelled(Canceller::Budget)),
+        reached: |_, state| took(state.took, Branch::Cancelled(Canceller::Budget)),
     },
     Coverage {
         name: "the start limit cancels the run its finish ended",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Cancelled(Canceller::StartLimit)),
+        reached: |_, state| took(state.took, Branch::Cancelled(Canceller::StartLimit)),
     },
     Coverage {
         name: "the walk's cancelStoreGithubBuilds cancels the run",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Cancelled(Canceller::Stop(Stopper::Walk))),
+        reached: |_, state| {
+            took(
+                state.took,
+                Branch::Cancelled(Canceller::Stop(Stopper::Walk)),
+            )
+        },
     },
     Coverage {
         name: "the user's cancelStoreGithubBuilds cancels the run",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Cancelled(Canceller::Stop(Stopper::User))),
+        reached: |_, state| {
+            took(
+                state.took,
+                Branch::Cancelled(Canceller::Stop(Stopper::User)),
+            )
+        },
     },
     // github_finish (`ployz::sdk::github_build::github_finish`).
     Coverage {
@@ -1199,7 +1205,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::StepFailed {
                     crash: true,
                     retried: true,
@@ -1213,7 +1219,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::StepFailed {
                     crash: false,
                     retried: true,
@@ -1243,7 +1249,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Outstanding {
                     by: Stopper::Walk,
                     found: true,
@@ -1257,7 +1263,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Outstanding {
                     by: Stopper::User,
                     found: true,
@@ -1271,7 +1277,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Outstanding {
                     by: Stopper::User,
                     found: false,
@@ -1295,7 +1301,7 @@ const COVERAGE: &[Coverage] = &[
         name: "a user cancels the queued Deployment",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::UserCancelled),
+        reached: |_, state| took(state.took, Branch::UserCancelled),
     },
     // The runner (`ployz::sdk::github_build::github_check_in`, `ployz::sdk::github_build::github_report`).
     Coverage {
@@ -1304,7 +1310,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::PreCheck {
                     request: Request::Job,
                     pass: true,
@@ -1318,7 +1324,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::PreCheck {
                     request: Request::Job,
                     pass: false,
@@ -1332,7 +1338,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Minted {
                     request: Request::Job,
                     mint: Mint::Minted,
@@ -1346,7 +1352,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Minted {
                     request: Request::Job,
                     mint: Mint::Fails,
@@ -1360,7 +1366,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckInEnded {
                     request: Request::Job,
                     why: Why::OldMint,
@@ -1375,7 +1381,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckInEnded {
                     request: Request::Job,
                     why: Why::OldMint,
@@ -1390,7 +1396,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckInEnded {
                     request: Request::Job,
                     why: Why::Refused,
@@ -1405,7 +1411,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckInEnded {
                     request: Request::Job,
                     why: Why::Refused,
@@ -1420,7 +1426,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckedIn {
                     request: Request::Job,
                     ok: true,
@@ -1434,7 +1440,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::CheckedIn {
                     request: Request::Job,
                     ok: false,
@@ -1446,7 +1452,7 @@ const COVERAGE: &[Coverage] = &[
         name: "the runner pushes into the grant's Machine",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Pushed),
+        reached: |_, state| took(state.took, Branch::Pushed),
     },
     Coverage {
         name: "the final report says Built",
@@ -1454,7 +1460,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Reported {
                     end: RunEnd::Built,
                     ok: true,
@@ -1468,7 +1474,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::Reported {
                     end: RunEnd::Failed,
                     ok: true,
@@ -1486,19 +1492,19 @@ const COVERAGE: &[Coverage] = &[
         name: "the job stops before its final report",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Quit),
+        reached: |_, state| took(state.took, Branch::Quit),
     },
     Coverage {
         name: "the report's event wakes the waiting walk",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Woke { waiting: true }),
+        reached: |_, state| took(state.took, Branch::Woke { waiting: true }),
     },
     Coverage {
         name: "the report's event finds no wait",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::Woke { waiting: false }),
+        reached: |_, state| took(state.took, Branch::Woke { waiting: false }),
     },
     // The grant's Machine.
     Coverage {
@@ -1519,7 +1525,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: None,
         reached: |_, state| {
-            took(state, Branch::ServersReported { ok: true }) && !state.server_on_github
+            took(state.took, Branch::ServersReported { ok: true }) && !state.server_on_github
         },
     },
     // The retried start.
@@ -1529,7 +1535,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::StartRead {
                     at: Start::Read,
                     follows: true,
@@ -1543,7 +1549,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::StartRead {
                     at: Start::Reread,
                     follows: true,
@@ -1557,7 +1563,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| {
             took(
-                state,
+                state.took,
                 Branch::StartRead {
                     at: Start::Reread,
                     follows: false,
@@ -1569,13 +1575,13 @@ const COVERAGE: &[Coverage] = &[
         name: "the retry's hand-off commits, and the walk follows the retry's run",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::HandOff { won: true }),
+        reached: |_, state| took(state.took, Branch::HandOff { won: true }),
     },
     Coverage {
         name: "the first try's late hand-off is refused, since the build is no longer waiting",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::DelayedHandOff { ok: false }),
+        reached: |_, state| took(state.took, Branch::DelayedHandOff { ok: false }),
     },
     Coverage {
         name: "after a retried start, a look passes on the run Cloud cancelled, and the Servers take the build",
@@ -1585,7 +1591,7 @@ const COVERAGE: &[Coverage] = &[
             state.retried
                 && !state.retry_won
                 && !state.limit_waited
-                && took(state, Branch::ServersReported { ok: true })
+                && took(state.took, Branch::ServersReported { ok: true })
         },
     },
     Coverage {
@@ -1606,13 +1612,13 @@ const COVERAGE: &[Coverage] = &[
         name: "GitHub ends a cancelled run and its job",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::RunCompleted { killed: true }),
+        reached: |_, state| took(state.took, Branch::RunCompleted { killed: true }),
     },
     Coverage {
         name: "GitHub completes a run whose job exited",
         on: everywhere,
         omit: None,
-        reached: |_, state| took(state, Branch::RunCompleted { killed: false }),
+        reached: |_, state| took(state.took, Branch::RunCompleted { killed: false }),
     },
 ];
 
