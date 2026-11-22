@@ -321,11 +321,6 @@ function runsOf(change: PlacementChange): VolumeRunInput[] {
   }
 }
 
-/** The runs a Deploy makes, in order. Each run observes the copies again, so a Deploy plans one step at a time. */
-export function placementSteps(changes: readonly PlacementChange[]): VolumeRunInput[] {
-  return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
-}
-
 /**
  * Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. A move keeps the
  * Server it left: once that Server stops answering, it is still the one holding the Volume.
