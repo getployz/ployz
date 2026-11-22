@@ -314,11 +314,7 @@ impl EnrollPlan {
                 Some(policy.accepts_services),
                 Some(policy.accepts_ingress),
             ],
-            network: Some(
-                super::enroll::CLUSTER_NETWORK
-                    .parse()
-                    .expect("the default Cluster network parses"),
-            ),
+            network: Some(ployz_core::DEFAULT_CLUSTER_NETWORK),
             cluster_name: instruction
                 .founding_cluster_name
                 .as_deref()
