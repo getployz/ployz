@@ -2,13 +2,12 @@
 
 use bollard::models::ContainerUpdateBody;
 use ployz_core::{
-    ByteQuantity, ContainerId, ContainerKind, ContainerLimits, ContainerLimitsUpdated, CpuNanos,
-    LimitsRefusal, ResolvedServiceSpec, SpecChange, compare_specs,
+    ByteQuantity, ContainerId, ContainerLimits, ContainerLimitsUpdated, CpuNanos, LimitsRefusal,
+    ResolvedServiceSpec, SpecChange, compare_specs,
 };
 
 use super::inspect::{Inspected, RawHostConfig};
 use super::{ContainerRuntime, Error, docker_error};
-use ployz_core::labels::ServiceLabels;
 
 /// The limits Docker reports on a Container after an update asked for others.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,11 +50,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerLimitsUpdated, Error> {
         let mut config_operation = self.specs.config_operation().await;
-        let stored = self
-            .specs
-            .get(container_id)
-            .await?
-            .ok_or_else(|| Error::LimitsSpecNotFound(*container_id))?;
+        let (inspected, _, stored) = self.observation().managed_service(container_id).await?;
         // A resent request whose first attempt applied the limits finds them stored.
         let resent = match refusal(&stored, spec) {
             None => false,
@@ -67,11 +62,6 @@ impl ContainerRuntime {
                 });
             }
         };
-        let inspected = self.observation().ensure_managed(container_id).await?;
-        let labels = inspected.labels().ok_or(Error::NotManaged)?;
-        if ServiceLabels::parse(labels)?.kind != ContainerKind::ServiceContainer {
-            return Err(Error::NotAServiceContainer(*container_id));
-        }
         // A stopped Container would take the limits but serve nothing; the Deploy
         // promised a serving copy, so the caller must replace it instead.
         refuse_unless_running(container_id, &inspected)?;
@@ -323,7 +313,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_limits_update_with_no_stored_spec_answers_not_found_unmarked() {
+    async fn a_limits_update_of_a_container_docker_lacks_answers_not_found_unmarked() {
         let (runtime, _fake) =
             crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let container_id = ContainerId::parse("c".repeat(64)).unwrap();
@@ -331,18 +321,10 @@ mod tests {
         let error = runtime
             .update_limits(&container_id, &spec(Some(128)))
             .await
-            .expect_err("no spec is stored for the Container");
+            .expect_err("Docker has no such Container");
 
-        assert!(
-            matches!(error, Error::LimitsSpecNotFound(id) if id == container_id),
-            "{error:?}"
-        );
         let answer = ployz_core::RpcError::from(&error);
-        assert_eq!(answer.code, ployz_core::RpcErrorCode::NotFound);
-        assert_eq!(
-            answer.message,
-            format!("resolved spec not found in machine.db for {container_id}")
-        );
+        assert_eq!(answer.code, ployz_core::RpcErrorCode::NotFound, "{error:?}");
         assert_eq!(answer.details, serde_json::Value::Null);
     }
 

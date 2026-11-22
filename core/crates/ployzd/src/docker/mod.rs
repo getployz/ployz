@@ -557,6 +557,25 @@ impl Observation {
         &self.sealing
     }
 
+    /// The Service Container `container_id` as Docker inspects it, with the spec this
+    /// Machine stored for it: the read an in-place update starts from.
+    pub(super) async fn managed_service(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<(Inspected, ServiceLabels, ployz_core::ResolvedServiceSpec), Error> {
+        let inspected = self.docker.inspect(container_id).await?;
+        let labels = ServiceLabels::parse(inspected.labels().ok_or(Error::NotManaged)?)?;
+        let spec = self
+            .specs
+            .get(container_id)
+            .await?
+            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
+        if labels.kind != ployz_core::ContainerKind::ServiceContainer {
+            return Err(Error::NotAServiceContainer(*container_id));
+        }
+        Ok((inspected, labels, spec))
+    }
+
     pub(super) async fn ensure_managed(
         &self,
         container_id: &ContainerId,
@@ -1419,10 +1438,6 @@ pub enum Error {
     /// Docker answered an inspect of this ID, and `machine.db` holds no spec under it.
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
-    /// A limits update found no stored spec for this ID before it asked Docker
-    /// anything, so nothing says whether Docker has the Container.
-    #[error("resolved spec not found in machine.db for {0}")]
-    LimitsSpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
@@ -1491,7 +1506,6 @@ impl Error {
         match self {
             Self::ContainerNotFound(_)
             | Self::SpecNotFound(_)
-            | Self::LimitsSpecNotFound(_)
             | Self::ExternalVolumeNotFound(_)
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
