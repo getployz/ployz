@@ -274,8 +274,9 @@ pub(crate) fn retry(
     });
     let ran = super::versions::replaying(source)?;
     let admitted_at = now();
-    queue(tx, &stored.summary.environment_id, false, |tx, number| {
-        let listed = next_listed(tx, &stored.summary.environment_id)?;
+    let environment = &stored.summary.environment_id;
+    queue(tx, environment, (id, false), |tx, number| {
+        let listed = next_listed(tx, environment)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state, and runs the images its source ran.
         tx.execute(
