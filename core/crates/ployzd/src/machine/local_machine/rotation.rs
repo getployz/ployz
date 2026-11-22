@@ -26,7 +26,7 @@ use ployz_decide::rotation::{Checked, RotationWant, decide};
 use super::{AdmittedSpec, Error, LocalMachine, not_found_refusal, redacted, refuse};
 use crate::docker::{ContainerRuntime, published_spec};
 use crate::mesh_peer::{confirmed_row, supersedes};
-use crate::route_acks::{Ackers, Membership, routed};
+use crate::route_acks::{Membership, routed};
 
 /// A copy not created yet has no id.
 #[derive(Clone, Debug)]
@@ -583,7 +583,7 @@ impl LocalMachine {
             })
             .min_by_key(Vec::len)
             .unwrap_or_default();
-        let known = matches!(&membership.ackers, Ackers::Known(machines) if !machines.is_empty());
+        let known = membership.ackers.complete();
         if known && unacked.is_empty() {
             return Ok(None);
         }

@@ -1,12 +1,11 @@
-//! What this Machine reads of its mesh peers: Corrosion's membership, a peer's
-//! store versions, and a peer's own answer for a Container. A peer's replicated
+//! What this Machine reads of its mesh peers: a peer's store versions, and a
+//! peer's own answer for a Container. A peer's replicated
 //! row counts only when its owner answers In at the row's gen, so the replicated
 //! observation narrows what this Machine does and never authorizes it. This
 //! module imports neither the Machine nor the boot pass, so both import it.
 
 use std::{
     collections::BTreeMap,
-    io,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
@@ -14,33 +13,12 @@ use std::{
 use ployz_core::{
     CodecError, ContainerDetails, ContainerId, ContainerObservation, CopyRotation,
     InspectContainerRequest, ListMachinesRequest, MACHINE_API_PORT, Machine, MachineId,
-    MachineRpcClient, ManagementAddress, MembershipEvidence, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    RequestedServiceSpec, ResolvedServiceSpec, SpecChange, compare_specs, op,
+    MachineRpcClient, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RequestedServiceSpec, ResolvedServiceSpec,
+    SpecChange, compare_specs, op,
 };
 use tonic::transport::Endpoint;
 
-use crate::corrosion::{
-    AdminClient, Error as CorrosionError, ReplicatedObservations, membership_states_by_address,
-};
-
-pub(crate) type MembershipStates = BTreeMap<ManagementAddress, MembershipEvidence>;
-
-/// Corrosion's membership as the local admin socket reports it, read within
-/// `bound`. Each caller decides what an unreadable sample means for it.
-pub(crate) async fn sample_membership(
-    admin: &AdminClient,
-    bound: Duration,
-) -> Result<MembershipStates, CorrosionError> {
-    let states = tokio::time::timeout(bound, admin.membership_states())
-        .await
-        .map_err(|_| {
-            CorrosionError::Io(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "membership sample timed out",
-            ))
-        })??;
-    Ok(membership_states_by_address(states))
-}
+use crate::corrosion::ReplicatedObservations;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PeerError {

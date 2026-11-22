@@ -39,7 +39,6 @@ use crate::{
     corrosion::{AdminClient, MachineView},
     machine::{LocalMachine, LocalMachineError},
     management::forgotten,
-    mesh_peer::sample_membership,
 };
 
 /// How often peer liveness is read.
@@ -190,7 +189,7 @@ pub(crate) struct FenceDaemon {
 impl FenceHost for FenceDaemon {
     async fn peers(&self) -> Option<Vec<Peer>> {
         let machines = self.machines.current()?;
-        let states = match sample_membership(&self.admin, MEMBERSHIP_TIMEOUT).await {
+        let states = match self.admin.membership(MEMBERSHIP_TIMEOUT).await {
             Ok(states) => states,
             Err(error) => {
                 tracing::debug!(error = %ployz_core::error_chain::inline(&error), "could not read membership");
