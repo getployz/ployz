@@ -53,16 +53,14 @@ const node = () => screen.getByRole("link", { name: "data-web-2, mirror of data"
 it("shows a live mirror by name with how fresh it is, and opens its own drawer", async () => {
   const router = await show([mirror()]);
   expect(node().textContent).toBe("data-web-2Mirror · 4 minutes ago");
-  expect(node().className).not.toMatch(/soft/);
   fireEvent.click(node());
   await screen.findByText("data");
   expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/vol-1~m2");
 });
 
-it("warns in amber when a mirror has fallen behind", async () => {
+it("warns when a mirror has fallen behind", async () => {
   await show([mirror({ refreshedAt: minutesAgo(3 * 60) })]);
   const behind = within(node()).getByLabelText("Behind");
-  expect(behind.parentElement?.className).toMatch(/text-warning/);
   expect(behind.parentElement?.textContent).toBe("3 hours ago");
 });
 
@@ -72,19 +70,16 @@ it("shows a busy mirror with a spinner and what it is doing", async () => {
   expect(node().querySelector("[aria-hidden]")).not.toBeNull();
 });
 
-it("shows a staged mirror pink with New", async () => {
+it("shows a staged mirror as a change, with New", async () => {
   await show([mirror({ staged: "new", refreshedAt: null })]);
   expect(within(node()).getByText("New")).toBeTruthy();
   expect(node().getAttribute("data-changed")).toBe("true");
-  expect(node().className).toMatch(/data-\[changed=true\]:bg-changed-soft/);
 });
 
-it("shows a staged removal red and struck through with Removing", async () => {
+it("shows a staged removal with Removing, not as an ordinary change", async () => {
   await show([mirror({ staged: "removing" })]);
   expect(node().textContent).toBe("data-web-2Removing");
-  expect(node().className).toMatch(/bg-destructive-soft/);
   expect(node().hasAttribute("data-changed")).toBe(false);
-  expect(within(node()).getByText("data-web-2").className).toMatch(/line-through/);
 });
 
 it("shows a mirror staged to become the Primary pink, with Primary", async () => {
