@@ -3,6 +3,7 @@
 
 mod agent_call;
 mod approval;
+mod atomic_file;
 pub mod build;
 mod cancellation;
 mod checkin;

@@ -125,16 +125,10 @@ impl Pins {
             path: self.path.clone(),
             source,
         };
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir).map_err(write)?;
-        let mut temporary = tempfile::NamedTempFile::new_in(dir).map_err(write)?;
-        serde_json::to_writer_pretty(&mut temporary, file)
-            .map_err(|error| write(io::Error::other(error)))?;
-        temporary.as_file().sync_all().map_err(write)?;
-        temporary
-            .persist(&self.path)
-            .map_err(|error| write(error.error))?;
-        Ok(())
+        let contents =
+            serde_json::to_vec_pretty(file).map_err(|error| write(io::Error::other(error)))?;
+        crate::atomic_file::replace(&self.path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| write(error.into()))
     }
 }
 
