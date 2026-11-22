@@ -1454,6 +1454,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::ENROLL_MACHINE_CAPABILITY)
+                .because(GateReason::FirstKeySpent)
                 .next("sudo ployz key add LINE on this Server, with the key line from your install command"),
         )),
         LocalMachineError::Store(StoreError::JoinUnanchored) => Err(gated(

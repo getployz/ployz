@@ -37,10 +37,7 @@ pub(crate) fn arm(data_dir: &Path, line: &LineKey) -> Result<(), Failure> {
         .map_err(failed)?
     {
         Armed::Created => {
-            crate::ui::note(format!(
-                "This Server will trust {} when it joins or founds a Cluster.",
-                line.describe()
-            ));
+            crate::ui::note(will_trust(line));
             return Ok(());
         }
         Armed::AlreadyWaiting => return Ok(()),
@@ -49,11 +46,14 @@ pub(crate) fn arm(data_dir: &Path, line: &LineKey) -> Result<(), Failure> {
     if matches!(held, FirstKey::Spent { .. }) && enrolled(data_dir)? {
         return Ok(());
     }
-    replace(&file, data_dir, &held, line)
+    replace(&file, data_dir, &held, line)?;
+    crate::ui::note(will_trust(line));
+    Ok(())
 }
 
 /// Re-arm `line` on a disk that hasn't enrolled, as `ployz key add` does there: a disk with
-/// no First Key takes it, and replacing one asks at this Server's terminal.
+/// no First Key takes it, and replacing one asks at this Server's terminal. The caller
+/// reports it.
 ///
 /// # Errors
 /// As [`arm`].
@@ -64,15 +64,17 @@ pub(crate) fn rearm(data_dir: &Path, line: &LineKey) -> Result<(), Failure> {
         .and_then(|held| held.arm(line))
         .map_err(failed)?
     {
-        Armed::Created | Armed::AlreadyWaiting => {
-            crate::ui::note(format!(
-                "This Server will trust {} when it joins or founds a Cluster.",
-                line.describe()
-            ));
-            Ok(())
-        }
+        Armed::Created | Armed::AlreadyWaiting => Ok(()),
         Armed::Held(held) => replace(&file, data_dir, &held, line),
     }
+}
+
+/// What a Server whose First Key is `line` will do with it.
+pub(crate) fn will_trust(line: &LineKey) -> String {
+    format!(
+        "This Server will trust {} when it joins or founds a Cluster.",
+        line.describe()
+    )
 }
 
 /// Whether the disk at `data_dir` has enrolled in a Cluster.
@@ -107,29 +109,27 @@ fn replace(
             "This Server's First Key changed while you were confirming. Nothing was replaced. Run the command again.",
         ));
     }
-    locked.rearm(line).map_err(failed)?;
-    crate::ui::note(format!(
-        "This Server will trust {} when it joins or founds a Cluster.",
-        line.describe()
-    ));
-    Ok(())
+    locked.rearm(line).map_err(failed)
 }
 
 /// Show what the line would replace and ask for the new key's code at this Server's own
 /// terminal. Never `--yes` or the environment: whoever wrote the line must not answer it.
+/// A run that writes JSON is read by a program, so it never asks.
 fn confirm(held: &FirstKey, line: &LineKey) -> Result<(), Failure> {
     let code = line.code().to_string();
-    let refused = || {
-        Failure::conflict(format!(
-            "{} No terminal here to confirm the new key, so nothing changed.",
-            holds(held)
-        ))
-        .hint(Hint::Next(format!(
+    let refused = |why: &str| {
+        Failure::conflict(format!("{} {why}", holds(held))).hint(Hint::Next(format!(
             "sudo ployz key add {line} at a terminal on this Server"
         )))
     };
+    if crate::ui::json() {
+        return Err(refused(
+            "You confirm a new key at this Server's terminal, which --json skips, so nothing changed.",
+        ));
+    }
+    let no_terminal = || refused("No terminal here to confirm the new key, so nothing changed.");
     let Ok(tty) = OpenOptions::new().read(true).write(true).open(TTY) else {
-        return Err(refused());
+        return Err(no_terminal());
     };
     let mut out = &tty;
     write!(
@@ -138,16 +138,18 @@ fn confirm(held: &FirstKey, line: &LineKey) -> Result<(), Failure> {
         holds(held),
         line.describe(),
     )
-    .map_err(|_| refused())?;
+    .map_err(|_| no_terminal())?;
     let mut typed = String::new();
     BufReader::new(&tty)
         .read_line(&mut typed)
-        .map_err(|_| refused())?;
+        .map_err(|_| no_terminal())?;
     if typed.trim() == code {
         Ok(())
     } else {
-        crate::ui::note("Nothing changed.");
-        Err(Failure::exit(crate::ui::exit::CANCELLED_EXIT).interrupted())
+        Err(
+            Failure::conflict(format!("That isn't {code}, so nothing changed."))
+                .hint(Hint::Next(format!("sudo ployz key add {line}"))),
+        )
     }
 }
 

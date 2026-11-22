@@ -225,6 +225,9 @@ pub enum GateReason {
     Activating,
     /// The joining Machine was forgotten. It joins again only with a new identity.
     MemberRemoved,
+    /// The Server already used its First Key, so it founds a Cluster through Cloud only
+    /// once it trusts a key again.
+    FirstKeySpent,
 }
 
 /// What a Machine's refusal of a gated call names: the capability that gates it and the

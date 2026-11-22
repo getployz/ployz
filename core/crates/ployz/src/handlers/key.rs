@@ -43,9 +43,23 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
                 "Run it as root: sudo ployz key add …",
             ));
         }
-        return first_key_line::rearm(layout.data_dir(), &line);
+        first_key_line::rearm(layout.data_dir(), &line)?;
+        return crate::ui::finish(
+            &Armed {
+                waiting: line.hint(),
+            },
+            || {
+                crate::ui::stream(first_key_line::will_trust(&line));
+            },
+        );
     }
     runtime()?.block_on(add_here(&layout.socket(), line))
+}
+
+/// A key this Server, not yet in a Cluster, will trust to join or found one.
+#[derive(Serialize)]
+struct Armed {
+    waiting: ployz_core::first_key::FirstKeyHint,
 }
 
 #[derive(Serialize)]
