@@ -9297,6 +9297,79 @@ fn two_services_with_one_signer_keep_their_own_pins() {
     );
 }
 
+/// Apply web and api signed at P1, then make web read api's address, so a Deploy of web
+/// alone also hands its runner api, unchanged.
+fn web_reads_api(store: &ConfigStore, who: &Actor) {
+    admit_signed(
+        store,
+        who,
+        1,
+        vec![
+            posted(store, who, "web", P1),
+            posted(store, who, "api", P1),
+        ],
+    );
+    apply(store, 1);
+    set(
+        store,
+        who,
+        "web.env.API",
+        json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
+    );
+}
+
+/// Admit a Deploy of `services` alone as `n`, carrying `versions`.
+fn admit_services(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, services): (u8, &[&str]),
+    versions: Vec<ployz_store::PostedVersion>,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: services
+                .iter()
+                .map(|name| ServiceName::parse(*name).unwrap())
+                .collect(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions,
+        }),
+        &Trusted::default(),
+    )
+}
+
+#[test]
+fn a_deploy_of_one_service_keeps_the_pin_of_an_unchanged_service_it_references() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let web = posted(&store, &who, "web", P1);
+    admit_services(&store, &who, (2, &["web"]), vec![web]).unwrap();
+    assert_eq!(runs(&store, 2, "api"), Some((P1.to_owned(), 1)));
+}
+
+#[test]
+fn a_deploy_of_one_service_takes_a_signed_version_of_a_service_it_references() {
+    let (store, who) = shop();
+    web_reads_api(&store, &who);
+    let versions = vec![
+        posted(&store, &who, "web", P1),
+        posted(&store, &who, "api", P2),
+    ];
+    admit_services(&store, &who, (2, &["web"]), versions).unwrap();
+    assert_eq!(
+        runs(&store, 2, "api").map(|(image, _)| image),
+        Some(P2.to_owned())
+    );
+}
+
 #[test]
 fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_one() {
     let (store, who) = shop();
