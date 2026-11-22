@@ -135,10 +135,7 @@ impl LocalMachine {
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
-        let switch = match &self.switch {
-            Some(lock) => Some(Arc::clone(lock).lock_owned().await),
-            None => None,
-        };
+        let switch = self.wait_out_switch().await;
         self.finish_mutation(move |local| async move {
             let _switch = switch;
             let containers = local.docker()?;
@@ -1370,17 +1367,14 @@ impl LocalMachine {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
         let pin = pinned(&want);
-        let replan = self
-            .switch
-            .as_ref()
-            .map(|lock| (Arc::clone(lock), want.clone()));
+        let replan = (!self.in_switch).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
         let mut step = plan_container(want, &now, &self.record().phase());
-        // Planned again under the switch lock, which the start keeps until it ends, so an
-        // Operator never starts a Volume's holder inside a switch of that Volume.
+        // Planned again under the switch lock, which the start keeps until it ends, so a
+        // start never lands inside a switch of that Volume.
         let switch = match replan {
-            Some((lock, want)) if starts_provisioned_holder(&step, &now) => {
-                let guard = lock.lock_owned().await;
+            Some(want) if starts_provisioned_holder(&step, &now) => {
+                let guard = self.lock_switch().await;
                 now = self.container_now(&locator).await?;
                 step = plan_container(want, &now, &self.record().phase());
                 Some(guard)
@@ -1932,8 +1926,8 @@ enum ContainerStep {
     },
 }
 
-/// What [`LocalMachine::start_container`] holds of the switch lock.
-pub(super) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
+/// What [`LocalMachine::lock_switch`] holds of the switch lock.
+pub(crate) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
 
 /// Whether `step` starts a Container, the one `now` observes, that mounts a Provisioned
 /// Volume.

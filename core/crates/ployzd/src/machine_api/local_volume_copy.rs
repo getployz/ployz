@@ -49,9 +49,7 @@ impl MachineService {
         if let Err(error) = self.admit_gen(&request.name, request.r#gen).await {
             return local_error(error);
         }
-        let guard = std::sync::Arc::clone(&self.switch_mutation)
-            .lock_owned()
-            .await;
+        let guard = self.local.lock_switch().await;
         crate::faults::apply(
             Point::Verb("SetVolumeCopy"),
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
@@ -61,7 +59,10 @@ impl MachineService {
         // free the next request to plan against a cut still running. The task runs this
         // one transition and ends when ZFS or Docker answers; it never retries or starts
         // other work.
-        let service = self.clone();
+        let service = Self {
+            local: self.local.inside_switch(&guard),
+            ..self.clone()
+        };
         let planned = tokio::spawn(async move {
             let _guard = guard;
             service.set_copy_planned(request, admitted).await
