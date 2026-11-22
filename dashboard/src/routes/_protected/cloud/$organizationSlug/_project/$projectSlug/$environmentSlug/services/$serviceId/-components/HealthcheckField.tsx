@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, ServiceSettingChange } from "@ployz/sdk";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";

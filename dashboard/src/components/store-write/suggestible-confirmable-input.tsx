@@ -13,7 +13,7 @@ import { Skeleton } from "#/components/ui/skeleton"
 import {
   ConfirmableInput,
   type ConfirmableInputProps,
-} from "#/components/stageable/confirmable-input"
+} from "#/components/store-write/confirmable-input"
 
 type SuggestibleConfirmableInputProps = ConfirmableInputProps & {
   suggestions: string[]

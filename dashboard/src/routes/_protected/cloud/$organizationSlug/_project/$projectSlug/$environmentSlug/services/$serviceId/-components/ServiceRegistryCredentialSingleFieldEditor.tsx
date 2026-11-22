@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
 import { Button } from "#/components/ui/button";
 import {
   appFormOptions,

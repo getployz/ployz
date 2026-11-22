@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { SettingsRow } from "#/components/settings/settings-section";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import type { Write } from "#/modules/config-store/store-write";
 
 /**

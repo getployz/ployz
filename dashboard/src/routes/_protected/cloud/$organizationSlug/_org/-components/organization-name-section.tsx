@@ -4,7 +4,7 @@ import { getRouteApi } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { ConfirmableInput, type ConfirmStatus } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput, type ConfirmStatus } from "#/components/store-write/confirmable-input";
 import { toErrorMessage } from "#/lib/error-message";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { OrganizationName } from "#/modules/organization/organization-state";

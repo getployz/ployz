@@ -5,7 +5,7 @@ import type { JsonValue, VolumeListing } from "@ployz/sdk";
 import { InfoHint } from "#/components/info-hint";
 import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 import { SettingsRow } from "#/components/settings/settings-section";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { FieldError } from "#/components/ui/field";
 import { REPLICAS_MAX, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";

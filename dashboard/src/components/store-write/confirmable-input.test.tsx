@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
 
 describe("ConfirmableInput", () => {
   afterEach(cleanup);

@@ -1,5 +1,5 @@
 import { useReducer } from "react";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import {
   initialVariableRowState,
   variableRowReducer,

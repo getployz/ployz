@@ -17,7 +17,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 import { SettingsEmpty } from "#/components/settings/settings-list";

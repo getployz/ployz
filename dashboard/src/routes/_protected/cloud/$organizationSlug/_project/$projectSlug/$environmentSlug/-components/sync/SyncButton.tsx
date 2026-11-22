@@ -13,7 +13,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { plural } from "#/lib/plural";
 import { useStoreBusy } from "#/modules/config-store/store-pending";
 import { closesIn, syncButtonState } from "#/modules/config-store/store-sync";

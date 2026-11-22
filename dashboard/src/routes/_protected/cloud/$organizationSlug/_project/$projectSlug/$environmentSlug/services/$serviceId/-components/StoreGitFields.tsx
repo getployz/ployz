@@ -14,7 +14,7 @@ import type { Write } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 
 /**

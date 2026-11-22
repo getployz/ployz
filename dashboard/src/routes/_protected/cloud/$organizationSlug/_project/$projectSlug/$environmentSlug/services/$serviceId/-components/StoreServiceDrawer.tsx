@@ -27,7 +27,7 @@ import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, deployedVcpuLimit, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";

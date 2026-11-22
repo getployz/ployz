@@ -6,7 +6,7 @@ import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";

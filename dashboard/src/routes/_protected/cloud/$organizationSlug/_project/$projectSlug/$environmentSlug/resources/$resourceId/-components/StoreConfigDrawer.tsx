@@ -13,7 +13,7 @@ import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { ConfirmableInput } from "#/components/store-write/confirmable-input";
 import { FieldError } from "#/components/ui/field";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
@@ -29,7 +29,7 @@ import { storeReferenceTargets } from "#/modules/config-store/store-variables";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useStorePendingName } from "#/modules/config-store/store-pending";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";

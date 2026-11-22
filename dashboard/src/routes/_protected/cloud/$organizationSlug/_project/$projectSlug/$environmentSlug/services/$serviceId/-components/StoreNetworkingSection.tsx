@@ -16,7 +16,7 @@ import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { isRequested, showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
-import { failureReason } from "#/components/stageable/use-commit-hold";
+import { failureReason } from "#/components/store-write/use-commit-hold";
 import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
 import { DomainTitle, PendingLabel, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";

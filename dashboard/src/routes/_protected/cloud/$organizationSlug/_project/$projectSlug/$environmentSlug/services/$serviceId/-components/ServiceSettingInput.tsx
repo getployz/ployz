@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
-import { type ConfirmStatus, ConfirmableInput } from "#/components/stageable/confirmable-input";
-import { SuggestibleConfirmableInput } from "#/components/stageable/suggestible-confirmable-input";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { type ConfirmStatus, ConfirmableInput } from "#/components/store-write/confirmable-input";
+import { SuggestibleConfirmableInput } from "#/components/store-write/suggestible-confirmable-input";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { showRefusalInline, type Write } from "#/modules/config-store/store-write";
 
 type DraftState = {

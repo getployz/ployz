@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
