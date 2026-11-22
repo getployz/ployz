@@ -8,7 +8,7 @@ use ployz_core::ServiceName;
 use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, KeepBranch, NodeName, NotSetVariable, ProjectName, RowRef,
+    EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch, NodeName, NotSetVariable, ProjectName, RowRef,
     ServicesQuery, SetupCommand, SourceKind, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow,
     SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
@@ -461,17 +461,30 @@ fn setting_change(
     }
 }
 
+/// [`Synced`] without its proposal: that is the Dashboard's to Remove, while here a
+/// Sync is undone by its id.
+#[derive(serde::Serialize)]
+struct SyncedView<'a> {
+    sync: &'a SyncId,
+    from: &'a EnvironmentSummary,
+    into: &'a EnvironmentSummary,
+    staged: &'a [NodeName],
+    closing: bool,
+}
+
 /// What a Sync did, and `deploy` of where it landed when it staged something.
 fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = (!synced.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    // The proposal is the Dashboard's to Remove; here a Sync is undone by its id.
-    let mut json = serde_json::to_value(synced).expect("a Sync serializes");
-    if let Some(json) = json.as_object_mut() {
-        json.remove("proposal");
-    }
-    let followed = Next::new(&json, next);
+    let view = SyncedView {
+        sync: &synced.sync,
+        from: &synced.from,
+        into,
+        staged: &synced.staged,
+        closing: synced.closing,
+    };
+    let followed = Next::new(&view, next);
     crate::ui::finish(&followed, || {
         let (from, into) = (&synced.from.name, into.to_string());
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
