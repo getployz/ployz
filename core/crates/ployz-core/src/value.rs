@@ -383,71 +383,7 @@ macro_rules! validated_string_newtype {
         }
     };
 }
-
-/// Whether `value` is an image reference Docker can pull, like `nginx:1.27` or `ghcr.io/acme/web@sha256:…`.
-/// The Store and the dashboard both check this one rule.
-// ponytail: oci-spec's parser refuses an IPv6-literal registry (`[::1]:5000/api`) that Docker accepts; widen here if anyone needs one.
-#[must_use]
-pub fn is_image_reference(value: &str) -> bool {
-    value.parse::<oci_spec::distribution::Reference>().is_ok()
-}
-
-validated_string_newtype!(
-    /// An image reference pinned to a SHA-256 digest, preserving its raw repository path.
-    ImageDigestReference, "image digest reference", "an image repository pinned to a SHA-256 digest",
-    |value| value.parse::<oci_spec::distribution::Reference>().is_ok_and(|reference| {
-        reference.digest().and_then(|digest| digest.strip_prefix("sha256:")).is_some_and(|digest| {
-            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-    })
-);
-
-/// An image Ployz runs on its own, such as a helper container or BuildKit, named by
-/// its content. A Machine's image store holds tags anyone with an image route can
-/// write, so a tag cannot say what one of these runs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PinnedImage(&'static str);
-
-impl PinnedImage {
-    /// Panics unless `reference` ends in `@sha256:` and 64 lowercase hex digits after
-    /// a repository, so a `const` built from a tag alone fails to compile.
-    #[must_use]
-    pub const fn new(reference: &'static str) -> Self {
-        const MARKER: &[u8] = b"@sha256:";
-        let bytes = reference.as_bytes();
-        assert!(
-            bytes.len() > MARKER.len() + 64,
-            "a pinned image names a repository and a sha256 digest"
-        );
-        let (_, tail) = bytes.split_at(bytes.len() - MARKER.len() - 64);
-        let (mut marker, mut digest) = tail.split_at(MARKER.len());
-        let mut expected = MARKER;
-        while let ([byte, rest @ ..], [want, wanted @ ..]) = (marker, expected) {
-            assert!(*byte == *want, "a pinned image ends in @sha256:<digest>");
-            marker = rest;
-            expected = wanted;
-        }
-        while let [byte, rest @ ..] = digest {
-            assert!(
-                byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'),
-                "a pinned image's digest is 64 lowercase hex digits"
-            );
-            digest = rest;
-        }
-        Self(reference)
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.0
-    }
-}
-
-impl fmt::Display for PinnedImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
+pub(crate) use validated_string_newtype;
 
 validated_string_newtype!(
     /// An Uploaded Source's content digest: lowercase hex sha256 of its paths, bytes,
@@ -474,68 +410,6 @@ validated_string_newtype!(
     ClusterName, "Cluster Name", "one DNS label: up to 63 lowercase letters, digits and '-', starting and ending with a letter or digit",
     |value| is_dns_label(value)
 );
-
-validated_string_newtype!(
-    /// A manifest digest as the Machine stored it: `sha256:` and 64 lowercase hex.
-    ImageDigest, "image digest", "`sha256:` followed by 64 lowercase hexadecimal characters",
-    |value| value.strip_prefix("sha256:").is_some_and(|hex| is_lower_hex(hex, 64))
-);
-
-impl ImageDigest {
-    /// The digest without its `sha256:` algorithm prefix.
-    #[must_use]
-    pub fn hex(&self) -> &str {
-        &self.as_str()["sha256:".len()..]
-    }
-}
-
-validated_string_newtype!(
-    /// An image digest as a builder, Docker or regctl reported it: `sha256:` and 64 hex digits
-    /// of either case, kept exactly as given. The Build boundaries that took either case before
-    /// ask this; [`ImageDigest`], lowercase only, is what a Machine stores and approvals name.
-    ReportedImageDigest, "reported image digest", "`sha256:` followed by 64 hexadecimal characters",
-    |value| value.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-    })
-);
-
-validated_string_newtype!(
-    /// The one repository a Build Grant may push into, in Docker's short form:
-    /// lowercase path components and no registry or tag (`ployz-build/web`).
-    BuildGrantRepository, "Build Grant repository", "a Docker repository path without a registry or tag",
-    |value| (1..=255).contains(&value.len())
-        && value.split('/').all(|component| {
-            component.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric())
-                && component.bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
-        })
-);
-
-/// The repository path every built Service's image and Build Grant lives under.
-pub const BUILD_REPOSITORY_PREFIX: &str = "ployz-build/";
-
-impl BuildGrantRepository {
-    /// The one repository a build of the Service named `service` may push into.
-    ///
-    /// # Errors
-    /// Returns an error when `service` is not a repository path component.
-    pub fn for_service(service: &impl fmt::Display) -> Result<Self, ValueError> {
-        Self::parse(format!("{BUILD_REPOSITORY_PREFIX}{service}"))
-    }
-}
-
-/// The image a Service's plan names before its build or upload has made one, which binding
-/// replaces with the verified content.
-#[must_use]
-pub fn pending_image(service: &impl fmt::Display) -> String {
-    format!("{BUILD_REPOSITORY_PREFIX}{service}:pending")
-}
-
-/// Whether `image` is a built Service's image or its pending placeholder, which no Device
-/// can pin by digest before the build exists.
-#[must_use]
-pub fn is_built_image(image: &str) -> bool {
-    image.starts_with(BUILD_REPOSITORY_PREFIX)
-}
 
 pub(crate) fn is_swarm_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"_-.".contains(&byte)
@@ -1559,7 +1433,7 @@ mod tests {
             deploy::PayloadDigest,
             keys::SigningPublicKey,
             proposal::StepDigest,
-            rule::{AttestKey, ImageDigest, RuleId},
+            rule::{AttestKey, BuiltImageDigest, RuleId},
         };
         use crate::{Ciphertext, FoundingClaim, SealedSealingKey, SealingKeyBackup};
         use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1586,7 +1460,7 @@ mod tests {
         wire(&AttestKey::parse(&hex32).unwrap(), &hex32);
         wire(&RuleId::parse(&"07".repeat(16)).unwrap(), &"07".repeat(16));
         wire(
-            &ImageDigest::parse(&format!("sha256:{hex32}")).unwrap(),
+            &BuiltImageDigest::parse(&format!("sha256:{hex32}")).unwrap(),
             &format!("sha256:{hex32}"),
         );
         assert_eq!(
@@ -1606,12 +1480,12 @@ mod tests {
             r#"invalid rule ID "zz": lowercase hex of 16 bytes"#
         );
         assert_eq!(
-            refused(ImageDigest::parse("zz").unwrap_err()),
+            refused(BuiltImageDigest::parse("zz").unwrap_err()),
             r#"invalid image digest "zz": sha256:lowercase hex of 32 bytes"#
         );
         assert!(PayloadDigest::parse(&"ab".repeat(32)).is_ok());
         assert!(PayloadDigest::parse(&"AB".repeat(32)).is_err());
-        assert!(ImageDigest::parse(&hex32).is_err());
+        assert!(BuiltImageDigest::parse(&hex32).is_err());
 
         let sealing: crate::SealingPublicKey =
             serde_json::from_value(serde_json::json!(STANDARD.encode([7; 32]))).unwrap();
@@ -1768,17 +1642,6 @@ mod tests {
     }
 
     #[test]
-    fn a_build_grant_repository_is_a_short_docker_repository_path() {
-        assert!(super::BuildGrantRepository::parse("ployz-build/web").is_ok());
-        for refused in ["", "registry.example:5000/web", "web:tag", "Web", "a//b"] {
-            assert!(
-                super::BuildGrantRepository::parse(refused).is_err(),
-                "{refused}"
-            );
-        }
-    }
-
-    #[test]
     fn derived_docker_names_keep_today_s_bytes() {
         let id = "00000000-0000-4000-8000-000000000002";
         assert_eq!(
@@ -1788,59 +1651,16 @@ mod tests {
         assert!(super::DockerVolumeName::for_resource("a/b").is_ok());
         let web = super::ServiceName::parse("web").unwrap();
         assert_eq!(
-            super::BuildGrantRepository::for_service(&web)
+            crate::BuildGrantRepository::for_service(&web)
                 .unwrap()
                 .as_str(),
             "ployz-build/web"
         );
-        assert_eq!(super::pending_image(&web), "ployz-build/web:pending");
-        assert!(super::is_built_image("ployz-build/web:pending"));
-        assert!(super::is_built_image("ployz-build/web"));
-        assert!(!super::is_built_image("ployz-builder/web"));
-        assert!(!super::is_built_image("nginx:latest"));
-    }
-
-    #[test]
-    fn a_reported_image_digest_keeps_either_case_and_an_image_digest_only_lowercase() {
-        let upper = format!("sha256:{}", "AB".repeat(32));
-        assert_eq!(
-            super::ReportedImageDigest::parse(upper.clone())
-                .unwrap()
-                .as_str(),
-            upper
-        );
-        assert!(
-            super::ReportedImageDigest::parse(format!("sha256:{}", "aB1".repeat(21) + "f")).is_ok()
-        );
-        assert!(super::ImageDigest::parse(upper).is_err());
-        for refused in [
-            "a".repeat(64),
-            format!("sha256:{}", "a".repeat(63)),
-            format!("sha256:{}g", "a".repeat(63)),
-            format!("SHA256:{}", "a".repeat(64)),
-            String::new(),
-        ] {
-            assert!(
-                super::ReportedImageDigest::parse(refused.clone()).is_err(),
-                "{refused}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_image_digest_is_lowercase_sha256() {
-        let digest = super::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
-        assert_eq!(digest.hex(), "a".repeat(64));
-        for refused in [
-            "a".repeat(64),
-            format!("sha256:{}", "A".repeat(64)),
-            "sha256:abc".into(),
-        ] {
-            assert!(
-                super::ImageDigest::parse(refused.clone()).is_err(),
-                "{refused}"
-            );
-        }
+        assert_eq!(crate::pending_image(&web), "ployz-build/web:pending");
+        assert!(crate::is_built_image("ployz-build/web:pending"));
+        assert!(crate::is_built_image("ployz-build/web"));
+        assert!(!crate::is_built_image("ployz-builder/web"));
+        assert!(!crate::is_built_image("nginx:latest"));
     }
 
     use super::*;

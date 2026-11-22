@@ -1551,7 +1551,7 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleEvidence, RuleProof,
+        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
@@ -1560,7 +1560,7 @@ async fn rule_proofs(
     for (service, kept) in &claimed.verified {
         let runs = receipts
             .get(service)
-            .and_then(|receipt| ImageDigest::parse(&receipt.image.reference).ok());
+            .and_then(|receipt| BuiltImageDigest::parse(&receipt.image.reference).ok());
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
             proofs.rules.insert(
                 service.clone(),
@@ -1607,7 +1607,7 @@ async fn rule_proofs(
             continue;
         };
         let (Ok(image), Ok(policy)) = (
-            ImageDigest::parse(&receipt.image.reference),
+            BuiltImageDigest::parse(&receipt.image.reference),
             PolicyDigest::of(&approved.policy),
         ) else {
             continue;

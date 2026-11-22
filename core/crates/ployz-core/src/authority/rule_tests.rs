@@ -279,7 +279,7 @@ fn the_build_audience_is_pinned() {
         "ployz-build:d381dad98d9e05abc95e1f858a8daec9bac744f9df1e9ba29f4c6f2590053bce"
     );
     let built = claim(BuildStage::Built {
-        image: ImageDigest::from_bytes([0x44; 32]),
+        image: BuiltImageDigest::from_bytes([0x44; 32]),
         attest: AttestKey::from_bytes([0x55; 32]),
     });
     assert_eq!(
@@ -507,7 +507,7 @@ fn approved_rule() -> AutoDeployRule {
 
 fn built() -> BuildClaim {
     claim(BuildStage::Built {
-        image: ImageDigest::from_bytes([0x44; 32]),
+        image: BuiltImageDigest::from_bytes([0x44; 32]),
         attest: AttestKey::from_bytes([0x55; 32]),
     })
 }
@@ -519,7 +519,7 @@ fn create(
     claim: &BuildClaim,
     spec: Value,
     kind: ContainerKind,
-) -> Result<ImageDigest, AuthorityRefusal> {
+) -> Result<BuiltImageDigest, AuthorityRefusal> {
     create_on(rule, claim, spec, kind, (Some(head()), "1"))
 }
 
@@ -535,7 +535,7 @@ fn create_on(
     spec: Value,
     kind: ContainerKind,
     (head, machine): (Option<CommitSha>, &str),
-) -> Result<ImageDigest, AuthorityRefusal> {
+) -> Result<BuiltImageDigest, AuthorityRefusal> {
     let spec = resolved(&requested(spec));
     let machine = MachineId::parse(machine.repeat(32)).unwrap();
     let namespace = Namespace::parse("app").unwrap();
@@ -605,7 +605,7 @@ fn a_rule_admits_the_heads_image_with_the_settings_it_approves() {
             requested_json(),
             ContainerKind::ServiceContainer
         ),
-        Ok(ImageDigest::from_bytes([0x44; 32]))
+        Ok(BuiltImageDigest::from_bytes([0x44; 32]))
     );
     assert_eq!(
         create(
@@ -614,7 +614,7 @@ fn a_rule_admits_the_heads_image_with_the_settings_it_approves() {
             requested_json(),
             ContainerKind::PreDeployHook
         ),
-        Ok(ImageDigest::from_bytes([0x44; 32]))
+        Ok(BuiltImageDigest::from_bytes([0x44; 32]))
     );
 }
 
@@ -695,7 +695,7 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
         (
             "aud naming another image",
             claim(BuildStage::Built {
-                image: ImageDigest::from_bytes([0x66; 32]),
+                image: BuiltImageDigest::from_bytes([0x66; 32]),
                 attest: AttestKey::from_bytes([0x55; 32]),
             }),
             "an image",
@@ -703,7 +703,7 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
         (
             "attest naming another key",
             claim(BuildStage::Built {
-                image: ImageDigest::from_bytes([0x44; 32]),
+                image: BuiltImageDigest::from_bytes([0x44; 32]),
                 attest: AttestKey::from_bytes([0x77; 32]),
             }),
             "the attest key",

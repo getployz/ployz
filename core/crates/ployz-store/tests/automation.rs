@@ -2357,8 +2357,8 @@ fn a_persons_redeploy_of_a_rule_built_image_carries_the_rule_and_its_token() {
 #[test]
 fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
     use ployz_core::authority::{
-        AttestKey, BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PayloadDigest,
-        PolicyDigest, RuleEvidence, RuleId, VerifiedBuild,
+        AttestKey, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, CommitSha,
+        PayloadDigest, PolicyDigest, RuleEvidence, RuleId, VerifiedBuild,
     };
     let (store, who) = shop();
     let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
@@ -2383,7 +2383,7 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
             commit: CommitSha::parse(H1).unwrap(),
             authority: CommitAuthority::Head,
             stage: BuildStage::Built {
-                image: ImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                 attest: AttestKey::from_bytes([5; 32]),
             },
         },
@@ -2414,7 +2414,7 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
                     namespace: namespace.clone(),
                     service: web.clone(),
                     digest: PayloadDigest::from_bytes([0; 32]),
-                    image: Some(ImageDigest::parse(&format!("sha256:{image}")).unwrap()),
+                    image: Some(BuiltImageDigest::parse(&format!("sha256:{image}")).unwrap()),
                 },
             )
             .unwrap()

@@ -13,8 +13,8 @@
 use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
-        AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, RecipientKey, RuleId, Signed, rule::PolicyCache,
+        AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
+        CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed, rule::PolicyCache,
     },
     separation,
 };
@@ -156,7 +156,11 @@ pub(super) fn grant_claim(
 
 /// The image token's claim: the grant's, naming the pushed `image` and the attest key
 /// the secrets opened with.
-pub(super) fn built_claim(grant: &BuildClaim, image: ImageDigest, attest: AttestKey) -> BuildClaim {
+pub(super) fn built_claim(
+    grant: &BuildClaim,
+    image: BuiltImageDigest,
+    attest: AttestKey,
+) -> BuildClaim {
     BuildClaim {
         stage: BuildStage::Built { image, attest },
         ..grant.clone()

@@ -54,8 +54,8 @@ async fn pull_image(
     image: &str,
     auth: Option<&RegistryAuth>,
 ) -> Result<(), Error> {
-    let image = match image.split_once('@') {
-        Some((name, digest)) => format!("{}@{digest}", ployz_core::image_repository(name)),
+    let image = match ployz_core::ImageRef::new(image).digest {
+        Some(digest) => format!("{}@{digest}", ployz_core::image_repository(image)),
         None => tagged(image),
     };
     docker
@@ -113,8 +113,8 @@ pub enum UnsignedImage {
 /// keeps naming what a caller with Full access put under it.
 pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, UnsignedImage> {
     require_public_registry(image).await?;
-    let pinned = match image.split_once('@') {
-        Some((name, digest)) => format!("{}@{digest}", ployz_core::image_repository(name)),
+    let pinned = match ployz_core::ImageRef::new(image).digest {
+        Some(digest) => format!("{}@{digest}", ployz_core::image_repository(image)),
         None => {
             let digest = docker
                 .inspect_registry_image(&tagged(image), None)
