@@ -5,7 +5,7 @@
 //! code is stored too, so `ployz login --wait`, a repeated `ployz login`, or any
 //! other command can finish a sign-in a browser approved in the meantime.
 //!
-//! Every request goes out through [`crate::cloud_account::client`], whose User-Agent marks
+//! Every request goes out through [`crate::cloud::http::client`], whose User-Agent marks
 //! the sessions it starts as signed-in devices.
 
 use std::{
@@ -46,7 +46,7 @@ pub(crate) enum LoginError {
     },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("{}", crate::cloud_reply::answered("Cloud answered", *.status, .body))]
+    #[error("{}", crate::cloud::reply::answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -107,7 +107,7 @@ impl Coded for LoginError {
             Self::Unreachable { .. } | Self::Unanswered { .. } => RpcErrorCode::Unavailable,
             Self::Unsupported(_) => RpcErrorCode::Unsupported,
             Self::TokenBound => RpcErrorCode::InvalidArgument,
-            Self::Status { status, .. } => crate::cloud_reply::status_code(*status),
+            Self::Status { status, .. } => crate::cloud::reply::status_code(*status),
             Self::Reply(_)
             | Self::Store { .. }
             | Self::Corrupt { .. }
@@ -148,7 +148,7 @@ impl Coded for LoginError {
             | Self::NotMember(_) => "ployz logout",
             Self::SignedOut | Self::Expired | Self::Denied | Self::Ended => "ployz login",
             Self::AwaitingApproval { .. } => "ployz login --wait",
-            Self::TokenRefused => crate::cloud_account::SIGN_IN_PAST_TOKEN,
+            Self::TokenRefused => crate::cloud::account::SIGN_IN_PAST_TOKEN,
             Self::AgentTokenRefused => "ployz mcp login",
             Self::UnknownOrganization(_) => "ployz org ls",
             Self::UnknownCredential(_) | Self::AmbiguousCredential { .. } => "ployz token ls",
@@ -404,7 +404,7 @@ pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, Login
         Some(Stored::SignedIn(signed_in)) => Ok(signed_in),
         Some(Stored::Pending(pending)) => {
             let url = pending.url.clone();
-            poll_once(store, &crate::cloud_account::client()?, pending)
+            poll_once(store, &crate::cloud::http::client()?, pending)
                 .await?
                 .ok_or(LoginError::AwaitingApproval { url })
         }
@@ -427,8 +427,8 @@ pub(crate) enum Start {
 ///
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
-    let cloud = crate::cloud_origin::CloudOrigin::new(cloud).into_string();
-    let http = crate::cloud_account::client()?;
+    let cloud = crate::cloud::origin::CloudOrigin::new(cloud).into_string();
+    let http = crate::cloud::http::client()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
@@ -474,7 +474,7 @@ pub(crate) async fn wait(
     store: &CredentialStore,
     pending: Pending,
 ) -> Result<SignedIn, LoginError> {
-    let http = crate::cloud_account::client()?;
+    let http = crate::cloud::http::client()?;
     let mut interval = Duration::from_secs(pending.interval_secs);
     loop {
         tokio::time::sleep(interval).await;
@@ -494,7 +494,7 @@ pub(crate) async fn wait(
 pub(crate) struct SignedOut {
     pub(crate) cloud: String,
     pub(crate) device: Option<String>,
-    pub(crate) servers: crate::cloud_account::ServerClears,
+    pub(crate) servers: crate::cloud::account::ServerClears,
     /// Why Cloud could not end the sign-in, which this device only forgot.
     pub(crate) unrevoked: Option<LoginError>,
 }
@@ -523,7 +523,7 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
         },
         Some(Stored::SignedIn(signed_in)) => {
             let url = format!("{}/api/cli/logout", signed_in.cloud);
-            let sent = crate::cloud_account::client()?
+            let sent = crate::cloud::http::client()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
                 .send()
@@ -706,12 +706,8 @@ fn forget<T>(store: &CredentialStore, error: LoginError) -> Result<T, LoginError
 async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginError> {
     let status = response.status();
     let cloud = response.url().origin().ascii_serialization();
-    let body = crate::cloud_account::http::read_body(
-        &cloud,
-        response,
-        crate::cloud_account::http::Effect::Read,
-    )
-    .await?;
+    let body =
+        crate::cloud::http::read_body(&cloud, response, crate::cloud::http::Effect::Read).await?;
     if status.is_success() {
         Ok(body)
     } else {
@@ -754,7 +750,7 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::cloud_account::testing::fake_cloud;
+    use crate::cloud::account::testing::fake_cloud;
 
     /// Cloud's device flow for one code, approved once `approved` is set.
     fn device_cloud(approved: Arc<Mutex<Option<&'static str>>>) -> String {

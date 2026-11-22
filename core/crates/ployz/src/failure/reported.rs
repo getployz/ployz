@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use super::{Failure, Message};
 use crate::{
-    cloud_enroll,
-    cloud_login::LoginError,
+    cloud,
+    cloud::login::LoginError,
     coded::Coded,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
@@ -80,7 +80,7 @@ reported_errors! {
         ProvisionError,
         RpcError,
         NamespaceError,
-        cloud_enroll::Error,
+        cloud::enroll::Error,
         EnrollmentHistoryError,
         crate::cluster::RoleWaitError,
         UnconfirmedDataLoss,

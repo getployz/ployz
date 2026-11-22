@@ -7,7 +7,7 @@ use ployz_core::{CapabilityRefusal, Hint, RpcError, RpcErrorCode};
 use serde_json::Value;
 
 use crate::{
-    cloud_login::LoginError,
+    cloud::login::LoginError,
     coded::Coded,
     connect::{ConnectError, TransportError},
     context::ContextError,
@@ -471,7 +471,7 @@ impl From<LoginError> for Failure {
     /// code, details and next step; a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
-            && let Some(refused) = crate::cloud_account::refusal_of(body.as_bytes())
+            && let Some(refused) = crate::cloud::account::refusal_of(body.as_bytes())
         {
             return Self::command(refused);
         }
@@ -500,7 +500,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        cloud_enroll, connect::TransportError, context::ConfigError, provisioning::ProvisionError,
+        cloud, connect::TransportError, context::ConfigError, provisioning::ProvisionError,
     };
     use ployz_core::{ContainerSelectorError, MachineSelectorError, ValueError};
 
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn cloud_coded_conflict_keeps_its_code() {
-        let failure = Failure::from(cloud_enroll::Error::CodedConflict {
+        let failure = Failure::from(cloud::enroll::Error::CodedConflict {
             body: serde_json::json!({"error": "Bring existing Servers online."}).to_string(),
         });
         assert_eq!(failure.report().code, RpcErrorCode::Conflict);
@@ -869,7 +869,7 @@ mod tests {
             (422, RpcErrorCode::InvalidArgument),
             (503, RpcErrorCode::Unavailable),
         ] {
-            let failure = Failure::from(cloud_enroll::Error::Status {
+            let failure = Failure::from(cloud::enroll::Error::Status {
                 status,
                 body: String::new(),
             });
@@ -914,7 +914,7 @@ mod tests {
                 body: String::new(),
             };
             assert_eq!(signed_in.code(), code, "login HTTP {status}");
-            let enrolled = Failure::from(cloud_enroll::Error::Status {
+            let enrolled = Failure::from(cloud::enroll::Error::Status {
                 status,
                 body: String::new(),
             });

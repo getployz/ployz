@@ -74,9 +74,9 @@ pub(crate) enum Error {
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("{}", crate::cloud_reply::answered("enroll", *.status, .body))]
+    #[error("{}", crate::cloud::reply::answered("enroll", *.status, .body))]
     Status { status: u16, body: String },
-    #[error("{}", crate::cloud_reply::answered("enroll", 409, .body))]
+    #[error("{}", crate::cloud::reply::answered("enroll", 409, .body))]
     CodedConflict { body: String },
     #[error(
         "Cloud no longer takes this enrollment token: it is unknown, used or expired, or this Organization's Servers were forgotten; make a new one with ployz server add --command"
@@ -113,7 +113,7 @@ impl Coded for Error {
             | Error::FounderWait => RpcErrorCode::Unavailable,
             Error::Json(_) => RpcErrorCode::Internal,
             Error::TokenRefused => RpcErrorCode::Unauthenticated,
-            Error::Status { status, .. } => crate::cloud_reply::status_code(*status),
+            Error::Status { status, .. } => crate::cloud::reply::status_code(*status),
             Error::CodedConflict { .. } => RpcErrorCode::Conflict,
         }
     }
@@ -662,7 +662,7 @@ async fn post_callback(
                     | Error::RetrySameCommand { .. }
                     | Error::CloudCantReach) => return error,
                 };
-                if crate::cloud_reply::message(body.as_bytes())
+                if crate::cloud::reply::message(body.as_bytes())
                     .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
                 {
                     return Error::CloudCantReach;
@@ -881,7 +881,7 @@ fn retry_error(
 
 fn http_client() -> Result<reqwest::Client, Error> {
     // Bound each request; `not_yet` polling may legitimately outlive one request.
-    crate::cloud_account::builder(crate::cloud_account::http::REQUEST_TIMEOUT)
+    crate::cloud::http::builder(crate::cloud::http::REQUEST_TIMEOUT)
         .build()
         .map_err(classify_http)
 }
@@ -1043,7 +1043,7 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
-    use crate::cloud_origin::CloudOrigin;
+    use crate::cloud::origin::CloudOrigin;
     use ployz_core::error_chain;
 
     #[tokio::test]
@@ -1145,7 +1145,7 @@ mod tests {
                 if path == 0 && !(*status == 409 && *code == Some("CONFLICT")) {
                     assert_eq!(
                         error.to_string(),
-                        crate::cloud_reply::answered(
+                        crate::cloud::reply::answered(
                             "enroll",
                             *status,
                             &String::from_utf8_lossy(answer)
@@ -2020,7 +2020,7 @@ mod tests {
                 // The request has reached the server, so its timeout is armed.
                 // Advance only that wait; use real time again for the retry's I/O.
                 tokio::time::pause();
-                tokio::time::advance(crate::cloud_account::http::REQUEST_TIMEOUT).await;
+                tokio::time::advance(crate::cloud::http::REQUEST_TIMEOUT).await;
                 tokio::time::resume();
                 // Keep the first response open until the retry has succeeded.
                 let (mut retry, _) = listener.accept().await.unwrap();

@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     calls::{approved_answer, follow_run, refusable_operation, start_run},
     credential::Credential,
-    http::{self, Effect},
     reply::{StoreCallError, answer, refusal},
 };
+use crate::cloud::http::{self, Effect};
 
 /// This credential's own Management Capability on each Server Cloud could reach.
 #[derive(Debug, Deserialize)]
@@ -300,7 +300,7 @@ fn removal_unsettled(name: &MachineName) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::testing::{fake_cloud, token};
+    use crate::cloud::account::testing::{fake_cloud, token};
 
     #[test]
     fn a_removal_reads_its_departure_and_an_older_or_newer_cloud_reads_without_one() {

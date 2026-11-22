@@ -20,7 +20,7 @@ use super::{
         Answer, AttemptFailure, CheckinRequest, EnrollStorage, HostReport, PrepRecord, StopReason,
     },
 };
-use crate::cloud_enroll::EnrollStage;
+use crate::cloud::enroll::EnrollStage;
 
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const ROOT_CONFIG: &str = "/root/.config/ployz/config.yaml";
@@ -261,7 +261,7 @@ pub(super) async fn server_add(
         }
     };
     let setup = crate::handlers::cloud::run_enrollment(
-        crate::cloud_enroll::Command::ServerEnroll,
+        crate::cloud::enroll::Command::ServerEnroll,
         &plan,
         &instruction.token,
         &system.cloud,

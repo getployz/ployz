@@ -5,7 +5,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
 use super::{calls::call, credential::Credential};
-use crate::cloud_login::LoginError;
+use crate::cloud::login::LoginError;
 
 /// An Organization Token as listed: never its secret.
 #[derive(Debug, Serialize, Deserialize)]
@@ -281,7 +281,7 @@ pub(crate) async fn remove_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::{
+    use crate::cloud::account::{
         credential, organizations,
         testing::{fake_cloud, signed_in_store, token},
     };

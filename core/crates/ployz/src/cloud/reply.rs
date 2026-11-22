@@ -231,5 +231,5 @@ pub(crate) fn checkin_refused(body: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-#[path = "cloud_reply_tests.rs"]
+#[path = "reply_tests.rs"]
 mod tests;

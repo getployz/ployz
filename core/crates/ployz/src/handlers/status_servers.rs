@@ -25,7 +25,7 @@ use super::server;
 use super::shared::disk;
 use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
-use crate::cloud_login::LoginError;
+use crate::cloud::login::LoginError;
 use crate::context::ContextError;
 
 pub(super) const UNCHECKED: &str =

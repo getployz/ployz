@@ -16,7 +16,7 @@ use super::{
     Attempt, CheckinClient, CheckinKey, EnrollInstruction, Host, Issue, Prep, StopReason, client,
     enroll, unit,
 };
-use crate::cloud_reply::Hold;
+use crate::cloud::reply::Hold;
 
 pub(super) const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 pub(super) const PREPARE_TRIES: u32 = 3;

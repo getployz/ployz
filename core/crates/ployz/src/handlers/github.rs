@@ -1,3 +1,4 @@
+use crate::cloud;
 use crate::ui::Next;
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,8 @@ use super::account::in_cloud;
 use super::login::open_browser;
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::LoginError;
+use crate::cloud::account::Credential;
+use crate::cloud::login::LoginError;
 use crate::ui::{Cell, Table, Tone};
 use ployz_core::Hint;
 
@@ -114,7 +115,7 @@ struct Disconnection {
 }
 
 async fn connection(credential: &Credential) -> Result<Connection, LoginError> {
-    cloud_account::call(credential, Method::GET, "github", None).await
+    cloud::account::call(credential, Method::GET, "github", None).await
 }
 
 pub(super) fn connect(root: &ArgMatches) -> Result<(), Error> {
@@ -297,9 +298,9 @@ pub(super) fn read_repository<T: DeserializeOwned>(
     }
     let path = format!("github/{route}?{}", url.query().unwrap_or_default());
     in_cloud(root, async |_, credential| {
-        match cloud_account::call(credential, Method::GET, &path, None).await {
+        match cloud::account::call(credential, Method::GET, &path, None).await {
             Err(LoginError::Status { body, .. })
-                if let Some(refused) = cloud_account::refusal(body.as_bytes()) =>
+                if let Some(refused) = cloud::account::refusal(body.as_bytes()) =>
             {
                 Ok(Err(refused.into()))
             }
@@ -322,7 +323,7 @@ pub(super) fn disconnect(root: &ArgMatches) -> Result<(), Error> {
     }
     let path = format!("github/{account}");
     let removed: Disconnected = in_cloud(root, async |_, credential| {
-        found(cloud_account::call(credential, Method::DELETE, &path, None).await)
+        found(cloud::account::call(credential, Method::DELETE, &path, None).await)
     })?
     .ok_or_else(|| not_found("No GitHub account by that login in this Organization"))?;
     crate::ui::done(

@@ -17,7 +17,7 @@ use ployz_core::{
 };
 use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
 
-use crate::cloud_account::Credential;
+use crate::cloud::account::Credential;
 use crate::failure::Failure;
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
@@ -113,9 +113,9 @@ impl KeptVersions {
                     .await
                     .map_err(Failure::from)
             }
-            Self::Cloud(credential) => crate::cloud_account::config_store::<View>(
+            Self::Cloud(credential) => crate::cloud::account::config_store::<View>(
                 credential,
-                crate::cloud_account::Via::Cli,
+                crate::cloud::http::Via::Cli,
                 "read",
                 &query.to_query(),
                 None,

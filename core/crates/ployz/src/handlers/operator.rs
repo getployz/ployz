@@ -20,8 +20,8 @@ use tokio::io::copy_bidirectional;
 
 use crate::{
     cli::{base, log_flags, positional, switch, trailing, value},
-    cloud_account::StoreCallError,
-    cloud_login::LoginError,
+    cloud::account::StoreCallError,
+    cloud::login::LoginError,
     context::Transport,
     operator::{
         OperatorError, asked_machines, exec_container_stopped, exec_options,

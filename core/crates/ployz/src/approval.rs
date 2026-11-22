@@ -16,8 +16,9 @@ use ployz_store::{
 use reqwest::Method;
 use serde::Deserialize;
 
-use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::{Delivery, LoginError};
+use crate::cloud;
+use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::login::{Delivery, LoginError};
 use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
@@ -570,7 +571,8 @@ async fn status(credential: &Credential, id: &str) -> Result<Status, StoreCallEr
         status: Status,
     }
     let read: Read =
-        cloud_account::refusable(credential, Method::GET, &format!("approvals/{id}"), None).await?;
+        cloud::account::refusable(credential, Method::GET, &format!("approvals/{id}"), None)
+            .await?;
     Ok(read.approval.status)
 }
 
@@ -580,7 +582,7 @@ pub(crate) async fn decide(
     id: &str,
     decision: &serde_json::Value,
 ) -> Result<(), StoreCallError> {
-    cloud_account::refusable::<serde_json::Value>(
+    cloud::account::refusable::<serde_json::Value>(
         credential,
         Method::POST,
         &format!("approvals/{id}"),
@@ -611,10 +613,10 @@ mod tests {
 
     #[test]
     fn an_approval_someone_else_answers_names_where_and_how() {
-        let credential = crate::cloud_account::Credential::Token {
+        let credential = crate::cloud::account::Credential::Token {
             cloud: "http://cloud.test/".into(),
-            token: crate::cloud_login::Secret::new("ployz_secret".into()),
-            from: crate::cloud_account::TokenFrom::Env,
+            token: crate::cloud::login::Secret::new("ployz_secret".into()),
+            from: crate::cloud::account::TokenFrom::Env,
         };
         assert_eq!(
             super::for_another_approver(&credential, "a1"),
@@ -1162,7 +1164,7 @@ mod tests {
     #[test]
     fn an_approval_stays_as_it_was_only_when_cloud_never_answered() {
         for status in [0, 400, 404, 500, 503] {
-            for (name, error) in crate::cloud_account::testing::every_login_error(status) {
+            for (name, error) in crate::cloud::account::testing::every_login_error(status) {
                 let never = ["Unreachable", "Unanswered"].contains(&name);
                 assert_eq!(super::unanswered(&error), never, "{name} {status}");
             }

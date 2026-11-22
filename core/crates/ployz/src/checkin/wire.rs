@@ -15,7 +15,7 @@ use ployz_core::probe_document::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::cloud_enroll::EnrollStage;
+use crate::cloud::enroll::EnrollStage;
 
 use super::probe;
 

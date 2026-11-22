@@ -1,6 +1,7 @@
 //! `server forget`: Forget one Server without a reset, or with no Server named, every
 //! Server of the Organization when they were deleted.
 
+use crate::cloud;
 use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::{Machine, RpcError, RpcErrorCode};
@@ -9,8 +10,8 @@ use super::super::{Error, config_path, leaf_matches, rerun, runtime};
 use super::fence::{Forgotten, already_forgotten};
 use crate::approval;
 use crate::cli::{base, positional, value};
-use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
-use crate::cloud_login::CredentialStore;
+use crate::cloud::account::{Credential, ForgetCheck, ObservedServer, ServersForgotten};
+use crate::cloud::login::CredentialStore;
 use crate::connect::Client;
 use ployz_core::Hint;
 use ployz_store::OperationVerb;
@@ -61,7 +62,7 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
     let (credential, typed) = runtime.block_on(async {
-        let credential = cloud_account::from_env(&store).await?;
+        let credential = cloud::account::from_env(&store).await?;
         let Some(typed) = matches.get_one::<String>("confirm") else {
             return Err(unconfirmed(&check(&credential).await?));
         };
@@ -114,7 +115,7 @@ fn forget_through_cloud(
             if !crate::ui::json() {
                 crate::ui::note("Asking Cloud to forget the Servers…");
             }
-            cloud_account::forget_servers(credential, organization, approval).await
+            cloud::account::forget_servers(credential, organization, approval).await
         },
     )?;
     finished(&forgotten)
@@ -203,7 +204,7 @@ async fn check(credential: &Credential) -> Result<ForgetCheck, Error> {
     if !crate::ui::json() {
         crate::ui::note("Asking Cloud which Servers to forget…");
     }
-    Ok(cloud_account::check_forget_servers(credential).await?)
+    Ok(cloud::account::check_forget_servers(credential).await?)
 }
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
@@ -280,7 +281,7 @@ fn listed(names: impl Iterator<Item = String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_account::{ObservedServer, Reach};
+    use crate::cloud::account::{ObservedServer, Reach};
     use serde_json::json;
 
     fn cloud_with(servers: &[&str]) -> (Credential, std::sync::mpsc::Receiver<String>) {
@@ -292,7 +293,7 @@ mod tests {
             "volumes": [],
         });
         let (forgets, forgot) = std::sync::mpsc::channel();
-        let cloud = crate::cloud_account::testing::fake_cloud(move |route, body| match route {
+        let cloud = crate::cloud::account::testing::fake_cloud(move |route, body| match route {
             "GET /api/cli/forget-servers" => (200, check.clone()),
             "POST /api/cli/forget-servers" => {
                 forgets.send(body.to_owned()).unwrap();
@@ -306,8 +307,8 @@ mod tests {
         });
         let credential = Credential::Token {
             cloud,
-            token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
-            from: crate::cloud_account::TokenFrom::Env,
+            token: crate::cloud::login::Secret::new("ployz_secret".to_owned()),
+            from: crate::cloud::account::TokenFrom::Env,
         };
         (credential, forgot)
     }
@@ -340,7 +341,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(organization, "acme");
-        let forgotten = cloud_account::forget_servers(&credential, &organization, None)
+        let forgotten = cloud::account::forget_servers(&credential, &organization, None)
             .await
             .unwrap();
         assert_eq!(

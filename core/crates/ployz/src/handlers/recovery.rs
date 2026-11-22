@@ -1,3 +1,4 @@
+use crate::cloud;
 use crate::cluster::{Call, Wait};
 use std::io::Read;
 use std::sync::Arc;
@@ -13,9 +14,9 @@ use serde_json::json;
 
 use super::{Error, config_path, leaf_matches, route, runtime};
 use crate::cli::{base, switch};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_enroll::RecoveryBackup;
-use crate::cloud_login::LoginError;
+use crate::cloud::account::Credential;
+use crate::cloud::enroll::RecoveryBackup;
+use crate::cloud::login::LoginError;
 use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Transport;
 use crate::ui::{self, Fields};
@@ -114,7 +115,7 @@ async fn recover_from_cloud(
     code: &RecoveryCode,
     refused: ConnectError,
 ) -> Result<SealingPublicKey, Error> {
-    let organization = cloud_account::acting_in(credential).await?;
+    let organization = cloud::account::acting_in(credential).await?;
     let backup = recovery_row(credential, &organization.id)
         .await?
         .and_then(|row| row.backup);
@@ -168,7 +169,7 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
         "ployz recovery rotate",
     ))?;
     let (public_key, code) = runtime.block_on(async {
-        let organization = cloud_account::acting_in(&credential).await?;
+        let organization = cloud::account::acting_in(&credential).await?;
         let row = recovery_row(&credential, &organization.id)
             .await?
             .ok_or_else(|| Error::unavailable(NOT_AVAILABLE))?;
@@ -179,7 +180,7 @@ fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> 
                 "This Server holds a Sealing Key other than the one Cloud backs up; nothing was rotated.",
             ));
         }
-        let rotated: Rotated = cloud_account::call(
+        let rotated: Rotated = cloud::account::call(
             &credential,
             reqwest::Method::POST,
             ROTATE_ROW,
@@ -397,7 +398,7 @@ pub(super) async fn recovery_row(
     credential: &Credential,
     organization_id: &str,
 ) -> Result<Option<RecoveryRow>, Error> {
-    match cloud_account::call::<RecoveryRow>(
+    match cloud::account::call::<RecoveryRow>(
         credential,
         reqwest::Method::POST,
         RECOVERY_ROW,
@@ -453,7 +454,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::cloud_account::testing::fake_cloud;
+    use crate::cloud::account::testing::fake_cloud;
     use crate::connect::test_support::unix_daemon_describing;
     use crate::handlers::verbs;
 

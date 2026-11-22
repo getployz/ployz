@@ -3,6 +3,7 @@
 //! follows one until it ends. A plain Sync is no run: Cloud hands the Mirror its pull and answers.
 //! Without Cloud there are none: Volumes stay put, and only a Restore runs, from the CLI.
 
+use crate::cloud;
 use crate::ui::Next;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use super::super::store::{self, Backend};
 use super::super::{Error, leaf_matches};
 use crate::approval::{self, Asked};
 use crate::cli::{approval as approval_arg, positional, switch, value};
-use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud::account::{Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Table, Tone};
 
 /// How a waiting command looks at its run. `Default` is production's.
@@ -388,8 +389,8 @@ pub(crate) async fn start(
     approval: Option<&str>,
 ) -> Result<VolumeRun, StoreCallError> {
     let body = serde_json::to_value(request)
-        .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
-    let started: OneRun = cloud_account::approved_answer(
+        .map_err(|error| crate::cloud::login::LoginError::Reply(error.to_string()))?;
+    let started: OneRun = cloud::account::approved_answer(
         credential,
         Method::POST,
         &format!("volumes/{volume}/runs"),
@@ -406,7 +407,7 @@ pub(crate) async fn list(
     volume: &VolumeId,
     environment: &EnvironmentId,
 ) -> Result<Vec<VolumeRun>, StoreCallError> {
-    let runs: Runs = cloud_account::refusable(
+    let runs: Runs = cloud::account::refusable(
         credential,
         Method::GET,
         &format!("volumes/{volume}/runs?environment={environment}"),
@@ -422,7 +423,7 @@ pub(crate) async fn get(
     id: &VolumeRunId,
 ) -> Result<VolumeRun, StoreCallError> {
     let one: OneRun =
-        cloud_account::refusable(credential, Method::GET, &format!("volume-runs/{id}"), None)
+        cloud::account::refusable(credential, Method::GET, &format!("volume-runs/{id}"), None)
             .await?;
     Ok(one.run)
 }
@@ -633,8 +634,8 @@ pub(crate) async fn sync_mirror(
     request: &SyncRequest,
 ) -> Result<Synced, StoreCallError> {
     let body = serde_json::to_value(request)
-        .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
-    cloud_account::refusable_operation(
+        .map_err(|error| crate::cloud::login::LoginError::Reply(error.to_string()))?;
+    cloud::account::refusable_operation(
         credential,
         Method::POST,
         &format!("volumes/{volume}/sync"),

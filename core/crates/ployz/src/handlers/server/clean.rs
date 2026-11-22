@@ -9,7 +9,8 @@ use super::super::shared::confirm::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::approval;
 use crate::cli::{base, value};
-use crate::cloud_account::{self, Credential};
+use crate::cloud;
+use crate::cloud::account::Credential;
 use crate::deploy::VolumeFate;
 use crate::ui::{Table, Tree};
 use ployz_store::OperationVerb;
@@ -273,7 +274,7 @@ fn confirm_in_cloud(
         next.clone(),
         || {
             let volumes = runtime
-                .block_on(cloud_account::refusable_operation::<Preview>(
+                .block_on(cloud::account::refusable_operation::<Preview>(
                     credential,
                     Method::GET,
                     &format!("namespaces/{namespace}/clean"),
@@ -317,7 +318,7 @@ fn through_cloud(
             super::approved_rerun(matches, &args, id)
         },
         async |approval| {
-            cloud_account::start_run(
+            cloud::account::start_run(
                 credential,
                 Method::POST,
                 &format!("namespaces/{namespace}/clean"),
@@ -331,7 +332,7 @@ fn through_cloud(
     struct Finished {
         volumes: Vec<String>,
     }
-    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
+    let settled = runtime.block_on(cloud::account::follow_operation::<Finished>(
         credential,
         &format!("namespace-cleanups/{id}"),
         &format!("Removing Namespace {namespace}"),

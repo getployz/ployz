@@ -2,18 +2,18 @@
 //! while a sign-in waits for the browser.
 //!
 //! `ployz login` without `--json` waits (`ployz::handlers::login::login`). Its
-//! `start` reads the file with `replaceable` (`ployz::cloud_login::start`). It refreshes a SignedIn Cloud still honours, resumes a Pending that has not expired with one poll, and otherwise asks
+//! `start` reads the file with `replaceable` (`ployz::cloud::login::start`). It refreshes a SignedIn Cloud still honours, resumes a Pending that has not expired with one poll, and otherwise asks
 //! Cloud for a new code and saves it as a Pending (`request_code`). `wait` then
-//! polls until Cloud answers (`ployz::cloud_login::wait`). An approved code's token goes to `finish`, which saves a
-//! SignedIn (`ployz::cloud_login::finish`). Denied or Expired goes to `forget`, whose `clear` removes the file,
-//! whatever it holds (`ployz::cloud_login::forget`, `ployz::cloud_login::CredentialStore::clear`). `poll` reads invalid_grant as Expired (`ployz::cloud_login::poll`). Other
-//! Cloud commands read the file through `ployz::cloud_login::signed_in`, which polls a Pending once and can
+//! polls until Cloud answers (`ployz::cloud::login::wait`). An approved code's token goes to `finish`, which saves a
+//! SignedIn (`ployz::cloud::login::finish`). Denied or Expired goes to `forget`, whose `clear` removes the file,
+//! whatever it holds (`ployz::cloud::login::forget`, `ployz::cloud::login::CredentialStore::clear`). `poll` reads invalid_grant as Expired (`ployz::cloud::login::poll`). Other
+//! Cloud commands read the file through `ployz::cloud::login::signed_in`, which polls a Pending once and can
 //! finish or forget it as well. `ployz logout` reads the file, signs a SignedIn out at Cloud and
-//! clears it (`ployz::cloud_login::logout`).
+//! clears it (`ployz::cloud::login::logout`).
 //!
 //! Each of these runs in its own `ployz` process, so one can step between any two of
 //! another's file operations. No lock covers them, and no write compares the file with what
-//! its process read. `save` writes a temp file and renames it over the file (`ployz::cloud_login::CredentialStore::save`), so a
+//! its process read. `save` writes a temp file and renames it over the file (`ployz::cloud::login::CredentialStore::save`), so a
 //! reader sees the old file or the new one, never a partial one.
 //!
 //! Cloud answers the token poll from better-auth's device authorization plugin, which the
@@ -70,12 +70,12 @@ impl std::fmt::Debug for Code {
     }
 }
 
-/// What `cloud.json` holds (`enum Stored`, `ployz::cloud_login::Stored`).
+/// What `cloud.json` holds (`enum Stored`, `ployz::cloud::login::Stored`).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum File {
-    /// No file: `load` returns `Ok(None)` (`ployz::cloud_login::CredentialStore::load`).
+    /// No file: `load` returns `Ok(None)` (`ployz::cloud::login::CredentialStore::load`).
     Absent,
-    /// A file that is not a `Stored`: `load` returns `Corrupt` (`ployz::cloud_login::CredentialStore::load`), and `replaceable`
+    /// A file that is not a `Stored`: `load` returns `Corrupt` (`ployz::cloud::login::CredentialStore::load`), and `replaceable`
     /// reads it as none. Another release or an edit writes it, and the model
     /// starts from it. Under Broken, a save half-written reads this way too.
     Unreadable,
@@ -109,7 +109,7 @@ enum Grant {
     /// The browser denied it: the next poll gets access_denied, which deletes the row.
     Denied,
     /// Past its expiry. The client's own clock says so first, and `poll` answers Expired
-    /// without asking Cloud (`ployz::cloud_login::poll`).
+    /// without asking Cloud (`ployz::cloud::login::poll`).
     Lapsed,
     /// A poll got the token, which consumed the row; every later poll gets invalid_grant.
     /// `ended` says a logout signed the token's session out at Cloud.
@@ -118,25 +118,25 @@ enum Grant {
     Swept,
 }
 
-/// What `ployz::cloud_login::poll` returned, read from Cloud's answer.
+/// What `ployz::cloud::login::poll` returned, read from Cloud's answer.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Answer {
-    /// authorization_pending (`ployz::cloud_login::poll`).
+    /// authorization_pending (`ployz::cloud::login::poll`).
     Pending,
-    /// The token (`ployz::cloud_login::poll`).
+    /// The token (`ployz::cloud::login::poll`).
     Token,
-    /// access_denied (`ployz::cloud_login::poll`).
+    /// access_denied (`ployz::cloud::login::poll`).
     Denied,
-    /// The code's expiry passed; `poll` answers Expired without asking (`ployz::cloud_login::poll`).
+    /// The code's expiry passed; `poll` answers Expired without asking (`ployz::cloud::login::poll`).
     Lapsed,
-    /// invalid_grant for a code another poll spent; `poll` reads it as Expired (`ployz::cloud_login::poll`).
+    /// invalid_grant for a code another poll spent; `poll` reads it as Expired (`ployz::cloud::login::poll`).
     Spent,
-    /// invalid_grant for a code access_denied deleted; `poll` reads it as Expired (`ployz::cloud_login::poll`).
+    /// invalid_grant for a code access_denied deleted; `poll` reads it as Expired (`ployz::cloud::login::poll`).
     Swept,
 }
 
 impl Answer {
-    /// The error `forget` returns for it (`ployz::cloud_login::wait`, `ployz::cloud_login::poll_once`).
+    /// The error `forget` returns for it (`ployz::cloud::login::wait`, `ployz::cloud::login::poll_once`).
     fn outcome(self) -> Outcome {
         match self {
             Self::Denied => Outcome::Denied,
@@ -151,7 +151,7 @@ impl Answer {
 enum Then {
     /// The process returns the error.
     Return,
-    /// `start`'s resume branch requests a new code (`ployz::cloud_login::start`).
+    /// `start`'s resume branch requests a new code (`ployz::cloud::login::start`).
     Request,
 }
 
@@ -163,11 +163,11 @@ enum Outcome {
     Expired,
     /// `LoginError::Denied`, "the sign-in was denied in the browser".
     Denied,
-    /// `signed_in`'s `AwaitingApproval` (`ployz::cloud_login::signed_in`).
+    /// `signed_in`'s `AwaitingApproval` (`ployz::cloud::login::signed_in`).
     AwaitingApproval,
-    /// `signed_in`'s `SignedOut` (`ployz::cloud_login::signed_in`).
+    /// `signed_in`'s `SignedOut` (`ployz::cloud::login::signed_in`).
     SignedOut,
-    /// `signed_in`'s `Corrupt` from `load` (`ployz::cloud_login::signed_in`).
+    /// `signed_in`'s `Corrupt` from `load` (`ployz::cloud::login::signed_in`).
     Unreadable,
     /// `logout` returned, after it read this.
     LoggedOut(File),
@@ -178,23 +178,23 @@ enum Outcome {
 enum Pc {
     /// Not started, or, under the fix, about to read the file again.
     Idle,
-    /// `start` read a SignedIn whose session Cloud honours (`ployz::cloud_login::start`); its save is next.
+    /// `start` read a SignedIn whose session Cloud honours (`ployz::cloud::login::start`); its save is next.
     Refreshing(Code),
-    /// `start` read a Pending that has not expired (`ployz::cloud_login::start`); `poll_once`'s poll is next.
+    /// `start` read a Pending that has not expired (`ployz::cloud::login::start`); `poll_once`'s poll is next.
     Resuming(Code),
-    /// `request_code` is next (`ployz::cloud_login::start`, in the resume branch). `expect` is the file the
+    /// `request_code` is next (`ployz::cloud::login::start`, in the resume branch). `expect` is the file the
     /// fix's save must still find, and `None` when the save writes over anything, as the
     /// code's does.
     Requesting {
         expect: Option<File>,
     },
-    /// `start` returned this code's Pending; the wait loop's poll is next (`ployz::cloud_login::wait`).
+    /// `start` returned this code's Pending; the wait loop's poll is next (`ployz::cloud::login::wait`).
     Waiting(Code),
-    /// `signed_in` loaded a Pending (`ployz::cloud_login::signed_in`); `poll_once`'s poll is next.
+    /// `signed_in` loaded a Pending (`ployz::cloud::login::signed_in`); `poll_once`'s poll is next.
     Polling(Code),
-    /// A poll returned the token; `finish`'s get-session and save are next (`ployz::cloud_login::finish`).
+    /// A poll returned the token; `finish`'s get-session and save are next (`ployz::cloud::login::finish`).
     Finishing(Code),
-    /// A poll of `code` answered Denied or Expired; `forget` is next (`ployz::cloud_login::forget`).
+    /// A poll of `code` answered Denied or Expired; `forget` is next (`ployz::cloud::login::forget`).
     Forgetting {
         code: Code,
         answer: Answer,
@@ -243,11 +243,11 @@ enum Role {
 /// Which poll answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Poller {
-    /// `start`'s `poll_once` (`ployz::cloud_login::start`).
+    /// `start`'s `poll_once` (`ployz::cloud::login::start`).
     Resume,
-    /// The wait loop's (`ployz::cloud_login::wait`).
+    /// The wait loop's (`ployz::cloud::login::wait`).
     Wait,
-    /// `signed_in`'s `poll_once` (`ployz::cloud_login::signed_in`).
+    /// `signed_in`'s `poll_once` (`ployz::cloud::login::signed_in`).
     Command,
 }
 
@@ -278,7 +278,7 @@ impl Found {
 /// The branch the last step took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
-    /// `start` read this and goes on to `request_code` (`ployz::cloud_login::start`).
+    /// `start` read this and goes on to `request_code` (`ployz::cloud::login::start`).
     StartRequests(File),
     /// `request_code` saved a new Pending.
     Requested,
@@ -287,9 +287,9 @@ enum Branch {
     RequestRereads,
     /// A poll answered.
     Polled { by: Poller, answer: Answer },
-    /// `finish` saved a SignedIn (`ployz::cloud_login::finish`).
+    /// `finish` saved a SignedIn (`ployz::cloud::login::finish`).
     Finished(Role),
-    /// `start` saved the refreshed SignedIn (`ployz::cloud_login::start`).
+    /// `start` saved the refreshed SignedIn (`ployz::cloud::login::start`).
     Refreshed,
     /// `forget` ran: what it found, whether it removed the file, the answer that sent it
     /// there, and where its process goes next.
@@ -300,11 +300,11 @@ enum Branch {
         answer: Answer,
         then: Then,
     },
-    /// `signed_in` read a SignedIn and returned it (`ployz::cloud_login::signed_in`).
+    /// `signed_in` read a SignedIn and returned it (`ployz::cloud::login::signed_in`).
     CommandReturnsStored,
-    /// `signed_in` found no file (`ployz::cloud_login::signed_in`).
+    /// `signed_in` found no file (`ployz::cloud::login::signed_in`).
     CommandSignedOut,
-    /// `signed_in`'s `load` returned Corrupt (`ployz::cloud_login::signed_in`).
+    /// `signed_in`'s `load` returned Corrupt (`ployz::cloud::login::signed_in`).
     CommandUnreadable,
     /// `logout` read a SignedIn, and Cloud signed its session out.
     LogoutSignsOut,
@@ -390,7 +390,7 @@ impl State {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Broken {
     /// `save` writes the file in place, in two steps, instead of a temp file renamed over
-    /// it (`ployz::cloud_login::CredentialStore::save`).
+    /// it (`ployz::cloud::login::CredentialStore::save`).
     save_tears: bool,
 }
 
@@ -787,7 +787,7 @@ impl SignInStore {
         code
     }
 
-    /// `ployz::cloud_login::poll` for `code`, and what the token request does to Cloud's row.
+    /// `ployz::cloud::login::poll` for `code`, and what the token request does to Cloud's row.
     fn poll(state: &mut State, code: Code) -> Answer {
         match state.grant(code) {
             Grant::Lapsed => Answer::Lapsed,
@@ -822,7 +822,7 @@ impl SignInStore {
         }
     }
 
-    /// `ployz::cloud_login::CredentialStore::save`: a temp file renamed over `cloud.json`, or, under Broken, the first
+    /// `ployz::cloud::login::CredentialStore::save`: a temp file renamed over `cloud.json`, or, under Broken, the first
     /// half of a write in place.
     fn save(&self, state: &mut State, file: File) -> Pc {
         if self.broken.save_tears {
@@ -834,7 +834,7 @@ impl SignInStore {
         }
     }
 
-    /// `forget` after a poll of `code` answered: `clear` (`ployz::cloud_login::forget`, `ployz::cloud_login::CredentialStore::clear`), or the fix's
+    /// `forget` after a poll of `code` answered: `clear` (`ployz::cloud::login::forget`, `ployz::cloud::login::CredentialStore::clear`), or the fix's
     /// locked compare and removal.
     /// The code's `clear` reads nothing, so only the fix's compare reads the file.
     fn forget(&self, state: &mut State, who: usize, code: Code, answer: Answer, then: Then) -> Pc {
@@ -1169,24 +1169,24 @@ fn story(model: &SignInStore, path: &[(State, Option<Action>)]) -> String {
 fn answered(answer: Answer, code: Code) -> String {
     match answer {
         Answer::Pending => {
-            format!("Cloud answers authorization_pending for {code} (`ployz::cloud_login::poll`)")
+            format!("Cloud answers authorization_pending for {code} (`ployz::cloud::login::poll`)")
         }
         Answer::Token => format!(
-            "Cloud grants {code}'s token and consumes the code; finish's get-session and save are next (`ployz::cloud_login::poll`, `ployz::cloud_login::finish`)"
+            "Cloud grants {code}'s token and consumes the code; finish's get-session and save are next (`ployz::cloud::login::poll`, `ployz::cloud::login::finish`)"
         ),
         Answer::Denied => format!(
-            "Cloud answers access_denied for {code} and deletes it (`ployz::cloud_login::poll`)"
+            "Cloud answers access_denied for {code} and deletes it (`ployz::cloud::login::poll`)"
         ),
         Answer::Lapsed => {
             format!(
-                "{code} has expired, so poll answers Expired without asking Cloud (`ployz::cloud_login::poll`)"
+                "{code} has expired, so poll answers Expired without asking Cloud (`ployz::cloud::login::poll`)"
             )
         }
         Answer::Spent => format!(
-            "Cloud answers invalid_grant, because {code} is spent, and poll reads it as Expired (`ployz::cloud_login::poll`)"
+            "Cloud answers invalid_grant, because {code} is spent, and poll reads it as Expired (`ployz::cloud::login::poll`)"
         ),
         Answer::Swept => format!(
-            "Cloud answers invalid_grant, because access_denied deleted {code}, and poll reads it as Expired (`ployz::cloud_login::poll`)"
+            "Cloud answers invalid_grant, because access_denied deleted {code}, and poll reads it as Expired (`ployz::cloud::login::poll`)"
         ),
     }
 }
@@ -1213,7 +1213,7 @@ fn saved_then(who: usize, file: File) -> &'static str {
             "; ployz login prints \"Open <url> and confirm the code <code>.\" and waits (`ployz::handlers::login::login`, `ployz::handlers::login::announce`)"
         }
         File::SignedIn(_) if who == COMMAND => {
-            "; signed_in returns it, and the command acts with it (`ployz::cloud_login::signed_in`)"
+            "; signed_in returns it, and the command acts with it (`ployz::cloud::login::signed_in`)"
         }
         File::SignedIn(_) => {
             "; ployz login prints \"Signed in to <cloud> as <email> in Organization <slug>.\" (`ployz::handlers::login::login`, `ployz::handlers::login::report`)"
@@ -1262,34 +1262,34 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
             ),
         },
         (Pc::Idle, Pc::Done(Outcome::SignedOut)) => {
-            "signed_in: load finds no cloud.json and returns SignedOut, \"Not signed in to Cloud.\" (`ployz::cloud_login::signed_in`)".to_owned()
+            "signed_in: load finds no cloud.json and returns SignedOut, \"Not signed in to Cloud.\" (`ployz::cloud::login::signed_in`)".to_owned()
         }
         (Pc::Idle, Pc::Done(Outcome::Unreadable)) => format!(
-            "signed_in: load returns Corrupt{torn}, \"The sign-in stored at ... is unreadable.\" (`ployz::cloud_login::CredentialStore::load`, `ployz::cloud_login::signed_in`)"
+            "signed_in: load returns Corrupt{torn}, \"The sign-in stored at ... is unreadable.\" (`ployz::cloud::login::CredentialStore::load`, `ployz::cloud::login::signed_in`)"
         ),
         (Pc::Idle, Pc::Done(Outcome::SignedIn)) => format!(
-            "signed_in: load reads {} and returns it (`ployz::cloud_login::signed_in`)",
+            "signed_in: load reads {} and returns it (`ployz::cloud::login::signed_in`)",
             before.file
         ),
         (Pc::Idle, Pc::Polling(code)) => format!(
-            "signed_in: load reads Pending({code}) (`ployz::cloud_login::signed_in`); poll_once's poll is next"
+            "signed_in: load reads Pending({code}) (`ployz::cloud::login::signed_in`); poll_once's poll is next"
         ),
         (Pc::Idle, Pc::Refreshing(code)) => format!(
-            "start: replaceable reads SignedIn({code}) (`ployz::cloud_login::start`), and get-session honours its token; the save is next"
+            "start: replaceable reads SignedIn({code}) (`ployz::cloud::login::start`), and get-session honours its token; the save is next"
         ),
         (Pc::Idle, Pc::Resuming(code)) => format!(
-            "start: replaceable reads Pending({code}) (`ployz::cloud_login::start`), for this Cloud and not expired, so poll_once is next"
+            "start: replaceable reads Pending({code}) (`ployz::cloud::login::start`), for this Cloud and not expired, so poll_once is next"
         ),
         (Pc::Idle, Pc::Requesting { .. }) => format!(
-            "start: replaceable reads {}; request_code is next (`ployz::cloud_login::start`)",
+            "start: replaceable reads {}; request_code is next (`ployz::cloud::login::start`)",
             match before.file {
-                File::Absent => "no cloud.json (`ployz::cloud_login::CredentialStore::load`, `ployz::cloud_login::start`)".to_owned(),
+                File::Absent => "no cloud.json (`ployz::cloud::login::CredentialStore::load`, `ployz::cloud::login::start`)".to_owned(),
                 File::Unreadable =>
-                    format!("an unreadable cloud.json as none{torn} (`ployz::cloud_login::CredentialStore::replaceable`, `ployz::cloud_login::start`)"),
+                    format!("an unreadable cloud.json as none{torn} (`ployz::cloud::login::CredentialStore::replaceable`, `ployz::cloud::login::start`)"),
                 File::Pending(code) =>
-                    format!("Pending({code}), which has expired, so start skips it (`ployz::cloud_login::start`)"),
+                    format!("Pending({code}), which has expired, so start skips it (`ployz::cloud::login::start`)"),
                 File::SignedIn(code) => format!(
-                    "SignedIn({code}), and get-session answers 401 for its ended session, so start falls through (`ployz::cloud_login::start`, `ployz::cloud_login::session`)"
+                    "SignedIn({code}), and get-session answers 401 for its ended session, so start falls through (`ployz::cloud::login::start`, `ployz::cloud::login::session`)"
                 ),
             }
         ),
@@ -1330,9 +1330,9 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
             answered(polled_answer(after), code),
             match next {
                 Pc::Waiting(_) =>
-                    "; start returns the Pending as resumed (`ployz::cloud_login::start`), and ployz login prints the code and waits (`ployz::handlers::login::login`)",
+                    "; start returns the Pending as resumed (`ployz::cloud::login::start`), and ployz login prints the code and waits (`ployz::handlers::login::login`)",
                 Pc::Forgetting { .. } =>
-                    "; forget is next (`ployz::cloud_login::poll_once`), then request_code (`ployz::cloud_login::start`)",
+                    "; forget is next (`ployz::cloud::login::poll_once`), then request_code (`ployz::cloud::login::start`)",
                 Pc::Idle
                 | Pc::Refreshing(_)
                 | Pc::Resuming(_)
@@ -1350,20 +1350,20 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
             "wait: after its sleep, poll: {}{}",
             answered(polled_answer(after), code),
             if matches!(after.pc(who), Pc::Forgetting { .. }) {
-                "; forget is next (`ployz::cloud_login::wait`)"
+                "; forget is next (`ployz::cloud::login::wait`)"
             } else {
                 ""
             }
         ),
         (Pc::Polling(code), Pc::Done(Outcome::AwaitingApproval)) => format!(
-            "signed_in: poll_once's poll: {}; signed_in returns AwaitingApproval, \"sign-in is waiting for approval at <url>\" (`ployz::cloud_login::signed_in`)",
+            "signed_in: poll_once's poll: {}; signed_in returns AwaitingApproval, \"sign-in is waiting for approval at <url>\" (`ployz::cloud::login::signed_in`)",
             answered(Answer::Pending, code)
         ),
         (Pc::Polling(code), _) => format!(
             "signed_in: poll_once's poll: {}{}",
             answered(polled_answer(after), code),
             if matches!(after.pc(who), Pc::Forgetting { .. }) {
-                "; forget is next (`ployz::cloud_login::poll_once`)"
+                "; forget is next (`ployz::cloud::login::poll_once`)"
             } else {
                 ""
             }
@@ -1380,7 +1380,7 @@ fn reads_as(model: &SignInStore, before: &State, action: Action, after: &State) 
                 )
             } else if !model.compares() {
                 format!(
-                    "forget: clear removes cloud.json, which held {}{} (`ployz::cloud_login::forget`, `ployz::cloud_login::CredentialStore::clear`)",
+                    "forget: clear removes cloud.json, which held {}{} (`ployz::cloud::login::forget`, `ployz::cloud::login::CredentialStore::clear`)",
                     before.file,
                     if model.fix.is_proposed() { " (under Broken)" } else { "" }
                 )
@@ -1460,15 +1460,15 @@ fn polled_answer(after: &State) -> Answer {
 fn forget_then(who: usize, answer: Answer, then: Then) -> String {
     match (then, answer.outcome()) {
         (Then::Request, _) => {
-            "start's resume branch goes on to request_code (`ployz::cloud_login::start`)".to_owned()
+            "start's resume branch goes on to request_code (`ployz::cloud::login::start`)".to_owned()
         }
         (Then::Return, Outcome::Expired) if who == COMMAND => {
-            "signed_in returns Expired, \"the sign-in code expired before it was approved\" (`ployz::cloud_login::forget`)".to_owned()
+            "signed_in returns Expired, \"the sign-in code expired before it was approved\" (`ployz::cloud::login::forget`)".to_owned()
         }
         (Then::Return, Outcome::Expired) => {
-            "ployz login fails, \"the sign-in code expired before it was approved\", next: ployz login (`ployz::cloud_login::forget`, `ployz::handlers::login::login`, `ployz::failure::Failure::from`)".to_owned()
+            "ployz login fails, \"the sign-in code expired before it was approved\", next: ployz login (`ployz::cloud::login::forget`, `ployz::handlers::login::login`, `ployz::failure::Failure::from`)".to_owned()
         }
-        (Then::Return, outcome) => format!("it returns {outcome:?} (`ployz::cloud_login::forget`)"),
+        (Then::Return, outcome) => format!("it returns {outcome:?} (`ployz::cloud::login::forget`)"),
     }
 }
 
@@ -1582,9 +1582,9 @@ mod tests {
 
     /// The finding. Login A's `start` finds no file, and `request_code` saves Pending(c0).
     /// Login B's `start` reads it, its poll gets authorization_pending, and it waits too
-    /// (`ployz::cloud_login::start`). The browser approves; A's poll gets the token, and `finish` saves
+    /// (`ployz::cloud::login::start`). The browser approves; A's poll gets the token, and `finish` saves
     /// SignedIn(c0). B's next poll gets invalid_grant for the spent code, which `poll` reads
-    /// as Expired (`ployz::cloud_login::poll`), and B's `forget` removes the file (`ployz::cloud_login::wait`, `ployz::cloud_login::forget`). A printed
+    /// as Expired (`ployz::cloud::login::poll`), and B's `forget` removes the file (`ployz::cloud::login::wait`, `ployz::cloud::login::forget`). A printed
     /// "Signed in", B printed "the sign-in code expired before it was approved", and
     /// `cloud.json` is gone.
     ///
@@ -1666,8 +1666,8 @@ mod tests {
         ));
     }
 
-    /// `start`'s resume branch (`ployz::cloud_login::start`). B reads Pending(c0) before A saves, and its one
-    /// poll lands after A's poll spent c0. B's `forget` removes A's SignedIn (`ployz::cloud_login::poll_once`), and its
+    /// `start`'s resume branch (`ployz::cloud::login::start`). B reads Pending(c0) before A saves, and its one
+    /// poll lands after A's poll spent c0. B's `forget` removes A's SignedIn (`ployz::cloud::login::poll_once`), and its
     /// `request_code` then saves a new Pending, so `cloud.json` ends holding B's code
     /// and B waits on it.
     #[test]
@@ -1704,8 +1704,8 @@ mod tests {
     }
 
     /// Another Cloud command's `signed_in` loads Pending(c0) before a login saves, and its
-    /// one poll gets invalid_grant afterwards. Its `forget` removes the SignedIn (`ployz::cloud_login::signed_in`,
-    /// `ployz::cloud_login::poll_once`).
+    /// one poll gets invalid_grant afterwards. Its `forget` removes the SignedIn (`ployz::cloud::login::signed_in`,
+    /// `ployz::cloud::login::poll_once`).
     #[test]
     fn a_cloud_command_forgets_an_approved_sign_in() {
         let path = breaks_where(as_is(), APPROVED_SIGN_IN_KEPT, |path| {
@@ -1724,9 +1724,9 @@ mod tests {
     }
 
     /// A Cloud command's `signed_in` loads Pending(c0) and its one poll gets the token, so
-    /// its `finish` saves SignedIn(c0) (`ployz::cloud_login::signed_in`, `ployz::cloud_login::poll_once`, `ployz::cloud_login::finish`). Login A's next poll then gets
+    /// its `finish` saves SignedIn(c0) (`ployz::cloud::login::signed_in`, `ployz::cloud::login::poll_once`, `ployz::cloud::login::finish`). Login A's next poll then gets
     /// invalid_grant for the code the command spent, and A's `forget` removes the command's
-    /// sign-in (`ployz::cloud_login::wait`, `ployz::cloud_login::forget`). A prints "the sign-in code expired before it was approved".
+    /// sign-in (`ployz::cloud::login::wait`, `ployz::cloud::login::forget`). A prints "the sign-in code expired before it was approved".
     #[test]
     fn a_waiter_forgets_a_sign_in_a_cloud_command_finished() {
         let path = breaks_where(as_is(), APPROVED_SIGN_IN_KEPT, |path| {
@@ -1815,7 +1815,7 @@ mod tests {
     }
 
     /// If `save` wrote the file in place, a reader would see it half-written: `start` reads
-    /// it as none and requests a code (`ployz::cloud_login::CredentialStore::replaceable`, `ployz::cloud_login::start`).
+    /// it as none and requests a code (`ployz::cloud::login::CredentialStore::replaceable`, `ployz::cloud::login::start`).
     #[test]
     fn save_writes_a_temp_file_and_renames_it() {
         let path = breaks(as_is_without(Broken { save_tears: true }), NO_TORN_READ);
@@ -1825,7 +1825,7 @@ mod tests {
         assert!(broken.pcs.iter().any(|pc| matches!(pc, Pc::Torn(_))));
     }
 
-    /// The code's `forget` only calls `clear`, a bare `remove_file` (`ployz::cloud_login::forget`, `ployz::cloud_login::CredentialStore::clear`),
+    /// The code's `forget` only calls `clear`, a bare `remove_file` (`ployz::cloud::login::forget`, `ployz::cloud::login::CredentialStore::clear`),
     /// so it reads nothing, even while another process's save is half-written. A requests
     /// c0, B's `start` finds it, and the browser denies it. A's poll gets access_denied, B's
     /// resume branch forgets c0 and starts saving Pending(c1), and A's `forget` removes the
@@ -1989,7 +1989,7 @@ mod tests {
 
     /// A resume branch whose `forget` removed its own Pending expects no file, so its
     /// `request_code` saves at once. A requests c0, B's `start` reads Pending(c0), the browser
-    /// denies c0, B's one poll gets access_denied (`ployz::cloud_login::poll_once`, `ployz::cloud_login::poll`), and B's `forget` removes
+    /// denies c0, B's one poll gets access_denied (`ployz::cloud::login::poll_once`, `ployz::cloud::login::poll`), and B's `forget` removes
     /// Pending(c0).
     #[test]
     fn the_fix_requests_after_forgetting_its_own_pending() {

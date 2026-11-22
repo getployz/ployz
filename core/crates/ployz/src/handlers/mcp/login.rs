@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use super::super::account::in_cloud;
 use super::super::{Error, config_path, leaf_matches};
 use crate::atomic_file::ReplaceError;
-use crate::cloud_account::{self, Credential, TokenKind, TokenPreset};
-use crate::cloud_login::{LoginError, Secret};
+use crate::cloud;
+use crate::cloud::account::{Credential, TokenKind, TokenPreset};
+use crate::cloud::login::{LoginError, Secret};
 use crate::ui;
 
 const LIFETIME_DAYS: u16 = 365;
@@ -34,7 +35,7 @@ impl Stored {
         Credential::Token {
             cloud: self.cloud.clone(),
             token: self.token.clone(),
-            from: crate::cloud_account::TokenFrom::McpLogin,
+            from: crate::cloud::account::TokenFrom::McpLogin,
         }
     }
 }
@@ -89,7 +90,7 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
         Err(error) => return Err(error.into()),
     };
     let (made, saved, revoked, left) = in_cloud(root, async |_, credential| {
-        let made = cloud_account::new_token(
+        let made = cloud::account::new_token(
             credential,
             "ployz mcp",
             TokenKind::Agent,
@@ -116,7 +117,7 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
         let saved = match saved {
             Ok(saved) => saved,
             Err(error) => {
-                if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
+                if let Err(revoking) = cloud::account::remove_token(credential, &made.id).await {
                     ui::warn(error_chain::then_sentence(
                         &format!(
                             "Could not revoke the token {} just made: {revoking}",
@@ -243,7 +244,7 @@ fn fate(previous: Stored, cloud: &str, organization: &str, saved: &Saved) -> Res
 /// Revoke the token `ployz mcp` held before, only while this Organization lists it as an
 /// agent token, so an edited `mcp.json` never revokes a CLI token.
 async fn revoke(credential: &Credential, id: &str) -> Result<bool, LoginError> {
-    let listed = cloud_account::credentials(credential).await?;
+    let listed = cloud::account::credentials(credential).await?;
     if !listed
         .tokens
         .iter()
@@ -251,7 +252,7 @@ async fn revoke(credential: &Credential, id: &str) -> Result<bool, LoginError> {
     {
         return Ok(false);
     }
-    cloud_account::remove_token(credential, id).await?;
+    cloud::account::remove_token(credential, id).await?;
     Ok(true)
 }
 
@@ -264,7 +265,7 @@ pub(super) enum ActingAs {
 }
 
 impl ActingAs {
-    /// `token` is `PLOYZ_TOKEN` as [`crate::cloud_account::env_token`] reads it, never empty.
+    /// `token` is `PLOYZ_TOKEN` as [`crate::cloud::account::env_token`] reads it, never empty.
     pub(super) fn resolve(config: &Path, token: Option<&str>) -> Result<Self, LoginError> {
         if token.is_some() {
             return Ok(Self::Token);

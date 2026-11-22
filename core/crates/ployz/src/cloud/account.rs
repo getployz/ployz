@@ -5,13 +5,12 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 //!
-//! One request pipeline serves every call: `http` builds and sends the request and
-//! reads the reply whole, `reply` turns a status and body into the caller's answer or
+//! One request pipeline serves every call: [`super::http`] builds and sends the request
+//! and reads the reply whole, `reply` turns a status and body into the caller's answer or
 //! the error that names the fix, and the rest are the calls themselves.
 
 mod calls;
 mod credential;
-pub(crate) mod http;
 mod org;
 mod reply;
 mod servers;
@@ -30,7 +29,6 @@ pub(crate) use calls::{
 pub(crate) use credential::{
     Credential, TokenFrom, acting_as, acting_in, credential, env_token, from_env, named_cloud,
 };
-pub(crate) use http::{CALL_DEADLINE, Via, builder, client, notice_revision, revision_seen};
 pub(crate) use org::{
     OrganizationEntry, Target, new_organization, organizations, remove_organization,
     use_organization,

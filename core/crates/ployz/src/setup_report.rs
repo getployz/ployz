@@ -207,8 +207,7 @@ impl SetupReport {
             steps: &self.finished,
             total_seconds: self.started.elapsed().as_secs_f64(),
         };
-        let Ok(http) =
-            crate::cloud_account::builder(crate::cloud_account::http::REPORT_TIMEOUT).build()
+        let Ok(http) = crate::cloud::http::builder(crate::cloud::http::REPORT_TIMEOUT).build()
         else {
             return;
         };
