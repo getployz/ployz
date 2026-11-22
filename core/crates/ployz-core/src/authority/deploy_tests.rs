@@ -1,3 +1,4 @@
+use crate::authority::MismatchField;
 use serde_json::{Value, json};
 
 use std::collections::BTreeMap;
@@ -319,7 +320,9 @@ fn each_payload_field_changed_alone_is_refused() {
     for (field, changed) in cases {
         assert_eq!(
             verify_changed(changed).unwrap_err(),
-            AuthorityRefusal::Mismatch { field: "a payload" },
+            AuthorityRefusal::Mismatch {
+                field: MismatchField::Payload
+            },
             "{field}"
         );
     }
@@ -470,7 +473,9 @@ fn a_spec_that_reads_host_data_keeps_where_it_runs_signed() {
     ] {
         assert_eq!(
             verify_from(regional.clone(), changed).unwrap_err(),
-            AuthorityRefusal::Mismatch { field: "a payload" },
+            AuthorityRefusal::Mismatch {
+                field: MismatchField::Payload
+            },
             "{what}"
         );
     }
@@ -526,7 +531,9 @@ fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
     ] {
         assert_eq!(
             verify_from(placed(base.clone(), "a"), placed(base, "b")).unwrap_err(),
-            AuthorityRefusal::Mismatch { field: "a payload" },
+            AuthorityRefusal::Mismatch {
+                field: MismatchField::Payload
+            },
             "{what}"
         );
     }
@@ -565,7 +572,9 @@ fn a_tag_image_is_refused_even_when_approved() {
     let spec = resolved(&tagged);
     assert_eq!(
         verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "an image" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Image
+        }
     );
     for (image, pinned) in [
         (IMAGE, true),
@@ -620,12 +629,16 @@ fn a_pinned_tag_runs_only_its_pinned_image() {
     assert!(pinned_creation(PINNED).is_ok());
     assert_eq!(
         pinned_creation(TAG).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "an image" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Image
+        }
     );
     for refused in [REPOINTED, IMAGE] {
         assert_eq!(
             pinned_creation(refused).unwrap_err(),
-            AuthorityRefusal::Mismatch { field: "a payload" },
+            AuthorityRefusal::Mismatch {
+                field: MismatchField::Payload
+            },
             "{refused}"
         );
     }
@@ -669,7 +682,9 @@ fn the_envelope_must_match_this_machine_and_request() {
     facts.cluster = Some(SealingPublicKey::from_bytes([8; 32]));
     assert_eq!(
         verify(&signed, &facts).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a Cluster" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Cluster
+        }
     );
 
     let no_hook = requested({
@@ -681,7 +696,9 @@ fn the_envelope_must_match_this_machine_and_request() {
     let hookless_spec = resolved(&no_hook);
     assert_eq!(
         verify(&hookless, &machine.facts(hook(&hookless_spec))).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a hook" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Hook
+        }
     );
 
     let other = ServiceName::parse("db").unwrap();
@@ -691,14 +708,16 @@ fn the_envelope_must_match_this_machine_and_request() {
     };
     assert_eq!(
         verify(&signed, &machine.facts(creation)).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a Service" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Service
+        }
     );
 
     machine.namespace = Namespace::parse("other").unwrap();
     assert_eq!(
         verify(&signed, &machine.facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "an Environment"
+            field: MismatchField::Environment
         }
     );
 }
@@ -867,7 +886,7 @@ fn a_signed_version_that_names_a_proposal_is_refused() {
     assert_eq!(
         verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "a proposal"
+            field: MismatchField::Proposal
         }
     );
 }
@@ -938,7 +957,9 @@ fn a_deploy_step_refuses_another_digest_index_or_kind() {
     step.digest = PayloadDigest::parse(&"0".repeat(64)).unwrap();
     assert_eq!(
         verify_step(&step, &bundle, &signer).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a step" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Step
+        }
     );
 
     let (mut step, bundle) = deploy_proposal(&signer, |_| {});
@@ -948,7 +969,9 @@ fn a_deploy_step_refuses_another_digest_index_or_kind() {
     });
     assert_eq!(
         verify_step(&step, &bundle, &signer).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a step" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Step
+        }
     );
 }
 
@@ -960,7 +983,9 @@ fn a_deploy_step_still_checks_the_spec_it_creates() {
     let spec = resolved(&requested(with(&["container", "privileged"], json!(true))));
     assert_eq!(
         verify(&envelope, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a payload" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Payload
+        }
     );
 }
 
@@ -1182,7 +1207,7 @@ fn a_signed_version_is_opened_in_one_fixed_order() {
     assert_eq!(
         verify(&sign(&body), &facts).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "a proposal"
+            field: MismatchField::Proposal
         }
     );
     body.proposal = None;
@@ -1190,13 +1215,15 @@ fn a_signed_version_is_opened_in_one_fixed_order() {
     assert_eq!(
         verify(&sign(&body), &facts).unwrap_err(),
         AuthorityRefusal::Mismatch {
-            field: "the signer"
+            field: MismatchField::Signer
         }
     );
     body.signer = SignerKey::Device(DeviceKey::from(approver.public()));
     assert_eq!(
         verify(&sign(&body), &facts).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a Cluster" }
+        AuthorityRefusal::Mismatch {
+            field: MismatchField::Cluster
+        }
     );
     body.cluster = SealingPublicKey::from_bytes([9; 32]);
     assert!(verify(&sign(&body), &facts).is_ok());

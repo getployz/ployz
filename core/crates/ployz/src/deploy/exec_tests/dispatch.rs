@@ -742,7 +742,8 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
         replicas: std::num::NonZeroU32::new(1).unwrap(),
     };
     let operations = [run(&machine('1'), replica.clone(), true)];
-    let slots = Slots::new("run", &namespace, &operations);
+    let first_run = ployz_core::DeploymentLogId::parse("run").unwrap();
+    let slots = Slots::new(&first_run, &namespace, &operations);
     let key = |kind, spec: &ResolvedServiceSpec, index, replacing| {
         slots
             .slot(kind, spec, index, replacing)
@@ -786,7 +787,7 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
         key(ContainerKind::ServiceContainer, &replica, 1, None),
         "each operation has its own slot"
     );
-    let resent = Slots::new("run", &namespace, &operations);
+    let resent = Slots::new(&first_run, &namespace, &operations);
     assert_eq!(
         replicated,
         resent
@@ -795,7 +796,8 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
             .as_str(),
         "a resent operation of the same run reaches the same slot"
     );
-    let another_run = Slots::new("other", &namespace, &operations);
+    let other = ployz_core::DeploymentLogId::parse("other").unwrap();
+    let another_run = Slots::new(&other, &namespace, &operations);
     assert_ne!(
         replicated,
         another_run
@@ -804,7 +806,7 @@ fn global_containers_keep_their_revision_keys_and_the_rest_key_by_run_and_operat
             .as_str()
     );
     let another_plan = Slots::new(
-        "run",
+        &first_run,
         &namespace,
         &[run(&machine('2'), replica.clone(), true)],
     );

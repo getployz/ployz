@@ -656,17 +656,15 @@ impl Daemon {
                 errors.push(ployz_core::error_chain::inline(&error));
             }
         }
-        // Admitted work is detached from its RPC and outlives the server drain. Give
-        // it the same grace, then release the data directory so the next daemon on
-        // it can claim it; work still running keeps the record until process exit
-        // rather than failing halfway through.
-        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().write_owned()).await {
-            Ok(_admission) => {
-                if let Err(error) = self.local.close().await {
-                    errors.push(ployz_core::error_chain::inline(&error));
-                }
-            }
-            Err(_) => tracing::warn!(
+        // Admitted work is detached from its RPC and outlives the server drain, so it
+        // gets the same grace before the next daemon may claim the data directory.
+        match crate::machine::LocalMachine::new(self.local.clone())
+            .close_when_idle(SERVER_DRAIN)
+            .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => errors.push(ployz_core::error_chain::inline(&error)),
+            None => tracing::warn!(
                 "admitted Machine work is still running; the record stays claimed until exit"
             ),
         }

@@ -249,7 +249,7 @@ struct Host {
     /// `volume_floors`: the newest lane `gen` this Machine admitted for the Volume.
     floor: u8,
     holder: Holder,
-    /// `MachineService::switch_mutation`, held by one request from its second floor
+    /// `LocalMachine::lock_switch`'s lock, held by one request from its second floor
     /// check, or a Prepare from its first read, to its reply.
     switch: Option<usize>,
     /// The exclusive admission turn, held by `start_volume_holder` from its floor
@@ -1353,7 +1353,7 @@ impl VolumeRuns {
             return false;
         }
         match request.progress {
-            // `switch_verb` queues `SetVolumeSize` on the switch lock, and
+            // `set_volume_size` queues `SetVolumeSize` on the switch lock, and
             // `prepare_volumes` takes it before its admission turn.
             Progress::Sent if matches!(request.want, Want::Size { .. }) => host.switch.is_none(),
             Progress::Sent if request.want == Want::Prepare && !self.broken.prepare_switch => {

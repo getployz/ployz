@@ -20,11 +20,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{TargetNode, now};
+use super::{TargetNode, organization};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
+use crate::storage::now;
 
 /// A signed version a client posts with a Deploy, and the image it pinned for it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -127,7 +128,7 @@ pub(crate) fn post(
             }
         })
         .collect();
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     let mut record = record_of(tx, id)?;
     let mut named = BTreeSet::new();
     let mut births = Births::new();
@@ -376,7 +377,7 @@ pub(crate) fn parents(
 ) -> Result<ParentView, RpcError> {
     let environment = crate::scope::environment(tx, who, &query.environment)?;
     trusted.writes(&environment.summary.name)?;
-    let namespace = super::namespace(tx, who, &environment.summary, false)?;
+    let namespace = super::namespace(tx, who, &environment.summary)?;
     let organization = who.organization.as_str();
     let records: Vec<(DeploymentId, Record)> = tx
         .query(
@@ -583,7 +584,7 @@ pub(super) fn pinned(
     if record != recorded {
         write_record(tx, id, &record)?;
     }
-    let organization = crate::build::organization(tx, id)?;
+    let organization = organization(tx, id)?;
     record
         .services
         .into_iter()

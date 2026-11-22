@@ -192,7 +192,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
             tx.execute(
                 "UPDATE config_deployment SET ended = CASE WHEN lease < ?1 THEN lease ELSE ?1 END \
                  WHERE status = 'unknown' AND ended IS NULL",
-                &[crate::deployment::now().into()],
+                &[now().into()],
             )?;
             tx.execute(
                 "UPDATE config_deployment SET ended = admitted \
@@ -217,8 +217,8 @@ const MIGRATIONS: &[(&str, Step)] = &[
             tx.batch(include_str!("migrations/0035_build_interrupted.sql"))?;
             // The clock is read twice, as it was when this shipped: first for the
             // in-flight test, then for the parameters. The reads may straddle a second.
-            let in_flight_at = crate::deployment::now();
-            steps::interrupt_builds(tx, in_flight_at, crate::deployment::now())?;
+            let in_flight_at = now();
+            steps::interrupt_builds(tx, in_flight_at, now())?;
             Ok(None)
         }),
     ),
@@ -561,6 +561,15 @@ pub(crate) fn admit_protect(
         details.extend(reached);
     }
     Err(refused)
+}
+
+/// Seconds since the Unix epoch, the Store's clock for every time it records.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// A bound parameter. Only the column types the schema uses exist.

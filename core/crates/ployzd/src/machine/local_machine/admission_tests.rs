@@ -277,7 +277,7 @@ async fn a_container_kept_before_its_reach_starts_for_a_device_but_not_a_grant()
     assert_eq!(
         start(&fixture, &kept_by(ci().public())),
         Err(AuthorityRefusal::Mismatch {
-            field: field::KEPT_REACH
+            field: MismatchField::KeptReach
         })
     );
 }

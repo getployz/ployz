@@ -12,7 +12,7 @@ use ployz_core::{
         VerifiedBuild, version::MAX_PRESENTED,
     },
 };
-use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
+use ployz_store::{ConfigStore, OrganizationId, Trusted, VersionsQuery};
 
 use crate::cloud::account::Credential;
 use crate::cluster::Carried;
@@ -109,16 +109,12 @@ impl KeptVersions {
                     .await
                     .map_err(Failure::from)
             }
-            Self::Cloud(credential) => crate::cloud::account::config_store::<View>(
-                credential,
-                crate::cloud::http::Via::Cli,
-                "read",
-                &query.to_query(),
-                None,
-            )
-            .await
-            .map_err(Failure::from)
-            .and_then(|view| VersionsQuery::view(view).map_err(Failure::from)),
+            Self::Cloud(credential) => {
+                crate::cloud::account::StoreClient::Cloud(credential, crate::cloud::http::Via::Cli)
+                    .read(&query, &Trusted::default())
+                    .await
+                    .map_err(Failure::from)
+            }
         };
         match read {
             Ok(view) => Carried {

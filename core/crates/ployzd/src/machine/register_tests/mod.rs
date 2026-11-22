@@ -774,14 +774,14 @@ fn enroll_refuses_a_second_founding_and_keeps_the_sealing_key() {
         wireguard_mtu: None,
         pinned: Default::default(),
     };
-    assert_eq!(store.enroll(found("edge")).unwrap(), EnrollPlan::Fresh);
+    assert_eq!(store.enroll(found("edge")).unwrap(), EnrollPlan::Fresh(()));
     let founded = SealingKey::load(&data_dir)
         .unwrap()
         .expect("the founder holds a key");
 
     for name in ["edge", "other"] {
         let plan = store.enroll(found(name)).unwrap();
-        assert_ne!(plan, EnrollPlan::Fresh, "{name}");
+        assert_ne!(plan, EnrollPlan::Fresh(()), "{name}");
         assert_eq!(SealingKey::load(&data_dir).unwrap(), Some(founded.clone()));
     }
 }

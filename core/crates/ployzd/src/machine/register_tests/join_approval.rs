@@ -1,4 +1,5 @@
 use super::*;
+use ployz_core::authority::MismatchField;
 use ployz_core::{
     ApproveJoinRequest, DeviceKey, EnrollAs, EnrollRequest, SetDeviceRequest,
     ShareSealingKeyRequest,
@@ -118,7 +119,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
                 pinned: Default::default()
             })
             .unwrap(),
-        EnrollPlan::Fresh
+        EnrollPlan::Fresh(())
     );
     assert_eq!(
         joiner.record().devices().collect::<Vec<_>>(),
@@ -275,7 +276,7 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     assert!(matches!(
         entry.approve_join(ApproveJoinRequest { approval }).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "an admitting Machine"
+            field: MismatchField::AdmittingMachine
         }))
     ));
     body.admitting_machines = vec![entry.record().id()];
@@ -284,7 +285,7 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     assert!(matches!(
         entry.approve_join(ApproveJoinRequest { approval }).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "approved Devices"
+            field: MismatchField::ApprovedDevices
         }))
     ));
     body.devices.pop();
@@ -293,7 +294,7 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     assert!(matches!(
         entry.approve_join(ApproveJoinRequest { approval }).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "approved passkeys"
+            field: MismatchField::ApprovedPasskeys
         }))
     ));
     body.passkeys.pop();
@@ -302,7 +303,7 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
     assert!(matches!(
         entry.approve_join(ApproveJoinRequest { approval }).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "a sealing recipient"
+            field: MismatchField::SealingRecipient
         }))
     ));
     server.abort();
@@ -504,7 +505,7 @@ async fn an_approval_naming_a_bootstrap_peer_this_machine_never_listed_is_refuse
     assert!(matches!(
         entry.register(request).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "bootstrap peers"
+            field: MismatchField::BootstrapPeers
         }))
     ));
     server.abort();
@@ -616,7 +617,7 @@ async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule(
             })
             .await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "a join confirmation"
+            field: MismatchField::JoinConfirmation
         }))
     ));
     assert!(
@@ -692,7 +693,7 @@ async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_ano
             })
             .await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "a join confirmation"
+            field: MismatchField::JoinConfirmation
         }))
     ));
     assert!(
@@ -777,7 +778,7 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
             })
             .await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "a join confirmation"
+            field: MismatchField::JoinConfirmation
         }))
     ));
     raw.publish_local_machine(forged).await.unwrap();
@@ -924,7 +925,7 @@ async fn enforcing_register_refuses_an_overlapping_allocation_before_proposing()
     assert!(matches!(
         entry.register(request).await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
-            field: "an unused subnet"
+            field: MismatchField::UnusedSubnet
         }))
     ));
     assert!(entry.pending_joins().unwrap().joins.is_empty());
@@ -1376,10 +1377,12 @@ async fn an_approval_that_closes_before_the_install_commits_installs_nothing() {
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
     let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
     let now = Timestamp::now();
-    let (plan, installation) = joiner
+    let EnrollPlan::Fresh(installation) = joiner
         .plan_enrollment(member(registration), None, now)
-        .unwrap();
-    assert_eq!(plan, EnrollPlan::Fresh);
+        .unwrap()
+    else {
+        panic!("an approved registration enrolls fresh");
+    };
 
     let closed = now.plus(24 * 60 * 60 * 1000);
     assert!(matches!(

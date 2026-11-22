@@ -460,7 +460,7 @@ impl ConfigStore {
         // A transaction of its own, before the pin's: a refused pin undoes its writes.
         self.storage.write(|tx| {
             deployment::load(tx, deployment)?;
-            let who = Actor::system(build::organization(tx, deployment)?);
+            let who = Actor::system(deployment::organization(tx, deployment)?);
             pull_request::withdraw_trust(tx, &who, trusted)
         })?;
         self.storage.write(|tx| {

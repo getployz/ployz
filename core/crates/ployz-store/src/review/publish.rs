@@ -188,17 +188,16 @@ pub(crate) fn review_for_save(
     let review = review::review(tx, environment)?;
     if let Err(stale) = review::check(&review, version) {
         let target = canonicalize_environment_intent(environment.working.clone());
-        let probe =
-            deployment::namespace(tx, who, &environment.summary, false).and_then(|namespace| {
-                review::destructive(
-                    tx,
-                    who,
-                    &review,
-                    (&target, &namespace, shipping),
-                    (None, &[], review::consent(review.saved.as_ref())),
-                    trusted.volumes.as_ref(),
-                )
-            });
+        let probe = deployment::namespace(tx, who, &environment.summary).and_then(|namespace| {
+            review::destructive(
+                tx,
+                who,
+                &review,
+                (&target, &namespace, shipping),
+                (None, &[], review::consent(review.saved.as_ref())),
+                trusted.volumes.as_ref(),
+            )
+        });
         return Err(review::with_loss(stale, probe));
     }
     let consumed = crate::branch::end_included(tx, &environment.summary.id, None)?;
@@ -332,7 +331,7 @@ pub(crate) fn publish(
     // Saved State then holds the removal, which the next full Deploy ships: the
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
-    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary)?;
     let (saved, created, _) = save(
         tx,
         who,

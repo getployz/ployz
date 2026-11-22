@@ -602,7 +602,7 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
     .iter()
     .map(|output| format!("-o {output}"))
     .collect();
-    drops.push(format!("-d {}", super::default_cluster_network()));
+    drops.push(format!("-d {}", ployz_core::DEFAULT_CLUSTER_NETWORK));
     fenced(fence, "127.0.0.0/8", allowed, &drops, &PRIVATE_V4)
 }
 

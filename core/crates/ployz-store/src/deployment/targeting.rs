@@ -6,23 +6,44 @@ use ployz_core::ServiceName;
 use super::Stored;
 
 /// The Services a Deployment targets.
-pub(crate) enum Targeting<'a> {
-    /// Every Service, Volume and Config.
-    Full,
+pub(crate) enum Targeting<N> {
+    /// Every Service, Volume and Config; with `prune`, it also tears down every
+    /// other Service running in its Namespace.
+    Full { prune: bool },
     /// These Services and what they mount.
-    Named(&'a [ServiceName]),
+    Named(N),
 }
 
-impl Targeting<'_> {
-    pub(crate) fn is_full(&self) -> bool {
-        matches!(self, Self::Full)
+impl<N> Targeting<N> {
+    pub(crate) const fn is_full(&self) -> bool {
+        matches!(self, Self::Full { .. })
+    }
+
+    pub(crate) const fn prunes(&self) -> bool {
+        matches!(self, Self::Full { prune: true })
+    }
+
+    pub(crate) const fn as_ref(&self) -> Targeting<&N> {
+        match self {
+            Self::Full { prune } => Targeting::Full { prune: *prune },
+            Self::Named(services) => Targeting::Named(services),
+        }
+    }
+
+    pub(crate) fn map<M>(self, named: impl FnOnce(N) -> M) -> Targeting<M> {
+        match self {
+            Self::Full { prune } => Targeting::Full { prune },
+            Self::Named(services) => Targeting::Named(named(services)),
+        }
     }
 }
 
 impl Stored {
-    pub(crate) fn targeting(&self) -> Targeting<'_> {
+    pub(crate) fn targeting(&self) -> Targeting<&[ServiceName]> {
         match self.summary.services.as_slice() {
-            [] => Targeting::Full,
+            [] => Targeting::Full {
+                prune: self.run.prune,
+            },
             named => Targeting::Named(named),
         }
     }

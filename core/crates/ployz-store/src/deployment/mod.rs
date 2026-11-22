@@ -56,9 +56,9 @@ use ployz_core::config::{
     CompiledNodeConfig, EnvironmentNodeType, LowerDeploymentConfig, LowerDeploymentConfigFile,
     LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
     SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, SealedFor,
-    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
-    parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
+    ServiceConfig, ServiceSource, ValuePartOwner, canonicalize_environment_intent,
+    compile_environment_intent, lower_deployment, parse_runtime_preview, project_runtime_outcome,
+    redacted_runtime_preview,
 };
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
@@ -83,7 +83,7 @@ use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::json_text;
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::{Row, Tx, name_of, now};
 use crate::variables;
 
 use self::loss::VolumeLoss;
@@ -324,6 +324,46 @@ pub enum DeploymentWarning {
     /// Something the Deploy found while executing, such as an image that exposes a
     /// port none of a Service's domains send to.
     Deploy { warning: DeployWarning },
+}
+
+impl DeploymentWarning {
+    /// The Deploy's own warning, when it is one.
+    #[must_use]
+    pub fn as_deploy(&self) -> Option<&DeployWarning> {
+        match self {
+            Self::Deploy { warning } => Some(warning),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. } => None,
+        }
+    }
+
+    /// Why the Deploy couldn't check the Ingress Proxies, when that is what it warns of.
+    #[must_use]
+    pub fn ingress_unchecked(&self) -> Option<&str> {
+        match self {
+            Self::IngressUnchecked { cause } => Some(cause),
+            Self::Fragile { .. }
+            | Self::NotSet { .. }
+            | Self::NotSetInFile { .. }
+            | Self::IngressNotServing { .. }
+            | Self::Deploy { .. } => None,
+        }
+    }
+
+    /// Whether it holds only names the Config Store wrote, such as a variable a Deploy
+    /// left out, rather than text a Server reported.
+    #[must_use]
+    pub fn is_named(&self) -> bool {
+        match self {
+            Self::Fragile { .. } | Self::NotSet { .. } | Self::NotSetInFile { .. } => true,
+            Self::IngressNotServing { .. }
+            | Self::IngressUnchecked { .. }
+            | Self::Deploy { .. } => false,
+        }
+    }
 }
 
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
@@ -983,18 +1023,15 @@ impl DeployedNode {
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
     /// Whether it ships every Service: nodes alone can't say, since a full
-    /// Deployment tears down what Saved dropped too.
-    pub(crate) full: bool,
-    /// Whether it also removes every Service of the Namespace this Store never held.
-    pub(crate) prune: bool,
+    /// Deployment tears down what Saved dropped too. A named one holds, by runtime
+    /// name, every Service it hands the runner: the named ones and each they
+    /// reference, changed or not.
+    pub(crate) targeting: Targeting<BTreeSet<ServiceName>>,
     pub(crate) namespace: Namespace,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.
     pub(crate) sourceless: Vec<String>,
-    /// By runtime name, every Service a narrowed one hands the runner: the named
-    /// ones and each they reference, changed or not. Empty for a full one.
-    pub(crate) shipped: BTreeSet<ServiceName>,
 }
 
 impl Frozen {
@@ -1006,7 +1043,10 @@ impl Frozen {
     /// Whether this Deployment hands the runner `service`: every one for a full
     /// Deployment, else a named one, one of a Saved change it ships, or one they reference.
     pub(crate) fn hands(&self, service: &SavedServiceIntent) -> bool {
-        self.full || self.shipped.contains(&service.config.private_dns)
+        match &self.targeting {
+            Targeting::Full { .. } => true,
+            Targeting::Named(shipped) => shipped.contains(&service.config.private_dns),
+        }
     }
 
     /// Whether this Deployment ships Service `name`, named or referenced.
@@ -1104,8 +1144,7 @@ impl Stored {
     /// Service it ran as then, unless a Service of `saved` runs as it now and so
     /// replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
-        let targeting = self.targeting();
-        let full = targeting.is_full();
+        let full = self.targeting().is_full();
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
@@ -1140,21 +1179,47 @@ impl Stored {
                 TargetNode::Volume { .. } | TargetNode::Config { .. } => {}
             }
         }
-        match targeting {
-            Targeting::Full => Ships::All {
-                removals,
-                prune: self.run.prune,
-            },
-            Targeting::Named(targeted) => {
-                let services = targeted
+        Ships {
+            targeting: self.targeting().map(|targeted| {
+                targeted
                     .iter()
                     .filter(|service| shipped.contains(service))
                     .cloned()
-                    .collect();
-                Ships::Named { services, removals }
-            }
+                    .collect()
+            }),
+            removals,
         }
     }
+}
+
+/// The Organization Deployment `id` belongs to.
+pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
+    tx.query(
+        "SELECT organization_id FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment"))?
+    .parse(0, "Deployment")
+}
+
+/// Insert a `config_deployment` row of `columns`, each named beside its value.
+fn insert(tx: &mut dyn Tx, columns: &[(&str, crate::storage::Param<'_>)]) -> Result<(), RpcError> {
+    let names = columns
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let slots = (1..=columns.len())
+        .map(|at| format!("?{at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values: Vec<crate::storage::Param<'_>> = columns.iter().map(|(_, value)| *value).collect();
+    tx.execute(
+        &format!("INSERT INTO config_deployment ({names}) VALUES ({slots})"),
+        &values,
+    )
+    .map(drop)
 }
 
 /// What a Deployment row reads as, from an unaliased `config_deployment`. The
@@ -1762,21 +1827,61 @@ pub(crate) fn cluster_domain(
 
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
-/// Organization holds that, then suffixed with this Environment's ID. `reserve`
-/// fixes a new one; a plan only looks.
+/// Organization holds that, then suffixed with this Environment's ID. A plan only
+/// looks; [`reserve_namespace`] fixes a new one.
 pub(crate) fn namespace(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentSummary,
-    reserve: bool,
 ) -> Result<Namespace, RpcError> {
-    let rows = tx.query(
+    match kept_namespace(tx, environment)? {
+        Some(namespace) => Ok(namespace),
+        None => free_namespace(tx, who, environment),
+    }
+}
+
+/// [`namespace`], fixed for `environment` if it was new.
+pub(crate) fn reserve_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
+    if let Some(namespace) = kept_namespace(tx, environment)? {
+        return Ok(namespace);
+    }
+    let namespace = free_namespace(tx, who, environment)?;
+    tx.execute(
+        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            who.organization.as_str().into(),
+            namespace.as_str().into(),
+            environment.id.as_str().into(),
+        ],
+    )?;
+    Ok(namespace)
+}
+
+fn kept_namespace(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentSummary,
+) -> Result<Option<Namespace>, RpcError> {
+    tx.query(
         "SELECT namespace FROM config_namespace WHERE environment_id = ?1",
         &[environment.id.as_str().into()],
-    )?;
-    if let Some(row) = rows.first() {
-        return row.parse::<Namespace>(0, "Namespace");
-    }
+    )?
+    .first()
+    .map(|row| row.parse::<Namespace>(0, "Namespace"))
+    .transpose()
+}
+
+/// The first of `environment`'s candidate Namespaces no other Environment of `who`'s
+/// Organization holds.
+fn free_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+) -> Result<Namespace, RpcError> {
     let base = format!("{}-{}", environment.project, environment.name);
     let suffix: String = environment
         .id
@@ -1800,17 +1905,6 @@ pub(crate) fn namespace(
             .is_empty();
         if namespace.is_reserved() || taken {
             continue;
-        }
-        if reserve {
-            tx.execute(
-                "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
-                 VALUES (?1, ?2, ?3)",
-                &[
-                    who.organization.as_str().into(),
-                    namespace.as_str().into(),
-                    environment.id.as_str().into(),
-                ],
-            )?;
         }
         return Ok(namespace);
     }
@@ -2138,16 +2232,6 @@ fn invalid_evidence(what: &str) -> RpcError {
         format!("The runner's {what} does not match this Deployment"),
         json!({}),
     )
-}
-
-/// Seconds since the Unix epoch: when a Deployment was admitted, which the idle
-/// rule for Branches reads.
-pub(crate) fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 #[cfg(test)]

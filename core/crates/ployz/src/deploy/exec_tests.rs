@@ -1574,9 +1574,14 @@ fn global_spec() -> ResolvedServiceSpec {
 #[test]
 fn only_a_global_service_container_is_keyed_by_its_spec() {
     let namespace = test_namespace();
-    let slots = Slots::new("run", &namespace, &[]);
+    let run = ployz_core::DeploymentLogId::parse("run").unwrap();
+    let slots = Slots::new(&run, &namespace, &[]);
     let (replicated, global) = (spec(Some(0), None, None), global_spec());
-    let per_run = |index: usize| format!("{}:{index}", slots.plan);
+    let per_run = |index: usize| {
+        ployz_core::CreationKey::for_slot(&run, &slots.digest, index)
+            .as_str()
+            .to_owned()
+    };
     let key = |slot: SlotKey| slot.creation_key.as_str().to_owned();
 
     assert_eq!(
