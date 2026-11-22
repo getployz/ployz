@@ -848,8 +848,7 @@ mod tests {
                 .subcommand_matches("add")
                 .unwrap();
             let remote =
-                Remote::from_target(&crate::handlers::server::provision::remote_target(matches))
-                    .unwrap();
+                Remote::from_target(&crate::enrollment::plan::remote_target(matches)).unwrap();
             let ssh = remote.ssh();
             let scp = remote.scp();
             for command in [&ssh, &scp] {

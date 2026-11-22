@@ -255,7 +255,7 @@ impl EnrollPlan {
             destination: text("destination").map(|address| Destination {
                 address,
                 ssh_key: text("ssh-key"),
-                remote: crate::handlers::server::provision::remote_target(matches),
+                remote: remote_target(matches),
             }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),
@@ -438,6 +438,15 @@ impl Reach {
             .await?),
         }
     }
+}
+
+/// Where `server add` or `server init` installs and how it reaches it.
+pub(crate) fn remote_target(matches: &ArgMatches) -> RemoteTarget {
+    RemoteTarget::new(
+        matches.get_one::<String>("destination").cloned(),
+        matches.get_one::<String>("ssh-key").cloned(),
+        crate::cli::ssh_timeout(matches),
+    )
 }
 
 /// This host's daemon socket, as a `--connect` value.
