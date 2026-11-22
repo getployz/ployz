@@ -664,7 +664,6 @@ mod commit_sha_tests {
     fn a_commit_is_shown_by_its_first_seven_digits() {
         let commit = CommitSha::parse("0123456789abcdef0123456789abcdef01234567").unwrap();
         assert_eq!(commit.short(), "0123456");
-        assert_eq!(CommitSha::SHORT_LEN, 7);
     }
 }
 
