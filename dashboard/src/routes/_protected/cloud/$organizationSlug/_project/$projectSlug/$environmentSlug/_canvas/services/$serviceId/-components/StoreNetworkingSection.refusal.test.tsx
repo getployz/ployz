@@ -6,7 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import * as pending from "#/modules/config-store/store-pending";
 import * as views from "#/modules/config-store/store-view.queries";
 import * as writes from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import type { StoreService } from "./StoreServiceDrawer";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 

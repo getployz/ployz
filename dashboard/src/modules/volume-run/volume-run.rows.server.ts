@@ -7,7 +7,7 @@ import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { serversUnanswered, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { volumeRunRequested, volumeRunTaken } from "#/modules/volume-run/volume-run.events";
@@ -501,7 +501,7 @@ export type VolumeRunPlan =
   | (Extract<ClusterPlan, { ok: true }> & { readonly environment: { readonly project: string; readonly name: string } })
   | Extract<ClusterPlan, { ok: false }>;
 
-export const unanswered: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
+export const unanswered = serversUnanswered("unavailable");
 
 /**
  * Why a born Volume can't go to `to`: its Ployz, or the Ployz of a Server that holds a copy now, can't check where a

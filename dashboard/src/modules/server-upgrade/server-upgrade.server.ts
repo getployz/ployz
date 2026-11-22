@@ -32,7 +32,7 @@ import {
   type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { SERVERS_UNANSWERED_MESSAGE, type StoreRefusal } from "#/lib/refusal";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
@@ -573,7 +573,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   const unavailable = (message: string) =>
     ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
   const observed = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
-  if (observed._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
+  if (observed._tag === "None") return unavailable(SERVERS_UNANSWERED_MESSAGE);
   if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
   const { version: from, name } = observed.value;
   return (attempt: string) => Effect.gen(function* () {

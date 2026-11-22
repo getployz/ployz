@@ -1,8 +1,6 @@
 import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, EnvironmentRef as StoreEnvironmentRef, JsonValue, SealingTargetsQuery } from "@ployz/sdk";
-import { Data, Schema } from "effect";
-
-/** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
-export type StoreRefusal = { code: string; message: string; details: JsonValue };
+import { Schema } from "effect";
+import type { StoreRefusal } from "#/lib/refusal";
 
 /**
  * A Cloud command's refusal, in the shape Store tools refuse: the input `field` it names and the JSON Schema that fits
@@ -14,16 +12,6 @@ export type CommandRefusal = StoreRefusal & {
   readonly writes: "none" | "unknown";
   readonly retry?: { readonly tool: string; readonly input: JsonValue };
 };
-
-/**
- * The Store refused a call, in the RPC error vocabulary: `conflict` carries fresh state, `not_found` names what's
- * missing. Cloud fails with it; the browser's writer rejects with it.
- */
-export class StoreRefused extends Data.TaggedError("StoreRefused")<StoreRefusal> {
-  get refusal(): StoreRefusal {
-    return { code: this.code, message: this.message, details: this.details };
-  }
-}
 
 const protectedDetails = Schema.is(Schema.Struct({ protected: Schema.Literal(true) }));
 /** The Store's refusal of a write into a Protected Environment by someone who can't protect it: it waits for someone who can. */

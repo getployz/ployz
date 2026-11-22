@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { asRecord } from "#/lib/json";
 import { MACHINE_ID_PATTERN } from "#/lib/schema";
 import { listOrganizationServers } from "#/modules/runtime/connections.server";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 type Server = Effect.Success<ReturnType<typeof listOrganizationServers>>[number];
 

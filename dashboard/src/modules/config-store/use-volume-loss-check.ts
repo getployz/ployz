@@ -1,6 +1,6 @@
 import type { DeletionCheck } from "#/modules/config-store/deletion";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import type { StoreRefused } from "./store.contract";
+import type { StoreRefused } from "#/lib/refusal";
 import { volumeLossItems } from "#/modules/volume-placement/volume-placement.review";
 import { volumeLoss, type VolumeLoss } from "./store-volumes";
 

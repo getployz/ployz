@@ -1,6 +1,6 @@
 import { Effect, Option, Schema } from "effect";
 import { Auth } from "#/modules/identity/auth.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { completeGithubConnect, startGithubConnect } from "#/modules/github/github-connect.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { htmlPage, seeOther } from "#/server/api-route";

@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { Context, Effect, Layer } from "effect";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { accessFor } from "#/modules/github/github-access";
 import {
   GithubApi, isGithubObservationNotFound, listGithubRepositoryBranches, readGithubRepositoryContents,

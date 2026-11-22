@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
 import { Cause, Clock, Effect, Schema } from "effect";
 import type { DialTiming, MachineId } from "@ployz/sdk";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";

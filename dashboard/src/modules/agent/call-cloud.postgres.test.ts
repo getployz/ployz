@@ -5,13 +5,13 @@ import { eq, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud, NO_SERVERS_MESSAGE } from "#/modules/agent/call-cloud.server";
 import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { presetGrant } from "#/modules/identity/token-grant";
-import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { freshApproval, freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
 import { forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
@@ -695,7 +695,7 @@ describe("callCloud", () => {
         const heard = yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services));
         expect(heard).toEqual({
           ok: false,
-          refusal: { code: "unavailable", message: UNREACHABLE_MESSAGE, details: { fix: { fix: "connect_servers" } } },
+          refusal: { code: "unavailable", message: SERVERS_UNANSWERED_MESSAGE, details: { fix: { fix: "connect_servers" } } },
         });
       }
     }));

@@ -8,7 +8,7 @@ import { askerCaller } from "#/modules/approvals/apply.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { refused, type StoreRefusal } from "#/lib/refusal";
 import { type Actor, callerEnvironments } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
@@ -29,7 +29,6 @@ import { Forbidden, NotFound } from "#/server/public-error";
 type ProposalRow = typeof operationProposals.$inferSelect;
 
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
-const refused = (code: string, message: string): Refused => ({ ok: false, refusal: { code, message, details: null } });
 
 type StepAct = {
   readonly proposalStep: number | null;

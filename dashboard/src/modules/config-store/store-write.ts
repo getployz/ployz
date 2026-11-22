@@ -7,7 +7,8 @@ import { SealError } from "#/modules/sealing/seal-error";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
-import { commandEnvironment, commandEnvironments, isProtectedAsk, StoreRefused } from "./store.contract";
+import { commandEnvironment, commandEnvironments, isProtectedAsk } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { cachedRevision, dropHiddenRefusals, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 

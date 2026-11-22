@@ -15,7 +15,7 @@ import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
 import { useStoreBusy } from "#/modules/config-store/store-pending";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DashboardPage } from "#/components/dashboard-page";

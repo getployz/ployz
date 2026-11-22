@@ -6,7 +6,8 @@ import {
   type PublicError as PublicErrorData,
 } from "#/lib/public-error";
 import { holdsQuery, isTaggedFailure, loggableCause, runRedactedLog, safeSummary, typedFailureSummary } from "#/server/log-redaction";
-import type { CommandRefusal, StoreRefusal } from "#/modules/config-store/store.contract";
+import type { CommandRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 
 export class NotFound extends Data.TaggedError("NotFound")<{
   readonly message: string;

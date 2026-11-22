@@ -30,7 +30,7 @@ import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, require
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useStorePendingName } from "#/modules/config-store/store-pending";
 import { useCommitHold } from "#/components/store-write/use-commit-hold";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";
 import { SettingsDanger, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";

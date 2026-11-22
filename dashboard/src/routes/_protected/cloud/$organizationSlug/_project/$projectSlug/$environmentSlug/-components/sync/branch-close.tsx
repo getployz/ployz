@@ -5,7 +5,7 @@ import type { BranchView, EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog } from "#/components/deletion-dialog";
 import { type DeletionCheck, type DeletionItem } from "#/modules/config-store/deletion";
 import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useVolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { branchQuery, useStoreView } from "#/modules/config-store/store-view.queries";

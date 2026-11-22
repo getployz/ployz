@@ -14,7 +14,7 @@ import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeSt
 import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
 import { mountSplit } from "#/modules/config-store/deploy-waits";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { useCommitHold } from "#/components/store-write/use-commit-hold";

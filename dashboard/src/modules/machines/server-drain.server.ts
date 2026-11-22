@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { DrainReport, DrainScope, MachineId, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq } from "drizzle-orm";
 import { Clock, Data, Effect, Option } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
@@ -17,7 +18,7 @@ import {
   type DrainEndCodeWithoutMessage,
   type DrainState,
 } from "#/modules/machines/server-drain-states";
-import { drainPlan, planDrain, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
@@ -261,7 +262,7 @@ export const bindDrainRun = (request: DrainRequest, runId: string) =>
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   // No Cluster paired is nothing to wait for.
-  if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: UNREACHABLE_MESSAGE });
+  if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
   if (session.status !== "connected") {
     return yield* new ServerDrainUnreachable({ operation: "open organization runtime", cause: session.status });
   }

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 
 import type { MachineId } from "@ployz/sdk";
 import { Data, Effect } from "effect";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal } from "#/lib/refusal";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { type ServerPolicyChangeRequestedEventData, createKeyedServerPolicyChangeRequestedEvent, serverPolicyChangeRequested } from "#/modules/machines/machines.events";

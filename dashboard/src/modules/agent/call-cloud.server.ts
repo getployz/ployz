@@ -2,14 +2,15 @@ import "@tanstack/react-start/server-only";
 import { carriedInto } from "#/modules/approvals/approvals.server";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, OwnedNamespace, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Clock, Data, Effect } from "effect";
-import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
+import { type StoreResult } from "#/modules/config-store/store.contract";
+import { refused, SERVERS_UNANSWERED_MESSAGE, StoreRefused } from "#/lib/refusal";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners, sealedNames, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/runtime/connections.server";
-import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { answerMetrics } from "#/modules/metrics/agent-metrics.server";
 import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
@@ -38,14 +39,12 @@ import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };
 
-const refusal = (code: string, message: string, details: StoreRefusal["details"] = null) =>
-  ({ ok: false, refusal: { code, message, details } }) as const;
 const answer = <A>(value: A): StoreResult<A> => ({ ok: true, value });
 
 const CONNECT_SERVERS = { fix: { fix: "connect_servers" } };
-const unreachable = () => refusal("unavailable", UNREACHABLE_MESSAGE, CONNECT_SERVERS);
+const unreachable = () => refused("unavailable", SERVERS_UNANSWERED_MESSAGE, CONNECT_SERVERS);
 export const NO_SERVERS_MESSAGE = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
-const noSuch = (what: string) => refusal("not_found", `No such ${what}.`);
+const noSuch = (what: string) => refused("not_found", `No such ${what}.`);
 
 /** A failure before Cloud wrote anything, so the agent may retry without checking its runs. */
 class BeforeWrite<E> extends Data.TaggedError("CallCloud.BeforeWrite")<{ readonly error: E }> {}
@@ -65,7 +64,7 @@ const noServers = (): ServersAnswer => {
 /** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
 const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
   return (yield* countOrganizationMachines(organizationId)) === 0
-    ? refusal("conflict", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
+    ? refused("conflict", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
     : unreachable();
 });
 
@@ -75,7 +74,7 @@ const runtimeAsk = (organizationId: string, query: CloudQuery, readable: Readonl
     if (connected === null) return yield* notConnected(organizationId);
     return yield* connected.agentAsk(query, readable, sealed).pipe(
       Effect.map(answer),
-      Effect.catch((error) => Effect.succeed(refusal(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
+      Effect.catch((error) => Effect.succeed(refused(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
     );
   }).pipe(Effect.scoped);
 
@@ -181,7 +180,7 @@ const metricsRead = Effect.fn("CallCloud.metricsRead")(function* (caller: Caller
     readable = owned.filter((row) => unheld(caller, "metrics:read", row.environment) === null).map((row) => row.namespace);
   }
   const read = yield* answerMetrics(caller.organization.id, query, yield* Clock.currentTimeMillis, readable);
-  if (read.type === "not_configured") return refusal("conflict", "Metrics aren’t enabled on this Cloud.");
+  if (read.type === "not_configured") return refused("conflict", "Metrics aren’t enabled on this Cloud.");
   return answer(read.answer);
 });
 
@@ -203,7 +202,7 @@ const logsRead = Effect.fn("CallCloud.logsRead")(function* (caller: Caller, quer
     const fresh = yield* sealedNames(organizationId, query.namespace);
     if (fresh !== null && fresh.every((name) => used.includes(name))) return heard;
     if (rerun === SEALED_REREADS) {
-      return refusal("unavailable", "Sealed variables kept changing while the logs were read. Ask again.");
+      return refused("unavailable", "Sealed variables kept changing while the logs were read. Ask again.");
     }
     sealed = fresh === null ? null : [...new Set([...used, ...fresh])].sort((a, b) => a.localeCompare(b));
   }
@@ -249,13 +248,13 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
     }
     case "logs":
       if (caller.support !== null && !caller.support.logs) {
-        return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
+        return refused("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
       return yield* logsRead(caller, query);
     case "server_logs":
       // The support logs switch promises only Container output, so it never opens a Server's own logs.
       if (caller.support !== null) {
-        return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
+        return refused("forbidden", "Ployz support can't read an Organization's Server logs.");
       }
       // A Server's own processes log for every Environment it runs, so a token held to some may not read them.
       return yield* runtimeRead(caller, query, "logs:read", null, { organizationWide: true });
@@ -322,7 +321,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         action.server.name,
       );
     case "set_server": {
-      if (action.accepts_ingress === true) return refusal("invalid_argument", "Turn web traffic on from the Server page or the terminal.");
+      if (action.accepts_ingress === true) return refused("invalid_argument", "Turn web traffic on from the Server page or the terminal.");
       return yield* admitted(
         yield* setServer(caller, action.server.machine, policyChangeOf(action), call),
         { kind: "server", machine: action.server.machine },
@@ -386,13 +385,13 @@ type CloudError = Effect.Error<ReturnType<typeof act>> | Effect.Error<ReturnType
 type Failure = CloudError extends infer E ? E extends BeforeWrite<infer Read> ? Read : E : never;
 
 const refusalOf = (error: Failure, acting: boolean) => {
-  if (error instanceof StoreRefused) return refusal(error.code, error.message, error.details);
-  if (error instanceof NotFound) return refusal("not_found", error.message);
-  if (error instanceof Validation) return refusal("invalid_argument", error.message);
-  if (error instanceof Conflict) return error.message === UNREACHABLE_MESSAGE ? unreachable() : refusal("conflict", error.message);
+  if (error instanceof StoreRefused) return refused(error.code, error.message, error.details);
+  if (error instanceof NotFound) return refused("not_found", error.message);
+  if (error instanceof Validation) return refused("invalid_argument", error.message);
+  if (error instanceof Conflict) return error.message === SERVERS_UNANSWERED_MESSAGE ? unreachable() : refused("conflict", error.message);
   return acting
-    ? refusal("unavailable", "Cloud couldn't finish this. It may have reached your servers; check its runs.", { writes: "unknown" })
-    : refusal("unavailable", "Cloud couldn't answer this. Try again.");
+    ? refused("unavailable", "Cloud couldn't finish this. It may have reached your servers; check its runs.", { writes: "unknown" })
+    : refused("unavailable", "Cloud couldn't answer this. Try again.");
 };
 
 export const callCloud = (caller: Caller, call: CloudCall, approvalId: string | null = null) =>

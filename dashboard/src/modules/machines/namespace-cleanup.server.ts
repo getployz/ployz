@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, lt } from "drizzle-orm";
 import { Data, Effect } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import type { Actor } from "#/modules/identity/actor";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { type NamespaceCleanupRequestedEventData, namespaceCleanupRequested } from "#/modules/machines/machines.events";
@@ -41,7 +42,7 @@ const unownedSession = Effect.fn("NamespaceCleanup.session")(function* (actor: A
     return yield* new Conflict({ userFacing: true, message: `${namespace} belongs to an Environment: delete that Environment in its Settings instead.` });
   }
   const session = yield* (yield* OrganizationRuntime).open(organization.id);
-  if (session.status !== "connected") return yield* new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." });
+  if (session.status !== "connected") return yield* new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
   return session.connected;
 });
 

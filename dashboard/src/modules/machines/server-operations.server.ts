@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
@@ -18,8 +19,7 @@ import {
 import { dockerVolumeName } from "#/modules/runtime/naming";
 import { Conflict } from "#/server/public-error";
 
-export const UNREACHABLE_MESSAGE = "Your servers aren't answering. Try again once they are.";
-const unreachable = () => new Conflict({ userFacing: true, message: UNREACHABLE_MESSAGE });
+const unreachable = () => new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
 
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const volumeName = ({ id }: DataLossIdentity) => `${id.machine_id}/${id.name}`;

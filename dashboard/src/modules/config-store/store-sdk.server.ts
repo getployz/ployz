@@ -9,7 +9,7 @@ import { storeChangeSources } from "./store.change-sources";
 import { ADVISORY_LOCK } from "#/server/advisory-locks";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 
 /** Whether the Store refused with `code`. */

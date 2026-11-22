@@ -1,6 +1,6 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing, Removal } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import type { Write } from "./store-write";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */

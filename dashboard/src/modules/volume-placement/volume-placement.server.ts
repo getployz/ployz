@@ -5,7 +5,8 @@ import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused, type StoreCall, type StoreRefusal } from "#/modules/config-store/store.contract";
+import { type StoreCall } from "#/modules/config-store/store.contract";
+import { serversUnanswered, type StoreRefusal, StoreRefused } from "#/lib/refusal";
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
@@ -47,9 +48,9 @@ const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belon
 const READ: StoreRefusal = { code: "conflict", message: "A restore reads this copy.", details: null };
 const DELETING: StoreRefusal = { code: "conflict", message: "This copy is being deleted.", details: null };
 const STARTING: StoreRefusal = { code: "conflict", message: "A Deploy or restore is starting. Try again.", details: null };
-const NO_ANSWER: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
+const NO_ANSWER = serversUnanswered("unavailable");
 /** Staging refuses while a Server is silent or its report hasn't arrived, the frame gate's way and with its code. */
-export const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
+export const UNANSWERED = serversUnanswered("unanswered");
 const NOT_CONNECTED: StoreRefusal = { code: "unavailable", message: "Cloud has no connection to your servers. Try again once one is connected.", details: null };
 
 /**

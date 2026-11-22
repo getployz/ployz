@@ -5,6 +5,7 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
+import { SERVERS_UNANSWERED_START } from "#/lib/refusal";
 import { openPublicPortsServerFn, setUpCloudflareServerFn } from "#/modules/ingress/doors.functions";
 import { clusterIngressKeys, clusterIngressObservationQueryOptions, clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { serverEnrollmentsQueryOptions } from "#/modules/machines/waiting/waiting.queries";
@@ -13,7 +14,6 @@ import { CloudflareChoice } from "./cluster-setup";
 import { forgetCloudflare, holdCloudflare, readHeldCloudflare, useHeldCloudflare } from "./first-cloudflare";
 import { type CardCloudflare, firstTunnelState } from "./servers-page-state";
 
-const NOT_ANSWERING = "Your servers aren't answering";
 const ANSWER_TRIES = 12;
 const ANSWER_WAIT_MS = 5_000;
 
@@ -34,7 +34,7 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
       break;
     } catch (error) {
       const message = toErrorMessage(error, "Ployz Cloud didn't answer.");
-      if (message.startsWith(NOT_ANSWERING) && tried < ANSWER_TRIES) {
+      if (message.startsWith(SERVERS_UNANSWERED_START) && tried < ANSWER_TRIES) {
         await new Promise((resolve) => setTimeout(resolve, ANSWER_WAIT_MS));
         continue;
       }

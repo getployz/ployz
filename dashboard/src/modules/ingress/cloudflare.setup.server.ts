@@ -15,6 +15,7 @@ import {
   refusalWords,
   tunnelToken,
 } from "#/modules/ingress/cloudflare.api.server";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
 import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
@@ -93,7 +94,7 @@ const OPEN_PUBLIC_LIMIT_MS = 60_000;
 export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (organizationId: string) {
   const database = yield* Database;
   const opened = yield* (yield* OrganizationRuntime).open(organizationId);
-  if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
+  if (opened.status !== "connected") return yield* refuse(SERVERS_UNANSWERED_MESSAGE);
   // Checked and opened under the lock setup reserves with, so no setup lands between the check and the ports opening.
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
@@ -203,7 +204,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
 
   const finish = Effect.gen(function* () {
     const opened = yield* (yield* OrganizationRuntime).open(organizationId);
-    if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
+    if (opened.status !== "connected") return yield* refuse(SERVERS_UNANSWERED_MESSAGE);
     // A Cluster founded closed holds no Public Door to hand over, so only the tunnel opens and the ports stay shut.
     const founding = yield* closedFounding(organizationId);
     if (founding.kind === "unknown") return yield* refuse("Your servers aren't answering yet. Try again once they all do.");
