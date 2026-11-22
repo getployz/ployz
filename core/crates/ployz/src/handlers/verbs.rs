@@ -2,7 +2,6 @@
 //! to know before calling it. `VERBS` is the only list.
 
 use clap::Command;
-use ployz_agent_tools::ToolId;
 use ployz_store::Permission;
 use serde::Serialize;
 
@@ -1198,7 +1197,7 @@ mod tests {
     use ployz_store::{Claim, Command};
 
     use super::*;
-    use ployz_store::tools::ToolId;
+    use ployz_agent_tools::ToolId;
 
     #[test]
     fn help_leaves_out_json_where_the_command_refuses_it() {

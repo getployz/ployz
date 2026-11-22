@@ -22,7 +22,11 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-#[expect(dead_code, reason = "This file's Engine answers only the Server list.")]
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "This file's Engine answers only the Server list."
+)]
 #[path = "connect/support.rs"]
 mod engine;
 
