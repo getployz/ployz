@@ -76,6 +76,15 @@ impl LocalMachine {
         })? {
             join_approval::Entered::Fresh(fresh) => fresh,
             join_approval::Entered::Replayed(stored) => {
+                if !confirmed && request.join_confirmation.is_none() {
+                    self.redraft_refused_join(
+                        &stored,
+                        &assignment.machine,
+                        snapshot.network,
+                        &snapshot.machines,
+                        request.first_key,
+                    )?;
+                }
                 return self
                     .replay_join(stored, &request, replicated, &publication)
                     .await;

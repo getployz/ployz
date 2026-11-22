@@ -244,6 +244,59 @@ async fn a_join_answered_under_another_key_heals_with_the_key_the_joiner_waits_f
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// The draft of a join answered under the wrong key can go before anyone approves it
+/// again: its window closes and it is pruned, or the answer predates kept drafts. The
+/// joiner's next Register offers the join again with a fresh window and the key it waits
+/// for, and the old answer still stands until an approval under that key replaces it.
+#[tokio::test]
+async fn a_wrong_key_join_is_offered_again_after_its_draft_is_gone() {
+    let (entry, _, _, directory, server) = participating().await;
+    let wrong = Signer::from_seed(&[1; 32]);
+    let right = Signer::from_seed(&[2; 32]);
+    enforce(&entry, &wrong).await;
+    enforce(&entry, &right).await;
+    let joiner = LocalMachineStore::open(tempfile::tempdir().unwrap().path()).unwrap();
+    let mut request = request("joiner", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    let waits_for = ployz_core::first_key::FirstKeyHint::Device {
+        code: DeviceKey::from(right.public()).code(),
+    };
+    request.first_key = Some(waits_for);
+    assert!(entry.register(request.clone()).await.is_err());
+    let approve = async |signer: &Signer| {
+        let mut body = entry.pending_joins().unwrap().joins.pop().expect("offered");
+        body.signer = signer.public().into();
+        let approval = Signed::sign(&body, signer).unwrap();
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: approval.clone(),
+            })
+            .await
+            .map(|_| approval)
+    };
+    let spent = approve(&wrong).await.unwrap();
+    entry.register(request.clone()).await.unwrap();
+    std::fs::remove_file(directory.join("join-approvals.json")).unwrap();
+
+    let replayed = entry.register(request.clone()).await.unwrap();
+
+    assert_eq!(replayed.assigned_machine.join_approval, Some(spent));
+    assert_eq!(
+        entry
+            .pending_joins()
+            .unwrap()
+            .first_keys
+            .get(&request.machine_id),
+        Some(&waits_for)
+    );
+    let fresh = approve(&right).await.unwrap();
+    let healed = entry.register(request.clone()).await.unwrap();
+    assert_eq!(healed.assigned_machine.join_approval, Some(fresh));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// Once a Forget answers, this Machine holds the forgotten Server removed. Every join route
 /// for it is refused after that, a resend carrying the approval it was admitted under
 /// included, and none lists it again.

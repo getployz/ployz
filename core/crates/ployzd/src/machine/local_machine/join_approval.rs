@@ -171,8 +171,9 @@ impl LocalMachine {
     }
 
     /// Before a joiner registers again: when a person approved its join afresh to replace
-    /// an answer the joiner refused, drop that answer so the fresh approval admits it.
-    /// `confirmed` when the joiner's row is out, which keeps the answer it confirmed.
+    /// an answer the joiner refused, drop that answer so the fresh approval admits it. An
+    /// approval that no longer verifies here leaves the answer as it is. `confirmed` when
+    /// the joiner's row is out, which keeps the answer it confirmed.
     pub(crate) fn give_way_to_a_fresh_approval(
         &self,
         machine: MachineId,
@@ -189,6 +190,13 @@ impl LocalMachine {
         else {
             return Ok(());
         };
+        let body = fresh.open().map_err(Error::JoinRefused)?;
+        if self
+            .verify_join(&fresh, &body.machine, body.network)
+            .is_err()
+        {
+            return Ok(());
+        }
         self.approvals.release_join(machine, &fresh)
     }
 
@@ -382,7 +390,7 @@ impl LocalMachine {
             fresh.machine, machine.id,
             "a join is admitted as it was entered"
         );
-        let mut joins = self.read_joins()?;
+        let joins = self.read_joins()?;
         let approval = approval.or_else(|| {
             joins
                 .proposals
@@ -407,6 +415,51 @@ impl LocalMachine {
             }
             return Ok(approval);
         }
+        self.draft_join(joins, machine, network, peers, first_key)?;
+        Err(Error::JoinRefused(AuthorityRefusal::Unsigned {
+            purpose: Purpose::Join,
+        }))
+    }
+
+    /// Offer `machine`'s join for a person's approval again when its answer was approved
+    /// under a key other than the one it waits for, the joiner hasn't confirmed, and no draft
+    /// waits for a signature: its window closed, the answer predates kept drafts, or the
+    /// approval that would replace the answer no longer verifies. The fresh draft gets a new
+    /// window and the key the joiner named; the old answer stands until an approval under
+    /// that key replaces it.
+    pub(crate) fn redraft_refused_join(
+        &self,
+        stored: &super::consumption::JoinResult,
+        machine: &Machine,
+        network: ipnet::Ipv4Net,
+        peers: &[Machine],
+        first_key: Option<FirstKeyHint>,
+    ) -> Result<(), Error> {
+        if !self.answered_with_another_key(stored, first_key) {
+            return Ok(());
+        }
+        let joins = self.read_joins()?;
+        let now = Timestamp::now();
+        if joins
+            .proposals
+            .get(&machine.id)
+            .is_some_and(|proposal| proposal.approval.is_none() && proposal.body.expires_at >= now)
+        {
+            return Ok(());
+        }
+        self.draft_join(joins, machine, network, peers, first_key)
+    }
+
+    /// Save a draft of `machine`'s join, with a fresh window and the trust this Machine
+    /// holds now, for a person to sign.
+    fn draft_join(
+        &self,
+        mut joins: Joins,
+        machine: &Machine,
+        network: ipnet::Ipv4Net,
+        peers: &[Machine],
+        first_key: Option<FirstKeyHint>,
+    ) -> Result<(), Error> {
         let record = self.record();
         let cluster = crate::sealing_key::SealingKey::load(self.owner.data_dir())
             .map_err(Error::JoinRecord)?
@@ -452,9 +505,6 @@ impl LocalMachine {
                 first_key,
             },
         );
-        self.save_joins(joins)?;
-        Err(Error::JoinRefused(AuthorityRefusal::Unsigned {
-            purpose: Purpose::Join,
-        }))
+        self.save_joins(joins)
     }
 }
