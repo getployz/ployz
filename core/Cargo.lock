@@ -4184,7 +4184,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "ed25519-dalek",
- "ployz",
+ "hyper-util",
  "ployz-core",
  "ployz-decide",
  "rcgen",
@@ -4199,6 +4199,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower",
 ]
 
 [[package]]
