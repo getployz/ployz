@@ -49,7 +49,7 @@ pub enum Apply {
 }
 
 /// What one Setting is: everything `get`, `explain`, the catalog and validation say
-/// about it. Behavior that differs by Setting (`value`, `set`, `unset`) stays in code.
+/// about it. Behavior that differs by Setting beyond its field (`set`, `unset`) stays in code.
 #[derive(Clone, Copy)]
 pub(crate) struct Spec {
     pub(crate) name: &'static str,
@@ -58,6 +58,9 @@ pub(crate) struct Spec {
     pub(crate) description: &'static str,
     /// The core config field it writes, as change rows and restores name it.
     pub(crate) field: &'static str,
+    /// Its config field, when it is one field `get`, `set`, `unset` and a review's
+    /// restore move whole.
+    pub(crate) access: Option<Access>,
     /// The core Setting a review row of it is, if any.
     pub(crate) core: Option<Setting>,
     pub(crate) apply: Apply,
@@ -69,6 +72,27 @@ pub(crate) struct Spec {
     /// One to three values `set` accepts.
     pub(crate) examples: fn() -> Value,
 }
+
+/// One config field, read and written as the JSON it serializes to.
+#[derive(Clone, Copy)]
+pub(crate) struct Access {
+    pub(crate) read: fn(&AuthoredServiceConfig) -> Value,
+    pub(crate) restore: fn(&mut AuthoredServiceConfig, Value) -> Result<(), serde_json::Error>,
+}
+
+/// The [`Access`] to the config field at `config.$field`.
+macro_rules! access {
+    ($($field:ident).+) => {
+        $crate::settings::Access {
+            read: |config| serde_json::json!(config.$($field).+),
+            restore: |config, value| {
+                config.$($field).+ = serde_json::from_value(value)?;
+                Ok(())
+            },
+        }
+    };
+}
+pub(crate) use access;
 
 /// The sources a Setting means anything for.
 #[derive(Clone, Copy)]
@@ -148,6 +172,7 @@ impl ServiceSetting {
                 label: "CPU limit",
                 description: "Most vCPUs each replica may use. Unset means no limit.",
                 field: "cpuLimit",
+                access: Some(access!(cpu_limit)),
                 core: Some(Setting::CpuLimit),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -160,6 +185,7 @@ impl ServiceSetting {
                 label: "Healthcheck",
                 description: "A check a new replica must pass before it takes traffic: an HTTP path on the port the domains send traffic to (PORT with no domains, or when they differ) or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
                 field: "healthcheck",
+                access: Some(access!(healthcheck)),
                 core: Some(Setting::Healthcheck),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -210,6 +236,7 @@ impl ServiceSetting {
                 label: "Container image",
                 description: "The container image each replica runs.",
                 field: "source.image",
+                access: None,
                 core: None,
                 apply: Apply::Staged,
                 needs: Needs::Image,
@@ -222,6 +249,7 @@ impl ServiceSetting {
                 label: "Max retries",
                 description: "How often an on-failure restart policy restarts a replica.",
                 field: "maxRetries",
+                access: Some(access!(max_retries)),
                 core: Some(Setting::MaxRetries),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -234,6 +262,7 @@ impl ServiceSetting {
                 label: "Memory limit",
                 description: "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit.",
                 field: "memLimit",
+                access: Some(access!(mem_limit)),
                 core: Some(Setting::MemLimit),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -253,6 +282,7 @@ impl ServiceSetting {
                 label: "Pre-deploy command",
                 description: "Runs once in a new replica before a Deploy starts the Service.",
                 field: "preDeployCommand",
+                access: Some(access!(pre_deploy_command)),
                 core: Some(Setting::PreDeployCommand),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -265,6 +295,7 @@ impl ServiceSetting {
                 label: "Private DNS",
                 description: "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name.",
                 field: "privateDns",
+                access: Some(access!(private_dns)),
                 core: Some(Setting::PrivateDns),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -278,6 +309,7 @@ impl ServiceSetting {
                 label: "Registry credentials",
                 description: "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it.",
                 field: "source.credentials",
+                access: None,
                 core: None,
                 apply: Apply::Immediate,
                 needs: Needs::Image,
@@ -300,6 +332,7 @@ impl ServiceSetting {
                 label: "Replicas",
                 description: "How many copies of the Service run. A number, or a count for each region like {\"fsn\":2,\"syd\":1}.",
                 field: "replicas",
+                access: Some(access!(replicas)),
                 core: Some(Setting::Replicas),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -315,6 +348,7 @@ impl ServiceSetting {
                 label: "Restart policy",
                 description: "When a stopped replica restarts.",
                 field: "restartPolicy",
+                access: Some(access!(restart_policy)),
                 core: Some(Setting::RestartPolicy),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -327,6 +361,7 @@ impl ServiceSetting {
                 label: "Start command",
                 description: "Overrides the image's command. Unset runs the image's own.",
                 field: "startCommand",
+                access: Some(access!(start_command)),
                 core: Some(Setting::StartCommand),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -339,6 +374,7 @@ impl ServiceSetting {
                 label: "Template",
                 description: "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
                 field: "template",
+                access: Some(access!(template)),
                 core: None,
                 // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
                 apply: Apply::Immediate,
@@ -362,6 +398,7 @@ impl ServiceSetting {
                 label: "Update order",
                 description: "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
                 field: "updateOrder",
+                access: Some(access!(update_order)),
                 core: Some(Setting::UpdateOrder),
                 apply: Apply::Staged,
                 needs: Needs::Any,
@@ -482,6 +519,9 @@ impl ServiceSetting {
 
     /// Its value for a Service with `config` and Deployment Policy `policy`.
     pub(crate) fn value(self, config: &AuthoredServiceConfig, policy: &Policy) -> Value {
+        if let Some(access) = self.spec().access {
+            return self.shown((access.read)(config));
+        }
         match (self, &config.source) {
             (Self::Git(git), _) => git.value(config),
             (Self::Policy(setting), _) => setting.value(policy),
@@ -489,18 +529,22 @@ impl ServiceSetting {
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
                 self.shown(json!(credentials))
             }
-            (Self::Image | Self::RegistryCredential, _) => Value::Null,
-            (Self::Healthcheck, _) => self.shown(json!(config.healthcheck)),
-            (Self::CpuLimit, _) => json!(config.cpu_limit),
-            (Self::MaxRetries, _) => json!(config.max_retries),
-            (Self::MemLimit, _) => json!(config.mem_limit),
-            (Self::PreDeployCommand, _) => json!(config.pre_deploy_command),
-            (Self::PrivateDns, _) => json!(config.private_dns),
-            (Self::Replicas, _) => json!(config.replicas),
-            (Self::RestartPolicy, _) => json!(config.restart_policy),
-            (Self::StartCommand, _) => json!(config.start_command),
-            (Self::Template, _) => json!(config.template),
-            (Self::UpdateOrder, _) => json!(config.update_order),
+            (
+                Self::Image
+                | Self::RegistryCredential
+                | Self::CpuLimit
+                | Self::Healthcheck
+                | Self::MaxRetries
+                | Self::MemLimit
+                | Self::PreDeployCommand
+                | Self::PrivateDns
+                | Self::Replicas
+                | Self::RestartPolicy
+                | Self::StartCommand
+                | Self::Template
+                | Self::UpdateOrder,
+                _,
+            ) => Value::Null,
         }
     }
 
@@ -697,12 +741,11 @@ impl ServiceSetting {
     }
 
     fn store(self, config: &mut AuthoredServiceConfig, value: Value) -> Result<(), RpcError> {
-        let mut document = serde_json::to_value(&*config).expect("service settings are JSON");
-        if let Some(fields) = document.as_object_mut() {
-            fields.insert(self.name().into(), value);
-        }
-        *config = self.decode(document)?;
-        Ok(())
+        let access = self
+            .spec()
+            .access
+            .ok_or_else(|| self.invalid("is not one config field"))?;
+        (access.restore)(config, value).map_err(|error| self.invalid(&error.to_string()))
     }
 
     /// Text that spells a number becomes the number, for numeric Settings, and text

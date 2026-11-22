@@ -1,9 +1,10 @@
 use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
 use super::{NodeChange, Review};
+use crate::git::GitSetting;
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::seal_scrub::ledger::{SealLedger, sealed};
-use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
+use crate::settings::{Access, NodeName, ServiceSetting, SettingPath, Target, access, shown};
 use crate::storage::Tx;
 use crate::trusted::Evidence;
 use crate::{Trusted, error, scope};
@@ -95,39 +96,39 @@ enum ServiceField {
 /// to.
 struct Compared {
     setting: Setting,
-    read: fn(&AuthoredServiceConfig) -> Value,
-    restore: fn(&mut AuthoredServiceConfig, Value) -> Result<(), serde_json::Error>,
+    access: Access,
 }
-macro_rules! compared {
-    ($setting:ident, $($field:ident).+) => {
-        Compared {
-            setting: Setting::$setting,
-            read: |config| json!(config.$($field).+),
-            restore: |config, value| {
-                config.$($field).+ = serde_json::from_value(value)?;
-                Ok(())
-            },
+impl Compared {
+    /// `setting` as its review row and config field.
+    const fn of(setting: ServiceSetting) -> Self {
+        let spec = setting.spec();
+        match (spec.core, spec.access) {
+            (Some(setting), Some(access)) => Self { setting, access },
+            _ => panic!("a compared Setting is one config field with a review row"),
         }
-    };
+    }
 }
 /// In the order a Service's rows list them, but for managed hostnames, which list
 /// after its routes.
 const COMPARED: [Compared; 13] = [
-    compared!(PreDeployCommand, pre_deploy_command),
-    compared!(StartCommand, start_command),
-    compared!(Healthcheck, healthcheck),
-    compared!(RestartPolicy, restart_policy),
-    compared!(MaxRetries, max_retries),
-    compared!(UpdateOrder, update_order),
-    compared!(Replicas, replicas),
-    compared!(CpuLimit, cpu_limit),
-    compared!(MemLimit, mem_limit),
-    compared!(PrivateDns, private_dns),
-    compared!(BuildMethod, build.build_method),
-    compared!(DockerfilePath, build.dockerfile_path),
-    compared!(BuildCommand, build.command),
+    Compared::of(ServiceSetting::PreDeployCommand),
+    Compared::of(ServiceSetting::StartCommand),
+    Compared::of(ServiceSetting::Healthcheck),
+    Compared::of(ServiceSetting::RestartPolicy),
+    Compared::of(ServiceSetting::MaxRetries),
+    Compared::of(ServiceSetting::UpdateOrder),
+    Compared::of(ServiceSetting::Replicas),
+    Compared::of(ServiceSetting::CpuLimit),
+    Compared::of(ServiceSetting::MemLimit),
+    Compared::of(ServiceSetting::PrivateDns),
+    Compared::of(ServiceSetting::Git(GitSetting::BuildMethod)),
+    Compared::of(ServiceSetting::Git(GitSetting::DockerfilePath)),
+    Compared::of(ServiceSetting::Git(GitSetting::BuildCommand)),
 ];
-const MANAGED_HOSTNAMES: Compared = compared!(ManagedHostnames, managed_hostnames);
+const MANAGED_HOSTNAMES: Compared = Compared {
+    setting: Setting::ManagedHostnames,
+    access: access!(managed_hostnames),
+};
 enum VariableField {
     Id(Delta<String>),
     Value(Box<Delta<VersionedValue>>),
@@ -340,7 +341,10 @@ fn compared_changes(
     before: &AuthoredServiceConfig,
     after: &AuthoredServiceConfig,
 ) {
-    if let Some(delta) = Delta::between(&(compared.read)(before), &(compared.read)(after)) {
+    if let Some(delta) = Delta::between(
+        &(compared.access.read)(before),
+        &(compared.access.read)(after),
+    ) {
         effects.push(Effect::Service {
             id: id.to_owned(),
             field: ServiceField::Compared(compared, delta),
@@ -1714,7 +1718,7 @@ impl ServiceField {
             },
             Self::Template(delta) => service.config.template.clone_from(&delta.before),
             Self::Compared(compared, delta) => {
-                (compared.restore)(&mut service.config, delta.before.clone())
+                (compared.access.restore)(&mut service.config, delta.before.clone())
                     .map_err(|_| error::corrupt("Service setting"))?;
             }
         }

@@ -45,6 +45,8 @@ mod service;
 mod settings;
 mod storage;
 mod teardown;
+#[cfg(feature = "test-support")]
+pub mod testing;
 mod trusted;
 mod typed_address;
 mod variables;

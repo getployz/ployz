@@ -8,8 +8,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-#[path = "../../ployz-store/tests/backend/mod.rs"]
-mod backend;
+use ployz_store::testing::backend;
 
 use ployz_agent_tools::{
     Act, Action, Ask, Call, CloudQuery, DashboardPage, Fix, Gate, INSTRUCTIONS, MetricsQuery,
