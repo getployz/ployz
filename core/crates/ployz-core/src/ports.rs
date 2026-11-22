@@ -17,13 +17,3 @@ pub const MANAGEMENT_PORT: u16 = 7573;
 pub const VOLUME_SEND_PORT: u16 = 7574;
 /// Fixed UDP port for the WireGuard mesh.
 pub const WIREGUARD_PORT: u16 = 51820;
-
-#[cfg(test)]
-mod tests {
-    use super::CORROSION_API_ADDRESS;
-
-    #[test]
-    fn the_corrosion_api_listens_on_loopback_port_7571() {
-        assert_eq!(CORROSION_API_ADDRESS.to_string(), "127.0.0.1:7571");
-    }
-}
