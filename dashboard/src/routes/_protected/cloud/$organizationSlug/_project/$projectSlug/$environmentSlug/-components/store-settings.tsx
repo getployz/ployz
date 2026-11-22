@@ -18,7 +18,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { rememberProjectRename } from "#/modules/config-store/renamed-projects";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
-import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
+import { StoreTeardownSection } from "./store-teardown-section";
 import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StoreRegionSection } from "./store-region-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";

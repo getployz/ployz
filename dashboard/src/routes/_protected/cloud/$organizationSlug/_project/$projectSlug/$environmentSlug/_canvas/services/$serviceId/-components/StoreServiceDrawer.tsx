@@ -31,7 +31,7 @@ import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
-import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
+import { SettingsDisclosure } from "./settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { RowWarning } from "#/components/settings/row-warning";
 import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";

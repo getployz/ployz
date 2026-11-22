@@ -3,7 +3,7 @@ import { useHydrated } from "@tanstack/react-router";
 import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, VolumeListing } from "@ployz/sdk";
 import { InfoHint } from "#/components/info-hint";
-import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SHARED_VOLUME_WHY } from "#/modules/volume-placement/volume-placement";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { Button } from "#/components/ui/button";

@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 import { GlobeIcon, LockIcon, XIcon } from "lucide-react";
 import { RowWarning } from "#/components/settings/row-warning";
-import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
+import { SettingsDisclosure } from "./_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId/-components/settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";

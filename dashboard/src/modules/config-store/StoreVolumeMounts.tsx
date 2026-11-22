@@ -4,7 +4,8 @@ import type { DiffView, EnvironmentRef, JsonValue, ServiceListing, VolumeListing
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { FieldError } from "#/components/ui/field";
-import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { RowWarning } from "#/components/settings/row-warning";
+import { SHARED_VOLUME_WHY } from "#/modules/volume-placement/volume-placement";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { MountEditor, mountFailure, type MountEditing } from "./MountEditor";

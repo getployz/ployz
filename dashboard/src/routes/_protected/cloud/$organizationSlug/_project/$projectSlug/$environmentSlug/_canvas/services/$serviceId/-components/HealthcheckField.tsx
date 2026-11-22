@@ -7,7 +7,7 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { InputGroupButton } from "#/components/ui/input-group";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
-import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
+import { SettingsDisclosure } from "./settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { serviceSetting, settingError } from "#/modules/config-store/catalog";
 import { healthcheckOf, healthcheckValue, type Healthcheck, type HealthcheckKind } from "#/modules/config-store/healthcheck";

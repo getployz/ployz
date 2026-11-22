@@ -19,7 +19,7 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
-import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SHARED_VOLUME_WHY } from "#/modules/volume-placement/volume-placement";
 import { SettingsEmpty } from "#/components/settings/settings-list";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { useVolumeCopies, type VolumeCopiesData, VolumeCopiesPanel } from "./StoreVolumeCopies";

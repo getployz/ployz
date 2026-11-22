@@ -2,7 +2,7 @@ import { Suspense, type ReactNode } from "react";
 import type { ServiceListing } from "@ployz/sdk";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { ListRowSkeletons, ShowMore } from "#/components/show-more";
+import { ListRowSkeletons, ShowMore } from "./show-more";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
