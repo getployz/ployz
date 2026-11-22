@@ -311,7 +311,7 @@ signed for it. So `--yes` ships nothing else that is staged: when any other chan
 in any service, volume or config, the deploy stops before it signs and names what changed:
 
 ```text
-error: api has a staged change at api.command that no person approved. --yes and CI or agent keys ship only the images --image names. Deploy it from a terminal. Nothing signed or deployed.
+error: api has a staged change at api.startCommand that no person approved. --yes and CI or agent keys ship only the images --image names. Deploy it from a terminal. Nothing signed or deployed.
 next: ployz deploy api
 ```
 

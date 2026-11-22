@@ -351,7 +351,7 @@ pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(),
         let service = (change.node.node_type == EnvironmentNodeType::Service)
             .then(|| ServiceName::parse(&change.name).ok())
             .flatten();
-        let image = format!("{}.image", change.name);
+        let source = format!("{}.source", change.name);
         let named = service
             .as_ref()
             .is_some_and(|service| edits.iter().any(|edit| edit.service == *service));
@@ -368,7 +368,11 @@ pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(),
         if change.lifecycle != ReviewLifecycleKind::Update {
             return Err(pending(None));
         }
-        if let Some(other) = change.settings.iter().find(|setting| setting.path != image) {
+        if let Some(other) = change
+            .settings
+            .iter()
+            .find(|setting| setting.path != source || !image_only(&setting.before, &setting.after))
+        {
             return Err(pending(Some(&other.path)));
         }
         let Some(staged) = change.settings.first() else {
@@ -378,13 +382,30 @@ pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(),
             return Err(match service.clone() {
                 Some(service) => Refused::Unnamed {
                     service,
-                    image: staged.after.as_str().unwrap_or("IMAGE").to_owned(),
+                    image: staged
+                        .after
+                        .get("image")
+                        .and_then(Value::as_str)
+                        .unwrap_or("IMAGE")
+                        .to_owned(),
                 },
                 None => pending(Some(&staged.path)),
             });
         }
     }
     Ok(())
+}
+
+/// Whether a `SERVICE.source` change, as the Store reports it, only swaps the image: both
+/// sides an image source, alike in all else, such as registry credentials.
+fn image_only(before: &Value, after: &Value) -> bool {
+    let rest = |source: &Value| {
+        let mut source = source.as_object()?.clone();
+        (source.remove("type")? == "image").then_some(())?;
+        source.remove("image")?;
+        Some(source)
+    };
+    matches!((rest(before), rest(after)), (Some(before), Some(after)) if before == after)
 }
 
 /// Refuse a deploy that moves any Service to a staged region, as `regions` lists the
