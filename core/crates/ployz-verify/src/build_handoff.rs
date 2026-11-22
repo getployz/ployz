@@ -669,7 +669,7 @@ struct State {
 }
 
 impl State {
-    /// `github_end` in core/crates/ployz-store/src/build.rs, for run `run`; its guard is
+    /// `github_end` in core/crates/ployz-store/src/build/github.rs, for run `run`; its guard is
     /// `github_end_holds` in `ployz-decide`.
     fn github_end(&mut self, broken: Broken, run: Run, end: End) -> Result<Status, ()> {
         // Without the grant guard the Store treats an Unstarted end like any other.
