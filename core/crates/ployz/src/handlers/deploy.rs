@@ -509,18 +509,16 @@ fn images(
         expect: Some(working.environment.revision),
         changes,
     };
+    // Another edit after the read could be overwritten and lost, so stop and let the
+    // person deploy again over what is there now.
     let edited = match store.try_edit(&staging) {
         Ok(edited) => edited,
-        // Another edit came after the read: stage over it, as `ployz set` would, with
-        // nothing to set back, since the read no longer says what was there.
         Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Conflict => {
-            let edited = store.try_edit(&Edit {
-                expect: None,
-                ..staging
-            })?;
-            kept.extend(edits.iter().map(|edit| edit.service.clone()));
-            undo.clear();
-            edited
+            return Err(Error::coded(
+                RpcErrorCode::Conflict,
+                "Someone changed this environment while the deploy read it. Run the deploy \
+                 again. Nothing staged or deployed.",
+            ));
         }
         Err(error) => return Err(error.into()),
     };

@@ -320,8 +320,9 @@ Deploy those changes at a terminal first, or discard them.
 
 A deploy that stops while it signs or uploads, such as one that says `Nothing signed or
 deployed.`, sets back each image it saved over another image. It warns instead when it can't: for
-a service that had no image, since the new image replaced its source, when someone else edited the
-environment while the deploy ran, or when setting it back fails. `ployz diff` then shows what is
+a service that had no image, since the new image replaced its source, or when setting it back
+fails. If someone else edits the environment just as the deploy stages its images, the deploy
+stops with nothing staged and asks you to run it again. `ployz diff` then shows what is
 staged. Once the deploy is sent to be queued, the image you named stays in the service's settings
 even if the deploy is refused or fails, and the next deploy ships it. If
 you set an image with `ployz set web.image=...`, deploy it with
