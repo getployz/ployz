@@ -53,9 +53,7 @@ pub enum Way {
 /// The caller's context for a comparison.
 pub struct Policy {
     pub way: Way,
-    /// Rows `from` marked Never sync.
     pub from_marks: BTreeSet<RowId>,
-    /// Rows `into` marked Never sync.
     pub into_marks: BTreeSet<RowId>,
     /// Lineages `into` uses live.
     pub live: BTreeSet<String>,

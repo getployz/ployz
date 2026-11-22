@@ -94,7 +94,6 @@ pub enum RotationTarget {
 /// The owner's answer to one move.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RotationEdge {
-    /// Write this rotation.
     Write(CopyRotation),
     /// Allowed with nothing to write: the rotation already holds, or the move is
     /// a stop that keeps it.

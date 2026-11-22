@@ -681,19 +681,16 @@ impl RequestedServiceSpec {
         self.volume_graph().volumes()
     }
 
-    /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
         self.volume_graph().mounts()
     }
 
-    /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
         self.config_graph().configs()
     }
 
-    /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
         self.config_graph().mounts()
@@ -754,19 +751,16 @@ impl ResolvedServiceSpec {
         self.volume_graph().volumes()
     }
 
-    /// Volume mounts in this spec's graph.
     #[must_use]
     pub fn mounts(&self) -> &[ServiceMount] {
         self.volume_graph().mounts()
     }
 
-    /// Config definitions in this spec's graph.
     #[must_use]
     pub fn configs(&self) -> &[ConfigSpec] {
         self.config_graph().configs()
     }
 
-    /// Config mounts in this spec's graph.
     #[must_use]
     pub fn config_mounts(&self) -> &[ConfigMount] {
         self.config_graph().mounts()

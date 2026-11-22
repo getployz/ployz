@@ -16,7 +16,6 @@ use crate::config::Generator;
 pub struct Shown(String);
 
 impl Shown {
-    /// Fixed wording.
     #[must_use]
     pub fn words(words: &'static str) -> Self {
         Self(words.to_owned())

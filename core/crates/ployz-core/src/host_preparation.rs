@@ -62,7 +62,6 @@ impl PrepState {
         interrupted
     }
 
-    /// Records `step` as running since `begun`.
     pub fn begin(&mut self, step: Step, begun: &Begun) {
         match step {
             Step::Docker => self.docker = begun.running(),
