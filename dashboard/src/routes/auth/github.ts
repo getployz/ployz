@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Data, Effect } from "effect";
 import { claimSignInCookie } from "#/modules/identity/claim-sign-in.server";
+import { seeOther } from "#/server/api-route";
 import { Auth } from "#/modules/identity/auth.server";
 import { runAppEffect } from "#/server/run.server";
 
@@ -46,10 +47,6 @@ export function handleGithubSignIn(request: Request) {
     ),
     { signal: request.signal },
   );
-}
-
-function seeOther(location: string) {
-  return new Response(null, { status: 303, headers: { location, "cache-control": "no-store" } });
 }
 
 // Browsers parse Location the way URL does: `/\evil.com` and `/<tab>/evil.com` start with one slash and still leave.

@@ -37,8 +37,7 @@ class GithubWebhookReadError extends Data.TaggedError(
 
 /** A push, check suite or pull request GitHub sent that Ployz can't read: GitHub keeps it as failed, so it shows there. */
 function rejectDelivery(input: { deliveryId: string; eventKind: string; rejection: "malformed" | "unsupported_action" }) {
-  console.warn("[github:webhook] rejected delivery", input);
-  return Effect.succeed(new Response("Rejected webhook", { status: 422 }));
+  return Effect.logWarning("Rejected webhook delivery.", input).pipe(Effect.as(new Response("Rejected webhook", { status: 422 })));
 }
 
 export const handleGithubWebhookRequest = Effect.fn(
@@ -56,11 +55,11 @@ export const handleGithubWebhookRequest = Effect.fn(
 
   const valid = yield* verifyWebhookSignature(body, signature);
   if (!valid) {
-    console.warn("[github:webhook] invalid signature", { deliveryId, event });
+    yield* Effect.logWarning("Webhook signature invalid.", { deliveryId, event });
     return new Response("Invalid signature", { status: 401 });
   }
   if (!deliveryId) {
-    console.warn("[github:webhook] missing delivery id", { event });
+    yield* Effect.logWarning("Webhook has no delivery id.", { event });
     return new Response("Missing delivery id", { status: 400 });
   }
 
@@ -184,6 +183,6 @@ export const handleGithubWebhookRequest = Effect.fn(
     return new Response("OK", { status: 200 });
   }
 
-  console.warn("[github:webhook] unsupported event", { deliveryId, event });
+  yield* Effect.logWarning("Webhook event unsupported.", { deliveryId, event });
   return new Response("Unsupported webhook event", { status: 422 });
 });

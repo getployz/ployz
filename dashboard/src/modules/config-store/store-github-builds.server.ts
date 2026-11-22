@@ -19,6 +19,7 @@ import { createGithubBuildRunCompletedEvent } from "#/modules/inngest/events";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 import { requirements, serversLacking } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
+import { bearerToken } from "#/server/bearer";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 
@@ -271,12 +272,10 @@ export const storeGithubBuildOpen = Effect.fn("StoreGithub.open")(function* (tar
   return (yield* heldGithubBuild(target.build))?.status === "building";
 });
 
-const bearer = (request: Request) => /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? null;
-
 /** The runner's verified OIDC claims; the Store checks them against the build's repository, workflow and run. */
 const runnerClaims = Effect.fn("StoreGithub.claims")(function* (request: Request) {
   const config = yield* AppConfig;
-  const token = bearer(request);
+  const token = bearerToken(request.headers);
   if (!token) return yield* new Unauthorized();
   const claims = yield* verifyGithubOidcToken(token, config.app.url.origin).pipe(Effect.mapError(() => new Unauthorized()));
   return { repository_id: claims.repository_id, job_workflow_ref: claims.job_workflow_ref, run_id: claims.run_id, event_name: claims.event_name } satisfies GithubClaims;

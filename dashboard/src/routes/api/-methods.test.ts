@@ -1,55 +1,41 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
-import * as run from "#/server/run.server";
+import { describe, expect, it } from "vitest";
+import { isApiRoute } from "#/server/api-route";
 
-// No route does any work here: probing a handler only shows whether it refuses its own method outright.
-let working = () => {};
-beforeAll(() => {
-  vi.spyOn(run, "runAppEffect").mockImplementation(() => {
-    working();
-    return new Promise(() => {});
-  });
-});
+type Handler = (ctx: { request: Request; params: Record<string, string> }) => Promise<Response>;
+type ServerRoute = { options: { server?: { handlers?: Partial<Record<string, Handler>> } } };
 
-type Handler = (ctx: { request: Request; params: Record<string, string> }) => Response | Promise<Response>;
-type ApiRoute = { options: { server?: { handlers?: Partial<Record<string, Handler>> } } };
+const routes = import.meta.glob<{ Route: ServerRoute }>(
+  ["./**/*.ts", "../mcp.ts", "../[.]well-known/**/*.ts", "!./**/-*", "!../**/-*", "!./**/*.test.ts"],
+  { eager: true },
+);
 
-const routes = import.meta.glob<{ Route: ApiRoute }>(["./**/*.ts", "!./**/-*", "!./**/*.test.ts"], { eager: true });
-const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+/** Routes that answer for themselves: the health check touches no runtime, and `/api/$` is the 404 itself. */
+const OWN_ANSWER = new Set(["./health.ts", "./$.ts"]);
+/** The Organization routes are wrapped once their change log has moved. */
+const isOrganizationRoute = (path: string) => path.startsWith("./org/");
 
 const request = (method: string) => new Request("http://localhost/api", { method });
 
-/** Whether `handler` answers `method` itself, rather than refusing it with a 405. */
-async function serves(handler: Handler, method: string) {
-  const worked = new Promise<undefined>((resolve) => {
-    working = () => resolve(undefined);
-  });
-  const answer = await Promise.race([
-    Promise.resolve()
-      .then(() => handler({ request: request(method), params: {} }))
-      .catch(() => undefined),
-    worked,
-  ]);
-  return !(answer instanceof Response && answer.status === 405);
-}
-
 describe("API routes", () => {
-  it.each(Object.entries(routes))("%s refuses other methods with 405 JSON naming only what it serves", async (_, { Route }) => {
+  it.each(Object.entries(routes))("%s is built by apiRoute or cliRoute", (path, { Route }) => {
+    const handlers = Route.options.server?.handlers;
+    if (handlers === undefined || OWN_ANSWER.has(path) || isOrganizationRoute(path)) return;
+    expect(isApiRoute(handlers), "build its handlers with apiRoute or cliRoute").toBe(true);
+  });
+
+  it.each(Object.entries(routes))("%s refuses other methods with 405 JSON naming only what it serves", async (path, { Route }) => {
     const handlers = Route.options.server?.handlers ?? {};
-    const keyed = METHODS.filter((method) => handlers[method] !== undefined);
-    if (keyed.length === 0) return;
+    const served = Object.keys(handlers).filter((method) => method !== "ANY");
+    if (served.length === 0 || path === "./$.ts") return;
     const fallback = handlers["ANY"];
     if (fallback === undefined) throw new Error("no ANY handler: other methods render the app's HTML shell");
-    const other = METHODS.find((method) => !keyed.includes(method) && !(method === "HEAD" && keyed.includes("GET")));
+    const other = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].find((method) => !served.includes(method));
     if (other === undefined) return;
     const response = await fallback({ request: request(other), params: {} });
     expect(response.status).toBe(405);
     expect(response.headers.get("content-type")).toContain("application/json");
     const allow = (response.headers.get("allow") ?? "").split(", ");
-    for (const method of allow) {
-      const handler = handlers[method] ?? (method === "HEAD" ? handlers["GET"] : undefined);
-      expect(handler, `Allow names ${method}, which has no handler`).toBeDefined();
-      if (handler !== undefined) expect(await serves(handler, method), `Allow names ${method}, which answers 405`).toBe(true);
-    }
-    for (const method of keyed) expect(allow).toContain(method);
+    expect(allow.filter((method) => method !== "HEAD")).toEqual(served);
+    if (served.includes("GET")) expect(allow).toContain("HEAD");
   });
 });

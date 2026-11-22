@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
 import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval } from "#/modules/approvals/approvals.server";
-import { callStore, refusal } from "#/modules/config-store/config-store.server";
+import { callStore } from "#/modules/config-store/config-store.server";
+import { cliRefusalResponse } from "#/server/public-error";
 import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, StoreSealingTargets, type StoreCall } from "#/modules/config-store/store.contract";
@@ -36,15 +37,15 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (upload !== undefined) {
     // A blob lands in no Environment: unreferenced, it's released after a day, and the Deployment that names it meets the Store's Environment check.
     const lacking = lacks(caller, "changes:deploy", "store");
-    if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: { permission: "changes:deploy" } });
+    if (lacking !== null) return cliRefusalResponse({ code: "forbidden", message: lacking, details: { permission: "changes:deploy" } });
     const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
     return refused === undefined
       ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
-      : refusal(refused);
+      : cliRefusalResponse(refused);
   }
   const body = yield* Effect.tryPromise(() => readCappedBody(request, MAX_REQUEST_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
   if (body === null) {
-    return refusal({ code: "invalid_argument", message: "The request is over 4 MiB.", details: { max_bytes: MAX_REQUEST_BYTES } });
+    return cliRefusalResponse({ code: "invalid_argument", message: "The request is over 4 MiB.", details: { max_bytes: MAX_REQUEST_BYTES } });
   }
   const input: unknown = yield* Effect.try({
     try: () => JSON.parse(new TextDecoder().decode(body)),
@@ -58,7 +59,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     : targets !== undefined ? { operation: "read", query: { query: "sealing_targets", ...targets } } : undefined;
   if (call === undefined) {
     const expected = operation === "read" ? "query" : operation === "sealing" ? "sealing target" : "command";
-    return refusal({ code: "invalid_argument", message: `Expected a ${expected}.`, details: null });
+    return cliRefusalResponse({ code: "invalid_argument", message: `Expected a ${expected}.`, details: null });
   }
   // Without a server, the CLI hears so before the Store reads anything.
   const sealing = operation === "sealing" ? yield* readClusterSealingToSeal(caller.organization.id) : undefined;
@@ -70,19 +71,19 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   const trusted = call.operation === "write" && (asks || named !== null)
     ? yield* redeemApproval(caller, named, yield* redeeming(caller.organization.id, call.command, named))
     : { ok: true, approval: "not_required" } as const;
-  if (!trusted.ok) return refusal(trusted.refusal);
+  if (!trusted.ok) return cliRefusalResponse(trusted.refusal);
   // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
   const unprotect = call.operation === "write"
     ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
     )
     : null;
-  if (unprotect !== null && "refused" in unprotect) return refusal(unprotect.refused);
+  if (unprotect !== null && "refused" in unprotect) return cliRefusalResponse(unprotect.refused);
   if (unprotect?.asked) {
     const refused = protectorOnly(caller, unprotect.asked.preview.environment);
-    if (refused !== null) return refusal(refused);
+    if (refused !== null) return cliRefusalResponse(refused);
     const gated = yield* gateOperation(caller, named, unprotect.asked);
-    if (!gated.ok) return refusal(gated.refusal);
+    if (!gated.ok) return cliRefusalResponse(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
   // Every write here is a CLI's: a plain-text secret from one that predates sealing is refused with the update to run.
@@ -97,8 +98,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     return Response.json(answer, { headers: { "cache-control": "no-store" } });
   }
   if (call.operation === "write" && result.refusal.code === "approval_required") {
-    return refusal(yield* requestApproval(caller, call.command, result.refusal, named));
+    return cliRefusalResponse(yield* requestApproval(caller, call.command, result.refusal, named));
   }
-  return refusal(result.refusal);
+  return cliRefusalResponse(result.refusal);
 });
 

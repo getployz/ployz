@@ -4,14 +4,10 @@ import { NonRetriableError } from "inngest";
 import { parseErrorEvidence } from "#/lib/error-evidence";
 import { asRecord } from "#/lib/json";
 import { runAppEffect } from "#/server/run.server";
-import { loggableCause, PublicErrorCategory } from "#/server/public-error";
+import { PublicErrorCategory } from "#/lib/public-error";
+import { loggableCause } from "#/server/log-redaction";
+import { isRetriableCategory } from "#/server/public-error";
 import type { AppServices } from "#/server/runtime.server";
-
-const NON_RETRIABLE_PUBLIC_ERROR_CATEGORIES = new Set([
-  "conflict",
-  "validation",
-  "not-found",
-]);
 
 const decodePublicFailure = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -30,10 +26,7 @@ export function isNonRetriableInngestCause(cause: unknown): boolean {
   );
   if (evidence.retriable === false) return true;
   const decoded = decodePublicFailure(failure);
-  return (
-    Option.isSome(decoded) &&
-    NON_RETRIABLE_PUBLIC_ERROR_CATEGORIES.has(decoded.value.publicErrorCategory)
-  );
+  return Option.isSome(decoded) && !isRetriableCategory(decoded.value.publicErrorCategory);
 }
 
 function describeCause(cause: Cause.Cause<unknown>) {

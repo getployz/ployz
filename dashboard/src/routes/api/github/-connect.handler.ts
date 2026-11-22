@@ -3,18 +3,18 @@ import { Auth } from "#/modules/identity/auth.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { completeGithubConnect, startGithubConnect } from "#/modules/github/github-connect.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
-
-const seeOther = (location: string) => new Response(null, { status: 303, headers: { location, "cache-control": "no-store" } });
+import { htmlPage, seeOther } from "#/server/api-route";
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 function refusal(status: number, message: string, link = { href: "/cloud", label: "Back to Ployz" }) {
-  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub not connected</title>`
-    + `<body style="font:15px system-ui,sans-serif;max-width:28rem;margin:20vh auto;padding:0 1.5rem;color:#111">`
-    + `<h1 style="font-size:18px;font-weight:600">GitHub not connected</h1><p style="color:#555">${escape(message)}</p>`
-    + `<p><a href="${escape(link.href)}" style="color:#111">${escape(link.label)}</a></p></body>`;
-  return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  return htmlPage(
+    status,
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub not connected</title>`
+      + `<body style="font:15px system-ui,sans-serif;max-width:28rem;margin:20vh auto;padding:0 1.5rem;color:#111">`
+      + `<h1 style="font-size:18px;font-weight:600">GitHub not connected</h1><p style="color:#555">${escape(message)}</p>`
+      + `<p><a href="${escape(link.href)}" style="color:#111">${escape(link.label)}</a></p></body>`,
+  );
 }
 
 const signedIn = Effect.fn("GithubConnect.signedIn")(function* (request: Request) {
@@ -22,8 +22,6 @@ const signedIn = Effect.fn("GithubConnect.signedIn")(function* (request: Request
   if (session === null) return yield* new Unauthorized();
   return { userId: session.user.id };
 });
-
-type Program = Parameters<typeof runAppEffect<string, unknown>>[0];
 
 const ClaimDetails = Schema.Struct({ claim_url: Schema.String });
 
@@ -45,10 +43,6 @@ const answer = <R>(effect: Effect.Effect<string, unknown, R>) => effect.pipe(
   ),
 );
 
-function respond(request: Request, effect: Program) {
-  return runAppEffect(answer(effect), { signal: request.signal });
-}
-
 export const githubConnectResponse = (request: Request) => {
   const params = new URL(request.url).searchParams;
   return answer(Effect.gen(function* () {
@@ -57,13 +51,9 @@ export const githubConnectResponse = (request: Request) => {
   }));
 };
 
-export function handleGithubConnect(request: Request) {
-  return runAppEffect(githubConnectResponse(request), { signal: request.signal });
-}
-
-export function handleGithubCallback(request: Request) {
+export const githubCallbackResponse = (request: Request) => {
   const params = new URL(request.url).searchParams;
-  return respond(request, Effect.gen(function* () {
+  return answer(Effect.gen(function* () {
     return yield* completeGithubConnect(yield* signedIn(request), params);
   }));
-}
+};

@@ -20,13 +20,13 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, createVariablesResealRequestedEvent } from "#/modules/inngest/events";
 import { type ConfigDeploymentAdmittedEventData, type DeploymentTrigger, configDeploymentAdmitted, configSweepRequested, createConfigDeploymentStartedEvent, createConfigPrCheckRequestedEvent } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
-import { Conflict, Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
+import { Conflict, Forbidden, NotFound, statusForRefusal, Unavailable, Validation } from "#/server/public-error";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
-import type { CommandRefusal, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
+import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreResult, ViewAnswer } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -143,38 +143,14 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
   );
 });
 
-/** Each Store refusal code's HTTP status. Any other code is a 500. */
-const REFUSAL_STATUS: ReadonlyMap<string, number> = new Map([
-  ["invalid_argument", 422],
-  ["not_found", 404],
-  ["unknown_command", 404],
-  ["conflict", 409],
-  ["ambiguous", 409],
-  ["confirmation_required", 409],
-  ["approval_required", 409],
-  ["channel_mismatch", 409],
-  ["device_request_conflict", 409],
-  ["unauthenticated", 401],
-  ["forbidden", 403],
-  ["approval_denied", 403],
-  ["claim_required", 403],
-  ["unsupported", 501],
-  ["unavailable", 503],
-]);
-
-/** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
-export function statusFor(code: string) {
-  return REFUSAL_STATUS.get(code) ?? 500;
-}
-
 /**
- * A Store refusal as a user's request answers it: the public error of the status `statusFor` gives the CLI, in its fixed
+ * A Store refusal as a user's request answers it: the public error of the status `statusForRefusal` gives the CLI, in its fixed
  * copy, since a Store message can name an ID. A 401 stays a 500, since the user's session already passed and the Store
  * means Cloud's own credential, and so does a 501, which has no public error.
  */
 export function publicRefusal(error: StoreRefused) {
   const { message } = error;
-  switch (statusFor(error.code)) {
+  switch (statusForRefusal(error.code)) {
     case 422:
       return new Validation({ message });
     case 404:
@@ -193,16 +169,6 @@ export function publicRefusal(error: StoreRefused) {
 /** `effect`, answering a Store refusal with its own status rather than a 500. */
 export const refusedPublicly = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.mapError((error) => error instanceof StoreRefused ? publicRefusal(error) : error));
-
-/** A Cloud command's refusal also names its `field`, what fits there and whether it wrote, as Store tools refuse. */
-export function refusal(error: StoreRefusal | CommandRefusal) {
-  const { code, message, details } = error;
-  const told = "writes" in error ? { field: error.field, expected: error.expected, writes: error.writes } : {};
-  return Response.json({ error: { code, message, details, ...told } }, {
-    status: statusFor(code),
-    headers: { "cache-control": "no-store" },
-  });
-}
 
 /** Who a user's write is by, as the Store records it (a Deployment's `admitted_by`): their name, else email. */
 const principalFor = Effect.fn("ConfigStore.principalFor")(function* (userId: string | null) {

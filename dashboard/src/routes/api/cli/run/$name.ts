@@ -1,12 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { handleRunRequest, serveCli } from "#/routes/api/cli/-handlers";
-import { methodNotAllowed } from "#/server/public-error";
+import { handleRunRequest } from "#/routes/api/cli/-handlers";
+import { cliRoute } from "#/server/api-route";
 
 export const Route = createFileRoute("/api/cli/run/$name")({
   server: {
-    handlers: {
-      POST: async ({ request, params }) => serveCli(request, handleRunRequest(request, params.name)),
-      ANY: (): Response => methodNotAllowed(Route),
-    },
+    handlers: cliRoute<{ name: string }>({ POST: ({ request, params }) => handleRunRequest(request, params.name) }),
   },
 });

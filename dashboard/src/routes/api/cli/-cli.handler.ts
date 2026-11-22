@@ -20,7 +20,6 @@ import {
   provideServerAccess,
   retireServerAccess,
 } from "#/modules/machines/server-access.server";
-import { refusal } from "#/modules/config-store/config-store.server";
 import { DEVICE_KEY } from "#/modules/devices/device-code";
 import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
 import { readPasskeyRequest } from "#/modules/passkeys/passkeys.server";
@@ -53,7 +52,7 @@ import { CreateOrganization } from "#/modules/organization/organization-state";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { lacks } from "#/modules/organization/access.server";
 import { slugifySegment } from "#/utils/slug";
-import { NotFound, Validation } from "#/server/public-error";
+import { cliRefusalResponse, NotFound, Validation } from "#/server/public-error";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
 import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 
@@ -120,10 +119,10 @@ function enrollInput(body: typeof EnrollServers.Type): EnrollInput {
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
 
 // The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
-const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
+const missingRefusal = (message: string) => cliRefusalResponse({ code: "not_found", message, details: null });
 const noSuchServer = () => missingRefusal("No such Server.");
 /** A token can't make or revoke tokens or Fleet Tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed. */
-const personOnly = (message: string) => refusal({ code: "forbidden", message, details: { next: "ployz login" } });
+const personOnly = (message: string) => cliRefusalResponse({ code: "forbidden", message, details: { next: "ployz login" } });
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: caller.credential, organizationId: caller.organization.id });
 
@@ -144,7 +143,7 @@ const operationCall = (request: Request) => {
 
 const admitted = <A>(admission: Admission | null, reply: (id: string) => A) => {
   if (admission === null) return noSuchServer();
-  return admission.ok ? reply(admission.id) : refusal(admission.refusal);
+  return admission.ok ? reply(admission.id) : cliRefusalResponse(admission.refusal);
 };
 
 const serverIdOf = (id: string | undefined) => {
@@ -176,7 +175,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { organizations: yield* callerOrganizations(caller), via: caller.via };
     case "POST organizations": {
       if (caller.credential.kind !== "session") {
-        return refusal({
+        return cliRefusalResponse({
           code: "invalid_argument",
           message: "Only a signed-in person can make an Organization; this credential acts only in its own. No changes made.",
           details: { next: "ployz login" },
@@ -188,16 +187,16 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       );
       if (input === null) {
         const unsluggable = body.slug === undefined && body.name.trim() !== "" && slugifySegment(body.name) === "";
-        return refusal({ code: "invalid_argument", message: unsluggable ? NAME_WITHOUT_SLUG : BAD_ORGANIZATION, details: null });
+        return cliRefusalResponse({ code: "invalid_argument", message: unsluggable ? NAME_WITHOUT_SLUG : BAD_ORGANIZATION, details: null });
       }
       return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input) };
     }
     case "DELETE organizations/:id": {
       // A Project refuses the removal before the gate, so an approval it carries is checked first.
       const carried = yield* carriedInto(caller, approvalHeader(request), { command: "remove", subject: `organization:${caller.organization.id}` });
-      if (carried !== null) return refusal(carried);
+      if (carried !== null) return cliRefusalResponse(carried);
       const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
-      return removal.ok ? removal.value : refusal(removal.refusal);
+      return removal.ok ? removal.value : cliRefusalResponse(removal.refusal);
     }
     case "GET tokens":
       return {
@@ -208,7 +207,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (caller.credential.kind !== "session") {
         return yield* requireClaimed(caller.organization.id, "mint_token").pipe(
           Effect.as(personOnly("Only a signed-in person can make tokens. No changes made.")),
-          Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+          Effect.catchTag("StoreRefused", (refused) => Effect.succeed(cliRefusalResponse(refused.refusal))),
         );
       }
       // The CLI checks the rest before it asks, so a bad name is the one a person can send; it is named alone.
@@ -218,7 +217,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const preset = yield* knownEnvironment(caller, yield* presetOf(input));
       return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind, preset }).pipe(
         Effect.map((token) => ({ token })),
-        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(cliRefusalResponse(refused.refusal))),
       );
     }
     case "DELETE tokens/:id": {
@@ -339,7 +338,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       return admitted(yield* removeServer(caller, machineId, input.confirm_data_loss.confirmed, call, input.server_name), (id) => ({ id }));
     }
     case "POST servers/:id/forget": {
@@ -347,7 +346,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(ForgetServer, request, "Forgetting a Server takes no options.");
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       return admitted(yield* forgetServer(caller, machineId, call, input.server_name), (id) => ({ id }));
     }
     case "GET server-removals/:id": {
@@ -362,7 +361,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (machineId === null) return noSuchServer();
       const shown = request.body === null ? undefined : (yield* decodeBody(DrainServer, request, "A drain takes no options.")).server_name;
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       return admitted(yield* drainServer(caller, machineId, call, shown), accepted);
     }
     case "GET server-drains/:id": {
@@ -374,7 +373,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(UpgradeServer, request, "An upgrade takes at most the Release Channel it names.");
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call, input.server_name), accepted);
     }
     case "GET server-upgrades/:id":
@@ -388,7 +387,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST namespaces/:id/clean": {
       if (request.body !== null) yield* decodeBody(CleanNamespace, request, "A clean takes no body.");
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call), accepted);
     }
     case "GET namespace-cleanups/:id": {
@@ -397,12 +396,12 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "GET forget-servers": {
       const checked = yield* checkForgetServers(forgetter(caller));
-      return checked.ok ? { organization: caller.organization.slug, ...checked.value } : refusal(checked.refusal);
+      return checked.ok ? { organization: caller.organization.slug, ...checked.value } : cliRefusalResponse(checked.refusal);
     }
     case "POST forget-servers": {
       const input = yield* decodeBody(ForgetServers, request, "Forgetting the Servers takes the Organization's slug.");
       if (input.organization !== caller.organization.slug) {
-        return refusal({
+        return cliRefusalResponse({
           code: "invalid_argument",
           message: `This credential acts in Organization ${caller.organization.slug}, not ${input.organization}. No changes made.`,
           details: { next: `ployz org use ${input.organization}` },
@@ -410,23 +409,23 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       }
       // Nothing to forget skips the gate, so an approval it carries is checked first.
       const carried = yield* carriedInto(caller, approvalHeader(request), { command: "forget", subject: `servers:${caller.organization.id}` });
-      if (carried !== null) return refusal(carried);
+      if (carried !== null) return cliRefusalResponse(carried);
       const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
-      return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
+      return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : cliRefusalResponse(forgotten.refusal);
     }
     case "POST device-requests": {
       if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can request a Device. No changes made.");
       const { key } = yield* decodeBody(NewDeviceRequest, request, "A Device request takes the Device's key as 64 lowercase hex digits.");
       const requested = yield* requestDevice(caller.organization.id, key);
       if (requested === null) {
-        return refusal({ code: "device_request_conflict", message: "Another Device's request holds this code. No changes made.", details: null });
+        return cliRefusalResponse({ code: "device_request_conflict", message: "Another Device's request holds this code. No changes made.", details: null });
       }
       return { code: requested.code, expires_at: requested.expiresAt.toISOString() };
     }
     case "GET device-requests/:id": {
       if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a Device request.");
       const lacking = lacks({ ...caller, support: null }, "servers:shell");
-      if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
+      if (lacking !== null) return cliRefusalResponse({ code: "forbidden", message: lacking, details: null });
       const pending = yield* readDeviceRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
       if (pending === null) return missingRefusal("No such Device request.");
       return { code: pending.code, key: pending.key, expires_at: pending.expiresAt.toISOString() };
@@ -434,19 +433,19 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET passkey-requests/:id": {
       if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a passkey request.");
       const lacking = lacks({ ...caller, support: null }, "servers:shell");
-      if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
+      if (lacking !== null) return cliRefusalResponse({ code: "forbidden", message: lacking, details: null });
       const pending = yield* readPasskeyRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
       if (pending === null) return missingRefusal("No such passkey request.");
       return pending;
     }
     case "POST server-access": {
       const access = yield* provideServerAccess(caller);
-      return access.ok ? access.value : refusal(access.refusal);
+      return access.ok ? access.value : cliRefusalResponse(access.refusal);
     }
     case "GET github":
       return yield* requireClaimed(caller.organization.id, "github_connect").pipe(
         Effect.andThen(githubConnection(caller)),
-        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(cliRefusalResponse(refused.refusal))),
       );
     case "GET github/:id": {
       const query = new URL(request.url).searchParams;
@@ -468,29 +467,29 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
             return yield* new NotFound({ message: "Not found." });
         }
       });
-      return yield* read.pipe(Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))));
+      return yield* read.pipe(Effect.catchTag("StoreRefused", (refused) => Effect.succeed(cliRefusalResponse(refused.refusal))));
     }
     case "DELETE github/:id":
       return yield* disconnectGithub(caller, caller.organization.slug, id ?? "");
     case "POST volumes/:id/runs": {
       const body = yield* decodeBody(NewVolumeRun, request, "A volume run takes its environment and what to run.");
       const call = yield* operationCall(request);
-      if (!call.ok) return refusal(call.refused.refusal);
+      if (!call.ok) return cliRefusalResponse(call.refused.refusal);
       const input = { volumeId: id ?? "", environment: body.environment, ...volumeRunInput(body) };
       return yield* Effect.gen(function* () {
         const run = yield* runVolume(caller, input, call);
-        return run.ok ? { run: yield* getVolumeRun(caller.organization.id, run.id) } : refusal(run.refusal);
+        return run.ok ? { run: yield* getVolumeRun(caller.organization.id, run.id) } : cliRefusalResponse(run.refusal);
       }).pipe(Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))));
     }
     case "POST volumes/:id/sync": {
       const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
       const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, body.environment.environment);
-      if (unsynced !== null) return refusal(unsynced.refusal);
+      if (unsynced !== null) return cliRefusalResponse(unsynced.refusal);
       // It asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
       const carried = yield* carriedInto(caller, approvalHeader(request), { command: "sync", subject: `volume:${id ?? ""}` });
-      if (carried !== null) return refusal(carried);
+      if (carried !== null) return cliRefusalResponse(carried);
       return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
-        Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
+        Effect.map((synced) => synced.ok ? { lines: synced.lines } : cliRefusalResponse(synced.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
     }
@@ -510,7 +509,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST approvals/:id": {
       const decision = yield* decodeBody(ApprovalDecision, request, "An approval takes `approve` with the digest you reviewed, or `reject`.");
       return yield* decideAndApply(caller, id ?? "", decision, freshOperationDigest).pipe(
-        Effect.map((decided) => decided.ok ? { approval: decided.approval } : refusal(decided.refusal)),
+        Effect.map((decided) => decided.ok ? { approval: decided.approval } : cliRefusalResponse(decided.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
     }
@@ -567,7 +566,7 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
         release: attempt.result.release,
       };
     case "missing_identities":
-      return refusal({
+      return cliRefusalResponse({
         code: "invalid_argument",
         message: "The Server holds Volumes this removal didn't confirm. No changes made.",
         details: { missing: attempt.missingIdentities },
@@ -575,7 +574,7 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
     case "failed":
     case "cancelled":
       // The CLI says when a sent reset didn't finish, and how to forget a Server that is gone.
-      return refusal({ code: "unavailable", message: attempt.failureMessage, details: attempt.unfinished ? { unfinished: true } : null });
+      return cliRefusalResponse({ code: "unavailable", message: attempt.failureMessage, details: attempt.unfinished ? { unfinished: true } : null });
     default: {
       const _exhaustive: never = attempt;
       throw new Error(`Unhandled machine remove attempt: ${String(_exhaustive)}`);

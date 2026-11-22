@@ -9,7 +9,7 @@ import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fix
 import { hasApprover } from "#/modules/approvals/approvals.server";
 import { createCustomerPortal } from "#/modules/billing/billing.server";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
-import { refusal } from "#/modules/config-store/config-store.server";
+import { cliRefusalResponse } from "#/server/public-error";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { startGithubConnect } from "#/modules/github/github-connect.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -82,7 +82,7 @@ it.live("an anonymous Organization is refused every claimed action with a 403 th
       const refused = yield* provided(Effect.flip(requireClaimed(ORGANIZATION, action)));
       if (!(refused instanceof StoreRefused)) return yield* Effect.die(refused);
       expect(refused.refusal).toMatchObject({ code: "claim_required", details: { claim_url: claimUrl, action } });
-      expect(refusal(refused.refusal).status).toBe(403);
+      expect(cliRefusalResponse(refused.refusal).status).toBe(403);
     }
   }));
 

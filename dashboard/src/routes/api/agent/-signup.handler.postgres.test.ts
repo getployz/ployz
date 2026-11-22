@@ -7,7 +7,7 @@ import { member, organizationToken, user } from "#/modules/identity/tables";
 import { rateLimitEvent } from "#/modules/machines/waiting/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleAgentSignup, signupMethodNotAllowed } from "#/routes/api/agent/-signup.handler";
-import { observedIp } from "#/routes/api/checkin/-handler";
+import { observedIp } from "#/server/client-ip";
 import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { storeTestCloudWith } from "#/test/store-cloud";
