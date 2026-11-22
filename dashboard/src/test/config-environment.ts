@@ -1,4 +1,5 @@
 import { ConfigProvider, Layer } from "effect";
+import { afterAll } from "vitest";
 import { AppConfig } from "#/server/config.server";
 import { TEST_SERVICE_VARIABLES } from "#/test/test-env";
 
@@ -25,3 +26,15 @@ export function testConfigEnvironment() {
 
 export const testConfigLayer = (overrides: Readonly<Record<string, string>> = {}) =>
   AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), ...overrides } }))));
+
+const POLAR_VARIABLES = ["POLAR_ACCESS_TOKEN", "POLAR_SERVER", "POLAR_WEBHOOK_SECRET", "POLAR_PRODUCT_ID"] as const;
+
+/** Runs the calling test file as a Self-hosted Cloud, one with no Polar settings, through the app's own runtime.
+ * Call it at module load: the runtime reads the settings when the file's first request builds it. */
+export function runAsSelfHostedCloud() {
+  const saved = POLAR_VARIABLES.map((name) => [name, process.env[name]] as const);
+  for (const name of POLAR_VARIABLES) delete process.env[name];
+  afterAll(() => {
+    for (const [name, value] of saved) if (value !== undefined) process.env[name] = value;
+  });
+}
