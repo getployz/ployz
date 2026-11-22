@@ -8,9 +8,9 @@ use ployz_core::ServiceName;
 use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch, NodeName, NotSetVariable, ProjectName, RowRef,
-    ServicesQuery, SetupCommand, SourceKind, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow,
-    SyncView, Synced, Take, Taken, UndoSync, Undone,
+    EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch, NodeName, NotSetVariable,
+    ProjectName, RowRef, ServicesQuery, SetupCommand, SourceKind, SyncChange, SyncChanges, SyncId,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 
 use super::super::config::expected;

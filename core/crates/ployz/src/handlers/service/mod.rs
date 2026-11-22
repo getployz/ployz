@@ -28,14 +28,12 @@ use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_liste
 /// Returns a connection, RPC, or serialization error.
 pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let sort = matches
-        .get_one::<String>("sort")
-        .cloned()
+    let sort = *matches
+        .get_one::<ProcessOrder>("sort")
         .ok_or_else(|| Error::usage("sort order is required"))?;
     let scoped = super::operator::scope(root)?;
     let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
     let labels = scoped.clone();
-    let order = sort.clone();
     let credential = with_lister(root, no_processes, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -60,7 +58,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .flat_map(|service| service.members())
                 .collect::<Vec<_>>();
-            sort_processes(&mut containers, &sort);
+            sort_processes(&mut containers, sort);
             let observations = process_rows(&containers, &retiring);
             let gaps = Gaps::of(&live.containers)
                 .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
@@ -71,8 +69,24 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         })
     })?;
     credential.map_or(Ok(()), |credential| {
-        super::cloud_read::processes(&credential, scoped, &order)
+        super::cloud_read::processes(&credential, scoped, sort)
     })
+}
+
+/// How `ps --sort` orders its rows.
+#[derive(Clone, Copy)]
+pub(in crate::handlers) enum ProcessOrder {
+    Service,
+    Machine,
+    Health,
+}
+
+impl ProcessOrder {
+    pub(in crate::handlers) const WORDS: &[(&str, Self)] = &[
+        ("service", Self::Service),
+        ("machine", Self::Machine),
+        ("health", Self::Health),
+    ];
 }
 
 /// What `ps` lists for an Organization with no Servers yet.
@@ -244,17 +258,17 @@ fn state_tone(container: ContainerRef<'_>) -> Tone {
     }
 }
 
-fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
+fn sort_processes(containers: &mut [ContainerRef<'_>], sort: ProcessOrder) {
     containers.sort_by(|left, right| {
         let left_observation = left.as_observation();
         let right_observation = right.as_observation();
         let primary = match sort {
-            "health" => health_rank(*left).cmp(&health_rank(*right)).then_with(|| {
+            ProcessOrder::Health => health_rank(*left).cmp(&health_rank(*right)).then_with(|| {
                 left_observation
                     .identity()
                     .cmp(&right_observation.identity())
             }),
-            "machine" => left_observation
+            ProcessOrder::Machine => left_observation
                 .machine_id
                 .as_str()
                 .cmp(right_observation.machine_id.as_str())
@@ -263,7 +277,7 @@ fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
                         .identity()
                         .cmp(&right_observation.identity())
                 }),
-            _ => left_observation
+            ProcessOrder::Service => left_observation
                 .identity()
                 .cmp(&right_observation.identity()),
         };

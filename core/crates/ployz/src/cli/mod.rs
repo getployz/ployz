@@ -138,6 +138,46 @@ pub(crate) fn yes(help: &'static str) -> Arg {
         .help(help)
 }
 
+/// A flag that takes one of `table`'s words and reads back as the value beside it:
+/// `matches.get_one::<T>(id)`.
+pub(crate) const fn choice<T>(table: &'static [(&'static str, T)]) -> Choice<T> {
+    Choice(table)
+}
+
+#[derive(Clone)]
+pub(crate) struct Choice<T: 'static>(&'static [(&'static str, T)]);
+
+impl<T: Clone + Send + Sync + 'static> clap::builder::TypedValueParser for Choice<T> {
+    type Value = T;
+
+    fn parse_ref(
+        &self,
+        command: &Command,
+        arg: Option<&Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<T, clap::Error> {
+        // The words' own parser, so a wrong word is refused in clap's usual words.
+        let word = clap::builder::PossibleValuesParser::new(self.0.iter().map(|(word, _)| *word))
+            .parse_ref(command, arg, value)?;
+        Ok(self
+            .0
+            .iter()
+            .find(|(known, _)| *known == word)
+            .map(|(_, chosen)| chosen.clone())
+            .expect("the words' parser admits only the table's words"))
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            self.0
+                .iter()
+                .map(|(word, _)| clap::builder::PossibleValue::new(*word)),
+        ))
+    }
+}
+
 pub(crate) fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }
