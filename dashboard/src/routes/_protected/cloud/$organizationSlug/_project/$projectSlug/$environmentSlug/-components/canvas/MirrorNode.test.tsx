@@ -8,7 +8,7 @@ import {
 import { afterEach, expect, it } from "vitest";
 import type { MachineId, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
-import type { MirrorCopy, OffsiteCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
+import type { MirrorCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { CanvasNodeList } from "./CanvasServiceList";
 
 const volume = asTestDouble<VolumeListing>()({ id: "vol-1", name: "data", mounts: [], deployed: true, storage: { kind: "docker" }, storage_locked: false, change: null });
@@ -17,15 +17,12 @@ const mirror = (extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "m2", server: { id: "m2" as MachineId, name: "web-2" }, name: "data-web-2", refreshedAt: minutesAgo(4),
   skipped: null, lastReported: false, staged: null, busy: null, ...extra,
 });
-const offsite: OffsiteCopy = {
-  kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: minutesAgo(10), staged: null, busy: null,
-};
 const old: OldCopy = {
   kind: "old", id: "m3", server: { id: "m3" as MachineId, name: "web-3" }, name: "data-old", since: null, bytes: 1e6, staged: null, busy: null,
 };
 const copiesOf = (elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({
   volume: { id: volume.id, name: volume.name },
-  live: { server: { id: "m1" as MachineId, name: "web-1", state: "live" }, restore: null, moveTo: null, busy: null, snapshots: null },
+  live: { server: { id: "m1" as MachineId, name: "web-1", state: "live" }, restore: null, moveTo: null, busy: null },
   elsewhere,
   unheard: [],
 });
@@ -96,12 +93,10 @@ it("shows a mirror staged to become the Primary pink, with Primary", async () =>
   expect(node().getAttribute("data-changed")).toBe("true");
 });
 
-it("hangs the offsite copy beside the mirror on one bar, and never the old copy", async () => {
-  await show([mirror(), offsite, old]);
+it("hangs the mirror alone, and never the old copy", async () => {
+  await show([mirror(), old]);
   const cards = [...document.querySelectorAll("[data-copy]")].map((card) => card.getAttribute("data-copy"));
-  expect(cards).toEqual(["data-web-2", "acme-backups"]);
-  expect(document.querySelector("[data-copy=acme-backups]")?.textContent).toBe("acme-backupsOffsite · 10 minutes ago");
-  expect(node().parentElement?.querySelector("i")).not.toBeNull();
+  expect(cards).toEqual(["data-web-2"]);
 });
 
 it("draws a single card without a bar", async () => {

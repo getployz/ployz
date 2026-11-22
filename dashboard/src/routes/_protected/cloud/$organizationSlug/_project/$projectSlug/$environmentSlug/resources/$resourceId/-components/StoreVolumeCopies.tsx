@@ -18,7 +18,7 @@ import { type RoleGate, useRoleGate } from "#/modules/organization/members.queri
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  addableCopies, cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
+  cardLine, COPY_WORDS, isStale, LAST_REPORTED, LIVE_WORDS, type LiveState, type MirrorCopy, type OldCopy, STAGED_WORDS, type StagedCopy,
   nothingElsewhere, unheardReason, type VolumeCopies, type VolumeCopy,
 } from "#/modules/volume-copies/volume-copies";
 import { useRefreshMirror } from "#/modules/volume-copies/volume-copies.hooks";
@@ -217,7 +217,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   const locked = disabled || deploying || blocked;
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
   const mirrorOn = placementTargets(volume, members, row, accepting, owed).mirror.filter((server) => server.id !== target.primary);
-  const canAdd = !blocked && mirrorOn.length > 0 && addableCopies(copies, ["mirror"]).length > 0;
+  const canAdd = !blocked && mirrorOn.length > 0 && !copies.elsewhere.some((copy) => copy.kind === "mirror");
   const { live } = copies;
 
   return <div className="flex flex-col gap-4">
@@ -307,7 +307,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null,
 }) {
   const line = cardLine(copy, now);
   const unheard = unheardReason(copy);
-  const title = copy.kind === "offsite" ? copy.bucket : copy.server.name;
+  const title = copy.server.name;
   const description = line.spin ? <Busy words={line.words} />
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>

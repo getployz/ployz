@@ -8,7 +8,7 @@ export type ServerRef = { readonly id: MachineId; readonly name: MachineName };
 export type StagedCopy = "new" | "removing" | "primary";
 
 type CopyBase = {
-  /** Stable within the Volume: the Server id for a mirror or old copy, the bucket for an offsite copy. */
+  /** Stable within the Volume: the Server id. */
   readonly id: string;
   readonly staged: StagedCopy | null;
   readonly busy: string | null;
@@ -28,14 +28,6 @@ export type MirrorCopy = CopyBase & {
   readonly lastReported: boolean;
 };
 
-export type OffsiteCopy = CopyBase & {
-  readonly kind: "offsite";
-  readonly bucket: string;
-  readonly region: string;
-  readonly keep: number;
-  readonly uploadedAt: Date | null;
-};
-
 export type OldCopy = CopyBase & {
   readonly kind: "old";
   readonly server: ServerRef;
@@ -44,19 +36,7 @@ export type OldCopy = CopyBase & {
   readonly bytes: number | null;
 };
 
-export type VolumeCopy = MirrorCopy | OffsiteCopy | OldCopy;
-export type AddableCopy = Exclude<VolumeCopy["kind"], "old">;
-
-export type SnapshotKind = "hourly" | "daily" | "manual" | "before_deploy" | "after_deploy" | "before_restore";
-
-export type Snapshot = {
-  readonly id: string;
-  readonly at: Date;
-  readonly kind: SnapshotKind;
-  readonly note: string | null;
-  readonly kept: boolean;
-  readonly bytes: number;
-};
+export type VolumeCopy = MirrorCopy | OldCopy;
 
 /**
  * What the primary's Server said of it: `live` on its own report of a writable root, `read_only` when the root it reports
@@ -72,8 +52,6 @@ export type LiveCopy = {
   readonly restore: { readonly label: string } | null;
   readonly moveTo: ServerRef | null;
   readonly busy: string | null;
-  /** Null where the Server does not serve snapshots. */
-  readonly snapshots: readonly Snapshot[] | null;
 };
 
 /** A Server outside Live that didn't report its copy, and what was heard from it instead. */
@@ -89,7 +67,7 @@ export type VolumeCopies = {
 
 export const STALE_AFTER_MS = 60 * 60_000;
 
-export const COPY_WORDS = { mirror: "Mirror", offsite: "Offsite", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
+export const COPY_WORDS = { mirror: "Mirror", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
 export const STAGED_WORDS = { new: "New", removing: "Removing", primary: "Primary" } as const satisfies Record<StagedCopy, string>;
 /** What a Server said instead of reporting its copy, on the primary's badge and a mirror's row alike. */
 const UNHEARD_WORDS = {
@@ -127,8 +105,6 @@ export function lastAt(copy: VolumeCopy): Date | null {
   switch (copy.kind) {
     case "mirror":
       return copy.refreshedAt;
-    case "offsite":
-      return copy.uploadedAt;
     case "old":
       return copy.since;
   }
@@ -140,12 +116,8 @@ export function isStale(copy: VolumeCopy, now: Date): boolean {
     && (copy.refreshedAt === null || now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS);
 }
 
-export const hangingCopies = (copies: VolumeCopies): readonly (MirrorCopy | OffsiteCopy)[] =>
-  copies.elsewhere.filter((copy): copy is MirrorCopy | OffsiteCopy => copy.kind !== "old");
-
-export function addableCopies(copies: VolumeCopies, served: readonly AddableCopy[]): readonly AddableCopy[] {
-  return served.filter((kind) => !copies.elsewhere.some((copy) => copy.kind === kind));
-}
+export const hangingCopies = (copies: VolumeCopies): readonly MirrorCopy[] =>
+  copies.elsewhere.filter((copy): copy is MirrorCopy => copy.kind === "mirror");
 
 export type CardLine = { readonly spin: boolean; readonly words: string; readonly age: string | null; readonly stale: boolean };
 
