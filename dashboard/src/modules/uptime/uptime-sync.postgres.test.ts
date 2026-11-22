@@ -10,7 +10,7 @@ import { createRunStoreDeployment } from "#/modules/config-store/store-deploymen
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 import { uptimeBackfillRequested } from "#/modules/uptime/uptime.events";
-import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
+import { controlPlaneStatements } from "#/modules/uptime/incident-fence.test-fixture";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { makeInngestEffectRunner } from "#/modules/inngest/run.server";

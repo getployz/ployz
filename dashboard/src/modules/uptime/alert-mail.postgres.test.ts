@@ -15,7 +15,7 @@ import type { MailMessage } from "#/modules/mail/mail.events";
 import { notificationPreference } from "#/modules/notifications/tables";
 import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { sendUptimeAlerts } from "#/modules/uptime/alert-mail.server";
-import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
+import { controlPlaneStatements } from "#/modules/uptime/incident-fence.test-fixture";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { holdProduction, hostedPolar } from "#/test/billing";
