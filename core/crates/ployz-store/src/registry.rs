@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    EncryptedSecretValue, SavedEnvironmentIntent, ServiceImageCredentials, ServiceSource,
+    EncryptedSecretValue, SavedEnvironmentIntent, SavedServiceIntent, ServiceImageCredentials,
+    ServiceSource,
 };
 use ployz_core::{RegistryAuth, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -147,6 +148,17 @@ pub(crate) fn sealed(
         .transpose()
 }
 
+/// Whether `service` pulls its image with a configured registry login.
+pub(crate) fn uses_login(service: &SavedServiceIntent) -> bool {
+    matches!(
+        &service.config.source,
+        ServiceSource::Image {
+            credentials: ServiceImageCredentials::Configured { .. },
+            ..
+        }
+    )
+}
+
 /// The sealed credentials a Deployment of `saved` pulls with, by runtime Service,
 /// for every targeted image Service that uses one.
 pub(crate) fn freeze(
@@ -157,14 +169,7 @@ pub(crate) fn freeze(
 ) -> Result<BTreeMap<ServiceName, EncryptedSecretValue>, RpcError> {
     let mut credentials = BTreeMap::new();
     for service in &saved.services {
-        let ServiceSource::Image {
-            credentials: ServiceImageCredentials::Configured { .. },
-            ..
-        } = &service.config.source
-        else {
-            continue;
-        };
-        if !frozen.targets(&service.id) {
+        if !uses_login(service) || !frozen.targets(&service.id) {
             continue;
         }
         let sealed = sealed(tx, environment, &service.id)?.ok_or_else(|| {

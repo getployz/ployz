@@ -40,6 +40,7 @@ export {
   observeCopies,
   observeRunning,
   observeVolumes,
+  pinImages,
   ployzVersion,
   SealedNames,
 } from "./generated/native";

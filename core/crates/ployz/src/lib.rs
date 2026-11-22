@@ -29,6 +29,7 @@ mod global_fixtures;
 mod global_slot;
 pub mod handlers;
 pub(crate) mod image;
+pub use image::{PinError, pin_public};
 pub(crate) mod ingress;
 pub mod namespace;
 pub mod operator;

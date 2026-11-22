@@ -26,8 +26,9 @@ pub mod shown;
 pub mod trusted_key;
 pub mod validity;
 pub mod version;
+pub mod version_draft;
 
-pub use admission::{DataReach, needs_signature};
+pub use admission::{DataReach, needs_signature, reach};
 pub use birth::{
     Against, Approved, Before, BirthError, Births, Held, MountLines, Mounts, PlannedVolume,
     PlannedVolumes, Unknown,

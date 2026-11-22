@@ -695,16 +695,14 @@ pub(super) fn pinned(
         if record.services.contains_key(&spec.name) {
             continue;
         }
-        let from = match &record.origin {
-            Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
-            Origin::Legacy => None,
-            Origin::Replay { .. } => replays.get(&spec.name).cloned(),
+        let ran = match &record.origin {
+            Origin::Own => would_run(tx, environment, (nodes, spec), namespace)?,
+            Origin::Legacy => written(spec, namespace),
+            Origin::Replay { .. } => replays
+                .get(&spec.name)
+                .cloned()
+                .or_else(|| written(spec, namespace)),
         };
-        let ran = from.or_else(|| {
-            PayloadDigest::of(spec, namespace)
-                .ok()
-                .map(|digest| RanService { digest, pin: None })
-        });
         if let Some(ran) = ran {
             record.services.insert(spec.name.clone(), ran);
         }
@@ -821,6 +819,142 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
         }
     }
     Ok(())
+}
+
+/// What a Deploy of its own Saved revision runs for `spec`: what the Deployment that last
+/// applied its Service ran, while only run fields changed since, else `spec` as written.
+/// The claim and the plan both resolve it here, so a plan asks to sign what a claim runs.
+fn would_run(
+    tx: &mut dyn Tx,
+    environment: &str,
+    (nodes, spec): (&[TargetNode], &RequestedServiceSpec),
+    namespace: &Namespace,
+) -> Result<Option<RanService>, RpcError> {
+    Ok(reused(tx, environment, (nodes, spec), namespace)?.or_else(|| written(spec, namespace)))
+}
+
+fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanService> {
+    PayloadDigest::of(spec, namespace)
+        .ok()
+        .map(|digest| RanService { digest, pin: None })
+}
+
+/// Each Service of `target` that reaches data and that no signed version kept for what a
+/// claim would run covers, with what it needs before a person's Deploy can run it.
+///
+/// A built Service is left to its automatic deploy rule while the rule is live, tracks
+/// the Service's branch and approves its spec. Its first Deploy still needs a build under
+/// the rule, which a push to its branch makes; once a Server verified that build under
+/// the rule's current generation, a Deploy reuses its image while only run fields
+/// change, and carries its proof.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a row that doesn't read.
+pub(crate) fn unsigned(
+    tx: &mut dyn Tx,
+    (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),
+    saved: &ployz_core::config::SavedEnvironmentIntent,
+    (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
+) -> Result<Vec<crate::Unsigned>, RpcError> {
+    use crate::Needs;
+    use ployz_core::config::ServiceSource;
+    let rule = crate::auto_rule::stored(tx, environment)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened)
+        .filter(|rule| !rule.ended);
+    let approved: Vec<ServiceName> = match rule {
+        Some(rule) => {
+            let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
+                saved
+                    .services
+                    .iter()
+                    .filter(|service| crate::git::tracks(service, repository, &branch))
+                    .map(|service| service.config.private_dns.clone())
+                    .collect::<Vec<_>>()
+            });
+            let sources = crate::auto_rule::sources(saved);
+            let changed = crate::auto_rule::changed(&rule, namespace, target, &sources, &[]);
+            rule.services
+                .into_iter()
+                .map(|service| service.name)
+                .filter(|service| {
+                    !changed.contains(service)
+                        && tracking
+                            .as_ref()
+                            .is_some_and(|names| names.contains(service))
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let mut unsigned = Vec::new();
+    for spec in target {
+        let service = nodes
+            .iter()
+            .find_map(|node| match node {
+                TargetNode::Service { id, runtime, .. } if *runtime == spec.name => Some(id),
+                TargetNode::Service { .. }
+                | TargetNode::Retire { .. }
+                | TargetNode::Volume { .. }
+                | TargetNode::Config { .. } => None,
+            })
+            .and_then(|id| {
+                saved
+                    .services
+                    .iter()
+                    .find(|service| service.id == id.as_str())
+            });
+        let login = service.is_some_and(crate::registry::uses_login);
+        if ployz_core::authority::reach(spec, login).is_none() {
+            continue;
+        }
+        let reused = reused(tx, environment.as_str(), (nodes, spec), namespace)?;
+        if let Some(ran) = reused.clone().or_else(|| written(spec, namespace))
+            && !versions_for(tx, organization, (namespace, &spec.name), ran.digest)?.is_empty()
+        {
+            continue;
+        }
+        let built = service
+            .is_some_and(|service| !matches!(service.config.source, ServiceSource::Image { .. }));
+        let needs = match (built, approved.contains(&spec.name)) {
+            (true, true)
+                if reused.is_some()
+                    && proven(tx, (environment, organization, namespace), &spec.name)? =>
+            {
+                continue;
+            }
+            (true, true) => Needs::Rebuild,
+            (true, false) => Needs::Rule,
+            (false, _) if login && !content_addressed(&spec.container.image) => Needs::Digest,
+            (false, _) => Needs::Version,
+        };
+        unsigned.push(crate::Unsigned {
+            service: spec.name.clone(),
+            needs,
+        });
+    }
+    Ok(unsigned)
+}
+
+/// Whether a Server verified, under the rule and generation `environment` keeps now, the
+/// image a Deploy of `service` reuses: its latest build, the receipt preparation reads
+/// first. The runner carries the same lookup's proof.
+fn proven(
+    tx: &mut dyn Tx,
+    (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),
+    service: &ServiceName,
+) -> Result<bool, RpcError> {
+    let image = crate::deployment::receipts(tx, environment)?
+        .remove(service)
+        .and_then(|receipts| receipts.into_iter().next())
+        .and_then(|receipt| {
+            let reference = receipt.pointer("/image/reference")?.as_str()?;
+            ployz_core::authority::BuiltImageDigest::parse(reference).ok()
+        });
+    let Some(image) = image else {
+        return Ok(false);
+    };
+    Ok(crate::build::verified_proof(tx, organization, (namespace, service), image)?.is_some())
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
