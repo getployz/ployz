@@ -11,8 +11,9 @@
 //!
 //! - Forget (`LocalMachine::forget`, local_machine/departure.rs): the denial, `remove_members`, then
 //!   `forget_machine`'s delete, which may fail and leave the row. Forget may run again.
-//! - An observation (`ReplicatedStore::machines`, corrosion/store.rs): the row read, then
-//!   `record_removed`, which records S only on `removed_machines`' deletion evidence, then
+//! - An observation (`RecordOwner::record_machines`, machine/record_owner.rs): the row read
+//!   (`ReplicatedStore::machine_rows`), then `record_removed`, its step that records S only
+//!   on `removed_machines`' deletion evidence (`remove_members`), then
 //!   the accept filter (`accepts_machine`) and the pin commit (`pin_machines`), which runs
 //!   the filter again inside the record write.
 //! - A Register resent to M1, as Cloud or a rerun of `ployz server add` sends it after a
