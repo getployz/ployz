@@ -623,7 +623,7 @@ fn resolve(
     compiled
         .variable_producers
         .extend(branch.live.iter().cloned());
-    let resolved = variables::resolve(&compiled, environment.as_str())?;
+    let resolved = variables::resolve(&compiled, environment)?;
     compiled.variable_producers.truncate(own);
     Ok((compiled, resolved))
 }
@@ -904,12 +904,10 @@ pub(super) fn lower(
         prune,
         cluster_domain: cluster_domain
             .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
-        sealed_for: uuid::Uuid::parse_str(environment.as_str())
-            .ok()
-            .map(|environment| SealedFor {
-                organization: organization.as_str().to_owned(),
-                environment,
-            }),
+        sealed_for: Some(SealedFor {
+            organization: organization.as_str().to_owned(),
+            environment: environment.uuid(),
+        }),
     };
     // `uploaded` also gives each named source-less Service the image its upload
     // builds, as the SDK's preparation does.
