@@ -14,7 +14,7 @@ import type { PloyzSdkError, PloyzSession } from "#/modules/runtime/ployz.server
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-export class ServerWebTrafficUnreachable extends Data.TaggedError("ServerWebTrafficUnreachable")<{
+class ServerWebTrafficUnreachable extends Data.TaggedError("ServerWebTrafficUnreachable")<{
   readonly operation: string;
   readonly cause: unknown;
 }> {}
@@ -22,13 +22,13 @@ export class ServerWebTrafficUnreachable extends Data.TaggedError("ServerWebTraf
 type WebTrafficAttemptRow = typeof serverWebTrafficAttempt.$inferSelect;
 type WebTrafficRequest = ServerWebTrafficRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
-export type WebTrafficRunReply = { readonly attemptId: string; readonly state: WebTrafficState };
+type WebTrafficRunReply = { readonly attemptId: string; readonly state: WebTrafficState };
 
 const NOT_FOUND = "The web traffic request was not found.";
 const rows = attemptRows(serverWebTrafficAttempt, NOT_FOUND);
 
 /** A row as the page reads it. The check constraint keeps each state's evidence; a row without it is a defect. */
-export function latestWebTrafficOf(row: WebTrafficAttemptRow): Effect.Effect<LatestWebTraffic> {
+function latestWebTrafficOf(row: WebTrafficAttemptRow): Effect.Effect<LatestWebTraffic> {
   const { id: attemptId, want } = row;
   const missing = (what: string) => Effect.die(new Error(`Web traffic change ${attemptId} is ${row.state} without its ${what}.`));
   switch (row.state) {

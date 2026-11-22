@@ -16,10 +16,8 @@ import {
   type WebTrafficView,
 } from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
-import { serverWebTrafficKeys, useServerWebTrafficChanges } from "./server-web-traffic.queries";
-
-/** How long a flip reads as under way before its row arrives; past it, the request was lost. */
-const PENDING_MS = 60_000;
+import { serverWebTraffic } from "./server-web-traffic.queries";
+import { usePendingAttempt } from "./use-pending-attempt";
 
 export type ServerWebTraffic = {
   readonly view: WebTrafficView;
@@ -48,24 +46,18 @@ export function useServerWebTraffic(
   servers: ReadonlyArray<{ readonly machine: RuntimeMachineRecord; readonly status: ServerStatus }>,
 ): ServerWebTraffic {
   const queryClient = useQueryClient();
-  const { servers: latest } = useServerWebTrafficChanges(organizationSlug);
+  const { servers: latest } = serverWebTraffic.useLatest(organizationSlug);
   const { lensStatus, published, incompleteIds } = useRuntimeStatus();
   const { runtime: ingress } = useRuntimeService(INGRESS);
-  const [requested, setRequested] = useState<{ readonly id: string; readonly want: WebTrafficWant } | null>(null);
+  const own = latest[server.id] ?? null;
+  const [requested, setRequested] = usePendingAttempt<{ readonly id: string; readonly want: WebTrafficWant }>(
+    own?.attemptId,
+    ({ id }) => id,
+  );
   const [open, setOpen] = useState(false);
   const [settledId, setSettledId] = useState<string | null>(null);
-  const own = latest[server.id] ?? null;
-  const arrived = requested !== null && own?.attemptId === requested.id;
   const finished = own !== null && own.state === "finished" ? own : null;
 
-  useEffect(() => {
-    if (arrived) setRequested(null);
-  }, [arrived]);
-  useEffect(() => {
-    if (requested === null) return;
-    const timer = setTimeout(() => setRequested(null), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [requested]);
   useEffect(() => {
     if (finished === null) return;
     const left = settleLeft(finished.endedAt, Date.now());
@@ -84,7 +76,7 @@ export function useServerWebTraffic(
       (answer) => {
         setRequested((current) => (current?.id === requestId ? { id: answer.change.attemptId, want: answer.change.want } : current));
         // The change stream brings the row too; this covers a tab whose stream is reconnecting.
-        void queryClient.invalidateQueries({ queryKey: serverWebTrafficKeys.all });
+        void queryClient.invalidateQueries({ queryKey: serverWebTraffic.keys.all });
       },
       (error: Error) => {
         setRequested((current) => (current?.id === requestId ? null : current));

@@ -22,10 +22,10 @@ import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries
 import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
 import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
-import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
+import { serverDrains } from "#/modules/machines/server-drain.queries";
 import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
 import { useServerWebTraffic } from "#/modules/machines/server-web-traffic.hooks";
-import { latestServerWebTrafficQueryOptions } from "#/modules/machines/server-web-traffic.queries";
+import { serverWebTraffic } from "#/modules/machines/server-web-traffic.queries";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { DrainDialog } from "./-components/drain-dialog";
@@ -56,8 +56,8 @@ export const Route = createFileRoute(
   loader: ({ params, context }) => prefetchRemote(
     context,
     latestServerUpgradesQueryOptions(params.organizationSlug),
-    latestServerDrainsQueryOptions(params.organizationSlug),
-    latestServerWebTrafficQueryOptions(params.organizationSlug),
+    serverDrains.options(params.organizationSlug),
+    serverWebTraffic.options(params.organizationSlug),
     volumePlacementsQueryOptions(params.organizationSlug),
     organizationMembersQueryOptions(params.organizationSlug),
   ),

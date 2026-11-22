@@ -21,7 +21,7 @@ import {
 
 const root = process.cwd();
 const SRC = join(root, "src");
-const DATA_FILE = /^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
+const DATA_FILE =/^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
 const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
 // The first line of a data file: /** @data-source <kind>: <freshness> */
 const DATA_SOURCE_HEADER = /^\/\*\* @data-source (\S+?): (.+) \*\/$/;

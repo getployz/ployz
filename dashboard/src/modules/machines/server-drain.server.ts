@@ -28,7 +28,7 @@ import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/mo
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-export class ServerDrainUnreachable extends Data.TaggedError("ServerDrainUnreachable")<{
+class ServerDrainUnreachable extends Data.TaggedError("ServerDrainUnreachable")<{
   readonly operation: string;
   readonly cause: unknown;
 }> {}
@@ -36,7 +36,7 @@ export class ServerDrainUnreachable extends Data.TaggedError("ServerDrainUnreach
 type DrainAttemptRow = typeof serverDrainAttempt.$inferSelect;
 type DrainRequest = ServerDrainRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
-export type DrainRunReply = { readonly attemptId: string; readonly state: DrainState };
+type DrainRunReply = { readonly attemptId: string; readonly state: DrainState };
 
 const rows = attemptRows(serverDrainAttempt, "The drain request was not found.");
 

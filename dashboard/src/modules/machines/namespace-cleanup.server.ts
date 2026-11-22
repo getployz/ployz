@@ -72,14 +72,14 @@ export const removeNamespace = Effect.fn("NamespaceCleanup.remove")(function* (
   return outcome;
 }, Effect.scoped);
 
-export class NamespaceCleanupUnreachable extends Data.TaggedError("NamespaceCleanupUnreachable")<{
+class NamespaceCleanupUnreachable extends Data.TaggedError("NamespaceCleanupUnreachable")<{
   readonly cause: unknown;
 }> {}
 
 type CleanupRow = typeof namespaceCleanup.$inferSelect;
 type CleanupRequest = NamespaceCleanupRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
-export type CleanupRunReply = { readonly cleanupId: string; readonly state: CleanupState };
+type CleanupRunReply = { readonly cleanupId: string; readonly state: CleanupState };
 
 const rows = attemptRows(namespaceCleanup, "The namespace clean was not found.");
 
