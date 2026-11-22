@@ -1,22 +1,21 @@
 // @vitest-environment jsdom
 
+import type { ReactNode } from "react";
 import { act, renderHook } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { ReactFlowProvider } from "@xyflow/react";
+import { expect, it } from "vitest";
 import { useCanvasCreator } from "./useCanvasCreator";
 
-// One Service node at the origin; the screen maps to the flow shifted by 100 on each axis.
-vi.mock("@xyflow/react", () => ({
-  useReactFlow: () => ({
-    getNodes: () => [{ id: "web", position: { x: 0, y: 0 } }],
-    screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x: x - 100, y: y - 100 }),
-  }),
-}));
+// One Service node at the origin. With no pane mounted, React Flow reads a screen point as the same flow point.
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <ReactFlowProvider initialNodes={[{ id: "web", position: { x: 0, y: 0 }, data: {} }]}>{children}</ReactFlowProvider>
+);
 
 const rightClick = (x: number, y: number) => ({ clientX: x, clientY: y }) as MouseEvent;
 
 it("opens a creator where the pane was right-clicked, or in the view's middle from the toolbar", () => {
-  const { result } = renderHook(() => useCanvasCreator(() => ({ x: 600, y: 600 })));
-  act(() => result.current.onPaneContextMenu(rightClick(1100, 900)));
+  const { result } = renderHook(() => useCanvasCreator(() => ({ x: 600, y: 600 })), { wrapper });
+  act(() => result.current.onPaneContextMenu(rightClick(1000, 800)));
   act(() => result.current.openAtLastRightClick("volume"));
   expect(result.current.open).toBe("volume");
   expect(result.current.position).toEqual({ x: 1000, y: 800 });
@@ -27,8 +26,8 @@ it("opens a creator where the pane was right-clicked, or in the view's middle fr
 });
 
 it("moves a node that would land on another clear of it, and a switch keeps that spot", () => {
-  const { result } = renderHook(() => useCanvasCreator(() => ({ x: 0, y: 0 })));
-  act(() => result.current.onPaneContextMenu(rightClick(110, 110)));
+  const { result } = renderHook(() => useCanvasCreator(() => ({ x: 0, y: 0 })), { wrapper });
+  act(() => result.current.onPaneContextMenu(rightClick(10, 10)));
   act(() => result.current.openAtLastRightClick("service"));
   const landed = result.current.position;
   const clear = landed.x > 288 + 20 || landed.x + 288 + 20 < 0 || landed.y > 144 + 20 || landed.y + 144 + 20 < 0;
