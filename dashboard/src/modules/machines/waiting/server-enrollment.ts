@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RegionSchema } from "#/modules/machines/server-policy";
+import { RegionSchema } from "#/modules/machines/server-regions";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type { EnrollmentStage, EnrollStorage } from "#/modules/machines/waiting/enrollment-states";
 

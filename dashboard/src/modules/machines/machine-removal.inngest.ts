@@ -26,8 +26,7 @@ import { completeMachineRemoveAttempt } from "#/modules/machines/machine-removal
 import { observeOrganization } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
-const MachineRemoveRequestedData = Schema.Struct({ attemptId: NonEmptyString });
+const MachineRemoveRequestedData = Schema.Struct({ attemptId: Schema.NonEmptyString });
 const MachineRemoveRequestedEnvelope = Schema.Struct({
   ...inngestEventEnvelopeFields,
   name: Schema.Literal("machine/remove.requested"),

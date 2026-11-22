@@ -10,9 +10,8 @@ import { runInngestEffect } from "#/server/run.server";
 type StepTools = Pick<PloyzStepTools, "run">;
 type EffectRunner = typeof runInngestEffect;
 
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const ServerPolicyChangeRequestedData = Schema.Struct({
-  organizationId: NonEmptyString,
+  organizationId: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
   change: ServerPolicyChangeSchema,
 });

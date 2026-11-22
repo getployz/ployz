@@ -59,3 +59,6 @@ export const rustMachineIdSchema = Schema.String.check(
     message: "MachineId must be a 32-hex UUID",
   }),
 ).pipe(Schema.decodeTo(MachineIdType));
+
+/** An Organization's URL slug as callers send it: untrimmed text is refused, not cleaned. */
+export const StrictOrganizationSlug = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());

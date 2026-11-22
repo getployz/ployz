@@ -1,7 +1,7 @@
 import type { MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
-import { rustMachineIdSchema, Uuid } from "#/lib/schema";
+import { rustMachineIdSchema, StrictOrganizationSlug, Uuid } from "#/lib/schema";
 import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
 
 export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
@@ -14,11 +14,6 @@ export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 export const ENROLL_NOT_YET_RETRY_AFTER_SECONDS = 2;
 export const ENROLL_QUEUED_RETRY_AFTER_SECONDS = 5;
 export const ENROLLMENT_PROTOCOL_VERSION = 1 as const;
-
-const OrganizationSlug = Schema.String.check(
-  Schema.isTrimmed(),
-  Schema.isNonEmpty(),
-);
 
 /** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
 const OrganizationId = Uuid;
@@ -39,7 +34,7 @@ export type ReadMachineEnrollmentInput =
   typeof ReadMachineEnrollmentInput.Type;
 
 export const ResetPendingEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
+  organizationSlug: StrictOrganizationSlug,
   confirmedFounderStoppedOrErased: Schema.Literal(true),
 });
 
@@ -83,7 +78,6 @@ function wireGuardPublicKeyFromDisplay(display: string): number[] | null {
 }
 
 /** Version 2 is a coordinated break: older CLIs must upgrade before founding. */
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 const NonnegativeSafeInteger = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
@@ -110,16 +104,16 @@ const initialMachinePolicySchema = Schema.Struct({
 
 export const enrollmentIdentitySchema = Schema.Struct({
   protocolVersion: Schema.Literal(ENROLLMENT_PROTOCOL_VERSION),
-  name: NonEmptyString,
+  name: Schema.NonEmptyString,
   initialPolicy: initialMachinePolicySchema,
   machineId: rustMachineIdSchema,
-  publicKey: NonEmptyString.check(
+  publicKey: Schema.NonEmptyString.check(
     Schema.makeFilter((value) => wireGuardPublicKeyFromDisplay(value) !== null, {
       message: "publicKey must be a WireGuard Display base64 key.",
     }),
   ),
-  advertisedEndpoints: Schema.Array(NonEmptyString),
-  publicIp: Schema.optionalKey(Schema.NullOr(NonEmptyString)),
+  advertisedEndpoints: Schema.Array(Schema.NonEmptyString),
+  publicIp: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
   requestedStorage: Schema.Literals(["none", "zfs"]).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("none")),
   ),
@@ -165,7 +159,7 @@ export const MANAGEMENT_CAPABILITY_LENGTH = "ployz1:".length + 86;
 
 const enrollmentCallbackIdentity = {
   machineId: rustMachineIdSchema,
-  pairingCredential: NonEmptyString,
+  pairingCredential: Schema.NonEmptyString,
 };
 
 /** Whether the enrolled Machine holds its Cluster's Sealing Key, and its public half if so. */
@@ -185,7 +179,7 @@ export const enrollmentCallbackBodySchema = Schema.Union([
   Schema.Struct({
     ...enrollmentCallbackIdentity,
     stage: Schema.Literal("publish"),
-    capability: NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
+    capability: Schema.NonEmptyString.check(Schema.isMaxLength(MANAGEMENT_CAPABILITY_LENGTH)),
   }),
   /** A founder that refused to found lets go of its Founding Claim, so the Organization can start with another Server. */
   Schema.Struct({
@@ -207,7 +201,7 @@ const cleaned = (schema: Schema.String, clean: (value: string) => string) =>
     decode: SchemaGetter.transform(clean),
     encode: SchemaGetter.transform((value) => value),
   }));
-const ProfileText = cleaned(NonEmptyString, (value) => value.slice(0, 256));
+const ProfileText = cleaned(Schema.NonEmptyString, (value) => value.slice(0, 256));
 
 // Not part of a longer dotted number, but a sentence's closing period still ends it.
 const IPV4 = /(?<!\d\.?)(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)/gu;

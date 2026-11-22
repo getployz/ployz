@@ -7,7 +7,7 @@ import { EllipsisIcon, PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } fr
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
-import { useRegionOptions } from "#/modules/machines/use-region-options";
+import { useRegionOptions } from "#/modules/machines/server-regions.hooks";
 import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
 import { sharedRegion, type SharedRegion } from "#/modules/config-store/deploy-waits";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";

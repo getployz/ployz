@@ -8,17 +8,15 @@ import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/dae
 import { rustMachineIdSchema } from "#/lib/schema";
 import type { MachineRemoveAttemptState, MachineRemoveResult } from "#/modules/machines/machine-removal-states";
 
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
-
 export const LoadMachineDataLossInput = Schema.Struct({
-  organizationSlug: NonEmptyString,
+  organizationSlug: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
 });
 
 export type LoadMachineDataLossInput = typeof LoadMachineDataLossInput.Type;
 
 export const EnqueueMachineRemoveInput = Schema.Struct({
-  organizationSlug: NonEmptyString,
+  organizationSlug: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
   confirmDataLoss: Schema.Array(dataLossIdentitySchema),
 });
@@ -30,14 +28,14 @@ export type EnqueueMachineRemoveInput = typeof EnqueueMachineRemoveInput.Type;
 export const ForgetServersInput = Schema.Struct({ organizationSlug: Schema.String });
 
 export const ForgetServerInput = Schema.Struct({
-  organizationSlug: NonEmptyString,
+  organizationSlug: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
   requestId: Schema.String.check(Schema.isUUID()),
 });
 export type ForgetServerInput = typeof ForgetServerInput.Type;
 
 export const GetMachineRemoveAttemptInput = Schema.Struct({
-  organizationSlug: NonEmptyString,
+  organizationSlug: Schema.NonEmptyString,
   attemptId: Schema.String.check(Schema.isUUID()),
 });
 

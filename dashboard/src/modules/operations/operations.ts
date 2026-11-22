@@ -5,7 +5,8 @@ import { PRIVATE_ACCESS_WANTS, SetPrivateAccessInput } from "#/modules/private-a
 import { EnqueueMachineRemoveInput, ForgetServerInput, ForgetServersInput } from "#/modules/machines/machine-removal";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
-import { BuildConcurrencyChangeSchema, RegionSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
+import { RegionSchema } from "#/modules/machines/server-regions";
+import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";

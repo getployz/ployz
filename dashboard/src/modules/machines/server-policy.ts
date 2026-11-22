@@ -1,10 +1,8 @@
 import type { MachineUpdate } from "@ployz/sdk";
-import { parseRegion } from "@ployz/sdk/config";
 import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/lib/schema";
+import { RegionSchema } from "#/modules/machines/server-regions";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
-
-const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 
 /** Builds a Server runs at once, as the Engine's `BuildConcurrency` bounds it. */
 export const BuildConcurrencySchema = Schema.Int.check(
@@ -18,20 +16,6 @@ export const BuildConcurrencyChangeSchema = Schema.Union([
 ]);
 
 export type BuildConcurrencyChange = typeof BuildConcurrencyChangeSchema.Type;
-
-/** The Engine's one region key rule, here as the SDK's `parseRegion` runs it. */
-export const REGION_RULE = "A region is up to 63 letters, digits, hyphens, underscores and dots.";
-
-export function isRegionKey(value: string): boolean {
-  try {
-    parseRegion(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export const RegionSchema = Schema.String.check(Schema.makeFilter<string>((value) => isRegionKey(value) ? undefined : REGION_RULE));
 
 /** One Server Policy change. Omitted fields keep the Server's current value. */
 export const ServerPolicyChangeSchema = Schema.Struct({
@@ -48,7 +32,7 @@ export const ServerPolicyChangeSchema = Schema.Struct({
 export type ServerPolicyChange = typeof ServerPolicyChangeSchema.Type;
 
 export const RequestServerPolicyChangeInput = Schema.Struct({
-  organizationSlug: NonEmptyString,
+  organizationSlug: Schema.NonEmptyString,
   machineId: rustMachineIdSchema,
   change: ServerPolicyChangeSchema,
 });
