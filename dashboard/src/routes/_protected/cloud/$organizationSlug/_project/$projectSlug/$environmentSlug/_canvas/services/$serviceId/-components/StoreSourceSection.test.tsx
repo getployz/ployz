@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { RowId, SettingRow } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import * as selectors from "#/components/service-source-selector";
+import * as selectors from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector";
 import * as github from "#/modules/github/github.queries";
 import * as gitFields from "./StoreGitFields";
 import { StoreSourceSection, type StoreService } from "./StoreServiceDrawer";

@@ -5,9 +5,9 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "#/components/ui/context-menu";
-import { SERVICE_CREATE_MENU_ITEMS } from "#/components/create-menu-items";
-import type { CreateMenuItem } from "#/components/create-menu-items";
-import type { CreatePanel } from "#/components/create-menu-items";
+import { SERVICE_CREATE_MENU_ITEMS } from "./create-menu-items";
+import type { CreateMenuItem } from "./create-menu-items";
+import type { CreatePanel } from "./create-menu-items";
 
 function getActionForItem(
   { id, panel }: CreateMenuItem,

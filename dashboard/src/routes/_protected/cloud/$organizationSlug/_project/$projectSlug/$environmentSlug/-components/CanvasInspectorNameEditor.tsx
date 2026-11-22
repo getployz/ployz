@@ -6,7 +6,7 @@ import { FieldError } from "#/components/ui/field";
 import { DnsNameHint } from "#/components/dns-name-hint";
 import { dnsName } from "#/utils/dns-name";
 import { InputGroupInput } from "#/components/ui/input-group";
-import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
+import { SourcePickerInput, SourcePickerLayout } from "../../../-components/service-create/source-picker-layout";
 import { Result, Schema } from "effect";
 import {
   strictParseOptions,

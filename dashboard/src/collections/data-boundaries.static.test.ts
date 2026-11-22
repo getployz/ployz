@@ -46,8 +46,8 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncButton.tsx": "a Sync waiting on the Store",
   "components/shell/create-environment-dialog.tsx": "create in flight",
   "components/shell/new-organization-dialog.tsx": "create in flight",
-  "components/service-create-command.tsx": "create in flight",
-  "components/service-source-selector.tsx": "sync and submit in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "components/settings/settings-list.tsx": "a settings form's Save in flight",
   "components/store-write/confirmable-input.tsx": "a confirm row's save in flight",
@@ -78,7 +78,7 @@ const READ_SERVER_FN = /\b(get|load|list|preview|search|resolve|read)[A-Z]\w*Ser
 const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 /** Reads that are one step of a user command (preview, evidence, wait for completion), not page state. */
 const COMMAND_READ_FILES = {
-  "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
@@ -134,10 +134,10 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
-  "components/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
-  "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/logs/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/store-write/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
-  "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
+  "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout and the billing portal involve money",
   "modules/billing/use-embedded-checkout.ts": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/-components/github-settings.tsx": "linking a GitHub account checks the signed offer against GitHub, and a disconnect answers with the account's uninstall link",

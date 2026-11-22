@@ -12,7 +12,7 @@ import { databaseCommand } from "#/modules/config-store/database-presets";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import * as functions from "#/modules/config-store/store.functions";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import * as creators from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
+import * as creators from "./useServiceCreator";
 import { ServiceCreateCommand } from "./service-create-command";
 
 // SAFETY: the command reads only the names and the Environment id of a written project.

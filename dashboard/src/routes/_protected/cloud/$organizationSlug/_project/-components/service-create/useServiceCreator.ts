@@ -9,11 +9,11 @@ import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { usePlaceNewNode } from "./useCanvasPositionMutation";
-import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
-import type { CreatePanel } from "#/components/create-menu-items";
-import type { CanvasResourceNode, FlowPosition } from "./types";
-import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
+import { usePlaceNewNode } from "../../$projectSlug/$environmentSlug/-components/canvas/useCanvasPositionMutation";
+import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "../../$projectSlug/$environmentSlug/-components/canvas/constants";
+import type { CreatePanel } from "./create-menu-items";
+import type { CanvasResourceNode, FlowPosition } from "../../$projectSlug/$environmentSlug/-components/canvas/types";
+import { findPlacement } from "../../$projectSlug/$environmentSlug/-utils/node-placement";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "#/lib/environment-routes";
 
 /** Where a new Service goes: its Environment, and where the canvas put it. */

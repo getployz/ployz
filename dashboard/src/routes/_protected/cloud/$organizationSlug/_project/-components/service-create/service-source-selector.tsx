@@ -3,7 +3,7 @@ import { resolvePublicGithubRepositoryServerFn } from "#/modules/github/github.f
 import type { ServiceGitAccess } from "@ployz/sdk";
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { Command as CommandPrimitive } from "cmdk";
-import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
+import { SourcePickerInput, SourcePickerLayout } from "./source-picker-layout";
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
 import { ChevronRightIcon, ExternalLinkIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -13,7 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupButton, InputGroupInput } from "#/components/ui/input-group";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
+import { imageRegistryLink, isValidImageReference } from "./image-registry-link";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";

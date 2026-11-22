@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranchIcon } from "lucide-react";
 import type { EnvironmentRef, ServiceSettingChange } from "@ployz/sdk";
-import { GitBranchSelectorDialog } from "#/components/service-source-selector";
+import { GitBranchSelectorDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector";
 import { Button } from "#/components/ui/button";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "#/components/ui/select";

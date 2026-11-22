@@ -8,7 +8,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { InputGroupInput } from "#/components/ui/input-group";
-import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
+import { SourcePickerInput, SourcePickerLayout } from "./source-picker-layout";
 import {
   Command,
   CommandGroup,
@@ -20,13 +20,13 @@ import {
   GitRepoSelector,
   GitRepoSelectorFooter,
   ImageSelector,
-} from "#/components/service-source-selector";
+} from "./service-source-selector";
 import {
   type CreateMenuItem,
   type CreatePanel,
   getCreateMenuItems,
-} from "#/components/create-menu-items";
-import { DATABASE_LOGOS } from "#/components/icons/database-logos";
+} from "./create-menu-items";
+import { DATABASE_LOGOS } from "./database-logos";
 import { Spinner } from "#/components/ui/spinner";
 import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
 import {
@@ -38,7 +38,7 @@ import {
   type NewServicePlacement,
   useCreateStoreDatabase,
   useCreateStoreService,
-} from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
+} from "./useServiceCreator";
 import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
@@ -87,9 +87,9 @@ type ServiceCommandProps = {
   };
   initialPanel?: CreatePanel;
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
-  onCreated?: (created: CreatedService, stillHere: boolean) => void | Promise<void>;
-  onCreateVolume?: () => void;
-  onCreateConfig?: () => void;
+  onCreated: (created: CreatedService, stillHere: boolean) => void | Promise<void>;
+  onCreateVolume: () => void;
+  onCreateConfig: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
   onPendingChange?: (pending: boolean) => void;
 };
@@ -278,7 +278,7 @@ function useServiceCreateActions({
       });
       if (props.mode === "service") {
         // Someone who navigated away while it saved stays there; the service still lands on the canvas.
-        await props.onCreated?.(created, stillHere());
+        await props.onCreated(created, stillHere());
         return;
       }
       showRefusalInline(created.persisted);
@@ -319,11 +319,11 @@ function useServiceCreateActions({
     }
     if (id === "volume") {
       // Only the canvas offers a Volume, and it places one itself.
-      if (props.mode === "service") props.onCreateVolume?.();
+      if (props.mode === "service") props.onCreateVolume();
       return;
     }
     if (id === "config") {
-      if (props.mode === "service") props.onCreateConfig?.();
+      if (props.mode === "service") props.onCreateConfig();
       return;
     }
 
