@@ -83,6 +83,16 @@ const CLOUD_CONTRACT: &[(&str, &str, &str)] = &[
     ("PROBE_ATTEMPT_TIMEOUT_MS", "3000", "3000"),
     ("PROBE_GREETING_READ_MS", "500", "500"),
     ("PROBE_GREETING_LENGTH", "22", "22"),
+    (
+        "INGRESS_VERIFY_PATH",
+        "\"/.ployz-verify\"",
+        "\"/.ployz-verify\"",
+    ),
+    (
+        "HOSTNAME_VERIFY_PATH",
+        "\"/.well-known/acme-challenge/ployz-verify\"",
+        "\"/.well-known/acme-challenge/ployz-verify\"",
+    ),
     ("MIN_MANAGED_VOLUME_BYTES", "100000000", "100000000"),
     ("MAX_LIFETIME_MILLIS", "900000", "900000"),
     ("CLOCK_SKEW_MILLIS", "120000", "120000"),
