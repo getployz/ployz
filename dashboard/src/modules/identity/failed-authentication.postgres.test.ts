@@ -7,7 +7,7 @@ import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.
 import { ClientAddress, FAILED_AUTHENTICATION_WINDOWS, resolveCaller } from "#/modules/identity/caller.server";
 import { handleAgentSignup } from "#/routes/api/agent/-signup.handler";
 import { handleRunRequest, serveCli } from "#/routes/api/cli/-handlers";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { publicErrorResponse } from "#/server/public-error";
 import * as run from "#/server/run.server";

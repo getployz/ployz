@@ -25,7 +25,7 @@ import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { serviceAct } from "#/modules/service-act/tables";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

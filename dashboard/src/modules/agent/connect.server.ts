@@ -5,7 +5,7 @@ import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { forgetSignedOutGrant, linkConsentSession, withAgentGrants } from "#/modules/identity/session-agents.server";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { Auth, type RemoteMcpAuth } from "#/server/auth.server";
+import { Auth, type RemoteMcpAuth } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 

@@ -1,11 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
 import type { Actor, SessionActor } from "#/modules/identity/actor";
-import { takeDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { invitation, member, session, user } from "#/modules/identity/tables";
-import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
+import { billingEnabled } from "#/server/capabilities.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized } from "#/server/public-error";
@@ -153,14 +152,13 @@ export const getOrganizationState = Effect.fn(
   "Organization.getOrganizationState",
 )(function* (actor: Actor, organizationSlug?: string) {
   const organizations = yield* listAccessibleOrganizations(actor);
-  const polar = yield* Polar;
   const staff = yield* SupportStaff;
   const config = yield* AppConfig;
   const accessible = organizationSlug !== undefined && organizations.some((organization) => organization.slug === organizationSlug);
   const activeOrganization = organizations.find((organization) => organization.slug === organizationSlug) ?? organizations[0] ?? null;
   return {
     formerOrganization: organizationSlug === undefined || accessible ? null : yield* formerOrganizationName(actor.userId, organizationSlug),
-    billingEnabled: polar.mode === "hosted",
+    billingEnabled: yield* billingEnabled,
     uptimeEnabled: config.uptimeEnabled,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */
     supportAvailable: staff.available,
@@ -181,88 +179,6 @@ export const syncOrganizationSlug = Effect.fn(
     organizationId: organization.id,
     organizationSlug: input.organizationSlug,
   };
-});
-
-type SessionRecord = {
-  id: string;
-  userId: string;
-  token?: string | null;
-  activeOrganizationId?: string | null;
-  activeOrganizationSlug?: string | null;
-};
-
-type SessionContext = {
-  context: {
-    internalAdapter: {
-      findUserById(userId: string): Promise<PersonalOrganizationUser | null>;
-      updateSession(
-        token: string,
-        session: {
-          activeOrganizationId: string;
-          activeOrganizationSlug: string | null;
-        },
-      ): Promise<SessionRecord | null>;
-    };
-  };
-};
-
-export class WorkspaceAuthHookFailure extends Data.TaggedError(
-  "WorkspaceAuthHookFailure",
-)<{ readonly cause: unknown }> {}
-
-const setActiveOrganizationForSession = Effect.fn(
-  "Organization.setActiveOrganizationForSession",
-)(function* (
-  sessionRecord: SessionRecord,
-  organizationId: string,
-  ctx: SessionContext,
-) {
-  const organizationSlug = yield* getOrganizationSlugById(organizationId);
-
-  const token = sessionRecord.token;
-  if (token) {
-    yield* Effect.tryPromise({
-      try: () => ctx.context.internalAdapter.updateSession(token, {
-        activeOrganizationId: organizationId,
-        activeOrganizationSlug: organizationSlug,
-      }),
-      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
-    });
-    return;
-  }
-
-  const database = yield* Database;
-  yield* database.drizzle
-    .update(session)
-    .set({
-      activeOrganizationId: organizationId,
-      activeOrganizationSlug: organizationSlug,
-    })
-    .where(eq(session.id, sessionRecord.id));
-});
-
-/**
- * A new session acts in an Organization from the start. A `ployz login` session redeeming `deviceCode` takes the one
- * the `/device` page named when it was approved; any other takes the user's first, made if they have none.
- */
-export const handleSessionCreated = Effect.fn("Organization.handleSessionCreated")(
-function* (
-  sessionRecord: SessionRecord,
-  ctx: SessionContext | null,
-  deviceCode: string | null,
-) {
-  if (!ctx || sessionRecord.activeOrganizationId) return;
-  const approved = deviceCode === null ? null : yield* takeDeviceOrganization(deviceCode, sessionRecord.userId);
-  let organizationId = approved ?? (yield* getFirstOrganizationIdForUser(sessionRecord.userId));
-  if (!organizationId) {
-    const user = yield* Effect.tryPromise({
-      try: () => ctx.context.internalAdapter.findUserById(sessionRecord.userId),
-      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
-    });
-    if (!user) return;
-    organizationId = yield* ensurePersonalOrganizationForUser(user);
-  }
-  yield* setActiveOrganizationForSession(sessionRecord, organizationId, ctx);
 });
 
 /**

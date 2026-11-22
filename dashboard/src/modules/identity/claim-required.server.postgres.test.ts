@@ -21,7 +21,7 @@ import { createInvite } from "#/modules/organization/invitation.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { githubConnectResponse } from "#/routes/api/github/-connect.handler";
-import { Auth, AuthLive, type AuthService, type AuthSession } from "#/server/auth.server";
+import { Auth, AuthLive, type AuthService, type AuthSession } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

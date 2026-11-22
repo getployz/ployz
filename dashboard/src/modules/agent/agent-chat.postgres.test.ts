@@ -18,7 +18,7 @@ import type { Caller } from "#/modules/identity/actor";
 import { member, user } from "#/modules/identity/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { scriptedAgent } from "#/test/agent-call";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";

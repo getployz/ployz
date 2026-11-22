@@ -7,7 +7,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, listCredentials, mintOrganizationTokenUnchecked, revokeCredential } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { Auth, type AuthService } from "#/server/auth.server";
+import { Auth, type AuthService } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";

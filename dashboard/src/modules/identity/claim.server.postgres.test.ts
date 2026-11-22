@@ -18,7 +18,7 @@ import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serv
 import { fleetToken } from "#/modules/machines/waiting/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";

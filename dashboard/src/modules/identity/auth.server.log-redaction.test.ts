@@ -8,7 +8,7 @@ import { formatWithOptions } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { Auth, AuthLive, logBetterAuth, signedSessionToken } from "#/server/auth.server";
+import { Auth, AuthLive, logBetterAuth, signedSessionToken } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { RedactedLogsLive } from "#/server/log-redaction";

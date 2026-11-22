@@ -13,6 +13,7 @@ import {
   organization as organizationPlugin,
 } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
+import { eq } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { createHmac } from "node:crypto";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
@@ -48,10 +49,12 @@ import {
   sendInngestEvent,
 } from "#/modules/inngest/client";
 import {
-  getOrganizationSlugById,
-  handleSessionCreated,
   ensurePersonalOrganizationForUser,
+  getFirstOrganizationIdForUser,
+  getOrganizationSlugById,
 } from "#/modules/organization/organization-state.server";
+import type { PersonalOrganizationUser } from "#/modules/organization/organization-state";
+import { takeDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { Actor, type SessionActor } from "#/modules/identity/actor";
 import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { grantActs, signOutSessionAgents, withAgentGrants } from "#/modules/identity/session-agents.server";
@@ -60,7 +63,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
-import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/server/auth-mcp.server";
+import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/modules/agent/mcp-auth.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { RequestScope } from "#/server/request-scope.server";
@@ -361,6 +364,88 @@ export function logBetterAuth(level: keyof typeof BETTER_AUTH_LOGS, ...log: unkn
   const logged = values.map((value) => value instanceof Error ? value : "[redacted]");
   runRedactedLog(BETTER_AUTH_LOGS[level]("[Better Auth]", message, ...logged));
 }
+
+type SessionRecord = {
+  id: string;
+  userId: string;
+  token?: string | null;
+  activeOrganizationId?: string | null;
+  activeOrganizationSlug?: string | null;
+};
+
+type SessionContext = {
+  context: {
+    internalAdapter: {
+      findUserById(userId: string): Promise<PersonalOrganizationUser | null>;
+      updateSession(
+        token: string,
+        session: {
+          activeOrganizationId: string;
+          activeOrganizationSlug: string | null;
+        },
+      ): Promise<SessionRecord | null>;
+    };
+  };
+};
+
+class WorkspaceAuthHookFailure extends Data.TaggedError(
+  "WorkspaceAuthHookFailure",
+)<{ readonly cause: unknown }> {}
+
+const setActiveOrganizationForSession = Effect.fn(
+  "Organization.setActiveOrganizationForSession",
+)(function* (
+  sessionRecord: SessionRecord,
+  organizationId: string,
+  ctx: SessionContext,
+) {
+  const organizationSlug = yield* getOrganizationSlugById(organizationId);
+
+  const token = sessionRecord.token;
+  if (token) {
+    yield* Effect.tryPromise({
+      try: () => ctx.context.internalAdapter.updateSession(token, {
+        activeOrganizationId: organizationId,
+        activeOrganizationSlug: organizationSlug,
+      }),
+      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
+    });
+    return;
+  }
+
+  const database = yield* Database;
+  yield* database.drizzle
+    .update(session)
+    .set({
+      activeOrganizationId: organizationId,
+      activeOrganizationSlug: organizationSlug,
+    })
+    .where(eq(session.id, sessionRecord.id));
+});
+
+/**
+ * A new session acts in an Organization from the start. A `ployz login` session redeeming `deviceCode` takes the one
+ * the `/device` page named when it was approved; any other takes the user's first, made if they have none.
+ */
+const handleSessionCreated = Effect.fn("Organization.handleSessionCreated")(
+function* (
+  sessionRecord: SessionRecord,
+  ctx: SessionContext | null,
+  deviceCode: string | null,
+) {
+  if (!ctx || sessionRecord.activeOrganizationId) return;
+  const approved = deviceCode === null ? null : yield* takeDeviceOrganization(deviceCode, sessionRecord.userId);
+  let organizationId = approved ?? (yield* getFirstOrganizationIdForUser(sessionRecord.userId));
+  if (!organizationId) {
+    const user = yield* Effect.tryPromise({
+      try: () => ctx.context.internalAdapter.findUserById(sessionRecord.userId),
+      catch: (cause) => new WorkspaceAuthHookFailure({ cause }),
+    });
+    if (!user) return;
+    organizationId = yield* ensurePersonalOrganizationForUser(user);
+  }
+  yield* setActiveOrganizationForSession(sessionRecord, organizationId, ctx);
+});
 
 const makeAuth = Effect.gen(function* () {
   const config = yield* AppConfig;

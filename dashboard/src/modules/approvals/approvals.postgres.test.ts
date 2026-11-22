@@ -38,7 +38,7 @@ import { createOrganizationToken } from "#/modules/identity/organization-token.s
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";

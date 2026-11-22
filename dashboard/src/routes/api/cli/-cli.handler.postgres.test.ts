@@ -48,7 +48,7 @@ import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { CliReadSealingRecoveryInput, CliRotateSealingRecoveryInput } from "#/modules/machines/sealing-key";
 import { readCliSealingRecovery, recoveryDigest, rotateCliSealingRecovery } from "#/modules/machines/sealing-key.server";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";

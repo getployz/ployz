@@ -24,7 +24,7 @@ import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
 import { CLI_USER_AGENT_PREFIX, revokeCredential } from "#/modules/identity/organization-token.server";
 import { organization } from "#/modules/organization/tables";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, type StoreCloud, storeTestCloudWith } from "#/test/store-cloud";
 

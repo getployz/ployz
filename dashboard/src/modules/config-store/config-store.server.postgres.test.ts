@@ -30,7 +30,7 @@ import { extractUpload, receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, session as sessionTable, user } from "#/modules/identity/tables";
 import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";

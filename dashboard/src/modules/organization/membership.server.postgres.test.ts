@@ -13,7 +13,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { serverAccessRetireRequestedEvent } from "#/modules/inngest/events";
 import { removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
-import { Auth, type AuthService } from "#/server/auth.server";
+import { Auth, type AuthService } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";

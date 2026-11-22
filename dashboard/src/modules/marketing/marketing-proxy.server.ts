@@ -21,7 +21,7 @@ const TIMEOUT = "5 seconds";
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
-export function marketingRequestHeaders(request: Request): Headers {
+function marketingRequestHeaders(request: Request): Headers {
   const url = new URL(request.url);
   const headers = new Headers();
   for (const name of FORWARDED_REQUEST_HEADERS) {
@@ -34,7 +34,7 @@ export function marketingRequestHeaders(request: Request): Headers {
 }
 
 /** The marketing site's answer to send the visitor, or undefined for the app's 404 (a 404 there too). */
-export function marketingResponse(upstream: Response, marketingOrigin: URL): Response | undefined {
+function marketingResponse(upstream: Response, marketingOrigin: URL): Response | undefined {
   if (upstream.status === 404) return undefined;
   const headers = new Headers();
   for (const name of PASSED_RESPONSE_HEADERS) {

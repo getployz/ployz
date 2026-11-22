@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { completeGithubConnect, startGithubConnect } from "#/modules/github/github-connect.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";

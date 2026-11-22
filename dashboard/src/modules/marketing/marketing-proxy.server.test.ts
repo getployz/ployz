@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
-import { fetchMarketing } from "#/server/marketing-proxy.server";
+import { fetchMarketing } from "#/modules/marketing/marketing-proxy.server";
 
 const marketing = new URL("http://ployz-site.internal");
 

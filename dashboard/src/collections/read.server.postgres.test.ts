@@ -11,7 +11,7 @@ import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { publicErrorResponse, Validation } from "#/server/public-error";

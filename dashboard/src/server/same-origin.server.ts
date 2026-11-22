@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { Forbidden } from "#/server/public-error";
 
 /**

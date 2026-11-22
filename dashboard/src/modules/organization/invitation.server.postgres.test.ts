@@ -13,8 +13,7 @@ import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/i
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
 import { getOrganizationState } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
-import { Polar } from "#/modules/billing/polar-provider.server";
-import { Auth, type AuthService } from "#/server/auth.server";
+import { Auth, type AuthService } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";
@@ -314,7 +313,7 @@ describe("org leave", () => {
 
 describe("a former member", () => {
   const stateOf = (who: keyof typeof ids, slug: string) =>
-    run(getOrganizationState({ userId: ids[who] }, slug).pipe(Effect.provideService(Polar, { mode: "self_hosted" })));
+    run(getOrganizationState({ userId: ids[who] }, slug));
 
   it("learns they are no longer a member of an Organization they joined, while anyone else learns nothing", async () => {
     expect(await roleOf(ids.eve)).toBeNull();
