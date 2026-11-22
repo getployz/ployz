@@ -1,6 +1,4 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useRef, useState } from "react";
-import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate, useRouter } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
@@ -10,10 +8,8 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { usePlaceNewNode } from "../../$projectSlug/$environmentSlug/-components/canvas/useCanvasPositionMutation";
-import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "../../$projectSlug/$environmentSlug/-components/canvas/constants";
-import type { CreatePanel } from "./create-menu-items";
-import type { CanvasResourceNode, FlowPosition } from "../../$projectSlug/$environmentSlug/-components/canvas/types";
-import { findPlacement } from "../../$projectSlug/$environmentSlug/-utils/node-placement";
+import { SERVICE_NODE_HEIGHT, SNAP_GRID } from "../../$projectSlug/$environmentSlug/-components/canvas/constants";
+import type { FlowPosition } from "../../$projectSlug/$environmentSlug/-components/canvas/types";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "#/lib/environment-routes";
 
 /** Where a new Service goes: its Environment, and where the canvas put it. */
@@ -97,78 +93,19 @@ export function useOpenCreatedService(params: EnvironmentRouteParams) {
   };
 }
 
-export function useServiceCreator(
-  params: {
-    organizationSlug: string;
-    projectSlug: string;
-    environmentSlug: string;
-  },
-  environmentId: string,
-  getViewportCenter: () => FlowPosition,
-) {
+/** Creates an empty Service at a canvas position and opens its panel; a failure shows as a toast. */
+export function useBlankServiceCreator(params: EnvironmentRouteParams, environmentId: string) {
   const openCreated = useOpenCreatedService(params);
-  const flow = useReactFlow<CanvasResourceNode>();
   const createStoreService = useCreateStoreService(params.organizationSlug);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
 
-  const [creatorOpen, setCreatorOpen] = useState(false);
-  const [creatorPosition, setCreatorPosition] = useState<FlowPosition>({
-    x: 0,
-    y: 0,
-  });
-  const [creatorPanel, setCreatorPanel] = useState<CreatePanel>("root");
-  const lastRightClickFlowPosition = useRef<FlowPosition>({ x: 0, y: 0 });
-
-  function computePlacement(target: FlowPosition) {
-    const existingRects = flow.getNodes().map((node) => ({
-      x: node.position.x,
-      y: node.position.y,
-      ...SERVICE_NODE_SIZE,
-    }));
-    return findPlacement(target, SERVICE_NODE_SIZE, existingRects);
-  }
-
-  function openCreator(position: FlowPosition, panel: CreatePanel = "root") {
-    setCreatorPosition(computePlacement(position));
-    setCreatorPanel(panel);
-    setCreatorOpen(true);
-  }
-
-  function openCreatorAtCenter(panel: CreatePanel = "root") {
-    openCreator(getViewportCenter(), panel);
-  }
-
   async function createBlankService(position: FlowPosition) {
-    const placement = computePlacement(position);
-    await openCreated(createStoreService({ store, environmentId, position: placement }, { type: "empty" }));
+    await openCreated(createStoreService({ store, environmentId, position }, { type: "empty" }));
   }
 
-  function onPaneContextMenu(event: MouseEvent | React.MouseEvent) {
-    lastRightClickFlowPosition.current = flow.screenToFlowPosition({
-      x: event.clientX,
-      y: event.clientY,
-    });
-  }
-
-  function openCreatorAtLastRightClick(panel: CreatePanel) {
-    openCreator(lastRightClickFlowPosition.current, panel);
-  }
-
-  function createBlankServiceAtLastRightClick() {
-    void createBlankService(lastRightClickFlowPosition.current).catch((error) =>
+  return (position: FlowPosition) => {
+    void createBlankService(position).catch((error) =>
       toast.error(toErrorMessage(error, "The service couldn’t be created. Try again.")),
     );
-  }
-
-  return {
-    openCreated,
-    creatorOpen,
-    setCreatorOpen,
-    creatorPosition,
-    creatorPanel,
-    openCreatorAtCenter,
-    onPaneContextMenu,
-    openCreatorAtLastRightClick,
-    createBlankServiceAtLastRightClick,
   };
 }

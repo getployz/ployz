@@ -21,12 +21,13 @@ import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { useServiceCreator } from "../../../../-components/service-create/useServiceCreator";
+import { useBlankServiceCreator, useOpenCreatedService } from "../../../../-components/service-create/useServiceCreator";
 import { canvasNodeOf } from "./nodes";
 import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useConfigCreator } from "./useConfigCreator";
+import { useCanvasCreator } from "./useCanvasCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
@@ -96,34 +97,21 @@ export function CanvasFlow({
   );
   useKeyboardFocusModality();
   useRefitOnWidthChange(flowReady && !focusNode);
-  const creator = useServiceCreator(params, environmentId, getViewportCenter);
-  const volumeCreator = useVolumeCreator(
-    params,
-    environmentId,
-    getViewportCenter,
-  );
-
-  const configCreator = useConfigCreator(params, environmentId, getViewportCenter);
-
-  function openConfigCreatorFromServiceDialog() {
-    creator.setCreatorOpen(false);
-    configCreator.openCreatorAtPosition(creator.creatorPosition);
-  }
-
-  function openVolumeCreatorFromServiceDialog() {
-    creator.setCreatorOpen(false);
-    volumeCreator.openCreatorAtPosition(creator.creatorPosition);
-  }
+  const creator = useCanvasCreator(getViewportCenter);
+  const openCreated = useOpenCreatedService(params);
+  const createBlankService = useBlankServiceCreator(params, environmentId);
+  const createVolume = useVolumeCreator(params.organizationSlug, environmentId);
+  const createConfig = useConfigCreator(params, environmentId);
 
   return (
     <LitVolumeProvider>
       <div className="canvas-graph aria-busy:opacity-60" inert={selectedNodeId !== null || renaming} aria-busy={renaming}>
       <div className="hidden h-full min-[861px]:block">
         <CanvasContextMenu
-          onCreateFromPanel={creator.openCreatorAtLastRightClick}
-          onCreateBlank={creator.createBlankServiceAtLastRightClick}
-          onCreateVolume={volumeCreator.openCreatorAtLastRightClick}
-          onCreateConfig={configCreator.openCreatorAtLastRightClick}
+          onCreateFromPanel={(panel) => creator.openAtLastRightClick("service", panel)}
+          onCreateBlank={() => createBlankService(creator.placeAtLastRightClick())}
+          onCreateVolume={() => creator.openAtLastRightClick("volume")}
+          onCreateConfig={() => creator.openAtLastRightClick("config")}
         >
           <ReactFlow
             key={`${params.projectSlug}/${params.environmentSlug}`}
@@ -144,11 +132,7 @@ export function CanvasFlow({
             onNodeClick={() => {}}
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDrag}
-            onPaneContextMenu={(event) => {
-              creator.onPaneContextMenu(event);
-              volumeCreator.onPaneContextMenu(event);
-              configCreator.onPaneContextMenu(event);
-            }}
+            onPaneContextMenu={creator.onPaneContextMenu}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
           </ReactFlow>
@@ -161,7 +145,7 @@ export function CanvasFlow({
         <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"
-          onClick={() => creator.openCreatorAtCenter()}
+          onClick={() => creator.openAtCenter("service")}
         >
           <PlusIcon data-icon="inline-start" />
           Create
@@ -172,26 +156,27 @@ export function CanvasFlow({
       <StoreBottomBar store={store} />
 
       <ServiceCreatorDialog
-        open={creator.creatorOpen}
-        onOpenChange={creator.setCreatorOpen}
-        panel={creator.creatorPanel}
-        position={creator.creatorPosition}
+        open={creator.open === "service"}
+        onOpenChange={(open) => creator.setOpen("service", open)}
+        panel={creator.panel}
+        position={creator.position}
         params={params}
-        onCreateVolume={openVolumeCreatorFromServiceDialog}
-        onCreateConfig={openConfigCreatorFromServiceDialog}
+        onCreateVolume={() => creator.switchTo("volume")}
+        onCreateConfig={() => creator.switchTo("config")}
         onCreated={async (created, stillHere) => {
-          creator.setCreatorOpen(false);
-          if (stillHere) await creator.openCreated(created);
+          creator.setOpen("service", false);
+          if (stillHere) await openCreated(created);
         }}
       />
       <VolumeCreatorDialog
         organizationSlug={params.organizationSlug}
-        open={volumeCreator.creatorOpen}
-        onOpenChange={volumeCreator.setCreatorOpen}
-        position={volumeCreator.creatorPosition}
-        onCreate={volumeCreator.createVolume}
+        open={creator.open === "volume"}
+        onOpenChange={(open) => creator.setOpen("volume", open)}
+        position={creator.position}
+        onCreate={createVolume}
       />
-      <ConfigCreatorDialog open={configCreator.creatorOpen} onOpenChange={configCreator.setCreatorOpen} onCreate={configCreator.createConfig} />
+      <ConfigCreatorDialog open={creator.open === "config"} onOpenChange={(open) => creator.setOpen("config", open)}
+        onCreate={(name) => createConfig(name, creator.position)} />
     </LitVolumeProvider>
   );
 }
