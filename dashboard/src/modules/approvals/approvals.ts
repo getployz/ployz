@@ -56,7 +56,7 @@ const OPERATION_WORDS = {
   set_private_access: { title: "Turn private access", asked: (name: string) => `turning Private Access ${name}` },
 } as const satisfies Partial<Record<OperationVerb, { title: string; asked: (name: string) => string }>>;
 
-const operationWords = (verb: OperationVerb) => verb in OPERATION_WORDS ? OPERATION_WORDS[verb as keyof typeof OPERATION_WORDS] : null;
+const operationWords = (verb: OperationVerb) => Object.entries(OPERATION_WORDS).find(([key]) => key === verb)?.[1] ?? null;
 
 /** What a refusal calls an operation waiting on a human: "renaming the Cluster to acme", or "this drain of fra-1". */
 export const operationAsked = (verb: OperationVerb, name: string) =>

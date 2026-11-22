@@ -3,18 +3,18 @@ import { type ApprovalReview, approvalSubject, asksForAuthKey, losesVolumeAccess
 import type { ApprovalView } from "./approvals.queries";
 
 /** The badge of an approval whose command alone says what it does. */
-const BADGE: Readonly<Record<string, string>> = {
-  stop: "Stops service",
-  restart: "Restarts service",
-  unprotect: "Unprotects",
-  sync: "Syncs",
-  take: "Takes",
-  cancel: "Cancels deploy",
-  move: "Moves volume",
-  restore: "Restores volume",
-  resize: "Resizes volume",
-  set_cluster_name: "Renames cluster",
-};
+const BADGE = new Map([
+  ["stop", "Stops service"],
+  ["restart", "Restarts service"],
+  ["unprotect", "Unprotects"],
+  ["sync", "Syncs"],
+  ["take", "Takes"],
+  ["cancel", "Cancels deploy"],
+  ["move", "Moves volume"],
+  ["restore", "Restores volume"],
+  ["resize", "Resizes volume"],
+  ["set_cluster_name", "Renames cluster"],
+]);
 
 const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -24,7 +24,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (losesVolumeAccess(review)) return "Removes server";
   if (command === "publish") return "Deletes on deploy";
   if (command === "retry" && !shutsDownAgain(review)) return rollsBack(review) ? "Rolls back" : "Redeploys";
-  const named = BADGE[command];
+  const named = BADGE.get(command);
   if (named !== undefined) return named;
   if (command === "set_private_access") return asksForAuthKey(review) ? "Joins a tailnet" : "Removes routers";
   if (command === "set_ingress_doors") return effects.length === 0 ? "Switches web traffic" : `Moves ${counted(effects.length, "address", "addresses")}`;
