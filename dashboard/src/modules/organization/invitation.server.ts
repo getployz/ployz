@@ -5,22 +5,19 @@ import { Effect } from "effect";
 import { requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { user } from "#/modules/identity/tables";
 import { invitation, member, organization } from "#/modules/organization/tables";
+import { type InviteRole, MANAGING_ROLES } from "#/modules/organization/permissions";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
 export const INVITE_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-type InviteRole = typeof invitation.$inferSelect.role;
-
 const hashInviteToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
 type InviteState = "pending" | "accepted" | "revoked" | "expired";
 
-const MANAGING = ["owner", "admin"] as const;
-
 const fromManager = sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
-  and ${member.userId} = ${invitation.inviterId} and ${inArray(member.role, [...MANAGING])})`;
+  and ${member.userId} = ${invitation.inviterId} and ${inArray(member.role, [...MANAGING_ROLES])})`;
 
 const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date; fromManager: boolean }, now: Date): InviteState => {
   if (row.status !== "pending") return row.status;
@@ -153,7 +150,7 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, userId))).limit(1);
     if (already !== undefined) return { slug: row.slug };
     const [manager] = yield* drizzle.select({ id: member.id }).from(member)
-      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING]))).for("share");
+      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING_ROLES]))).for("share");
     const state = stateOf({ ...row, fromManager: manager !== undefined }, new Date());
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });

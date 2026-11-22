@@ -1,5 +1,6 @@
 import { createdAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
+import type { InviteRole, MemberRole } from "#/modules/organization/permissions";
 
 import { createSelectSchema } from "drizzle-orm/effect-schema";
 
@@ -73,7 +74,7 @@ export const member = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    role: text("role").default("member").notNull().$type<"owner" | "admin" | "member">(),
+    role: text("role").default("member").notNull().$type<MemberRole>(),
     createdAt,
   },
   (table) => [unique().on(table.userId, table.organizationId)],
@@ -92,7 +93,7 @@ export const invitation = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull().unique(),
     email: text("email"),
-    role: text("role").notNull().$type<"admin" | "member">(),
+    role: text("role").notNull().$type<InviteRole>(),
     status: text("status").default("pending").notNull().$type<"pending" | "accepted" | "revoked">(),
     expiresAt: timestamp("expires_at", {
       mode: "date",

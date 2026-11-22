@@ -1,5 +1,6 @@
 "use client";
 
+import { refusalFor } from "#/modules/organization/permissions";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { DeletionDialog } from "#/components/deletion-dialog";
@@ -10,7 +11,7 @@ import { useClusterReleased } from "#/providers/runtime-provider";
 
 /** Whether you may forget the Servers, and why not. */
 export function useForgetServersGate(organizationSlug: string) {
-  return useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget them.");
+  return useRoleGate(organizationSlug, "servers:remove", refusalFor("servers:remove", "forget them"));
 }
 
 /**

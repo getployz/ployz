@@ -6,13 +6,13 @@ import { type CommandName, runCommand } from "#/modules/commands/commands.server
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { acceptInvite, readInvite } from "#/modules/organization/invitation.server";
+import { InviteRole, MemberRole } from "#/modules/organization/permissions";
 import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Validation } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const Slug = Schema.NonEmptyString;
-const MemberRole = Schema.Literals(["owner", "admin", "member"]);
 
 const ranResult = <N extends CommandName>(caller: Caller, name: N, input: JsonValue) => Effect.gen(function* () {
   const result = yield* runCommand(caller, name, input, { approvalId: null, key: null });
@@ -46,7 +46,7 @@ export const listMembersServerFn = createServerFn({ method: "GET" })
 
 export const inviteMemberServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ organizationSlug: Slug, email: Schema.NullOr(Schema.String), role: Schema.Literals(["admin", "member"]) })))
+  .validator(strictValidator(Schema.Struct({ organizationSlug: Slug, email: Schema.NullOr(Schema.String), role: InviteRole })))
   .handler(({ context, data }) => {
     const email = data.email?.trim();
     const input: JsonValue = email ? { role: data.role, email } : { role: data.role };

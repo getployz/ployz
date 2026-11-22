@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { Suspense, useState, type ReactNode } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
@@ -122,7 +123,7 @@ function RouteComponent() {
   );
 }
 
-const REMOVE_REFUSED = "Only an owner or admin can remove servers.";
+const REMOVE_REFUSED = refusalFor("servers:remove", "remove servers");
 
 /**
  * Services, Web traffic, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and

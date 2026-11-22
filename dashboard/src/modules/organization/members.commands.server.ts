@@ -11,12 +11,11 @@ import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
 import { refusalOf } from "#/modules/organization/access.server";
 import { listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { InviteRole, MemberRole } from "#/modules/organization/permissions";
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
 
 const MemberSelector = Schema.NonEmptyString.annotate({ description: "The member's email, e.g. bob@example.com, or their name if no other member shares it" });
-const MemberRole = Schema.Literals(["owner", "admin", "member"]);
-const InviteRole = Schema.Literals(["admin", "member"]);
 
 const Member = Schema.Struct({
   name: Schema.String,

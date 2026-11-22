@@ -1,5 +1,6 @@
 /** @data-source remote: an Organization's members and pending invites, prefetched by Organization Settings and refetched after this tab's member writes; the change stream refetches it when a member or invite row changes. An invite link's Organization and state, prefetched by its page, which joining leaves */
 import { queryOptions, useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
 import { can, type Permission } from "#/modules/organization/permissions";
 import { defineChange } from "#/collections/change-log/declare";
@@ -52,6 +53,18 @@ export function useRoleGate(organizationSlug: string, permission: Permission, re
   if (members.status === "pending") return { allowed: false, reason: ROLE_CHECKING };
   if (members.status === "error") return { allowed: false, reason: ROLE_UNCHECKED };
   return { allowed: false, reason: may === undefined ? NO_LONGER_MEMBER : refusal };
+}
+
+const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
+
+/**
+ * A `useRoleGate` for what Ployz support never does, even where its role holds `permission`: a support visit, which
+ * the Organization's loader names, closes the control as it closes for a role that lacks it.
+ */
+export function useMemberGate(organizationSlug: string, permission: Permission, refusal?: string): RoleGate {
+  const { access } = organizationRoute.useLoaderData();
+  const gate = useRoleGate(organizationSlug, permission, refusal);
+  return access === "support" ? { allowed: false, reason: gate.reason } : gate;
 }
 
 type Members = Awaited<ReturnType<typeof listMembersServerFn>>;

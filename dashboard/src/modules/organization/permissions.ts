@@ -1,10 +1,20 @@
 /** What Ployz support may read inside an Organization beyond its shape. Each is off until a member turns it on. */
 export type SupportShows = { readonly variables: boolean; readonly configs: boolean; readonly logs: boolean };
 
-/** Support is Ployz staff acting in an Organization that allows support. */
-export type PermissionRole = "owner" | "admin" | "member" | "support";
+import { Schema } from "effect";
 
-type RankedRole = Exclude<PermissionRole, "support">;
+/** The roles a member holds, most trusted first. */
+export const MemberRole = Schema.Literals(["owner", "admin", "member"]);
+export type MemberRole = typeof MemberRole.Type;
+
+/** The roles an invite may grant: an owner is made by an existing owner, never by a link. */
+export const InviteRole = Schema.Literals(["admin", "member"]);
+export type InviteRole = typeof InviteRole.Type;
+
+/** Support is Ployz staff acting in an Organization that allows support. */
+export type PermissionRole = MemberRole | "support";
+
+type RankedRole = MemberRole;
 
 const LEAST_ROLE = [
   ["org:read", "member"],
@@ -72,6 +82,32 @@ function holdings(role: RankedRole, withheld: ReadonlyArray<Permission> = []): R
 export const can = (role: PermissionRole, permission: Permission): boolean =>
   Object.hasOwn(ROLE_PERMISSIONS, role) && ROLE_PERMISSIONS[role].has(permission);
 
+/** The roles that may manage members: what an invite's maker must still hold for the invite to work. */
+export const MANAGING_ROLES: ReadonlyArray<MemberRole> = MemberRole.literals.filter((role) => can(role, "members:manage"));
+
 /** Everything `role` holds, in `PERMISSIONS` order: what the Store is told a caller may do. */
 export const permissionsOf = (role: PermissionRole): Permission[] =>
   Object.hasOwn(ROLE_PERMISSIONS, role) ? PERMISSIONS.filter((permission) => ROLE_PERMISSIONS[role].has(permission)) : [];
+
+/** What a gated control says it does when its refusal names the action instead of the Organization. */
+type RefusalAction =
+  | "add servers"
+  | "enroll or reject servers"
+  | "change how a server runs"
+  | "upgrade servers"
+  | "remove servers"
+  | "forget servers"
+  | "forget them"
+  | "change these"
+  | "change this"
+  | "change where builds run"
+  | "delete it";
+
+/**
+ * What a refusal says to someone whose role doesn't hold `permission`: the least role that does, and with `action`,
+ * what they may not do. Server and screen share it, so a control and the call behind it refuse in the same words.
+ */
+export const refusalFor = (permission: Permission, action?: RefusalAction) => {
+  const who = can("admin", permission) ? "Only an owner or admin" : "Only an owner";
+  return action === undefined ? `${who} of this Organization can do this.` : `${who} can ${action}.`;
+};

@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -28,17 +27,14 @@ import {
   reviewDoorsSwitchQueryOptions,
   useClusterIngress,
 } from "#/modules/ingress/doors.queries";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { useMemberGate } from "#/modules/organization/members.queries";
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /** Web traffic: whether the Cluster takes it on public ports or through a Cloudflare tunnel, and the switch between them. */
 export function WebTrafficSection({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const view = useClusterIngress(organizationSlug);
-  const { access } = organizationRoute.useLoaderData();
-  const gate = useRoleGate(organizationSlug, "servers:operate");
-  const editable = access !== "support" && gate.allowed;
+  const editable = useMemberGate(organizationSlug, "servers:operate").allowed;
   const { setup, change, foundedClosed } = view;
   const switching = change !== null && (change.state === "pending" || change.state === "running");
   const failure = change !== null && change.state === "failed" ? change.failure : null;

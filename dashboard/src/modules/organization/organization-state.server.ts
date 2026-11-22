@@ -5,6 +5,7 @@ import type { Actor, SessionActor } from "#/modules/identity/actor";
 import { session, user } from "#/modules/identity/tables";
 import { invitation, member, organization } from "#/modules/organization/tables";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
+import { refusalFor } from "#/modules/organization/permissions";
 import { billingEnabled } from "#/server/capabilities.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -113,7 +114,7 @@ export const createOrganization = Effect.fn("Organization.create")(function* (ac
 /** A new name, by an owner or admin, never by a support visit. The slug, and so every address and URL, stays. */
 export const renameOrganization = Effect.fn("Organization.rename")(function* (actor: Actor, input: RenameOrganization) {
   const access = yield* requireAccess(actor, input.organizationSlug, "org:settings");
-  if (access.kind === "support") return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
+  if (access.kind === "support") return yield* new Forbidden({ message: refusalFor("org:settings") });
   const { id } = access.organization;
   const { drizzle } = yield* Database;
   yield* drizzle.update(organization).set({ name: input.name }).where(eq(organization.id, id));

@@ -6,6 +6,7 @@ import { OPERATIONS } from "#/modules/operations/operations";
 import { PRIVATE_ACCESS_WANTS, routerCount } from "#/modules/private-access/private-access";
 import { privateAccessAsked, runPrivateAccess } from "#/modules/private-access/private-access.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { refusalFor } from "#/modules/organization/permissions";
 
 const use = OPERATIONS["private_access.use"];
 
@@ -43,7 +44,7 @@ export const privateAccessUse = defineCommand({
   output: Schema.Struct({ to: To, routers: Schema.Number }),
   render: "message",
   run: (caller, input) => caller.support !== null
-    ? Effect.succeed(refused("forbidden", "Only an owner or admin of this Organization can do this."))
+    ? Effect.succeed(refused("forbidden", refusalFor(use.requires)))
     : withRuntime(runPrivateAccess(caller.organization.id, input.to)).pipe(
       Effect.map(({ servers, failures }) => {
         const routers = routerCount(servers);

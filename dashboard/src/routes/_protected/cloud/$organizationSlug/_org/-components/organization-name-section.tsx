@@ -1,18 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput, type ConfirmStatus } from "#/components/store-write/confirmable-input";
 import { toErrorMessage } from "#/lib/error-message";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { useMemberGate } from "#/modules/organization/members.queries";
 import { OrganizationName } from "#/modules/organization/organization-state";
 import { renameOrganizationServerFn } from "#/modules/organization/organization-state.functions";
 import { organizationKeys, useOrganizationName } from "#/modules/organization/organization-state.queries";
 
 const isName = Schema.is(OrganizationName);
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /** The Organization's name. Its slug, and so its URLs, stay. */
 export function OrganizationNameSection({ organizationSlug }: { organizationSlug: string }) {
@@ -29,9 +27,8 @@ function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: str
   const [draft, setDraft] = useState(name);
   const queryClient = useQueryClient();
   // A support visit may not rename a customer's Organization; the settings loader has the members, so a member's role is known.
-  const { access } = organizationRoute.useLoaderData();
-  const gate = useRoleGate(organizationSlug, "org:settings");
-  const locked = access === "support" || !gate.allowed;
+  const gate = useMemberGate(organizationSlug, "org:settings");
+  const locked = !gate.allowed;
   const rename = useMutation({
     mutationFn: useServerFn(renameOrganizationServerFn),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: organizationKeys.all }),

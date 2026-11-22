@@ -1,5 +1,6 @@
 "use client";
 
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -55,7 +56,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
   }
 
   const forget = useForgetServersGate(organizationSlug);
-  const mayDelete = useRoleGate(organizationSlug, "org:delete", "Only an owner can delete it.");
+  const mayDelete = useRoleGate(organizationSlug, "org:delete", refusalFor("org:delete", "delete it"));
   const disabledReason = mayDelete.reason ?? (projects.length > 0
     ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
     : undefined);

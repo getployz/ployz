@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
@@ -46,7 +47,7 @@ const BUILD_ORDER_LABELS = {
 } satisfies Record<BuildOrder, string>;
 const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github", "servers-only", "github-only"];
 
-export const BUILD_ORDER_REFUSED = "Only an owner or admin can change where builds run.";
+export const BUILD_ORDER_REFUSED = refusalFor("org:settings", "change where builds run");
 
 /** The Organization's Build Order, which the settings page prefetches. */
 export const BUILD_ORDER_QUERY = { query: "build_order" } as const;

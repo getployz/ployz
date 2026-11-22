@@ -1,5 +1,6 @@
 "use client";
 
+import { refusalFor } from "#/modules/organization/permissions";
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
@@ -70,7 +71,8 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
-  const gate = useRoleGate(organizationSlug, target.environment === null ? "project:delete" : "environment:delete", "Only an owner or admin can delete it.");
+  const deletes = target.environment === null ? "project:delete" : "environment:delete";
+  const gate = useRoleGate(organizationSlug, deletes, refusalFor(deletes, "delete it"));
   const disabledReason = gate.reason ?? blocked;
   const offline = useServerList(organizationSlug).servers.filter((server) => server.status === "offline")
     .map((server) => ({ id: server.machine.id, name: server.name }));

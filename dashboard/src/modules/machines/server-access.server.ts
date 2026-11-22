@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, not, sql, type SQLWrapper } from "drizzle-orm";
 import { Cause, Clock, Effect, Schema } from "effect";
 import type { DialTiming, MachineId } from "@ployz/sdk";
 import type { StoreRefusal } from "#/lib/refusal";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { organizationToken, session } from "#/modules/identity/tables";
+import { MANAGING_ROLES } from "#/modules/organization/permissions";
 import { member } from "#/modules/organization/tables";
 import { clusterExpectation, decryptPairingSecret, loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTiming, shouldLogDialTiming, type DialTimingInput } from "#/modules/machines/server-access-diagnostics";
@@ -342,7 +343,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
 const authorizedBy = (userId: SQLWrapper | string, organizationId: SQLWrapper | string, credentialKind: SQLWrapper | string, credentialId: SQLWrapper | string) =>
   sql`(exists (select 1 from ${member}
     where ${member.userId} = ${userId} and ${member.organizationId} = ${organizationId}
-      and ${member.role} in ('owner', 'admin'))
+      and ${inArray(member.role, [...MANAGING_ROLES])})
   and ((${credentialKind}::text = 'session' and exists (select 1 from ${session}
       where ${session.id} = ${credentialId} and ${session.expiresAt} > ${now}))
     or (${credentialKind}::text = 'token' and exists (select 1 from ${organizationToken}

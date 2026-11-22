@@ -10,9 +10,9 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { RequestScope } from "#/server/request-scope.server";
-import { can, type Permission, permissionsOf, reads, type SupportShows } from "./permissions";
+import { can, type MemberRole, type Permission, permissionsOf, refusalFor, reads, type SupportShows } from "./permissions";
 
-export type Role = typeof member.$inferSelect.role;
+export type Role = MemberRole;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
 /** What an Access may do: its role's permissions narrowed by a token's grant, and the Environments it may write, if limited. */
@@ -93,9 +93,7 @@ export const admit = (input: {
 export const refusalOf = (permission: Permission, by: "role" | "grant" = "role") =>
   by === "grant"
     ? `This token's grant doesn't include ${permission}.`
-    : can("admin", permission)
-      ? "Only an owner or admin of this Organization can do this."
-      : "Only an owner of this Organization can do this.";
+    : refusalFor(permission);
 
 /** Why `caller` doesn't hold `permission`, worded for its role or its token's grant, or null when it does. */
 type Holder = Pick<Caller, "role" | "support"> & Partial<Pick<Caller, "credential">>;

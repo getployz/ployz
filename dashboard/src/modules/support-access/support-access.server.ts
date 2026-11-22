@@ -7,6 +7,7 @@ import { NO_SUPPORT_ACCESS, type SetSupportAccessInput, type SupportAccessRow } 
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
+import { refusalFor } from "#/modules/organization/permissions";
 
 const rowColumns = {
   id: organizationSupportAccess.organizationId,
@@ -25,7 +26,7 @@ export const setSupportAccess = Effect.fn("SupportAccess.set")(function* (
   { organizationSlug, change }: SetSupportAccessInput,
 ) {
   const access = yield* requireAccess(actor, organizationSlug, "org:settings");
-  if (access.kind === "support") return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
+  if (access.kind === "support") return yield* new Forbidden({ message: refusalFor("org:settings") });
   const organizationId = access.organization.id;
   const { drizzle } = yield* Database;
   const by = { changedByUserId: actor.userId, updatedAt: new Date() };

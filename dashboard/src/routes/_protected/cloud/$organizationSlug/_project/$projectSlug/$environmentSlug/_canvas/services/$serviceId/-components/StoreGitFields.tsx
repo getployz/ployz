@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GitBranchIcon } from "lucide-react";
@@ -34,7 +35,7 @@ type GitRef = { repositoryId: number; installationId: number };
  * Protected Environment only those who may protect it do. Undefined until the listing and your role load; the Store refuses either way.
  */
 export function useSourceLock(organizationSlug: string, environment: EnvironmentRef) {
-  return useProtectedAsk(organizationSlug, environment) ? "Only an owner or admin can change this." : undefined;
+  return useProtectedAsk(organizationSlug, environment) ? refusalFor("environments:protect", "change this") : undefined;
 }
 
 /** The branch a Git Service builds, picked from the repository's branches (typed when GitHub isn't known yet). */

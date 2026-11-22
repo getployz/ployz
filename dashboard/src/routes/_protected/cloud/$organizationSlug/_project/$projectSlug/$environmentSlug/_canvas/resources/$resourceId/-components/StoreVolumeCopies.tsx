@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { Fragment, type ReactNode, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon, XIcon } from "lucide-react";
@@ -63,7 +64,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const floorless = new Set(lens.machines.filter((machine) => serverSupports(machine, requirements.volumeFloor) === false).map((machine) => machine.id));
   return {
     organizationSlug,
-    forgetGate: useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget servers."),
+    forgetGate: useRoleGate(organizationSlug, "servers:remove", refusalFor("servers:remove", "forget servers")),
     volume,
     members,
     rows,

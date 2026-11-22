@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { toast } from "sonner";
@@ -12,8 +13,8 @@ import { useYouMay } from "#/modules/organization/members.queries";
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null; foundsClosed?: boolean };
 
-export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
-export const ENROLL_REFUSED = "Only an owner or admin can enroll or reject servers.";
+export const ADD_SERVERS_REFUSED = refusalFor("servers:add", "add servers");
+export const ENROLL_REFUSED = refusalFor("servers:add", "enroll or reject servers");
 
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {

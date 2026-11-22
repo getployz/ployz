@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useEffect, useState } from "react";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useOrganizationContext } from "#/collections/use-organization-context";
@@ -14,7 +15,7 @@ import {
   setServerUpgradeSettingsServerFn,
 } from "./server-upgrade.functions";
 
-export const UPGRADE_REFUSED = "Only an owner or admin can upgrade servers.";
+export const UPGRADE_REFUSED = refusalFor("servers:operate", "upgrade servers");
 
 /** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
 const PENDING_MS = 60_000;

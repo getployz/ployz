@@ -1,3 +1,4 @@
+import { refusalFor } from "#/modules/organization/permissions";
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { Navigate, useNavigate } from "@tanstack/react-router";
@@ -75,7 +76,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
   const writer = useStoreWriter(organizationSlug);
   const [checked, hold] = useCommitHold(saved);
-  const gate = useRoleGate(organizationSlug, "environments:protect", "Only an owner or admin can change this.");
+  const gate = useRoleGate(organizationSlug, "environments:protect", refusalFor("environments:protect", "change this"));
   return (
     <SettingsSection id="protected" title="Protected"
       description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">
