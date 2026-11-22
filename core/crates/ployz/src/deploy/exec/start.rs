@@ -1,12 +1,13 @@
 use super::cleanup;
-use super::machine_ops::CopyLifecycle;
-use super::machine_ops::MachineOperations;
 use super::report::{Left, left_by};
 use super::stop_first::{Withdrawn, leave_unstopped};
-use super::transport::{Outstanding, RESTART_WAIT, RestartTolerant};
-use super::{Shared, SlotPolicy, machine_error, stop};
+use super::{Shared, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
+use crate::deploy::machine_calls::CopyLifecycle;
+use crate::deploy::machine_calls::MachineOperations;
+use crate::deploy::machine_calls::SlotPolicy;
+use crate::deploy::machine_calls::{Outstanding, RESTART_WAIT, RestartTolerant};
 use crate::deploy::progress::Progress;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,

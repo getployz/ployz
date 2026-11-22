@@ -1,8 +1,8 @@
-use super::machine_ops::MachineOperations;
 use super::report::{Left, left_by};
 use super::{DeployOperation, cleanup};
 use super::{OperationFailure, Ran, Shared, health_error, inspect, machine_error, operation_at};
 use crate::deploy::cleanup::{ACK_POLL, EmptyPolicy, NotIn, RotationFailure};
+use crate::deploy::machine_calls::MachineOperations;
 use crate::deploy::progress::Progress;
 use crate::deploy::schedule::{ServiceGroup, Stage};
 use futures_util::future::join_all;

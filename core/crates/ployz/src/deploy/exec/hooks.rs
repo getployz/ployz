@@ -1,6 +1,6 @@
-use super::machine_ops::MachineOperations;
 use super::start::{Attempt, FailedStart, Row, SlotRun, start};
 use super::{inspect, remove};
+use crate::deploy::machine_calls::MachineOperations;
 use ployz_core::{
     AnswerWhen, ContainerId, ContainerLocator, ContainerRuntimeObservation, ContainerWant,
     DeploymentLogId, Drain, ExecutionError, Gen, HEALTH_POLL_INTERVAL, HookFailure, MachineId,

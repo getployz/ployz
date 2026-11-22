@@ -10,10 +10,11 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::machine_ops::{MachineOperations, Unanswered};
+use super::machine_error;
 use super::publish::gaps_still_routing;
-use super::{machine_error, naming_machine};
 use crate::deploy::cleanup;
+use crate::deploy::machine_calls::naming_machine;
+use crate::deploy::machine_calls::{MachineOperations, Unanswered};
 use crate::deploy::progress::Progress;
 
 /// How long a Deploy waits on the entry Machine's store for its gen floor.

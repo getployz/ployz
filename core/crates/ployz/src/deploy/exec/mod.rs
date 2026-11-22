@@ -7,12 +7,12 @@ use futures_util::{
 };
 use ployz_core::{
     AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
-    DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
-    FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
-    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService,
-    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    ContainerUpdateOperation, ContainerWant, CopyRotation, DependencyHealthFailure, DeployEvent,
+    DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort, FailedOperation,
+    HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId, Namespace,
+    OperationPhase, PortPublication, PullPolicy, QualifiedService, RemoveContainerPurpose,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName, ServiceOutcome, SlotKey,
+    StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -31,33 +31,25 @@ pub(super) use super::progress::Progress;
 mod gens;
 mod health;
 mod hooks;
-mod machine_ops;
 mod publish;
 mod report;
-mod set_each;
 mod start;
 mod stop_first;
-mod transport;
 
+use super::machine_calls::{MachineOperations, RestartTolerant, SlotPolicy, naming_machine};
 use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
-pub(crate) use machine_ops::MachineOperations;
-pub(crate) use machine_ops::{CopyLifecycle, ProxyPlacement};
-#[cfg(test)]
-pub(crate) use machine_ops::{RedialFailure, Session};
 use publish::{
     Done, GappedPublishes, GroupCopies, Published, ack_tick, old_copies, publish_group,
     rolling_step, route_new,
 };
 use report::Report;
-pub(crate) use set_each::{Answer, set_each};
 use start::{Attempt, FailedStart, Row, SlotRun, answer_when, out_of_memory, remove_stray, start};
 pub(crate) use start::{MoveEnd, MoveError, move_container};
 use stop_first::{
     StopFirstSteps, remove_container, replace_stop_first, restore_group, stop_old_copy,
 };
-pub(crate) use transport::RestartTolerant;
 
 struct Stop {
     index: usize,
@@ -218,57 +210,6 @@ impl<'a> Slots<'a> {
         SlotPolicy::of(kind, &spec.mode).slot(self.namespace, kind, spec, replacing, || {
             format!("{}:{index}", self.plan)
         })
-    }
-}
-
-/// How a new Container's slot is keyed. A Global Service Container is keyed by
-/// its spec, so a retry or another run lands on the Container already there;
-/// every other Container is keyed by the run that creates it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotPolicy {
-    BySpec,
-    PerRun,
-}
-
-impl SlotPolicy {
-    fn of(kind: ContainerKind, mode: &ployz_core::ServiceMode) -> Self {
-        if kind == ContainerKind::ServiceContainer && *mode == ployz_core::ServiceMode::Global {
-            Self::BySpec
-        } else {
-            Self::PerRun
-        }
-    }
-
-    fn keyed_by_spec(self) -> bool {
-        self == Self::BySpec
-    }
-
-    /// The slot of a new Container of `spec`. `per_run` names it when the spec does not.
-    fn slot(
-        self,
-        namespace: &Namespace,
-        kind: ContainerKind,
-        spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
-        per_run: impl FnOnce() -> String,
-    ) -> SlotKey {
-        let key = match self {
-            Self::BySpec => {
-                let key = crate::cluster::global_creation_key(spec);
-                // Explicit replacement can overlap even an identical spec.
-                match replacing {
-                    Some(old) => format!("{key}:replace:{old}"),
-                    None => key,
-                }
-            }
-            Self::PerRun => per_run(),
-        };
-        SlotKey {
-            namespace: namespace.clone(),
-            service: spec.name.clone(),
-            kind,
-            creation_key: CreationKey::try_from(key).expect("creation keys stay within 512 bytes"),
-        }
     }
 }
 
@@ -1207,16 +1148,6 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
-}
-
-/// The Machine that answered `error`, for a failure sentence that names the Server.
-fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
-    if let serde_json::Value::Object(details) = &mut error.details {
-        details.insert("machine_id".into(), serde_json::json!(machine_id));
-    } else {
-        error.details = serde_json::json!({ "machine_id": machine_id });
-    }
-    error
 }
 
 fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {

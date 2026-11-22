@@ -1,4 +1,3 @@
-use super::machine_ops::MachineOperations;
 use super::publish::{gaps_still_routing, left_unless_done};
 use super::report::{Left, left_by};
 use super::start::{Attempt, FailedStart, Row, SlotRun, discard_new, start};
@@ -11,6 +10,7 @@ use super::{
     remove, stop,
 };
 use crate::deploy::cleanup::{EmptyPolicy, NotIn, RotationFailure};
+use crate::deploy::machine_calls::MachineOperations;
 use crate::deploy::progress::Progress;
 use crate::deploy::schedule::ServiceGroup;
 use futures_util::future::join_all;
