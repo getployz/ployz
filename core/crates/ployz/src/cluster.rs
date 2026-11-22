@@ -499,9 +499,7 @@ impl Client {
                 client
                     .call::<op::InspectStorage>(
                         InspectStorageRequest {},
-                        Call::read()
-                            .to(&MachineTarget::from(&machine.machine.id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&MachineTarget::from(&machine.machine.id)),
                     )
                     .await
                     .map(Some)
@@ -833,9 +831,7 @@ impl Client {
         match client
             .call::<op::InspectStorage>(
                 InspectStorageRequest {},
-                Call::read()
-                    .to(&MachineTarget::from(&machine.machine.id))
-                    .budget(crate::connect::target_read_timeout()),
+                Call::target_read(&MachineTarget::from(&machine.machine.id)),
             )
             .await
         {
@@ -878,9 +874,7 @@ impl Client {
                             reference,
                             last_tagged: false,
                         },
-                        Call::read()
-                            .to(&MachineTarget::from(&machine.id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&MachineTarget::from(&machine.id)),
                     )
                     .await
                     .map_err(crate::connect::rpc_error)?;
@@ -1996,9 +1990,7 @@ async fn list_volumes_on_machine(
     client
         .call::<op::ListVolumes>(
             ListVolumesRequest {},
-            Call::read()
-                .to(&MachineTarget::from(&machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(&machine_id)),
         )
         .await
         .map_err(crate::connect::rpc_error)
@@ -2040,9 +2032,7 @@ async fn list_on_machine(
     client
         .call::<op::ListContainers>(
             ListContainersRequest { environment },
-            Call::read()
-                .to(&MachineTarget::from(&machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(&machine_id)),
         )
         .await
         .map(|list| MachineSuccess {

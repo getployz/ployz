@@ -420,9 +420,7 @@ async fn gather_deploy_snapshot(
                 let result = client
                     .call::<ployz_core::op::InspectStorage>(
                         ployz_core::InspectStorageRequest {},
-                        Call::read()
-                            .to(&ployz_core::MachineTarget::from(&id))
-                            .budget(crate::connect::target_read_timeout()),
+                        Call::target_read(&ployz_core::MachineTarget::from(&id)),
                     )
                     .await
                     .map_err(crate::connect::rpc_error);

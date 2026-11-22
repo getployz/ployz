@@ -297,9 +297,7 @@ impl CopyLifecycle for Client {
                 ListContainersRequest {
                     environment: EnvironmentValues::Redacted,
                 },
-                Call::read()
-                    .to(&MachineTarget::from(machine_id))
-                    .budget(crate::connect::target_read_timeout()),
+                Call::target_read(&MachineTarget::from(machine_id)),
             )
             .await
             .map_err(crate::cluster::unanswered_kept);
@@ -600,9 +598,7 @@ impl Client {
                 ListContainersRequest {
                     environment: EnvironmentValues::Included,
                 },
-                Call::read()
-                    .to(&MachineTarget::from(machine_id))
-                    .budget(crate::connect::target_read_timeout()),
+                Call::target_read(&MachineTarget::from(machine_id)),
             )
             .await
             .map_err(|error| crate::cluster::answered_by(machine_id, error))?
