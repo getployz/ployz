@@ -494,6 +494,7 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.rule.passkey.v1", "Always"),
     ("ployz.authority.scoped-keys.v1", "Always"),
     ("ployz.authority.parent-versions.v1", "Always"),
+    ("ployz.authority.key-prior.v1", "Always"),
 ];
 
 #[test]

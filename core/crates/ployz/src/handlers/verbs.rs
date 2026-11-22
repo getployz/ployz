@@ -811,7 +811,7 @@ pub(crate) const VOLUME_INSPECT: Verb = Verb::cloud(
     volume::inspect,
 );
 pub(crate) const VOLUME_LS: Verb =
-    Verb::cloud("volume ls", Never, volume::list_command, volume::list);
+    Verb::cloud("volume ls", Never, volume::list_command, volume::list).docs("services/volumes.md");
 pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
     "volume mirror",
     Never,
