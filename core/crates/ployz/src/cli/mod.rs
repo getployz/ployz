@@ -4,6 +4,9 @@ use ployz_store::ReviewVersion;
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 pub(crate) mod metrics;
+mod rerun;
+
+pub(crate) use rerun::{approved_rerun, config_flag, recovery_command, rerun};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -110,6 +113,29 @@ pub(crate) fn config_path(
         .map(std::path::Path::new)
         .map(crate::context::expand_home)
         .ok_or_else(|| crate::failure::Failure::usage("Ployz config path is required"))
+}
+
+/// Whether the compiled command at `words` takes a value for the option `id`; a
+/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// unbuilt, so a global argument still sits on the ancestor that declares it.
+pub(crate) fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
+    let root = compiled();
+    let takes = |arg: &clap::Arg| {
+        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
+    };
+    let mut command = &root;
+    let mut inherited = false;
+    for word in words {
+        let Some(child) = command.find_subcommand(word) else {
+            break;
+        };
+        inherited |= id != "context"
+            && command
+                .get_arguments()
+                .any(|arg| arg.is_global_set() && takes(arg));
+        command = child;
+    }
+    inherited || command.get_arguments().any(takes)
 }
 
 /// This command line as typed, then `extra`.

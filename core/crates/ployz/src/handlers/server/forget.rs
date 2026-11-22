@@ -110,7 +110,7 @@ fn forget_through_cloud(
         credential,
         OperationVerb::Forget,
         matches.get_one::<String>("approval").cloned(),
-        |id| super::approved_rerun(matches, confirmed, id),
+        |id| crate::cli::approved_rerun(matches, confirmed, id),
         async |approval| {
             if !crate::ui::json() {
                 crate::ui::note("Asking Cloud to forget the Servers…");

@@ -163,7 +163,7 @@ fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
     let typed = |id: &str| root.value_source(id) == Some(ValueSource::CommandLine);
     let mut words = vec!["ployz".to_owned()];
     words.extend(
-        crate::handlers::config_flag(root)
+        crate::cli::config_flag(root)
             .into_iter()
             .flatten()
             .map(ToOwned::to_owned),

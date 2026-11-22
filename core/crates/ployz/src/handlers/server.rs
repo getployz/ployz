@@ -116,13 +116,6 @@ pub(super) fn servers(matches: &ArgMatches) -> Result<Vec<ployz_core::MachineObs
     })
 }
 
-/// `rerun` with `--approval id`, the command that goes ahead once a human approved.
-pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> String {
-    let mut args = args.to_vec();
-    args.extend(["--approval", id]);
-    super::rerun(matches, &args)
-}
-
 pub(super) struct ConnectionOptions {
     config_path: PathBuf,
     context: Option<String>,

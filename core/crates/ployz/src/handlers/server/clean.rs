@@ -315,7 +315,7 @@ fn through_cloud(
                 "--confirm",
                 namespace.as_str(),
             ];
-            super::approved_rerun(matches, &args, id)
+            crate::cli::approved_rerun(matches, &args, id)
         },
         async |approval| {
             cloud::account::start_run(
@@ -375,7 +375,7 @@ fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a O
 /// Removing `namespace`, reaching the same Servers as this command.
 fn retry(matches: &ArgMatches, namespace: &Namespace) -> String {
     let mut words = vec!["ployz"];
-    words.extend(super::super::config_flag(matches).into_iter().flatten());
+    words.extend(crate::cli::config_flag(matches).into_iter().flatten());
     words.extend(["server", "clean"]);
     for flag in ["context", "connect"] {
         if let Some(value) = matches.get_one::<String>(flag) {

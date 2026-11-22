@@ -577,7 +577,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         &credential,
         ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
-        |id| super::server::approved_rerun(matches, &again, id),
+        |id| crate::cli::approved_rerun(matches, &again, id),
         async |approval| {
             approved = approval.map(str::to_owned);
             cloud::account::remove_organization(&credential, &removing, approval).await
@@ -589,7 +589,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         None
     };
     let next = (!removal.removed).then(|| match &approved {
-        Some(id) => super::server::approved_rerun(matches, &again, id),
+        Some(id) => crate::cli::approved_rerun(matches, &again, id),
         None => retry,
     });
     let value = serde_json::json!({

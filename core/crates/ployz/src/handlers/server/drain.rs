@@ -94,7 +94,7 @@ fn through_cloud(
         credential,
         OperationVerb::Drain,
         matches.get_one::<String>("approval").cloned(),
-        |id| super::approved_rerun(matches, &["server", "drain", selector], id),
+        |id| crate::cli::approved_rerun(matches, &["server", "drain", selector], id),
         async |approval| {
             cloud::account::start_run(
                 credential,
@@ -238,7 +238,7 @@ fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedServi
     .hint(Hint::Next(shell_words::join(
         ["ployz"]
             .into_iter()
-            .chain(super::super::config_flag(matches).into_iter().flatten())
+            .chain(crate::cli::config_flag(matches).into_iter().flatten())
             .chain(["login"]),
     )))
 }

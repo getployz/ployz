@@ -44,9 +44,9 @@ mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
-use crate::cli::{command_path, config_path, leaf_matches, typed_with};
-pub(super) use shared::rerun::config_flag;
-use shared::rerun::{recovery_command, rerun};
+use crate::cli::{
+    command_path, config_path, leaf_matches, recovery_command, rerun, takes_value, typed_with,
+};
 mod status;
 mod status_servers;
 pub(crate) mod store;
@@ -396,29 +396,6 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     (verb.run)(matches)
         .map_err(|failure| context::with_context_next(failure, leaf_matches(matches)))
-}
-
-/// Whether the compiled command at `words` takes a value for the option `id`; a
-/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
-/// unbuilt, so a global argument still sits on the ancestor that declares it.
-fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
-    let root = crate::cli::compiled();
-    let takes = |arg: &clap::Arg| {
-        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
-    };
-    let mut command = &root;
-    let mut inherited = false;
-    for word in words {
-        let Some(child) = command.find_subcommand(word) else {
-            break;
-        };
-        inherited |= id != "context"
-            && command
-                .get_arguments()
-                .any(|arg| arg.is_global_set() && takes(arg));
-        command = child;
-    }
-    inherited || command.get_arguments().any(takes)
 }
 
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
@@ -905,10 +882,7 @@ mod tests {
                 .map(std::ffi::OsString::from)
                 .collect::<Vec<_>>();
             let root = parse(&crate::cli::command(), &argv).unwrap();
-            let mut leaf = &root;
-            while let Some((_, child)) = leaf.subcommand() {
-                leaf = child;
-            }
+            let leaf = leaf_matches(&root);
             assert_eq!(
                 leaf.ids().any(|id| id == "context"),
                 context.is_some(),
