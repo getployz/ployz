@@ -6,7 +6,7 @@ use super::*;
 
 #[tokio::test]
 async fn docker_can_remove_a_provisioned_volume() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -36,7 +36,7 @@ async fn docker_can_remove_a_provisioned_volume() {
 
 #[tokio::test]
 async fn removing_an_unknown_volume_is_idempotent_and_keeps_siblings() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("sibling"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -71,7 +71,7 @@ async fn removing_an_unknown_volume_is_idempotent_and_keeps_siblings() {
 
 #[tokio::test]
 async fn removing_an_unknown_volume_without_a_pool_is_idempotent() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, "");
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -87,7 +87,7 @@ async fn removing_an_unknown_volume_without_a_pool_is_idempotent() {
 #[tokio::test]
 async fn removing_an_unknown_volume_ignores_an_unusable_managed_root() {
     for root_state in ["readonly-root", "incompatible-root"] {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join(root_state), "").unwrap();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -110,7 +110,7 @@ async fn removing_an_unknown_volume_ignores_an_unusable_managed_root() {
 
 #[tokio::test]
 async fn docker_receives_dataset_destruction_failures() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     fs::write(test.0.join("destroy-fails"), "").unwrap();
@@ -128,7 +128,7 @@ async fn docker_receives_dataset_destruction_failures() {
 
 #[tokio::test]
 async fn remove_refuses_a_promoted_root_docker_has_not_registered() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     set_property(&test, "tank/ployz/data", "ployz:promote", "1");
@@ -151,7 +151,7 @@ async fn remove_refuses_a_promoted_root_docker_has_not_registered() {
 
 #[tokio::test]
 async fn remove_never_destroys_an_unbounded_dataset() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     fs::write(test.0.join("unbounded-volume"), "").unwrap();
@@ -174,7 +174,7 @@ async fn remove_never_destroys_an_unbounded_dataset() {
 
 #[tokio::test]
 async fn remove_never_destroys_a_child_below_an_unmanaged_root() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("incompatible-root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
@@ -197,7 +197,7 @@ async fn remove_never_destroys_a_child_below_an_unmanaged_root() {
 
 #[tokio::test]
 async fn get_returns_volume_identity_mountpoint_bound_and_usage() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -221,7 +221,7 @@ async fn get_returns_volume_identity_mountpoint_bound_and_usage() {
 
 #[tokio::test]
 async fn get_answers_only_names_it_is_sure_are_not_provisioned_volumes() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
@@ -241,7 +241,7 @@ async fn get_answers_only_names_it_is_sure_are_not_provisioned_volumes() {
 
 #[tokio::test]
 async fn get_hangs_up_while_zfs_cannot_list_datasets() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "list-fails"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -264,7 +264,7 @@ async fn get_hangs_up_while_zfs_cannot_list_datasets() {
 
 #[tokio::test]
 async fn get_hangs_up_on_an_empty_or_unparseable_body() {
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     fs::write(test.0.join("volume"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -285,7 +285,7 @@ async fn get_hangs_up_when_pool_or_dataset_state_is_unsure() {
         (USABLE_POOL, &["root", "volume", "unbounded-volume"][..]),
         (USABLE_POOL, &["volume"][..]),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         for marker in markers {
             fs::write(test.0.join(marker), "").unwrap();
         }
@@ -301,7 +301,7 @@ async fn get_hangs_up_when_pool_or_dataset_state_is_unsure() {
 
 #[tokio::test]
 async fn busy_executable_retries_are_bounded_and_do_not_repeat_commands() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, "");
     let writer = fs::OpenOptions::new().write(true).open(&zpool).unwrap();
     let mut command = std::pin::pin!(checked_command(&zpool, &["list"]));
@@ -344,7 +344,7 @@ async fn busy_executable_retries_are_bounded_and_do_not_repeat_commands() {
 
 #[tokio::test]
 async fn remove_waits_for_a_list_holding_the_storage_mutation() {
-    let test = TestDir::new();
+    let test = test_dir();
     for marker in ["root", "volume", "hold-list"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -392,7 +392,7 @@ async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capa
 
     for pool in ["ployz-device", "ployz"] {
         for endpoint in ["Get", "Mount", "Path", "List", "Remove"] {
-            let test = TestDir::new();
+            let test = test_dir();
             let (zpool, zfs) = fake_zfs(&test.0, "");
             let script = test.0.join("fake-zfs");
             fs::write(
@@ -457,7 +457,7 @@ esac
             if pool == "ployz-device" {
                 assert_eq!(
                     fs::read_to_string(test.0.join("machine-pool.device")).unwrap(),
-                    ployzd::machine_pool::CONFIRMED_DEVICE_POOL_MARKER
+                    crate::machine_pool::CONFIRMED_DEVICE_POOL_MARKER
                 );
                 assert!(!test.0.join("machine-pool").exists());
             } else {
@@ -474,7 +474,7 @@ esac
 
 #[tokio::test]
 async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_imported() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, "");
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -496,7 +496,7 @@ async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_importe
 
 #[tokio::test]
 async fn remove_refuses_while_a_held_pool_is_not_imported() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, "");
     fs::create_dir(test.0.join("ployz-volumes")).unwrap();
     let socket = test.0.join("plugin.sock");
@@ -511,7 +511,7 @@ async fn remove_refuses_while_a_held_pool_is_not_imported() {
 
 #[tokio::test]
 async fn get_refuses_while_a_held_pool_is_not_imported() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, "");
     fs::create_dir(test.0.join("ployz-volumes")).unwrap();
     let socket = test.0.join("plugin.sock");

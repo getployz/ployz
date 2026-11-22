@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use bollard::{
@@ -25,7 +25,6 @@ use ployz_core::{
 use tokio::sync::mpsc;
 
 use super::{
-    cleanup::{self, Disk, Limits, Report},
     clock::now_nanos,
     exit_ledger::{ExitLedger, Late},
     layout::{ContainerKind, NANOS_PER_SEC, StoreRoot},
@@ -295,12 +294,7 @@ impl Harvester {
                 }),
                 self.stream_since.is_some(),
             ),
-            Some("start") => {
-                let marker = marker(MarkerKind::Restart);
-                if self.ledger.started(id) {
-                    self.ledger.settler.settle(marker);
-                }
-            }
+            Some("start") => self.ledger.started(id),
             _ => {}
         }
     }
@@ -370,23 +364,6 @@ impl Harvester {
             && let Err(error) = self.ledger.settler.forget_before(before)
         {
             tracing::warn!(%error, "cannot forget settlements no stream can repeat");
-        }
-        let disk = match Disk::measure(&self.store) {
-            Ok(disk) => disk,
-            Err(error) => {
-                tracing::warn!(%error, "cannot measure the observe store's filesystem");
-                return;
-            }
-        };
-        let limits = Limits::for_filesystem(disk.total_bytes);
-        let report = cleanup::run(&self.store, &limits, disk, SystemTime::now());
-        if report != Report::default() {
-            tracing::info!(
-                bytes = report.bytes_freed,
-                segments = report.segments_deleted,
-                rollups = report.rollups_deleted,
-                "cleaned the observe store"
-            );
         }
     }
 }
@@ -537,7 +514,7 @@ mod tests {
         observe::{
             fixtures::{T0, labelled},
             layout::StoreRoot,
-            metrics::segment::Row,
+            settled::Unfinished,
             ship::{self, Outbox},
         },
         test_dir::TestDir,
@@ -701,19 +678,22 @@ mod tests {
             self
         }
 
+        /// The exits and OOM kills the store settled or is settling.
         fn markers(&self) -> Vec<(i64, MarkerKind)> {
-            let Ok(segments) = fs::read_dir(self.store.raw_metrics()) else {
+            let Ok(settlements) = fs::read_dir(self.store.settled()) else {
                 return Vec::new();
             };
-            let mut markers: Vec<(i64, MarkerKind)> = segments
-                .flat_map(|segment| {
-                    fs::read_to_string(segment.unwrap().path())
-                        .unwrap()
-                        .lines()
-                        .map(|line| serde_json::from_str::<Row>(line).unwrap())
-                        .collect::<Vec<_>>()
+            let mut markers: Vec<(i64, MarkerKind)> = settlements
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.is_file() && path.extension().is_none_or(|ext| ext == "pending")
                 })
-                .map(|Row::Marker(marker)| {
+                .map(|path| {
+                    serde_json::from_slice::<Unfinished>(&fs::read(path).unwrap())
+                        .unwrap()
+                        .marker
+                })
+                .map(|marker| {
                     assert_eq!(marker.service_id.as_str(), SERVICE_ID);
                     assert_eq!(marker.service.to_string(), "default/web");
                     assert_eq!(marker.replica, "web-1");
@@ -727,7 +707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oom_kill_and_its_restart_leave_one_marker_each() {
+    async fn an_oom_kill_and_its_exit_leave_one_marker_each() {
         let host = host().with_machine();
         let mut running = host.harvester();
         let service = [("ployz.service.id", SERVICE_ID)];
@@ -761,7 +741,6 @@ mod tests {
                         stopped: false,
                     }
                 ),
-                (T0 + 3, MarkerKind::Restart),
             ]
         );
     }
@@ -1533,49 +1512,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tick_reads_few_segments_to_resume_settlements() {
-        let host = host().with_machine();
-        let service = ("ployz.service.id", SERVICE_ID);
-        let mut running = host.harvester();
-        let mut blocked = Vec::new();
-        for crash in 0..20 {
-            let at = T0 + 1 + 2 * crash;
-            let finished = host.store.settled().join(format!("{ID}-exit-{at}"));
-            fs::create_dir_all(finished.join("blocked")).unwrap();
-            blocked.push(finished);
-            running
-                .harvester
-                .on_docker_event(event("die", at, &[service, ("exitCode", "1")]));
-            running
-                .harvester
-                .on_docker_event(event("start", at + 1, &[service]));
-            running.settle_exits(|| Inspected::Unanswered);
-        }
-        drop(running);
-        // A stop between appending each marker and saying so.
-        let settlements = crate::observe::settled::Settlements::open(&host.store);
-        for (key, mut entry) in settlements.unfinished().unwrap() {
-            entry.appended = false;
-            settlements.save(&key, &entry).unwrap();
-        }
-        for finished in blocked {
-            fs::remove_dir_all(finished).unwrap();
-        }
-        let mut running = host.harvester();
-        for left in [12, 4, 0] {
-            running.harvester.finish_settlements();
-            assert_eq!(unfinished(&host), left);
-        }
-        let exits = host
-            .markers()
-            .into_iter()
-            .filter(|(_, kind)| matches!(kind, MarkerKind::Exit { .. }))
-            .count();
-        assert_eq!(exits, 20);
-        assert_eq!(crashes(&host).len(), 20);
-    }
-
-    #[tokio::test]
     async fn each_crash_of_a_crash_looping_container_is_recorded() {
         let host = host().with_machine();
         let service = ("ployz.service.id", SERVICE_ID);
@@ -1819,12 +1755,9 @@ mod tests {
         )
     }
 
-    fn pending_json(ts: i64, code: i64, appended: bool, seq: Option<i64>) -> String {
+    fn pending_json(ts: i64, code: i64, seq: Option<i64>) -> String {
         let seq = seq.map_or_else(|| "null".to_owned(), |seq| seq.to_string());
-        format!(
-            r#"{{"marker":{},"appended":{appended},"seq":{seq}}}"#,
-            marker_json(ts, code)
-        )
+        format!(r#"{{"marker":{},"seq":{seq}}}"#, marker_json(ts, code))
     }
 
     fn entry_json(seq: i64, ts: i64, code: i64) -> String {
@@ -1843,10 +1776,6 @@ mod tests {
         )
     }
 
-    fn marker_rows(host: &Host) -> usize {
-        host.markers().len()
-    }
-
     #[tokio::test]
     async fn a_settled_crash_leaves_these_files_byte_for_byte() {
         let host = host().with_machine();
@@ -1859,7 +1788,7 @@ mod tests {
             listing(&host.store.settled()),
             [pair(
                 format!("{ID}-exit-{ts}"),
-                pending_json(ts, 1, true, Some(ts))
+                pending_json(ts, 1, Some(ts))
             )]
         );
         assert_eq!(
@@ -1868,13 +1797,6 @@ mod tests {
                 pair(outbox_name(ts), entry_json(ts, ts, 1)),
                 pair("last_seq", ts.to_string()),
             ]
-        );
-        assert_eq!(
-            listing(&host.store.raw_metrics()),
-            [pair(
-                "1759996800.jsonl",
-                format!("{{\"row\":\"marker\",{}\n", &marker_json(ts, 1)[1..])
-            )]
         );
     }
 
@@ -1887,30 +1809,17 @@ mod tests {
         let next = ts + 1;
         let name = format!("{ID}-exit-{ts}");
         let pending = format!("{name}.pending");
-        let raw = host.store.raw_metrics();
         let outbox = host.store.crash_outbox();
         let mut running = host.harvester();
 
-        // The marker cannot be appended.
-        fs::create_dir_all(raw.parent().unwrap()).unwrap();
-        fs::write(&raw, b"").unwrap();
+        // No seq can be reserved.
+        fs::remove_dir_all(&outbox).unwrap();
+        fs::write(&outbox, b"").unwrap();
         running.harvester.on_docker_event(crash_die(ts));
         running.settle_exits(|| Inspected::Gone);
         assert_eq!(
             listing(&host.store.settled()),
-            [pair(&pending, pending_json(ts, 1, false, None))]
-        );
-        assert_eq!(listing(&outbox), []);
-
-        // The marker is appended and said to be, but no seq can be reserved.
-        fs::remove_file(&raw).unwrap();
-        fs::remove_dir_all(&outbox).unwrap();
-        fs::write(&outbox, b"").unwrap();
-        running.harvester.finish_settlements();
-        assert_eq!(marker_rows(&host), 1);
-        assert_eq!(
-            listing(&host.store.settled()),
-            [pair(&pending, pending_json(ts, 1, true, None))]
+            [pair(&pending, pending_json(ts, 1, None))]
         );
 
         // A seq is reserved but cannot be saved, so nothing is queued.
@@ -1921,7 +1830,7 @@ mod tests {
         running.harvester.finish_settlements();
         assert_eq!(
             listing(&host.store.settled()),
-            [pair(&pending, pending_json(ts, 1, true, None))]
+            [pair(&pending, pending_json(ts, 1, None))]
         );
         assert_eq!(
             listing(&outbox),
@@ -1937,7 +1846,7 @@ mod tests {
         running.harvester.finish_settlements();
         assert_eq!(
             listing(&host.store.settled()),
-            [pair(&pending, pending_json(ts, 1, true, Some(next)))]
+            [pair(&pending, pending_json(ts, 1, Some(next)))]
         );
         assert_eq!(
             listing(&outbox),
@@ -1957,7 +1866,7 @@ mod tests {
             listing(&host.store.settled()),
             [
                 pair(&name, "<dir>"),
-                pair(&pending, pending_json(ts, 1, true, Some(next))),
+                pair(&pending, pending_json(ts, 1, Some(next))),
             ]
         );
         assert_eq!(
@@ -1973,7 +1882,7 @@ mod tests {
         running.harvester.finish_settlements();
         assert_eq!(
             listing(&host.store.settled()),
-            [pair(&name, pending_json(ts, 1, true, Some(next)))]
+            [pair(&name, pending_json(ts, 1, Some(next)))]
         );
         assert_eq!(
             listing(&outbox),
@@ -1982,53 +1891,18 @@ mod tests {
                 pair("last_seq", next.to_string()),
             ]
         );
-        assert_eq!(marker_rows(&host), 1);
-    }
-
-    // A failed save of "appended" does not stop the settlement, but a failed
-    // save of the reserved seq does.
-    #[tokio::test]
-    async fn a_failed_save_of_the_appended_step_carries_on_and_one_of_the_seq_step_stops() {
-        let host = host().with_machine();
-        let ts = T0 + 1;
-        let name = format!("{ID}-exit-{ts}");
-        let pending = format!("{name}.pending");
-        fs::create_dir_all(host.store.settled().join(format!("{name}.tmp"))).unwrap();
-        fs::write(
-            host.store.settled().join(&pending),
-            pending_json(ts, 1, false, None),
-        )
-        .unwrap();
-        let mut running = host.harvester();
-        running.harvester.finish_settlements();
-
-        assert_eq!(marker_rows(&host), 1);
-        assert_eq!(
-            listing(&host.store.settled()),
-            [pair(&pending, pending_json(ts, 1, false, None))]
-        );
-        assert_eq!(
-            listing(&host.store.crash_outbox()),
-            [
-                pair(format!("{}.reserved", outbox_name(ts)), ""),
-                pair("last_seq", ts.to_string()),
-            ]
-        );
+        assert_eq!(host.markers().len(), 1);
     }
 
     struct Left {
-        appended: bool,
         seq: Option<i64>,
-        stored: bool,
         reserved: bool,
         queued: bool,
         code: i64,
     }
 
     const LEFT: Left = Left {
-        appended: false,
         seq: None,
-        stored: false,
         reserved: false,
         queued: false,
         code: 1,
@@ -2040,86 +1914,46 @@ mod tests {
     async fn a_settlement_an_earlier_daemon_left_resumes_from_where_it_stopped() {
         let ts = T0 + 1;
         let held = Some(ts);
-        // Each case: what was left, the marker rows after, the seqs queued
-        // after, and the seq the finished settlement names.
+        // Each case: what was left, the seqs queued after, and the seq the
+        // finished settlement names.
         let cases = [
-            ("marker not appended", LEFT, 1, vec![ts], held),
-            (
-                "marker stored but not said to be",
-                Left {
-                    stored: true,
-                    ..LEFT
-                },
-                1,
-                vec![ts],
-                held,
-            ),
-            (
-                "marker appended, no seq",
-                Left {
-                    appended: true,
-                    ..LEFT
-                },
-                0,
-                vec![ts],
-                held,
-            ),
+            ("no seq", LEFT, vec![ts], held),
             (
                 "seq reserved",
                 Left {
-                    appended: true,
                     seq: held,
                     reserved: true,
                     ..LEFT
                 },
-                0,
                 vec![ts],
                 held,
             ),
             (
                 "crash already queued",
                 Left {
-                    appended: true,
                     seq: held,
                     queued: true,
                     ..LEFT
                 },
-                0,
                 vec![ts],
                 held,
             ),
             (
                 "reserved seq gone and nothing queued",
-                Left {
-                    appended: true,
-                    seq: held,
-                    ..LEFT
-                },
-                0,
+                Left { seq: held, ..LEFT },
                 vec![],
                 held,
             ),
-            (
-                "clean exit not appended",
-                Left { code: 0, ..LEFT },
-                1,
-                vec![],
-                None,
-            ),
+            ("clean exit", Left { code: 0, ..LEFT }, vec![], None),
         ];
-        for (label, left, rows, queued_seqs, finished_seq) in cases {
+        for (label, left, queued_seqs, finished_seq) in cases {
             let host = host().with_machine();
             let name = format!("{ID}-exit-{ts}");
             let outbox = host.store.crash_outbox();
             fs::create_dir_all(&outbox).unwrap();
             fs::create_dir_all(host.store.settled()).unwrap();
-            let json = pending_json(ts, left.code, left.appended, left.seq);
+            let json = pending_json(ts, left.code, left.seq);
             fs::write(host.store.settled().join(format!("{name}.pending")), &json).unwrap();
-            if left.stored {
-                let marker = serde_json::from_str(&marker_json(ts, left.code)).unwrap();
-                crate::observe::metrics::segment::append(&host.store, &[Row::Marker(marker)])
-                    .unwrap();
-            }
             if left.reserved {
                 fs::write(outbox.join(format!("{}.reserved", outbox_name(ts))), b"").unwrap();
             }
@@ -2129,7 +1963,6 @@ mod tests {
             let mut running = host.harvester();
             running.harvester.finish_settlements();
 
-            assert_eq!(marker_rows(&host), rows, "{label}");
             let files = listing(&outbox);
             let queued: Vec<i64> = files
                 .iter()
@@ -2150,7 +1983,7 @@ mod tests {
             );
             assert_eq!(
                 listing(&host.store.settled()),
-                [pair(&name, pending_json(ts, left.code, true, finished_seq))],
+                [pair(&name, pending_json(ts, left.code, finished_seq))],
                 "{label}"
             );
         }

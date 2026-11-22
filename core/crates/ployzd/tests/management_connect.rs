@@ -1587,65 +1587,6 @@ async fn holder_contract() {
 }
 
 /// A grant an Operator minted reaches nothing, and a Full caller's grant does.
-#[tokio::test(flavor = "multi_thread")]
-async fn only_a_full_callers_grant_reaches_the_machine() {
-    tokio::time::timeout(Duration::from_secs(120), grant_scope_contract())
-        .await
-        .expect("build grant test timed out");
-}
-
-async fn grant_scope_contract() {
-    use ployz_core::{BuildGrant, BuildGrantId, ManagementScope, MintedKey};
-
-    let machine = GrantMachine::start().await;
-    let http = reqwest::Client::new();
-    let mint = |scope: ManagementScope| {
-        let holder = iroh::SecretKey::generate();
-        let id = BuildGrantId::parse(hex::encode(holder.public().as_bytes())).unwrap();
-        let request = ployz_core::MintBuildGrantRequest {
-            repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
-            holder: Some(id),
-            sealed: None,
-            rule: None,
-        };
-        let minted = machine
-            .grants
-            .mint(
-                machine.local.record().management_secret().public_key(),
-                ployzd::management::Mint::check(request, None)
-                    .unwrap()
-                    .minted_by(scope),
-                machine.ingest,
-            )
-            .unwrap();
-        let MintedKey::Holder { machine: dial } = minted.key else {
-            panic!("a holder mint returns the Machine to dial");
-        };
-        BuildGrant::new(dial, holder.to_bytes())
-    };
-    let sealed_status = async |registry: &ployz::connect::GrantRegistry| {
-        http.get(format!("http://{}/ployz/sealed", registry.address()))
-            .send()
-            .await
-            .map(|response| response.status())
-            .ok()
-    };
-
-    let operator = open_grant_registry(&mint(ManagementScope::Operator), &machine.relay)
-        .await
-        .unwrap();
-    assert_eq!(sealed_status(&operator).await, None);
-    let full = open_grant_registry(&mint(ManagementScope::Full), &machine.relay)
-        .await
-        .unwrap();
-    // This grant carries no Sealed values.
-    assert_eq!(
-        sealed_status(&full).await,
-        Some(reqwest::StatusCode::NOT_FOUND)
-    );
-    machine.stop().await;
-}
-
 /// A Machine that already holds the image answers the pusher's manifest HEAD, and the
 /// pusher never PUTs it; that HEAD of the grant's own tag is the grant's push.
 #[tokio::test(flavor = "multi_thread")]
@@ -1766,9 +1707,7 @@ impl GrantMachine {
         self.grants
             .mint(
                 self.local.record().management_secret().public_key(),
-                ployzd::management::Mint::check(request, None)
-                    .unwrap()
-                    .minted_by(ployz_core::ManagementScope::Full),
+                ployzd::management::Mint::check(request, None).unwrap(),
                 self.ingest,
             )
             .unwrap()

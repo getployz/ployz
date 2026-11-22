@@ -39,8 +39,7 @@ mod slot;
 mod storage;
 mod transfer;
 
-use error::PluginError;
-use ployzd::{
+use crate::{
     dataset_layout::VolumeName,
     volume_copy::{
         CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SEND_POINT_ROUTE,
@@ -49,6 +48,7 @@ use ployzd::{
         WRITER_ROUTE,
     },
 };
+use error::PluginError;
 use storage::{
     CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, run_command,
 };
@@ -101,9 +101,9 @@ struct MountResponse {
 
 /// The listener the plugin serves and, when it bound the path itself, its claim on it.
 #[derive(Debug)]
-pub(super) struct PluginSocket {
-    pub(super) claim: Option<fs::File>,
-    pub(super) listener: StdUnixListener,
+pub struct PluginSocket {
+    pub claim: Option<fs::File>,
+    pub listener: StdUnixListener,
 }
 
 /// Takes the listener `ployz-volume-plugin.socket` passed, or else claims and binds
@@ -115,8 +115,8 @@ pub(super) struct PluginSocket {
 /// Returns [`io::ErrorKind::AddrInUse`] when another process holds the claim or
 /// serves `path`, and an error when the inherited socket is invalid, `path` holds
 /// something this plugin must not replace, or binding fails.
-pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
-    if let Some(listener) = ployzd::socket_activation::inherited_unix_listener()? {
+pub fn listener(path: &Path) -> io::Result<PluginSocket> {
+    if let Some(listener) = crate::socket_activation::inherited_unix_listener()? {
         return Ok(PluginSocket {
             claim: None,
             listener,
@@ -125,8 +125,8 @@ pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let claim = ployzd::socket_activation::claim_socket_path(path)?;
-    ployzd::socket_activation::remove_stale_socket(path)?;
+    let claim = crate::socket_activation::claim_socket_path(path)?;
+    crate::socket_activation::remove_stale_socket(path)?;
     let listener = StdUnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     Ok(PluginSocket {
@@ -140,7 +140,7 @@ pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
 /// # Errors
 ///
 /// Returns an error when the listener cannot become asynchronous or serving fails.
-pub(super) async fn run(
+pub async fn run(
     listener: StdUnixListener,
     data_dir: &std::path::Path,
     run_dir: &std::path::Path,
@@ -295,7 +295,6 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::atomic::{AtomicU64, Ordering},
     };
 
     use serde_json::{Value, json};
@@ -305,31 +304,17 @@ mod tests {
     };
 
     use super::*;
+    use crate::test_dir::TestDir;
 
     #[test]
     fn dataset_missing_usage_is_not_zero() {
         assert!(Dataset::parse("tank/ployz/data\t1073741824\t-\t/data\tyes\toff", "tank").is_err());
     }
 
-    static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "ployzd-volume-plugin-{}-{}",
-                std::process::id(),
-                NEXT_TEST.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    fn test_dir() -> TestDir {
+        let test = TestDir::new("ployzd-volume-plugin");
+        fs::create_dir(&test.0).unwrap();
+        test
     }
 
     fn commands(test: &TestDir) -> String {
@@ -390,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -428,7 +413,7 @@ mod tests {
     #[tokio::test]
     async fn without_systemd_a_restarted_plugin_binds_its_socket_and_departs_a_machine_without_zfs()
     {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = test.0.join("plugins/ployz.sock");
         drop(listener(&socket).unwrap());
         let PluginSocket {
@@ -448,7 +433,7 @@ mod tests {
 
     #[test]
     fn without_systemd_the_plugin_refuses_a_socket_another_process_still_serves() {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = test.0.join("ployz.sock");
         let live = StdUnixListener::bind(&socket).unwrap();
 
@@ -463,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_second_plugin_refuses_the_path_the_first_has_claimed() {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = test.0.join("ployz.sock");
         let _first = listener(&socket).unwrap();
 
@@ -475,7 +460,7 @@ mod tests {
 
     #[test]
     fn without_systemd_the_plugin_replaces_a_socket_nothing_serves() {
-        let test = TestDir::new();
+        let test = test_dir();
         let socket = test.0.join("ployz.sock");
         drop(StdUnixListener::bind(&socket).unwrap());
 
@@ -486,7 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_refuses_a_name_whose_writer_is_held_in_its_slot() {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join("mirror"), "").unwrap();
         fs::write(test.0.join("mirror-fs"), "").unwrap();
@@ -510,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn docker_can_get_and_list_provisioned_volume_usage() {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join("volume"), "").unwrap();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -532,7 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn docker_driver_accepts_an_exact_internal_byte_bound() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -557,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_an_existing_root_with_an_incompatible_mountpoint() {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join("incompatible-root"), "").unwrap();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -575,7 +560,7 @@ mod tests {
         let message = error(&response);
         assert!(message.contains("tank/ployz"));
         assert!(message.contains("/tank/ployz"));
-        assert!(message.contains(ployzd::dataset_layout::MOUNT_ROOT));
+        assert!(message.contains(crate::dataset_layout::MOUNT_ROOT));
         assert!(
             !fs::read_to_string(test.0.join("commands"))
                 .unwrap()
@@ -586,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_mount_and_remove_reject_a_child_outside_the_managed_root() {
-        let test = TestDir::new();
+        let test = test_dir();
         fs::write(test.0.join("root"), "").unwrap();
         fs::write(test.0.join("volume"), "").unwrap();
         fs::write(test.0.join("incompatible-volume"), "").unwrap();
@@ -624,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_requests_are_rejected_before_zfs_mutation() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -671,7 +656,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_of_an_existing_volume_at_or_below_its_bound_is_idempotent_and_never_resizes() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -715,7 +700,7 @@ mod tests {
                 Some("multiple usable Machine Pools"),
             ),
         ] {
-            let test = TestDir::new();
+            let test = test_dir();
             let (zpool, zfs) = fake_zfs(&test.0, pools);
             let socket = test.0.join("plugin.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -737,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_malformed_pool_inspection_before_zfs_mutation() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(
             &test.0,
             "broken\tONLINE\ntank\t4294967296\t0\t4294967296\tONLINE\toff\n",
@@ -766,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_serves_activation_path_unmount_and_local_capabilities() {
-        let test = TestDir::new();
+        let test = test_dir();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();

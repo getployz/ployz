@@ -121,7 +121,7 @@ async fn converges_after_each_failure(
     request: Value,
     fixture: impl Fn(&TestDir) -> (PathBuf, Server),
 ) {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = fixture(&test);
     let clean = post(&socket, route, request.clone()).await;
     assert!(clean.get("Ok").is_some(), "{clean}");
@@ -130,7 +130,7 @@ async fn converges_after_each_failure(
     let end = state(&test);
     server.abort();
     for step in &steps {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = fixture(&test);
         fs::create_dir_all(test.0.join("props")).unwrap();
         fs::write(
@@ -153,7 +153,7 @@ async fn converges_after_each_failure(
 
 #[tokio::test]
 async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
 
     let request = json!({"name": "data", "target": "f-1"});
@@ -203,7 +203,7 @@ async fn slot_roles(socket: &Path) -> (Value, Value) {
 
 #[tokio::test]
 async fn the_cut_leaves_the_root_as_an_old_copy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-1", 11)]);
 
     let reply = post(
@@ -227,7 +227,7 @@ async fn the_cut_leaves_the_root_as_an_old_copy() {
 #[tokio::test]
 async fn a_pull_into_an_old_copy_makes_it_a_mirror() {
     let source = Source::start(Some(BOUND), "snapshot w-2-1 78\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
     set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
     post(
@@ -257,7 +257,7 @@ async fn a_pull_into_an_old_copy_makes_it_a_mirror() {
 #[tokio::test]
 async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
     let source = Source::start(Some(BOUND), "").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
     set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
     post(
@@ -299,7 +299,7 @@ async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
     let source = Source::start(Some(BOUND), "").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
     set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
     let seen = post(
@@ -334,7 +334,7 @@ async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
 /// Docker drops a Volume's labels and options when Get says it does not exist.
 #[tokio::test]
 async fn docker_still_gets_a_root_cut_into_its_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-1", 11)]);
     let cut = post(
         &socket,
@@ -370,7 +370,7 @@ async fn the_cut_converges_after_a_failure_at_every_step() {
 
 #[tokio::test]
 async fn the_cut_refuses_a_root_written_after_an_existing_target() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("f-1", 13), ("w-1-1", 11)]);
 
     let reply = post(
@@ -390,7 +390,7 @@ async fn the_cut_refuses_a_root_written_after_an_existing_target() {
 
 #[tokio::test]
 async fn the_cut_refuses_a_machine_holding_a_different_copy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-1", 11)]);
 
     let reply = post(
@@ -406,7 +406,7 @@ async fn the_cut_refuses_a_machine_holding_a_different_copy() {
 
 #[tokio::test]
 async fn a_run_snapshot_is_taken_once_and_the_newest_two_kept() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
 
     let request = json!({"name": "data", "snapshot": "w-1-3"});
@@ -422,7 +422,7 @@ async fn a_run_snapshot_is_taken_once_and_the_newest_two_kept() {
 
 #[tokio::test]
 async fn a_run_snapshot_is_skipped_when_nothing_was_written_since_the_newest() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-2", 12)]);
     set_property(&test, ROOT, "written@w-1-2", "0");
 
@@ -449,7 +449,7 @@ async fn a_run_snapshot_converges_after_a_failure_at_every_step() {
 
 #[tokio::test]
 async fn forget_drops_every_run_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
 
     let reply = post(&socket, "/Volume.Copy.Forget", json!({"name": "data"})).await;
@@ -474,7 +474,7 @@ async fn forget_converges_after_a_failure_at_every_step() {
 
 #[tokio::test]
 async fn the_writer_route_promotes_a_pulled_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("f-1", 13)]);
 
     let request = json!({"name": "data", "at": "13", "epoch": 2});
@@ -509,7 +509,7 @@ async fn the_writer_route_promotes_a_pulled_slot() {
 
 #[tokio::test]
 async fn the_writer_route_promotes_a_pulled_slot_on_a_pool_without_the_managed_parent() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["mirror", "mirror-fs"]);
     set_snapshots(&test, SLOT_FS, &[("f-1", 13)]);
 
@@ -538,7 +538,7 @@ async fn the_writer_route_promotes_a_pulled_slot_on_a_pool_without_the_managed_p
 
 #[tokio::test]
 async fn the_writer_route_aborts_a_partial_receive_before_promoting_the_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("f-1", 13)]);
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
 
@@ -560,7 +560,7 @@ async fn the_writer_route_aborts_a_partial_receive_before_promoting_the_slot() {
 
 #[tokio::test]
 async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("f-1", 13)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
 
@@ -583,7 +583,7 @@ async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
 
 #[tokio::test]
 async fn a_half_promoted_root_reads_apart_from_an_unfinished_cut() {
-    let promoting = TestDir::new();
+    let promoting = test_dir();
     let (socket, server) = slot(&promoting, &[("f-1", 13)]);
     fs::write(
         promoting.0.join("props/fail-command"),
@@ -601,7 +601,7 @@ async fn a_half_promoted_root_reads_apart_from_an_unfinished_cut() {
     let promoting_copy = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
     server.abort();
 
-    let cutting = TestDir::new();
+    let cutting = test_dir();
     let (socket, server) = writer(&cutting, &[("f-1", 13)]);
     set_property(&cutting, ROOT, "ployz:epoch", "2");
     set_property(&cutting, ROOT, "written@f-1", "0");
@@ -645,7 +645,7 @@ async fn the_writer_route_converges_after_a_failure_at_every_step() {
 
 #[tokio::test]
 async fn the_writer_route_refuses_a_slot_behind_the_wanted_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-2", 12)]);
 
     let reply = post(
@@ -665,7 +665,7 @@ async fn the_writer_route_refuses_a_slot_behind_the_wanted_snapshot() {
 
 #[tokio::test]
 async fn the_writer_route_refuses_a_root_of_a_later_epoch() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("f-1", 13)]);
     set_property(&test, ROOT, "ployz:epoch", "2");
     fs::write(test.0.join("readonly-volume"), "").unwrap();
@@ -683,7 +683,7 @@ async fn the_writer_route_refuses_a_root_of_a_later_epoch() {
 
 #[tokio::test]
 async fn the_writer_route_raises_the_epoch_of_a_root_at_the_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("f-1", 13)]);
     set_property(&test, ROOT, "ployz:epoch", "1");
 
@@ -704,7 +704,7 @@ async fn the_writer_route_raises_the_epoch_of_a_root_at_the_snapshot() {
 
 #[tokio::test]
 async fn the_writer_route_refuses_to_raise_the_epoch_of_a_root_behind_the_snapshot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-2", 12)]);
     set_property(&test, ROOT, "ployz:epoch", "1");
 
@@ -721,7 +721,7 @@ async fn the_writer_route_refuses_to_raise_the_epoch_of_a_root_behind_the_snapsh
 
 #[tokio::test]
 async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("f-1", 13)]);
     set_property(&test, ROOT, "ployz:epoch", "1");
     set_property(&test, ROOT, "ployz:cut", "on");
@@ -966,7 +966,7 @@ async fn finished(socket: &Path, target: &str) -> Value {
 async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target() {
     let source = Source::start(Some(BOUND), "").await;
     source.hold("target=", "snapshot w-1-1 77\n");
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
 
     let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -1002,7 +1002,7 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
 #[tokio::test]
 async fn a_pull_that_leaves_the_copy_writable_fails() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "readonly-lost"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -1015,7 +1015,7 @@ async fn a_pull_that_leaves_the_copy_writable_fails() {
 async fn a_stalled_receive_process_fails_the_pull_and_dies() {
     for marker in ["stall-read", "stall-exit"] {
         let source = Source::start(Some(BOUND), &"x".repeat(2 * 1024 * 1024)).await;
-        let test = TestDir::new();
+        let test = test_dir();
         fs::create_dir_all(test.0.join("props")).unwrap();
         fs::write(test.0.join("props").join(marker), "").unwrap();
         let (socket, server) =
@@ -1040,7 +1040,7 @@ async fn a_stalled_receive_process_fails_the_pull_and_dies() {
 #[tokio::test]
 async fn a_pull_resumes_an_interrupted_receive_then_prunes_to_the_target() {
     let source = Source::start(Some(BOUND), "break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -1078,7 +1078,7 @@ async fn a_pull_resumes_an_interrupted_receive_then_prunes_to_the_target() {
 #[tokio::test]
 async fn a_pull_resent_after_its_receive_failed_answers_the_failure_once_then_retries() {
     let source = Source::start(Some(BOUND), "break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -1110,7 +1110,7 @@ async fn a_pull_resent_after_its_receive_failed_answers_the_failure_once_then_re
 #[tokio::test]
 async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT, "ployz:pull", "w-1-2");
@@ -1143,7 +1143,7 @@ async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token(
 async fn a_pull_for_another_target_that_fails_before_its_receive_keeps_the_failure_on_its_own_target()
  {
     let source = Source::start(Some(BOUND), "break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
@@ -1192,7 +1192,7 @@ async fn a_pull_for_another_target_that_fails_before_its_receive_keeps_the_failu
 
 #[tokio::test]
 async fn a_pull_no_receive_attends_reads_unattended_and_resumable_by_its_token() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-1", 11)]);
     set_property(&test, SLOT, "ployz:pull", "w-1-2");
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
@@ -1225,7 +1225,7 @@ async fn pull_state(socket: &Path, kind: &str) -> Value {
 async fn a_pull_reads_receiving_failed_answered_then_landed() {
     let source = Source::start(Some(BOUND), "break\n").await;
     source.hold("target=w-1-2", "break\n");
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -1270,7 +1270,7 @@ async fn a_pull_reads_receiving_failed_answered_then_landed() {
 /// that landed from one nothing attends.
 #[tokio::test]
 async fn a_pull_with_no_receive_reads_landed_once_the_slot_holds_its_target() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
     set_property(&test, SLOT, "ployz:pull", "w-1-2");
     let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
@@ -1293,7 +1293,7 @@ async fn a_pull_with_no_receive_reads_landed_once_the_slot_holds_its_target() {
 #[tokio::test]
 async fn a_pull_a_seal_stopped_reads_unattended() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1350,7 +1350,7 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
         StatusCode::NOT_FOUND,
         "snapshot 11 is not on tank/ployz/data",
     );
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -1381,7 +1381,7 @@ async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send(
         StatusCode::NOT_FOUND,
         "resume token cannot be sent from tank/ployz/data: incremental source no longer exists",
     );
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
@@ -1416,7 +1416,7 @@ async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_
         StatusCode::NOT_FOUND,
         "snapshot 11 is not on tank/ployz/data",
     );
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     let machine = Machine { test, socket };
@@ -1455,7 +1455,7 @@ async fn a_pull_whose_target_the_writer_lacks_keeps_the_slot_copy() {
         StatusCode::NOT_FOUND,
         "no snapshot w-1-2 on tank/ployz/data",
     );
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -1483,7 +1483,7 @@ async fn a_pull_whose_target_the_writer_lacks_keeps_the_slot_copy() {
 #[tokio::test]
 async fn a_pull_whose_token_the_writer_lost_after_a_first_receive_broke_lands_in_one_pull() {
     let source = Source::start(Some(BOUND), "break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -1519,7 +1519,7 @@ async fn a_pull_whose_token_the_writer_lost_after_a_first_receive_broke_lands_in
 #[tokio::test]
 async fn a_resume_the_writer_fails_never_prints_its_token() {
     let source = Source::start(Some(BOUND), "break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -1546,7 +1546,7 @@ async fn a_resume_the_writer_fails_never_prints_its_token() {
 #[tokio::test]
 async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_the_label() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1579,7 +1579,7 @@ async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_t
 #[tokio::test]
 async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1601,7 +1601,7 @@ async fn departure_during_a_receive_stops_it_and_destroys_the_mirror() {
 #[tokio::test]
 async fn a_seal_during_a_receive_keeps_the_mirror_without_reporting_a_failure() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1632,7 +1632,7 @@ async fn a_seal_during_a_receive_keeps_the_mirror_without_reporting_a_failure() 
 #[tokio::test]
 async fn a_pull_resent_after_a_seal_stopped_its_receive_resumes_it() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1665,7 +1665,7 @@ async fn a_pull_resent_after_a_seal_stopped_its_receive_resumes_it() {
 #[tokio::test]
 async fn a_demote_that_cannot_destroy_a_mirror_reports_no_failure_for_its_stopped_receive() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1755,7 +1755,7 @@ fn pid_in(file: &Path) -> String {
 async fn departure_stops_a_pull_into_a_slot_it_keeps() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server, receives) = puller_with_receives(
             &test,
             &["root", "mirror", "mirror-fs"],
@@ -1811,7 +1811,7 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
         ("ployz:seed", "11"),
     ] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
         set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
         set_property(&test, SLOT_FS, mark, value);
@@ -1839,7 +1839,7 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
 #[tokio::test]
 async fn a_pull_of_the_slots_newest_keeps_its_cut() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 11\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
@@ -1872,7 +1872,7 @@ fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
 #[tokio::test]
 async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
         landed_before_a_restart(&test, mark, value);
 
@@ -1895,7 +1895,7 @@ async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
 async fn a_pull_stopped_over_a_marked_slot_leaves_it_kept() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-3 13\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
         landed_before_a_restart(&test, mark, value);
         fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -1922,7 +1922,7 @@ async fn a_pull_stopped_over_a_marked_slot_leaves_it_kept() {
 async fn a_pull_whose_mark_cleanup_fails_leaves_a_slot_the_departure_keeps() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
         set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
         set_property(&test, SLOT_FS, mark, value);
@@ -1953,7 +1953,7 @@ async fn a_pull_whose_mark_cleanup_fails_leaves_a_slot_the_departure_keeps() {
 /// its rename leaves a slot the departure keeps, pulled or not.
 #[tokio::test]
 async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
     set_snapshots(&test, SLOT_FS, &[("w-1-2", 12)]);
     set_property(&test, SLOT, "ployz:pull", "w-1-2");
@@ -1989,7 +1989,7 @@ async fn departure_keeps_a_pulled_slot_whose_promote_stopped_before_the_rename()
 /// it stopped before the rename leaves the record naming the newest point.
 #[tokio::test]
 async fn departure_keeps_a_beta1_promote_that_stopped_before_the_rename() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
     landed_before_a_restart(&test, "ployz:epoch", "2");
     set_property(&test, SLOT_FS, "ployz:promote", "on");
@@ -2008,7 +2008,7 @@ async fn departure_keeps_a_beta1_promote_that_stopped_before_the_rename() {
 #[tokio::test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 async fn a_pull_of_a_cut_slots_own_newest_never_records_a_pull() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "ployz:cut", "on");
@@ -2047,7 +2047,7 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
         let mut reached = false;
         for _ in 0..5 {
             let source = Source::start(Some(BOUND), &stream).await;
-            let test = TestDir::new();
+            let test = test_dir();
             fs::write(test.0.join("root"), "").unwrap();
             fs::write(test.0.join("mirror"), "").unwrap();
             fs::create_dir_all(test.0.join("props")).unwrap();
@@ -2075,7 +2075,6 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
                     &stream,
                     ("tank/ployz-mirror/data", SLOT_FS),
                     BOUND,
-                    "test",
                     ployz_core::VolumeGen::default(),
                     &Stop::unowned(),
                 )
@@ -2271,7 +2270,7 @@ fn gated_child(stop: &Stop, gate: &Path) -> ZfsChild {
 /// otherwise the task finishes early and the departure judges a slot the child still holds.
 #[tokio::test]
 async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2299,7 +2298,7 @@ async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
 /// task's finish on it: the departure would judge a slot the child may still hold.
 #[tokio::test]
 async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2326,7 +2325,7 @@ async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
 
 #[tokio::test]
 async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2354,7 +2353,7 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
 /// task's finish waits for the child's own exit.
 #[tokio::test]
 async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2446,7 +2445,7 @@ async fn panicked_with_a_held_child(receives: &Receives, name: &VolumeName, gate
 /// has exited.
 #[tokio::test]
 async fn a_panicked_task_reads_as_running_until_its_child_exits() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2465,7 +2464,7 @@ async fn a_panicked_task_reads_as_running_until_its_child_exits() {
 /// must still name that child, and the failure must outlive it.
 #[tokio::test]
 async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2496,7 +2495,7 @@ async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
 /// slot that child still holds.
 #[tokio::test]
 async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let gate = test.0.join("gate");
     let receives = Receives::default();
     let name: VolumeName = "data".parse().unwrap();
@@ -2523,7 +2522,7 @@ async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
 async fn departure_stops_a_pull_whose_writer_never_answers() {
     let source = Source::start(Some(BOUND), "").await;
     source.silence("/volume-send/");
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
     assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
@@ -2552,7 +2551,7 @@ async fn departure_stops_a_pull_whose_writer_never_answers() {
 #[tokio::test]
 async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_writer_bound() {
     let source = Source::start(Some(2 * BOUND), "snapshot w-1-2 12\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT, "refquota", &BOUND.to_string());
@@ -2579,7 +2578,7 @@ async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_write
 #[tokio::test]
 async fn a_pull_refuses_a_writer_that_has_no_copy_to_send() {
     let source = Source::start(None, "").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
 
     let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -2596,7 +2595,7 @@ async fn a_pull_converges_after_a_failure_before_the_receive_starts() {
         "create -o canmount=off -o readonly=on -o refquota=1073741824 tank/ployz-mirror/data",
         "set ployz:pull=w-1-1 tank/ployz-mirror/data",
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = puller(&test, &["root"], source.port);
         fs::create_dir_all(test.0.join("props")).unwrap();
         fs::write(test.0.join("props/fail-command"), step).unwrap();
@@ -2630,7 +2629,7 @@ fn poolless(test: &TestDir, port: u16) -> (PathBuf, Server) {
 async fn a_pull_onto_a_machine_without_a_pool_creates_the_pool_sized_for_the_writer() {
     let source = Source::start(Some(BOUND), "").await;
     source.hold("/volume-send/", "");
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = poolless(&test, source.port);
 
     let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
@@ -2657,7 +2656,7 @@ async fn a_pull_onto_a_machine_without_a_pool_creates_the_pool_sized_for_the_wri
 async fn a_pull_that_fails_after_creating_the_first_pool_converges_on_resend() {
     let source = Source::start(Some(BOUND), "").await;
     source.hold("/volume-send/", "");
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("fail-slot-once"), "").unwrap();
     let (socket, server) = poolless(&test, source.port);
 
@@ -2675,7 +2674,7 @@ async fn a_pull_that_fails_after_creating_the_first_pool_converges_on_resend() {
 
 #[tokio::test]
 async fn a_machine_without_a_pool_has_no_copy_to_inspect_forget_or_destroy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = poolless(&test, ployz_core::VOLUME_SEND_PORT);
 
     for route in [
@@ -2700,7 +2699,7 @@ async fn a_machine_without_a_pool_has_no_copy_to_inspect_forget_or_destroy() {
 
 #[tokio::test]
 async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-1", 11)]);
 
     let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
@@ -2716,7 +2715,7 @@ async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
     );
     server.abort();
 
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[]);
     let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
     assert_eq!(reason(&reply), "no_transition");
@@ -2727,7 +2726,7 @@ async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
 #[tokio::test]
 async fn destroy_refuses_a_root_without_both_seed_markers() {
     for markers in [&[("ployz:promote", "on")][..], &[("ployz:seed", "77")][..]] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = writer(&test, &[("w-1-1", 11)]);
         for (property, value) in markers {
             set_property(&test, ROOT, property, value);
@@ -2748,7 +2747,7 @@ async fn destroy_refuses_a_root_without_both_seed_markers() {
 #[tokio::test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 async fn docker_sees_a_cut_root_through_its_slot_until_the_root_is_back() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = writer(&test, &[("w-1-1", 11)]);
     post(
         &socket,
@@ -2778,7 +2777,7 @@ async fn docker_sees_a_cut_root_through_its_slot_until_the_root_is_back() {
     assert!(test.0.join("mirror-fs").exists());
     server.abort();
 
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = slot(&test, &[("w-1-1", 11)]);
     let get = post(&socket, "/VolumeDriver.Get", json!({"Name": "data"})).await;
     assert!(
@@ -2816,7 +2815,7 @@ async fn pair(a_markers: &[&str], b_markers: &[&str]) -> (Machine, Machine) {
         (a_markers, a_listener, b_port),
         (b_markers, b_listener, a_port),
     ] {
-        let test = TestDir::new();
+        let test = test_dir();
         for marker in markers {
             fs::write(test.0.join(marker), "").unwrap();
         }
@@ -2827,7 +2826,7 @@ async fn pair(a_markers: &[&str], b_markers: &[&str]) -> (Machine, Machine) {
         storage.send_port = peer;
         storage.receive_stall = Duration::from_secs(60);
         tokio::spawn(serve(unix, storage));
-        tokio::spawn(ployzd::volume_send::serve(
+        tokio::spawn(crate::volume_send::serve(
             listener,
             (zfs, zpool),
             socket.clone(),
@@ -3642,8 +3641,8 @@ mod fault_lines {
         fs::write(&fault, format!("kill-daemon:{verb}")).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &child, "--ignored", "--nocapture"])
-            .env(ployzd::faults::PATH_ENV, &fault)
-            .env_remove(ployzd::diag::ENV)
+            .env(crate::faults::PATH_ENV, &fault)
+            .env_remove(crate::diag::ENV)
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3673,8 +3672,8 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_cut_kill_line_names_the_volume_and_the_target"]
     async fn a_cut_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
-        let test = TestDir::new();
+        crate::diag::init(None).unwrap();
+        let test = test_dir();
         let (socket, _server) = writer(&test, &[("w-1-1", 11)]);
         let request = json!({"name": "data", "target": "f-1", "gen": 9});
         let answered = post(&socket, "/Volume.Copy.Cut", request).await;
@@ -3694,8 +3693,8 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_snapshot_kill_line_names_the_volume_and_the_snapshot"]
     async fn a_snapshot_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
-        let test = TestDir::new();
+        crate::diag::init(None).unwrap();
+        let test = test_dir();
         let (socket, _server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
         let request = json!({"name": "data", "snapshot": "w-1-3", "gen": 9});
         let answered = post(&socket, "/Volume.Copy.Snapshot", request).await;
@@ -3715,8 +3714,8 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_forget_kill_line_names_the_volume"]
     async fn a_forget_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
-        let test = TestDir::new();
+        crate::diag::init(None).unwrap();
+        let test = test_dir();
         let (socket, _server) = writer(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
         let answered = post(
             &socket,
@@ -3740,9 +3739,9 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_first_pull_kill_line_names_the_volume_and_the_target"]
     async fn a_first_pull_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
+        crate::diag::init(None).unwrap();
         let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, _server) = puller(&test, &["root"], source.port);
         let answered = post(&socket, "/Volume.Copy.Pull", laned(pull("w-1-1"))).await;
         panic!("the first pull outlived its kill: {answered}");
@@ -3761,10 +3760,10 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_receive_kill_line_names_the_volume_and_the_target"]
     async fn a_receive_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
+        crate::diag::init(None).unwrap();
         let stream = format!("snapshot w-1-1 77\n{}", "x".repeat(2 << 20));
         let source = Source::start(Some(BOUND), &stream).await;
-        let test = TestDir::new();
+        let test = test_dir();
         fs::create_dir_all(test.0.join("props")).unwrap();
         fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
         let (socket, _server) = puller(&test, &["root"], source.port);
@@ -3789,8 +3788,8 @@ mod fault_lines {
     #[tokio::test]
     #[ignore = "a child of a_slot_destroy_kill_line_names_the_volume"]
     async fn a_slot_destroy_under_a_kill() {
-        ployzd::diag::init(None).unwrap();
-        let test = TestDir::new();
+        crate::diag::init(None).unwrap();
+        let test = test_dir();
         let (socket, _server) = slot(&test, &[("w-1-1", 11)]);
         let answered = post(
             &socket,
@@ -4007,7 +4006,7 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
     ] {
         let (name, _, _) = writing.drive();
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = writing.fixture(&test, source.port);
         drive(writing, &test, &socket, None).await;
         let steps = effects(&commands(&test));
@@ -4044,7 +4043,7 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
 
         for (index, step) in steps.iter().enumerate() {
             let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
-            let test = TestDir::new();
+            let test = test_dir();
             let (socket, server) = writing.fixture(&test, source.port);
             let earlier = steps
                 .iter()
@@ -4075,14 +4074,14 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
 #[derive(Clone)]
 struct SendsToAll;
 
-impl ployzd::volume_send::Recipients for SendsToAll {
+impl crate::volume_send::Recipients for SendsToAll {
     async fn sends(
         &self,
         _: std::net::IpAddr,
         _: &ployz_core::DockerVolumeName,
         _: Option<&ployz_core::SnapshotName>,
-    ) -> std::result::Result<ployzd::volume_send::Sends, String> {
-        Ok(ployzd::volume_send::Sends::Member(
+    ) -> std::result::Result<crate::volume_send::Sends, String> {
+        Ok(crate::volume_send::Sends::Member(
             ployz_core::MachineId::random(),
         ))
     }
@@ -4097,7 +4096,7 @@ pub(super) const BORN: &str = "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c0d3cb8e7d
 async fn a_pull_of_another_origin_keeps_the_slots_copy_origin_and_token() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.born(BORN);
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
@@ -4127,7 +4126,7 @@ async fn a_pull_of_another_origin_keeps_the_slots_copy_origin_and_token() {
 async fn a_born_pull_lands_a_copy_stamped_with_its_origin() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.born(BORN);
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
@@ -4149,7 +4148,7 @@ async fn a_born_pull_lands_a_copy_stamped_with_its_origin() {
 /// slot carries no such mark and sends with its own origin.
 #[tokio::test]
 async fn send_point_refuses_a_slot_still_marked_mid_pull() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
     set_snapshots(&test, SLOT_FS, &[("w-1-2", 12)]);
     let point = json!({"name": "data", "target": "w-1-2"});
@@ -4179,7 +4178,7 @@ async fn send_point_refuses_a_slot_still_marked_mid_pull() {
 async fn a_cut_listing_never_lets_a_born_pull_stamp_an_occupied_mirror() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.born(BORN);
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     fs::write(test.0.join("props/list-cut"), "").unwrap();
@@ -4199,7 +4198,7 @@ async fn a_cut_listing_never_lets_a_born_pull_stamp_an_occupied_mirror() {
 async fn a_cut_snapshot_listing_names_no_newest_point() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.born(BORN);
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "ployz:origin", BORN);
@@ -4237,7 +4236,7 @@ async fn a_cut_snapshot_listing_names_no_newest_point() {
 #[tokio::test]
 async fn send_point_answers_a_cut_listing_or_a_marked_parent_as_no_absence() {
     let point = json!({"name": "data", "target": "w-1-2"});
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
     set_snapshots(&test, ROOT, &[("w-1-2", 12)]);
     set_property(&test, SLOT, "ployz:pull", "w-1-2");

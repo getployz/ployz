@@ -39,7 +39,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, Copy, Rotated, RotationFailure};
+use crate::deploy::cleanup::{self, Copy, Rotated};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -487,7 +487,7 @@ async fn retire_copy<C: CopyLifecycle>(
     {
         Ok(details) => details.container,
         Err(error) if error.code == RpcErrorCode::NotFound => return None,
-        Err(error) => return Some(machine_failure_reason(&copy.machine, error)),
+        Err(error) => return Some(left_by(&copy.machine, error)),
     };
     let step = cleanup::retire(
         client,
@@ -499,29 +499,15 @@ async fn retire_copy<C: CopyLifecycle>(
     .await;
     match step.map(Rotated::failure) {
         Ok(Ok(())) => None,
-        Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
-        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) if unconfirmed.machines.is_empty() => {
-            Some("the route set did not name every live Machine".into())
+        Ok(Err(failure)) => {
+            Some(failure.left_reason(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string())))
         }
-        Ok(Err(RotationFailure::NotConfirmed(unconfirmed))) => {
-            let proxies: Vec<String> = unconfirmed
-                .machines
-                .iter()
-                .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
-                .collect();
-            Some(format!("proxy on {} did not confirm", proxies.join(", ")))
-        }
-        Ok(Err(RotationFailure::Cancelled)) => Some("interrupted".into()),
-        Err(error) => Some(machine_failure_reason(&copy.machine, error)),
+        Err(error) => Some(left_by(&copy.machine, error)),
     }
 }
 
-fn machine_failure_reason(machine: &str, error: RpcError) -> String {
-    if error.code == RpcErrorCode::Unavailable || error.target_unanswered() {
-        format!("{machine} did not answer")
-    } else {
-        error.message
-    }
+fn left_by(machine: &str, error: RpcError) -> String {
+    cleanup::did_not_answer(machine, &error).unwrap_or(error.message)
 }
 
 /// Every claim pair is kept, under its name: a name sealed after the claim
@@ -1565,7 +1551,7 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleEvidence, RuleProof,
+        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
@@ -1574,7 +1560,7 @@ async fn rule_proofs(
     for (service, kept) in &claimed.verified {
         let runs = receipts
             .get(service)
-            .and_then(|receipt| ImageDigest::parse(&receipt.image.reference).ok());
+            .and_then(|receipt| BuiltImageDigest::parse(&receipt.image.reference).ok());
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
             proofs.rules.insert(
                 service.clone(),
@@ -1621,7 +1607,7 @@ async fn rule_proofs(
             continue;
         };
         let (Ok(image), Ok(policy)) = (
-            ImageDigest::parse(&receipt.image.reference),
+            BuiltImageDigest::parse(&receipt.image.reference),
             PolicyDigest::of(&approved.policy),
         ) else {
             continue;

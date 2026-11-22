@@ -99,12 +99,6 @@ impl<'pool> DatasetLayout<'pool> {
         Self::new(pool.name())
     }
 
-    /// The imported Pool's name.
-    #[must_use]
-    pub fn pool(&self) -> &'pool str {
-        self.pool
-    }
-
     /// `<pool>/ployz`, the parent of every writer root.
     #[must_use]
     pub fn root_parent(&self) -> String {

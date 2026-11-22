@@ -287,7 +287,6 @@ mod tests {
     fn the_refusal_file_and_its_text_are_what_other_releases_read() {
         assert_eq!(STARTUP_REFUSAL_FILE, "refused");
         assert_eq!(STARTUP_REFUSED, "ployzd refused to start: ");
-        assert_eq!(crate::NETWORK_CONFLICT_EXIT_STATUS, 78);
     }
 
     #[test]

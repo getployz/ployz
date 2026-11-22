@@ -509,6 +509,45 @@ pub(crate) fn creates_container(operation: &DeployOperation) -> bool {
     TaskKind::of(operation) == TaskKind::Start
 }
 
+/// The depth at which each Service starts: 0 without a dependency in this
+/// Deploy, else one more than its deepest dependency. `groups` come in
+/// execution order, so every dependency is placed before its dependents.
+pub(crate) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
+    let mut depths = BTreeMap::new();
+    for group in groups {
+        let Some(service) = &group.service else {
+            continue;
+        };
+        let depth = group
+            .dependencies
+            .iter()
+            .filter_map(|dependency| depths.get(dependency))
+            .max()
+            .map_or(0, |deepest: &u32| deepest + 1);
+        depths.insert(service.clone(), depth);
+    }
+    depths
+}
+
+/// Each `(dependency, dependent)` pair of Services this Deploy runs, in the order
+/// `groups` place them.
+pub(super) fn dependencies(groups: &[ServiceGroup]) -> Vec<(ServiceName, ServiceName)> {
+    let deployed: BTreeSet<&ServiceName> = groups
+        .iter()
+        .filter_map(|group| group.service.as_ref())
+        .collect();
+    groups
+        .iter()
+        .filter_map(|group| Some((group.service.as_ref()?, &group.dependencies)))
+        .flat_map(|(service, dependencies)| {
+            dependencies
+                .iter()
+                .filter(|dependency| deployed.contains(dependency))
+                .map(|dependency| (dependency.clone(), service.clone()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +558,39 @@ mod tests {
 
     fn name(service: &str) -> ServiceName {
         ServiceName::parse(service).unwrap()
+    }
+
+    fn group_of(service: &str, dependencies: &[&str]) -> ServiceGroup {
+        group(service, dependencies, Vec::new())
+    }
+
+    #[test]
+    fn dependencies_pair_each_deployed_dependency_with_its_dependent() {
+        let groups = [
+            group_of("db", &[]),
+            group_of("cache", &["redis"]),
+            group_of("queue", &["db"]),
+            group_of("api", &["queue", "cache"]),
+            ServiceGroup {
+                service: None,
+                ..group_of("unused", &["db"])
+            },
+        ];
+        let pair = |dependency: &str, dependent: &str| {
+            (
+                ServiceName::parse(dependency).unwrap(),
+                ServiceName::parse(dependent).unwrap(),
+            )
+        };
+        assert_eq!(
+            dependencies(&groups),
+            [
+                pair("db", "queue"),
+                pair("queue", "api"),
+                pair("cache", "api")
+            ],
+            "redis is not deployed, so cache waits on nothing here"
+        );
     }
 
     fn group(service: &str, dependencies: &[&str], steps: Vec<Stage>) -> ServiceGroup {

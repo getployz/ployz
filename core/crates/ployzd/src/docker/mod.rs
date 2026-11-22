@@ -959,7 +959,7 @@ impl Observation {
             && let Some(HealthcheckSpec::Http(check)) = &resolved_spec.container.healthcheck
         {
             effective_check = Some(HealthcheckSpec::Http(check.clone()));
-            if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+            if runtime.is_running() {
                 let (health, probed) = http_health_probe(address, check).await;
                 runtime = ContainerRuntimeObservation::Running { health };
                 last_check = probed;
@@ -1066,7 +1066,7 @@ pub struct InspectedRun {
 
 /// A Running Container marked stopping reports health `stopping`, which no proxy routes to.
 fn withdrawn(runtime: ContainerRuntimeObservation, stopping: bool) -> ContainerRuntimeObservation {
-    if stopping && matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+    if stopping && runtime.is_running() {
         return ContainerRuntimeObservation::Running {
             health: HealthObservation::Stopping,
         };

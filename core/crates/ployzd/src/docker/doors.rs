@@ -109,10 +109,6 @@ pub(crate) struct DoorFacts {
 }
 
 impl DoorFacts {
-    pub(crate) fn running(&self) -> bool {
-        matches!(self.runtime, ContainerRuntimeObservation::Running { .. })
-    }
-
     pub(crate) fn at_rest(&self) -> bool {
         self.runtime.at_rest()
     }

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::build::BuildStatus;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
@@ -28,7 +29,7 @@ use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::{Row, Tx, name_of};
+use crate::storage::{Row, Tx, json_text, name_of};
 use crate::volume::size::VolumeResized;
 use crate::{Actor, Trusted, build, registry};
 
@@ -398,10 +399,7 @@ fn remember(
             who.organization.as_str().into(),
             repository_id.into(),
             branch.as_str().into(),
-            serde_json::to_string(&heads)
-                .expect("heads are JSON")
-                .as_str()
-                .into(),
+            json_text(&heads).as_str().into(),
         ],
     )?;
     Ok(())
@@ -526,8 +524,8 @@ pub(crate) fn deploy_landed(
         tx,
         who.organization.as_str(),
         landed,
-        &json_of(&pending.updates),
-        &json_of(&pending.removals),
+        &json_text(&pending.updates),
+        &json_text(&pending.removals),
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
@@ -568,10 +566,6 @@ fn merged_services(row: &Row) -> Result<MergedServices, RpcError> {
         updates: row.json(0, "merge deploy")?,
         removals: row.json(1, "merge deploy")?,
     })
-}
-
-fn json_of(ids: &BTreeSet<impl Serialize>) -> String {
-    serde_json::to_string(ids).expect("Service IDs are JSON")
 }
 
 /// What merges into the branch of `push` landed in `environment` that no Deployment
@@ -858,7 +852,7 @@ fn admit(
             None => None,
         },
     };
-    let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let fresh = DeploymentId::fresh();
     let admission = match &held {
         Some(hold) => deployment::Admission::Promote(&hold.id),
         None => deployment::Admission::New {
@@ -929,8 +923,8 @@ pub(crate) fn shipped_landed(
             merge_deploy::replace(
                 tx,
                 landed,
-                &json_of(&pending.updates),
-                &json_of(&pending.removals),
+                &json_text(&pending.updates),
+                &json_text(&pending.removals),
             )?;
         }
     }
@@ -966,11 +960,14 @@ fn last_built(
     id: &EnvironmentId,
     service: &SavedServiceIntent,
 ) -> Result<Option<CommitSha>, RpcError> {
+    let (built, reused) = (name_of(BuildStatus::Built), name_of(BuildStatus::Reused));
     let rows = tx.query(
-        "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
+        &format!(
+            "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
          JOIN config_deployment d ON d.id = b.deployment_id \
          WHERE d.environment_id = ?1 AND d.nodes LIKE ?2 AND b.commit_sha IS NOT NULL \
-         AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
+         AND b.status IN ('{built}', '{reused}') ORDER BY d.admitted DESC"
+        ),
         &[
             id.as_str().into(),
             deployment::node_pattern(&service.id).as_str().into(),

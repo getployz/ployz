@@ -3,7 +3,8 @@
 //!
 //! `github_finish` re-reads the build, then asks [`first`] whether the grant must be read on
 //! the Machine that minted it, and [`after_read`] what that read ends the build with. The
-//! Store's `github_end` asks [`github_end_holds`] whether the run that ends it still holds it.
+//! Store's `github_end` asks [`github_end_holds`] whether the run that ends it still holds it,
+//! and its `github_check_in` asks [`github_check_in_holds`] whether a run may check in.
 //! The sentences here are the ones the build's log and message record.
 
 use ployz_core::ImageDigest;
@@ -182,6 +183,14 @@ pub fn github_end_holds(kind: EndKind, target: Target) -> bool {
         (Target::Run { building_on }, _) => building_on.is_some(),
         (Target::BeforeGithub { waiting_unskipped }, _) => waiting_unskipped,
     }
+}
+
+/// Whether the Store lets a run that holds the build as `building_on` check in while its
+/// Deployment is `in_flight` or not. Only a run that has not checked in may, and only
+/// while the Deployment still wants the build.
+#[must_use]
+pub fn github_check_in_holds(building_on: Option<Hold>, in_flight: bool) -> bool {
+    building_on == Some(Hold::Dispatched) && in_flight
 }
 
 #[cfg(test)]

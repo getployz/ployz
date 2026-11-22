@@ -12,11 +12,12 @@ use std::{
     time::Duration,
 };
 
+use crate::faults::{Identity, Point, Want};
 use futures_util::{FutureExt as _, StreamExt as _};
 use ployz_core::{
-    ManagementAddress, SendSource, SendStream, SnapshotName, VolumeGen, error_chain::inline,
+    CopyTransition, ManagementAddress, SendSource, SendStream, SnapshotName, VolumeGen,
+    error_chain::inline,
 };
-use ployzd::faults::{Identity, Want};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
@@ -427,26 +428,21 @@ impl std::fmt::Display for ReceiveFailure {
 
 impl VolumeStorage {
     /// Pulls one stream into `fs`, then re-asserts and verifies the slot's bound and
-    /// read-only state, which ZFS drops on an interrupted first receive. `fault` names
-    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`], for the
-    /// Volume and target `stream` names.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Each is one pull's own: its source, slot, bound, stop, and the lane its fault line names."
-    )]
+    /// read-only state, which ZFS drops on an interrupted first receive. The
+    /// `SetVolumeCopy.MirrorToMirror` kill point fires once the stream passes
+    /// [`KILL_AFTER_BYTES`], for the Volume and target `stream` names in lane `r#gen`.
     pub(super) async fn receive(
         &self,
         from: ManagementAddress,
         stream: &SendStream,
         (parent, fs): (&str, &str),
         bound: u64,
-        fault: &'static str,
         r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream, stop).await?;
         self.admit_origin(parent, fs, &opened).await?;
-        self.receive_opened(opened, fs, bound, fault, pulling(stream, r#gen), stop)
+        self.receive_opened(opened, fs, bound, pulling(stream, r#gen), stop)
             .await
     }
 
@@ -579,7 +575,6 @@ impl VolumeStorage {
         OpenedStream { shown, response }: OpenedStream,
         fs: &str,
         bound: u64,
-        fault: &'static str,
         identity: Identity<'_>,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
@@ -589,7 +584,7 @@ impl VolumeStorage {
                 ReceiveFailure::Failed(format!("could not run zfs receive: {error}"))
             })?;
         let pumped = {
-            let pump = self.pump(child.child(), &shown, response, fs, fault, identity);
+            let pump = self.pump(child.child(), &shown, response, fs, identity);
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
@@ -612,7 +607,6 @@ impl VolumeStorage {
         shown: &str,
         response: reqwest::Response,
         fs: &str,
-        fault: &'static str,
         identity: Identity<'_>,
     ) -> Result<(), ReceiveFailure> {
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
@@ -637,7 +631,10 @@ impl VolumeStorage {
                     let before = received;
                     received += bytes.len() as u64;
                     if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
-                        ployzd::faults::kill_inside(fault, Some(identity));
+                        crate::faults::kill_inside(
+                            Point::Copy(CopyTransition::MirrorToMirror),
+                            Some(identity),
+                        );
                     }
                 }
                 Err(error) => {

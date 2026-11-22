@@ -283,13 +283,16 @@ fn proxy_recovery(doors: &[DoorFacts]) -> Option<Repair> {
             .failed_start
             .then_some(Repair::StartHolder(holder.id));
     }
-    let mut running = holders.iter().copied().filter(|facts| facts.running());
+    let mut running = holders
+        .iter()
+        .copied()
+        .filter(|facts| facts.runtime.is_running());
     let (Some(holder), None) = (running.next(), running.next()) else {
         return None;
     };
     if holders
         .iter()
-        .any(|facts| !facts.running() && !facts.at_rest())
+        .any(|facts| !facts.runtime.is_running() && !facts.at_rest())
     {
         return None;
     }
@@ -298,7 +301,7 @@ fn proxy_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .copied()
         .filter(|facts| facts.joined_to == Some(holder.id))
         .collect::<Vec<_>>();
-    if let Some(caddy) = joined.iter().find(|facts| facts.running()) {
+    if let Some(caddy) = joined.iter().find(|facts| facts.runtime.is_running()) {
         return match (holder.netns, caddy.netns) {
             (Some(holder_ns), Some(caddy_ns)) if holder_ns != caddy_ns => Some(Repair::Rejoin {
                 owner: holder.id,
@@ -328,13 +331,16 @@ fn tunnel_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .iter()
         .filter(|facts| facts.door == Door::TunnelOrigin)
         .collect::<Vec<_>>();
-    let mut running = origins.iter().copied().filter(|facts| facts.running());
+    let mut running = origins
+        .iter()
+        .copied()
+        .filter(|facts| facts.runtime.is_running());
     let (Some(origin), None) = (running.next(), running.next()) else {
         return None;
     };
     if origins
         .iter()
-        .any(|facts| !facts.running() && !facts.at_rest())
+        .any(|facts| !facts.runtime.is_running() && !facts.at_rest())
     {
         return None;
     }
@@ -343,7 +349,7 @@ fn tunnel_recovery(doors: &[DoorFacts]) -> Option<Repair> {
         .iter()
         .find(|facts| {
             facts.door == Door::Tunnel
-                && facts.running()
+                && facts.runtime.is_running()
                 && facts.joined_to == Some(origin.id)
                 && facts.netns.is_some_and(|ns| ns != origin_ns)
         })

@@ -4,11 +4,11 @@
 
 use std::process::Stdio;
 
-use ployz_core::{RpcError, SlotRole, Snapshot};
-use ployzd::{
+use crate::{
     dataset_layout::{DatasetLayout, MIRROR_MOUNT_ROOT},
     machine_pool::MachinePool,
 };
+use ployz_core::{RpcError, SlotRole, Snapshot};
 use tokio::process::Command;
 
 use super::{

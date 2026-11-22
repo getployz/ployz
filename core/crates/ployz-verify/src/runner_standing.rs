@@ -2,16 +2,15 @@
 //! holds its status. The runner (`run_deployment_expecting` and `Run`, ployz's
 //! sdk/store_runner.rs) dials the Servers under `connecting`, then
 //! plans or builds and prepares, executes, deletes the Volumes the Deploy removes and
-//! fills ingress, each piece of work under `renewing` (:653-665, :687-691, :708,
-//! :726-738). While it awaits that work, `connecting` and `renewing` call `standing()`
-//! every `CANCEL_POLL`, 2 s (:40, :1116-1132, :1136-1149), and the work can end before
-//! the next call (:1129, :1141). `execute` also calls it once after executing (:694) and
-//! once before `fill_ingress` (:712). `standing()` is `record(RunEvidence::Alive)` read
+//! fills ingress, each piece of work under `renewing` (`ployz::sdk::store_runner::Run::execute`). While it awaits that work, `connecting` and `renewing` call `standing()`
+//! every `CANCEL_POLL`, 2 s (`ployz::sdk::store_runner::Run::executing`), and the work can end before
+//! the next call (`ployz::sdk::store_runner::Run::record_warnings`). `execute` also calls it once after executing and
+//! once before `fill_ingress`. `standing()` is `record(RunEvidence::Alive)` read
 //! through `read_of` (store_runner.rs) and `ployz_decide::standing::Latch`, and every site
 //! matches the one `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
 //! deployment/lifecycle.rs `cancel`), a newer Deployment of the Environment is claimed and
 //! sets it Unknown (deployment/claim.rs `claim`), or forgetting the Cluster cancels it without
-//! waiting on the runner (deployment/lifecycle.rs `cancel_in_flight`, teardown.rs:460).
+//! waiting on the runner (deployment/lifecycle.rs `cancel_in_flight`, `ployz_store::teardown::forget_cluster`).
 //!
 //! The model found two problems in the code before `Standing` (#3839), and the code
 //! now keeps out all but one path of the first. Each fixed part has a `Broken` flag
@@ -38,7 +37,7 @@
 //! Deployment as Interrupted in the same transaction, and its projection shows the
 //! deletions of an Interrupted outcome, where the code reads them NotAttempted for any
 //! outcome but a Success (deployment/outcomes.rs `removed_volume`), and an Interrupted outcome projects
-//! to Failed (ployz-core config/runtime_outcome.rs:208-220). The code does not have it.
+//! to Failed (ployz-core `ployz_core::config::runtime_outcome::project_runtime_outcome`). The code does not have it.
 //!
 //! Each store call is one step, since `record`, `claim`, `cancel` and `cancel_in_flight`
 //! each take one transaction (deployment/record.rs `record`, deployment/claim.rs `claim`,
@@ -58,7 +57,7 @@ use std::fmt::Write as _;
 use ployz_decide::standing::{self as decide, Latch, Over, Read};
 use stateright::{Model, Property};
 
-use crate::harness::{self, Variant, everywhere};
+use crate::harness::{self, Variant, everywhere, took};
 
 /// The Deployment's status as `record` reads it. `stored` (deployment/mod.rs) remaps a
 /// lapsed lease to Unknown, which the model leaves out.
@@ -429,10 +428,6 @@ enum Omit {
 type Coverage = harness::Coverage<RunnerStanding, Omit>;
 
 /// The last step took `branch`.
-fn took(state: &State, branch: Branch) -> bool {
-    state.took == Some(branch)
-}
-
 /// Each branch the bounds reach, once. `every_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
 const COVERAGE: &[Coverage] = &[
@@ -440,14 +435,14 @@ const COVERAGE: &[Coverage] = &[
         name: "connecting reads a cancel: Cancelled before connecting",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::ConnectingCancelled)),
-        reached: |_, state| took(state, Branch::ConnectingCancelled),
+        reached: |_, state| took(state.took, Branch::ConnectingCancelled),
     },
     Coverage {
         name: "renewing aborts the prepare",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
+            took(state.took, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
         },
     },
     Coverage {
@@ -455,7 +450,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
+            took(state.took, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
         },
     },
     Coverage {
@@ -463,7 +458,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Aborts)),
         reached: |_, state| {
-            took(state, Branch::Aborts)
+            took(state.took, Branch::Aborts)
                 && matches!(state.phase, Phase::Filling { stopped: true, .. })
         },
     },
@@ -472,33 +467,36 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Unprepared)),
         reached: |_, state| {
-            took(state, Branch::Unprepared) && state.store.outcome == Some(Outcome::NotExecuted)
+            took(state.took, Branch::Unprepared)
+                && state.store.outcome == Some(Outcome::NotExecuted)
         },
     },
     Coverage {
         name: "record(Prepared) refuses a run that is over",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::PreparedRefused)),
-        reached: |_, state| took(state, Branch::PreparedRefused),
+        reached: |_, state| took(state.took, Branch::PreparedRefused),
     },
     Coverage {
         name: "record(Prepared) reads a cancel: Cancelled before it executed",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::PreparedCancelling)),
-        reached: |_, state| took(state, Branch::PreparedCancelling),
+        reached: |_, state| took(state.took, Branch::PreparedCancelling),
     },
     Coverage {
         name: "the session ends mid-execution and Abandoned leaves the run Unknown",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::Abandons)),
-        reached: |_, state| took(state, Branch::Abandons) && state.store.status == Status::Unknown,
+        reached: |_, state| {
+            took(state.took, Branch::Abandons) && state.store.status == Status::Unknown
+        },
     },
     Coverage {
         name: "the read after executing reads the takeover and the run records Interrupted",
         on: everywhere,
         omit: Some(Omit::Branch(Branch::CheckFindsLost)),
         reached: |_, state| {
-            took(state, Branch::CheckFindsLost) && state.last_read == Some(Read::Unknown)
+            took(state.took, Branch::CheckFindsLost) && state.last_read == Some(Read::Unknown)
         },
     },
     Coverage {
@@ -506,7 +504,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::Check(Call::Fails)])),
         reached: |_, state| {
-            took(state, Branch::CheckGoesOn) && state.last_read == Some(Read::Unavailable)
+            took(state.took, Branch::CheckGoesOn) && state.last_read == Some(Read::Unavailable)
         },
     },
     Coverage {
@@ -514,7 +512,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
-            took(state, Branch::GateSkips) && state.last_read == Some(Read::Cancelling)
+            took(state.took, Branch::GateSkips) && state.last_read == Some(Read::Cancelling)
         },
     },
     Coverage {
@@ -522,7 +520,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::Removed])),
         reached: |_, state| {
-            took(state, Branch::Records)
+            took(state.took, Branch::Records)
                 && state.store.outcome
                     == Some(Outcome::Executed {
                         interrupted: false,
@@ -536,7 +534,7 @@ const COVERAGE: &[Coverage] = &[
         on: everywhere,
         omit: Some(Omit::Actions(&[Action::CancelInFlight])),
         reached: |_, state| {
-            took(state, Branch::Records)
+            took(state.took, Branch::Records)
                 && state
                     .sent
                     .is_some_and(|sent| sent.answer == Answer::RefusedEnded)
@@ -554,26 +552,28 @@ const COVERAGE: &[Coverage] = &[
         name: "renewing latches a takeover during remove_volumes",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::Latches)),
-        reached: |_, state| took(state, Branch::Latches) && state.standing == Standing::Lost,
+        reached: |_, state| took(state.took, Branch::Latches) && state.standing == Standing::Lost,
     },
     Coverage {
         name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
         on: |model| model.store_fix.is_proposed(),
         omit: Some(Omit::Branch(Branch::Converted)),
-        reached: |_, state| took(state, Branch::Converted) && state.store.shows_removed,
+        reached: |_, state| took(state.took, Branch::Converted) && state.store.shows_removed,
     },
     Coverage {
         name: "renewing aborts once a read says the run ended",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::Aborts)),
-        reached: |_, state| took(state, Branch::Aborts) && state.last_read == Some(Read::Ended),
+        reached: |_, state| {
+            took(state.took, Branch::Aborts) && state.last_read == Some(Read::Ended)
+        },
     },
     Coverage {
         name: "the gate skips fill_ingress once the latch says the run is over",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::GateSkips)),
         reached: |_, state| {
-            took(state, Branch::GateSkips)
+            took(state.took, Branch::GateSkips)
                 && state.standing != Standing::Keep
                 && state.last_read != Some(Read::Cancelling)
         },
@@ -583,7 +583,7 @@ const COVERAGE: &[Coverage] = &[
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::StopsOver)),
         reached: |_, state| {
-            took(state, Branch::StopsOver)
+            took(state.took, Branch::StopsOver)
                 && state.standing == Standing::Lost
                 && matches!(state.last, Some(Action::Poll(_)))
         },
@@ -592,14 +592,16 @@ const COVERAGE: &[Coverage] = &[
         name: "the run stops once a read says it ended",
         on: RunnerStanding::reads_standing,
         omit: Some(Omit::Branch(Branch::StopsOver)),
-        reached: |_, state| took(state, Branch::StopsOver) && state.standing == Standing::Ended,
+        reached: |_, state| {
+            took(state.took, Branch::StopsOver) && state.standing == Standing::Ended
+        },
     },
     Coverage {
         name: "record refuses a lost run's Executed and keeps it sent again as Interrupted",
         on: |model| model.store_fix.is_shipped() && !model.broken.no_resend,
         omit: Some(Omit::Branch(Branch::Resends)),
         reached: |_, state| {
-            took(state, Branch::Resends)
+            took(state.took, Branch::Resends)
                 && state.store.outcome
                     == Some(Outcome::Executed {
                         interrupted: true,
@@ -746,7 +748,7 @@ impl RunnerStanding {
     /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown
     /// (the `taken_over` branches); any other goes through `finish`. The store fix
     /// keeps a non-Interrupted one for an Unknown Deployment as Interrupted. The
-    /// projection shows the deletions for a Success (:2186-2190), and in the store fix
+    /// projection shows the deletions for a Success (`ployz_store::deployment::outcomes::node_outcomes`), and in the store fix
     /// for an Interrupted outcome too.
     fn executed(&self, state: &mut State, interrupted: bool) -> Answer {
         let broken = self.broken;
@@ -801,7 +803,7 @@ impl RunnerStanding {
     /// `record(RunEvidence::Abandoned)` (deployment/record.rs, the `Abandoned` arm): a no-op on an Unknown
     /// Deployment or one with an outcome, `running` otherwise, then
     /// Unknown after a preview. The model sends it only from executing, after
-    /// the preview, so the arm's `NotExecuted` for a run with no preview (:1909-1922) is out
+    /// the preview, so the arm's `NotExecuted` for a run with no preview (the `Abandoned` arm of `ployz_store::deployment::record::record`) is out
     /// of scope.
     fn abandoned(state: &mut State) {
         let store = &mut state.store;
@@ -1085,7 +1087,7 @@ const TAKEOVER_KEEPS_OUTCOME: &str =
 /// lists the deleted Volume under the fix, since a run that was taken over moves no Applied
 /// State (deployment/record.rs `record`, the `taken_over` branch). `cancel_in_flight` is exempt: `forget_cluster`, which
 /// runs it, lets go of the Organization's Applied State and Volumes' fixed storage
-/// (teardown.rs:444-447, :460-471).
+/// (`ployz_store::teardown::forget_cluster`).
 const DELETIONS_KEPT: &str = "once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless cancel_in_flight ended the Deployment";
 const NO_WORK_AFTER_END: &str = "once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes";
 const HEEDS_CANCEL: &str = "while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes";

@@ -8,7 +8,7 @@ pub(super) mod approve;
 #[cfg(test)]
 mod follow_tests;
 mod forget;
-mod progress;
+pub(crate) mod progress;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};

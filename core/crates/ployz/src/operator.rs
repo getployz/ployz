@@ -256,14 +256,7 @@ fn running_container(service: &ServiceObservation) -> Option<&ServiceContainer> 
     service
         .containers
         .iter()
-        .find(|container| is_running(container))
-}
-
-fn is_running(container: &ServiceContainer) -> bool {
-    matches!(
-        container.as_observation().runtime,
-        ployz_core::ContainerRuntimeObservation::Running { .. }
-    )
+        .find(|container| container.as_observation().runtime.is_running())
 }
 
 /// The Service Name as the person typed it, not the Namespace the CLI scoped it to.
@@ -383,7 +376,9 @@ pub async fn open_exec(
     let unanswered =
         container_selector.is_none() && (!gaps.failures.is_empty() || !gaps.omissions.is_empty());
     let (service, container) = match selected {
-        Ok((service, container)) if !unanswered || is_running(container) => {
+        Ok((service, container))
+            if !unanswered || container.as_observation().runtime.is_running() =>
+        {
             (service, container.as_observation())
         }
         Err(error) if !unanswered || !error.is_not_found() => return Err(error),
@@ -448,7 +443,7 @@ pub async fn exec_container_stopped(
     client: &mut Client,
     target: &ExecTarget,
 ) -> Result<Option<ContainerStopped>, OperatorError> {
-    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing, Running};
+    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing};
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
@@ -477,8 +472,7 @@ pub async fn exec_container_stopped(
         .flat_map(|service| &service.containers)
         .map(ServiceContainer::as_observation)
         .any(|container| {
-            container.container_id != target.container_id
-                && matches!(container.runtime, Running { .. })
+            container.container_id != target.container_id && container.runtime.is_running()
         });
     Ok(Some(ContainerStopped { another_runs }))
 }

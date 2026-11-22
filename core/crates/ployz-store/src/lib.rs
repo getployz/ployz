@@ -59,17 +59,16 @@ use ployz_core::RpcError;
 
 pub use auto_rule::{ApproveRule, RuleQuery, RuleView};
 pub use automation::{
-    AutoDeployed, Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped,
-    SystemEvent,
+    Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped, SystemEvent,
 };
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
-    KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone,
+    KeepBranch, LiveNode, SetBranchSetup, SetupCommand, SyncChanges, SyncQuery, SyncRow, SyncView,
+    Synced, Take, Taken, UndoSync, Undone,
 };
 pub use branch::{
     FollowHint, HintSource, Included, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced,
-    NeverSyncedRow, ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange,
+    ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -79,19 +78,19 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
 pub use command::*;
-pub use deployment::loss::{RemovedVolume, VolumeLoss, docker_volume};
+pub use deployment::loss::{VolumeLoss, docker_volume};
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
-    NodeOutcome, NodeStatus, Outcome, Pinned, PostedVersion, RanService, RowPhase, RowState,
-    RowTracker, RowTransition, RunEvidence, ServerProgress, ServerRow, StoppedBy, TagPin,
-    Unclaimed, UploadBase, UploadedSource, VersionsQuery, VersionsView, WaitingService,
+    NodeOutcome, NodeStatus, Outcome, Pinned, PostedVersion, RowPhase, RowState, RowTracker,
+    RowTransition, RunEvidence, ServerProgress, ServerRow, StoppedBy, TagPin, Unclaimed,
+    UploadBase, UploadedSource, VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
-    AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
-    DomainAction, DomainAdded, DomainChange, DomainEdit, DomainEvidence, DomainName, DomainQuery,
-    DomainRow, DomainStaged, DomainStatus, DomainView, DomainsQuery, DomainsView,
-    PublishedHostname, RemoveDomain, SetGeneratedDomain, TunnelAnswer, TunnelEvidence, TunnelReach,
+    AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,
+    DomainChange, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
+    DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain, SetGeneratedDomain,
+    TunnelEvidence,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{
@@ -99,44 +98,37 @@ pub use github::{
 };
 pub use id::*;
 pub use permission::Permission;
-pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
-pub use ployz_core::memory_size::memory_size;
 pub use pull_request::{
-    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
-    OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
-    PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing,
-    Sweep,
+    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
+    OpenPullRequest, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery, PullRequestRef,
+    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use region::{
-    NameRegion, NewRegionQuery, NewRegionView, REGION_LABEL, Region, RegionKey, RegionName,
-    RegionServers, RegionsQuery, RegionsView, ServersByRegion, region_servers,
+    NameRegion, NewRegionQuery, NewRegionView, Region, RegionName, RegionsQuery, RegionsView,
+    region_key, region_servers,
 };
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
-    RemovalCancelled, Remove, RemovedQuery, RemovedView, Residual, Waiting,
+    RemovalCancelled, Remove, RemovedQuery, RemovedView, Waiting,
 };
 pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
-    ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, DataEffect,
-    DestructiveEffect, DestructiveKind, DiffView, LostAfter, MalformedReviewVersion, NodeChange,
-    OperationVerb, RegionChange, ReviewVersion, introduced_source,
+    ApprovalOperation, ApprovalRequired, ApprovalSubject, DataEffect, DestructiveEffect,
+    DestructiveKind, DiffView, NodeChange, OperationVerb, ReviewVersion, introduced_source,
 };
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
-pub use settings::{
-    Apply, EnvironmentSetting, NodeName, SecretCell, SecretInput, SettingPath,
-    refuse_unknown_region,
-};
+pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath, refuse_unknown_region};
 pub use storage::Converted;
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,
-    OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
-    RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
+    AppliedVolume, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
+    ProjectsQuery, ProjectsView, ProtectedView, RemovedBecause, SeenProtection,
+    SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,

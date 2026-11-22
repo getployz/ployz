@@ -24,7 +24,6 @@ pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
-mod report;
 mod schedule;
 
 pub use pipeline::DeployError;
@@ -43,7 +42,8 @@ pub use ployz_core::{
 pub use schedule::{ServiceGroup, Stage};
 
 pub(crate) use progress::pending_rows;
-pub(crate) use report::{Replica, service_row, starts, updates};
+#[cfg(test)]
+pub(crate) use schedule::depths;
 
 pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(

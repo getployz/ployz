@@ -201,16 +201,10 @@ impl PayloadDigest {
     }
 }
 
-/// Whether `image` names its content: `name@sha256:<64 hex>`, or a bare `sha256:<64 hex>`
-/// image ID. Any other reference resolves through a tag the image store's writers choose.
+/// Whether `image` names its content, as [`ImageRef::content`](crate::ImageRef::content) reads it.
 #[must_use]
 pub fn content_addressed(image: &str) -> bool {
-    let digest = match image.rsplit_once('@') {
-        Some((name, digest)) if !name.is_empty() => digest,
-        Some(_) => return false,
-        None => image,
-    };
-    crate::ImageDigest::parse(digest).is_ok()
+    crate::ImageRef::new(image).content().is_some()
 }
 
 /// One Service as the approver's client shows it before signing: the digest it signs, its
@@ -283,8 +277,11 @@ impl ApprovedChange {
     /// A pin is this client's own registry read of the tag shown, so its prefix is enough.
     #[must_use]
     pub fn line(&self) -> String {
-        let image = match (&self.tag, self.image.rsplit_once("@sha256:")) {
-            (Some(tag), Some((_, hex))) => Shown::text(tag)
+        let hex = crate::ImageRef::new(&self.image)
+            .digest
+            .and_then(|digest| digest.strip_prefix("sha256:"));
+        let image = match (&self.tag, hex) {
+            (Some(tag), Some(hex)) => Shown::text(tag)
                 .and_words(" → @sha256:")
                 .and_text(hex.get(..12).unwrap_or(hex))
                 .and_words("…"),

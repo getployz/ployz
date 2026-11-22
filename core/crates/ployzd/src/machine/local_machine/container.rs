@@ -16,15 +16,14 @@ use ployz_core::{
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
     PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
-    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal,
-    RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
     HealthcheckSpec, ReadyWait, SETTLE_INSPECT_GRACE, health_monitor, settle_deadline,
 };
 
-use self::rotation::RotationWant;
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
 use super::{AdmittedSpec, Error, LocalMachine};
 use crate::docker::{
@@ -34,6 +33,7 @@ use crate::docker::{
 use crate::docker_image::ImagePull;
 use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
+use ployz_decide::rotation::{RotationWant, in_rotation, in_rotation_refusal};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
@@ -142,10 +142,7 @@ impl LocalMachine {
             let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
             let mut mounted = std::collections::BTreeMap::new();
@@ -912,10 +909,7 @@ impl LocalMachine {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, move |local| async move {
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             Ok(local
                 .docker()?
                 .update_placement(machine, &container_id, &spec, local.observe_storage())
@@ -1058,8 +1052,7 @@ impl LocalMachine {
             });
         }
         let record = self.record();
-        let participating = record.has_cluster_identity();
-        let Some(machine) = record.machine().filter(|_| participating) else {
+        let Some(machine) = record.cluster_machine() else {
             return Ok(EnsuredContainer::Refused {
                 now: self.container_now(&locator).await?,
                 refusal: refuse(
@@ -1722,10 +1715,7 @@ impl LocalMachine {
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
-        if !record.has_cluster_identity() {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         containers
             .lifecycle()
             .create_with_admission(
@@ -2106,24 +2096,6 @@ fn start_fence(want: &ContainerWant) -> Option<StartFence> {
         | ContainerWant::Out { .. }
         | ContainerWant::Held { .. } => None,
     }
-}
-
-/// True when the copy must leave routing through an Out want first.
-fn in_rotation(rotation: &CopyRotation, target: &RotationTarget) -> bool {
-    matches!(
-        rotation.edge(target),
-        RotationEdge::Refused(RotationRefusal::InRotation)
-    )
-}
-
-fn in_rotation_refusal(container: &ContainerId, rotation: &CopyRotation) -> ContainerRefusal {
-    refuse(
-        ContainerRefusalReason::InRotation,
-        format!(
-            "Container {container} is {}; take it out of routing first",
-            rotation::describe(rotation)
-        ),
-    )
 }
 
 async fn leave_rotation<'a>(

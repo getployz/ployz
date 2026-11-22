@@ -900,11 +900,16 @@ mod settled {
     }
 
     async fn eventually(mut ready: impl FnMut() -> bool) {
-        while !ready() {
-            // real-wait: the daemon changes this state over the fake Docker's real TCP
-            // socket, or in work detached from the test, and neither signals it.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let wait = async {
+            while !ready() {
+                // real-wait: the daemon changes this state over the fake Docker's real TCP
+                // socket, or in work detached from the test, and neither signals it.
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .expect("the daemon's state change arrives");
     }
 
     async fn let_requests_land() {

@@ -10,6 +10,7 @@ use super::{Residual, Target};
 use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, ProjectId, RemovalId, VolumeName};
+use crate::storage::json_text;
 use crate::storage::{Row, Tx};
 
 /// Where a mark a write can still change stands. A finished mark reads `removed`
@@ -78,8 +79,7 @@ impl Mark {
     ) -> Self {
         let at = crate::deployment::now();
         Self {
-            id: RemovalId::parse(uuid::Uuid::new_v4().to_string())
-                .expect("a new UUID is a removal ID"),
+            id: RemovalId::fresh(),
             target,
             target_name,
             by: who
@@ -254,10 +254,10 @@ pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, mark: &Mark) -> Result<(), RpcE
             mark.at.into(),
             mark.retried.into(),
             state_text(mark.state).into(),
-            text(&mark.accepted).as_str().into(),
-            text(&mark.members).as_str().into(),
-            text(&mark.evidence).as_str().into(),
-            text(&mark.residuals).as_str().into(),
+            json_text(&mark.accepted).as_str().into(),
+            json_text(&mark.members).as_str().into(),
+            json_text(&mark.evidence).as_str().into(),
+            json_text(&mark.residuals).as_str().into(),
         ],
     )?;
     Ok(())
@@ -286,7 +286,7 @@ pub(crate) fn finish(
              WHERE id = ?1 AND state = '{}'",
             state_text(State::Removing)
         ),
-        &[id.as_str().into(), text(&residuals).as_str().into()],
+        &[id.as_str().into(), json_text(&residuals).as_str().into()],
     )?;
     Ok(if moved == 0 {
         Finished::NotRemoving
@@ -322,8 +322,4 @@ pub(crate) fn drop_live(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<
         &[environment.as_str().into()],
     )?;
     Ok(())
-}
-
-fn text(value: &impl Serialize) -> String {
-    serde_json::to_string(value).expect("stored documents are JSON")
 }

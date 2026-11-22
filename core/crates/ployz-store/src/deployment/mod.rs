@@ -41,7 +41,7 @@ pub(crate) use rows::server_names;
 pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
-pub use versions::{Pinned, PostedVersion, RanService, TagPin, VersionsQuery, VersionsView};
+pub use versions::{Pinned, PostedVersion, TagPin, VersionsQuery, VersionsView};
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
@@ -80,6 +80,7 @@ use crate::registry;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
+use crate::storage::json_text;
 use crate::storage::{Row, Tx, name_of};
 use crate::variables;
 
@@ -215,9 +216,7 @@ pub struct DeploymentSummary {
     /// runner was lost reads Unknown, ended at the earlier of its runner lease and when
     /// that was found: a newer claim took it over, its runner claimed it again or gave
     /// up after preparing, or its runner lease lapsed. Its runner may still act until
-    /// that lease. An Interrupted outcome its runner records after moves it to then. A
-    /// row an older Store left without one reads its admission once superseded, and
-    /// the earlier of its runner lease and now once Unknown.
+    /// that lease. An Interrupted outcome its runner records after moves it to then.
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     /// What whoever admitted it said it ships.
@@ -367,6 +366,11 @@ impl IngressFailure {
 
 /// The most characters a Deployment message has.
 pub(crate) const MESSAGE_MAX: usize = 500;
+
+/// `text` cut to [`MESSAGE_MAX`] characters.
+pub(crate) fn clipped(text: &str) -> String {
+    text.chars().take(MESSAGE_MAX).collect()
+}
 
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
@@ -1220,12 +1224,13 @@ enum Standing {
 /// Store before [`Standing`] did:
 /// - It reads Unknown once its status says a runner holds it and that runner's
 ///   lease [`lapsed`], with its `ended` as the column holds it.
-/// - Each edge, [`Standing::claim_for`] through [`Standing::restamp`], writes the
+/// - Each edge, [`Standing::queue`] through [`Standing::restamp`], writes the
 ///   columns it writes for the typed standing of the same status, and no others
 ///   (`parity_tests`).
 /// - Whatever picks a row to move or count tests its status or its columns, never
-///   its kind of [`Standing`]: lifecycle.rs `cancel_held`, and history.rs
-///   `settling`, which counts the lease of any row with no `ended`.
+///   its kind of [`Standing`]: lifecycle.rs `queue`, `hold`, `supersede_held` and
+///   `cancel_held`, and history.rs `settling`, which counts the lease of any row
+///   with no `ended`.
 #[derive(Debug)]
 struct Raw {
     status: DeploymentStatus,
@@ -1372,16 +1377,6 @@ impl End {
     }
 }
 
-impl Raw {
-    /// Whether its status says a runner holds it.
-    const fn claimed(&self) -> bool {
-        matches!(
-            self.status,
-            DeploymentStatus::Running | DeploymentStatus::Cancelling
-        )
-    }
-}
-
 /// What a summary shows of a [`Standing`].
 struct Shown {
     status: DeploymentStatus,
@@ -1393,16 +1388,15 @@ struct Shown {
 
 impl Standing {
     /// Decode a row's `status` with its `number`, `runner`, `started`, `lease` and
-    /// `ended`, read at `now`. A row an older Store left without `ended` reads its
-    /// `admitted` once superseded, and [`runner_lost`] once Unknown. Any row whose
-    /// columns fit no other standing reads as [`Raw`], so every row a Store read
-    /// before [`Standing`] still reads.
+    /// `ended`. Any row whose columns fit no other standing reads as [`Raw`], so
+    /// every row a Store read before [`Standing`] still reads. Migration
+    /// `0034_deployment_ended` stamped `ended` on each superseded or Unknown row an
+    /// older Store left without one.
     fn decode(
         status: DeploymentStatus,
         number: Option<u64>,
         (runner, started, lease): (Option<RunnerId>, Option<i64>, i64),
         ended: Option<i64>,
-        (admitted, now): (i64, i64),
     ) -> Self {
         use DeploymentStatus as S;
         // A claim needs its runner and its start; none needs neither.
@@ -1428,13 +1422,10 @@ impl Standing {
                 claim,
                 phase: Phase::Cancelling,
             }),
-            (S::Superseded, number, Some(None), ended) => Self::Superseded {
+            (S::Superseded, number, Some(None), Some(ended)) => Self::Superseded { number, ended },
+            (S::Unknown, number, Some(Some(claim)), Some(ended)) => Self::Ended(Ended {
                 number,
-                ended: ended.unwrap_or(admitted),
-            },
-            (S::Unknown, number, Some(Some(claim)), ended) => Self::Ended(Ended {
-                number,
-                ended: ended.unwrap_or_else(|| runner_lost(claim.lease, now)),
+                ended,
                 claim: Some(claim),
                 end: End::Unknown,
             }),
@@ -1484,7 +1475,9 @@ impl Standing {
     fn status(&self, now: i64) -> DeploymentStatus {
         match self {
             Self::Claimed(claimed) if lapsed(claimed.claim.lease, now) => DeploymentStatus::Unknown,
-            Self::Raw(raw) if raw.claimed() && lapsed(raw.lease, now) => DeploymentStatus::Unknown,
+            Self::Raw(raw) if raw.status.claimed() && lapsed(raw.lease, now) => {
+                DeploymentStatus::Unknown
+            }
             standing @ (Self::Waiting(_)
             | Self::Queued(_)
             | Self::Claimed(_)
@@ -1593,12 +1586,57 @@ impl Standing {
     const fn renew(&mut self, now: i64) {
         match self {
             Self::Claimed(claimed) => claimed.renew(now),
-            Self::Raw(raw) if raw.claimed() => raw.lease = now + LEASE,
+            Self::Raw(raw) if raw.status.claimed() => raw.lease = now + LEASE,
             Self::Waiting(_)
             | Self::Queued(_)
             | Self::Superseded { .. }
             | Self::Ended(_)
             | Self::Raw(_) => {}
+        }
+    }
+
+    /// Queued as `number`, when it waits for CI: its CI passed, so it is admitted in
+    /// place. Any other stands as it was.
+    fn queue(self, number: u64) -> Self {
+        match self {
+            Self::Waiting(Waiting) => Self::Queued(Queued { number }),
+            Self::Raw(mut raw) => {
+                if raw.status == DeploymentStatus::WaitingForCi {
+                    raw.status = DeploymentStatus::Queued;
+                    raw.number = Some(number);
+                }
+                Self::Raw(raw)
+            }
+            standing @ (Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Replaced at `now` by a newer admission, when it is queued or waits for CI.
+    /// Any other stands as it was.
+    fn supersede(self, now: i64) -> Self {
+        match self {
+            Self::Waiting(Waiting) => Self::Superseded {
+                number: None,
+                ended: now,
+            },
+            Self::Queued(Queued { number }) => Self::Superseded {
+                number: Some(number),
+                ended: now,
+            },
+            Self::Raw(mut raw) => {
+                if matches!(
+                    raw.status,
+                    DeploymentStatus::WaitingForCi | DeploymentStatus::Queued
+                ) {
+                    raw.status = DeploymentStatus::Superseded;
+                    raw.ended = Some(now);
+                }
+                Self::Raw(raw)
+            }
+            standing @ (Self::Claimed(_) | Self::Superseded { .. } | Self::Ended(_)) => standing,
         }
     }
 
@@ -1661,7 +1699,7 @@ impl Standing {
         match self {
             Self::Claimed(claimed) => Self::Ended(claimed.lose_runner(now)),
             Self::Raw(mut raw) => {
-                if raw.claimed() {
+                if raw.status.claimed() {
                     raw.status = DeploymentStatus::Unknown;
                     raw.ended = Some(runner_lost(raw.lease, now));
                 }
@@ -1810,6 +1848,23 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
     stored(rows.first().ok_or_else(|| missing(id))?)
 }
 
+/// Every Deployment `condition` selects from `config_deployment`, as [`load`] reads
+/// one.
+fn load_where(
+    tx: &mut dyn Tx,
+    condition: &str,
+    params: &[crate::storage::Param<'_>],
+) -> Result<Vec<Stored>, RpcError> {
+    let columns = COLUMNS.as_str();
+    tx.query(
+        &format!("SELECT {columns} FROM config_deployment WHERE {condition}"),
+        params,
+    )?
+    .iter()
+    .map(stored)
+    .collect()
+}
+
 fn stored(row: &Row) -> Result<Stored, RpcError> {
     let read_at = now();
     let number = row
@@ -1827,7 +1882,6 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             row.int(12)?,
         ),
         row.optional_int(16)?,
-        (admitted_at, read_at),
     );
     let Shown {
         status,
@@ -1854,11 +1908,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
-    let service_uploads: Option<uploads::ServiceUploads> = row
-        .optional_text(23)?
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| error::corrupt("Deployment uploads"))?;
+    let service_uploads: Option<uploads::ServiceUploads> =
+        row.optional_json(23, "Deployment uploads")?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -1869,11 +1920,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             services: row.json(5, "Deployment")?,
             ships: shipped(&nodes),
             runner,
-            upload: row
-                .optional_text(9)?
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            upload: row.optional_json(9, "Deployment upload")?,
             chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             preparing: preparing(status, &run),
             all_waiting: all_waiting(status, &nodes, &run),
@@ -2057,10 +2104,6 @@ fn parse_stored<T: TryFrom<String, Error = RpcError>>(value: &str) -> Result<T, 
     T::try_from(value.to_owned()).map_err(|_| error::corrupt("identity"))
 }
 
-fn json_text(value: &impl Serialize) -> String {
-    serde_json::to_string(value).expect("stored documents are JSON")
-}
-
 fn missing(id: &DeploymentId) -> RpcError {
     error::not_found(format!("No Deployment {id}"), json!({}))
 }
@@ -2167,7 +2210,7 @@ mod parity_tests {
     /// A typed one read again from the columns `save` wrote for it.
     fn again(standing: &Standing) -> Standing {
         let (status, number, runner, started, lease, ended) = columns(standing);
-        let again = Standing::decode(status, number, (runner, started, lease), ended, (50, NOW));
+        let again = Standing::decode(status, number, (runner, started, lease), ended);
         assert!(
             !matches!(again, Standing::Raw(_)),
             "{:?}",
@@ -2207,7 +2250,6 @@ mod parity_tests {
                                     number,
                                     (runner.clone(), started, lease),
                                     ended,
-                                    (50, NOW),
                                 );
                                 if !matches!(standing, Standing::Raw(_)) {
                                     typed.push(standing);
@@ -2223,7 +2265,9 @@ mod parity_tests {
 
     type Edge = (&'static str, fn(Standing) -> Standing);
 
-    const EDGES: [Edge; 11] = [
+    const EDGES: [Edge; 13] = [
+        ("queue", |standing| standing.queue(8)),
+        ("supersede", |standing| standing.supersede(NOW)),
         ("claim_for", |standing| {
             standing.claim_for(&runner("runner-b"), NOW)
         }),

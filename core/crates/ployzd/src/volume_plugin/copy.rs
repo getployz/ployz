@@ -3,19 +3,19 @@
 //! check-then-act over the datasets it finds, so the same request resent after a crash
 //! at any sub-step converges. Every route answers the copy as it is afterwards.
 
-use axum::{Json, extract::State};
-use ployz_core::{
-    CopyRefusal, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
-};
-use ployzd::{
+use crate::{
     dataset_layout::DatasetLayout,
-    faults::{Identity, Want},
+    faults::{Identity, Point, Want},
     machine_pool::MachinePool,
     volume_copy::{
         CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest, WriterRequest,
     },
     volume_send::protocol,
+};
+use axum::{Json, extract::State};
+use ployz_core::{
+    CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
+    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 
 use super::{
@@ -92,14 +92,14 @@ pub(super) async fn destroy(
 /// for the Pool.
 struct Admitted {
     held: super::storage::HeldMutation,
-    installation: ployzd::mutation::MutationGuard,
+    installation: crate::mutation::MutationGuard,
     name: VolumeName,
 }
 
 /// What a route sees once it holds the plugin's mutation and the daemon's installation.
 struct Scope {
     held: super::storage::HeldMutation,
-    _installation: ployzd::mutation::MutationGuard,
+    _installation: crate::mutation::MutationGuard,
     pool: MachinePool,
     datasets: Vec<Dataset>,
     name: VolumeName,
@@ -292,8 +292,8 @@ impl VolumeStorage {
             self.z(&["snapshot", &format!("{root_name}@{}", request.target)])
                 .await?;
         }
-        ployzd::faults::kill_inside(
-            "SetVolumeCopy.WriterToMirror",
+        crate::faults::kill_inside(
+            Point::Copy(CopyTransition::WriterToMirror),
             Some(Identity {
                 volume: &request.name,
                 want: Want::Mirror {
@@ -330,8 +330,8 @@ impl VolumeStorage {
                     .await?;
             }
         }
-        ployzd::faults::kill_inside(
-            "SetVolumeCopy.WriterToSnapshot",
+        crate::faults::kill_inside(
+            Point::Copy(CopyTransition::WriterToSnapshot),
             Some(Identity {
                 volume: &request.name,
                 want: Want::Snapshot {
@@ -358,8 +358,8 @@ impl VolumeStorage {
             self.z(&["destroy", &format!("{root}@{}", snapshot.name)])
                 .await?;
             if index == 0 {
-                ployzd::faults::kill_inside(
-                    "SetVolumeCopy.WriterToForget",
+                crate::faults::kill_inside(
+                    Point::Copy(CopyTransition::WriterToForget),
                     Some(forgetting(name, request.r#gen)),
                 );
             }
@@ -399,7 +399,7 @@ impl VolumeStorage {
     ///   that record.
     /// - `ployz:cut` goes after the rename, in [`Self::make_writable`].
     ///
-    /// [`RootCopy::parse`]: super::inspect::RootCopy::parse
+    /// [`RootCopy::parse`]: ployz_decide::volume_root::RootCopy::parse
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
@@ -618,8 +618,8 @@ impl VolumeStorage {
                     .await
                     .map_err(internal)?;
                 self.create_slot(&parent, bound).await.map_err(internal)?;
-                ployzd::faults::kill_inside(
-                    "SetVolumeCopy.NoneToMirror",
+                crate::faults::kill_inside(
+                    Point::Copy(CopyTransition::NoneToMirror),
                     Some(Identity {
                         volume: &request.name,
                         want: Want::Mirror {
@@ -756,9 +756,8 @@ impl VolumeStorage {
         r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), String> {
-        let fault = "SetVolumeCopy.MirrorToMirror";
         match self
-            .receive(from, &stream, (parent, fs), bound, fault, r#gen, stop)
+            .receive(from, &stream, (parent, fs), bound, r#gen, stop)
             .await
         {
             Ok(()) => return Ok(()),
@@ -798,7 +797,7 @@ impl VolumeStorage {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.receive_opened(opened, fs, bound, fault, pulling(&full, r#gen), stop)
+        self.receive_opened(opened, fs, bound, pulling(&full, r#gen), stop)
             .await
             .map_err(|failure| failure.to_string())
     }
@@ -903,8 +902,8 @@ impl VolumeStorage {
                 .await
                 .map_err(internal)?
             {
-                ployzd::faults::kill_inside(
-                    "SetVolumeCopy.SeedToForget",
+                crate::faults::kill_inside(
+                    Point::Copy(CopyTransition::SeedToForget),
                     Some(forgetting(wire, request.r#gen)),
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
@@ -941,8 +940,8 @@ impl VolumeStorage {
                 )
                 .await);
         }
-        ployzd::faults::kill_inside(
-            "SetVolumeCopy.MirrorToForget",
+        crate::faults::kill_inside(
+            Point::Copy(CopyTransition::MirrorToForget),
             Some(forgetting(wire, request.r#gen)),
         );
         self.z(&[

@@ -67,9 +67,7 @@ pub async fn metrics_live(
             let answer = client
                 .call::<op::MetricsLive>(
                     request,
-                    Call::read()
-                        .to(&MachineTarget::from(&machine_id))
-                        .budget(crate::connect::target_read_timeout()),
+                    Call::target_read(&MachineTarget::from(&machine_id)),
                 )
                 .await
                 .map_err(crate::connect::rpc_error);

@@ -1,53 +1,12 @@
-//! Direct execution evidence, grouped by the same RowTracker the Store uses.
+//! A Deploy graph's Service rows, folded from each copy's Store row.
 
 use crate::ui::progress::{GraphService, Row, State, Subject, Timing, Work};
 use ployz_core::{
     DeployOperation, InPlaceChange, MachineId, OperationRow, QualifiedService, ServiceName,
 };
 use ployz_store::{RowPhase, RowState, StoppedBy};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::Duration;
-
-use super::ServiceGroup;
-
-/// The depth at which each Service starts: 0 without a dependency in this
-/// Deploy, else one more than its deepest dependency. `groups` come in
-/// execution order, so every dependency is placed before its dependents.
-pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
-    let mut depths = BTreeMap::new();
-    for group in groups {
-        let Some(service) = &group.service else {
-            continue;
-        };
-        let depth = group
-            .dependencies
-            .iter()
-            .filter_map(|dependency| depths.get(dependency))
-            .max()
-            .map_or(0, |deepest: &u32| deepest + 1);
-        depths.insert(service.clone(), depth);
-    }
-    depths
-}
-
-/// Each `(dependency, dependent)` pair of Services this Deploy runs, in the order
-/// `groups` place them.
-pub(super) fn dependencies(groups: &[ServiceGroup]) -> Vec<(ServiceName, ServiceName)> {
-    let deployed: BTreeSet<&ServiceName> = groups
-        .iter()
-        .filter_map(|group| group.service.as_ref())
-        .collect();
-    groups
-        .iter()
-        .filter_map(|group| Some((group.service.as_ref()?, &group.dependencies)))
-        .flat_map(|(service, dependencies)| {
-            dependencies
-                .iter()
-                .filter(|dependency| deployed.contains(dependency))
-                .map(|dependency| (dependency.clone(), service.clone()))
-        })
-        .collect()
-}
 
 pub(crate) struct Replica<'a> {
     pub machine: MachineId,
@@ -318,5 +277,5 @@ pub(crate) fn service_row<'a>(
 }
 
 #[cfg(test)]
-#[path = "report_tests.rs"]
+#[path = "rows_tests.rs"]
 mod tests;

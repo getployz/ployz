@@ -11,6 +11,7 @@ use crate::Trusted;
 use crate::id::{ProposalId, RepositoryId};
 use crate::pr_environment::{self, PullRequestRef};
 use crate::storage::Param;
+use crate::storage::json_text;
 
 /// Remove a proposal from a draft: what it still owns there goes back to what the
 /// draft held before it was included, and the proposal is forgotten. Rows the draft
@@ -332,7 +333,7 @@ pub(crate) fn record(
         keep_receipt(tx, who, (into, from), &found.id, sync)?;
         return Ok(found.id.clone());
     }
-    let id = ProposalId::parse(uuid::Uuid::new_v4().to_string())?;
+    let id = ProposalId::fresh();
     tx.execute(
         "INSERT INTO config_proposal (id, organization_id, environment_id, \
          source_environment_id, repository_id, number, source_name, source_revision, \
@@ -661,7 +662,7 @@ fn credential(
     service: &str,
 ) -> Result<Option<String>, RpcError> {
     Ok(registry::sealed(tx, environment, service)?.map(|sealed| {
-        let text = serde_json::to_string(&sealed).expect("a sealed credential is JSON");
+        let text = json_text(&sealed);
         hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
     }))
 }
@@ -724,13 +725,7 @@ pub(crate) fn keep_carried(
     }
     tx.execute(
         "UPDATE config_proposal SET carried = ?1 WHERE id = ?2",
-        &[
-            serde_json::to_string(&kept)
-                .expect("carried settings are JSON")
-                .as_str()
-                .into(),
-            proposal.as_str().into(),
-        ],
+        &[json_text(&kept).as_str().into(), proposal.as_str().into()],
     )?;
     Ok(())
 }

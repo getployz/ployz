@@ -1,26 +1,54 @@
 //! Fault injection for verify-cluster.
+#![cfg_attr(
+    not(feature = "verify-faults"),
+    expect(
+        dead_code,
+        reason = "Without verify-faults no fault fires, so nothing reads where one would."
+    )
+)]
 
 use ployz_core::{
-    DockerVolumeName, SnapshotGuid, SnapshotName, VolumeGen, WantedCopy, WriterEpoch,
+    CopyTransition, DockerVolumeName, SnapshotGuid, SnapshotName, VolumeGen, WantedCopy,
+    WriterEpoch,
 };
 
+#[cfg(all(feature = "verify-faults", test))]
+pub(crate) use enabled::PATH_ENV;
 #[cfg(feature = "verify-faults")]
-pub use enabled::{PATH_ENV, kill_inside, leak_memory};
-#[cfg(feature = "verify-faults")]
-pub(crate) use enabled::{apply, check};
+pub(crate) use enabled::{apply, check, kill_inside, leak_memory};
 
-/// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
-#[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 8] = [
-    "SetVolumeCopy.WriterToMirror",
-    "SetVolumeCopy.WriterToSnapshot",
-    "SetVolumeCopy.WriterToForget",
-    "SetVolumeCopy.SeedToForget",
-    "SetVolumeCopy.MirrorToWriter",
-    "SetVolumeCopy.MirrorToMirror",
-    "SetVolumeCopy.MirrorToForget",
-    "SetVolumeCopy.NoneToMirror",
-];
+/// Where a fault fires: a verb by the name a fault file gives it, or one `SetVolumeCopy`
+/// transition, named `SetVolumeCopy.<transition>`.
+#[derive(Clone, Copy, Debug)]
+pub enum Point {
+    Verb(&'static str),
+    Copy(CopyTransition),
+}
+
+impl Point {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Verb(verb) => verb,
+            Self::Copy(transition) => match transition {
+                CopyTransition::WriterToWriter => "SetVolumeCopy.WriterToWriter",
+                CopyTransition::WriterToMirror => "SetVolumeCopy.WriterToMirror",
+                CopyTransition::WriterToSnapshot => "SetVolumeCopy.WriterToSnapshot",
+                CopyTransition::WriterToForget => "SetVolumeCopy.WriterToForget",
+                CopyTransition::SeedToForget => "SetVolumeCopy.SeedToForget",
+                CopyTransition::MirrorToWriter => "SetVolumeCopy.MirrorToWriter",
+                CopyTransition::MirrorToMirror => "SetVolumeCopy.MirrorToMirror",
+                CopyTransition::MirrorToForget => "SetVolumeCopy.MirrorToForget",
+                CopyTransition::NoneToMirror => "SetVolumeCopy.NoneToMirror",
+            },
+        }
+    }
+
+    /// Whether the effect outlives the RPC, so `kill-daemon` fires inside it, from
+    /// [`kill_inside`], rather than as the verb starts.
+    fn outlives_rpc(self) -> bool {
+        matches!(self, Self::Copy(transition) if transition != CopyTransition::WriterToWriter)
+    }
+}
 
 /// The Volume a fault fires for, by physical name, the want it serves and the lane's gen.
 /// The verify harness credits a fault line to a run by these fields, not by when it was
@@ -70,70 +98,11 @@ impl<'a> Identity<'a> {
     }
 }
 
-#[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-#[derive(Clone, Copy, Debug)]
-enum Act {
-    Delay {
-        secs: u64,
-    },
-    Kill,
-    KillInside,
-    Unanswered,
-    /// A delayed or unanswered verb resumes: the harness reads `disarm` as proof the hold
-    /// was still running when it disarmed.
-    Released {
-        by: Release,
-    },
-}
-
-#[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-#[derive(Clone, Copy, Debug)]
-enum Release {
-    Disarm,
-    Limit,
-}
-
-#[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-fn warn(act: Act, verb: &'static str, identity: Option<Identity<'_>>) {
-    let (message, secs, by) = match act {
-        Act::Delay { secs } => ("fault: delaying switch verb", Some(secs), None),
-        Act::Kill => ("fault: killing daemon", None, None),
-        Act::KillInside => ("fault: killing daemon inside the effect", None, None),
-        Act::Unanswered => ("fault: leaving switch verb unanswered", None, None),
-        Act::Released { by } => (
-            "fault: releasing switch verb",
-            None,
-            Some(match by {
-                Release::Disarm => "disarm",
-                Release::Limit => "limit",
-            }),
-        ),
-    };
-    let (target, snapshot, writer) = match identity.map(|identity| identity.want) {
-        Some(Want::Mirror { target }) => (Some(target), None, None),
-        Some(Want::Snapshot { snapshot }) => (None, Some(snapshot), None),
-        Some(Want::Writer { at, epoch }) => (None, None, Some((at, epoch))),
-        Some(Want::Forget | Want::Floor) | None => (None, None, None),
-    };
-    tracing::warn!(
-        verb,
-        secs,
-        by = by.map(display),
-        volume = identity.map(|identity| display(identity.volume)),
-        target = target.map(display),
-        snapshot = snapshot.map(display),
-        at = writer.map(|(at, _)| display(at)),
-        epoch = writer.map(|(_, epoch)| display(epoch)),
-        r#gen = identity.map(|identity| display(identity.r#gen)),
-        "{message}"
-    );
-}
+#[cfg(not(feature = "verify-faults"))]
+pub(crate) async fn apply(_point: Point, _identity: Option<Identity<'_>>) {}
 
 #[cfg(not(feature = "verify-faults"))]
-pub(crate) async fn apply(_verb: &'static str, _identity: Option<Identity<'_>>) {}
-
-#[cfg(not(feature = "verify-faults"))]
-pub fn kill_inside(_verb: &'static str, _identity: Option<Identity<'_>>) {}
+pub fn kill_inside(_point: Point, _identity: Option<Identity<'_>>) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn leak_memory() {}
@@ -155,7 +124,63 @@ mod enabled {
     use ployz_core::MachineLayout;
     use tokio::time::Instant;
 
-    use super::{Act, Identity, Release, warn};
+    use super::{Identity, Point, Want};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Act {
+        Delay {
+            secs: u64,
+        },
+        Kill,
+        KillInside,
+        Unanswered,
+        /// A delayed or unanswered verb resumes: the harness reads `disarm` as proof the hold
+        /// was still running when it disarmed.
+        Released {
+            by: Release,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Release {
+        Disarm,
+        Limit,
+    }
+
+    fn warn(act: Act, verb: &'static str, identity: Option<Identity<'_>>) {
+        let (message, secs, by) = match act {
+            Act::Delay { secs } => ("fault: delaying switch verb", Some(secs), None),
+            Act::Kill => ("fault: killing daemon", None, None),
+            Act::KillInside => ("fault: killing daemon inside the effect", None, None),
+            Act::Unanswered => ("fault: leaving switch verb unanswered", None, None),
+            Act::Released { by } => (
+                "fault: releasing switch verb",
+                None,
+                Some(match by {
+                    Release::Disarm => "disarm",
+                    Release::Limit => "limit",
+                }),
+            ),
+        };
+        let (target, snapshot, writer) = match identity.map(|identity| identity.want) {
+            Some(Want::Mirror { target }) => (Some(target), None, None),
+            Some(Want::Snapshot { snapshot }) => (None, Some(snapshot), None),
+            Some(Want::Writer { at, epoch }) => (None, None, Some((at, epoch))),
+            Some(Want::Forget | Want::Floor) | None => (None, None, None),
+        };
+        tracing::warn!(
+            verb,
+            secs,
+            by = by.map(display),
+            volume = identity.map(|identity| display(identity.volume)),
+            target = target.map(display),
+            snapshot = snapshot.map(display),
+            at = writer.map(|(at, _)| display(at)),
+            epoch = writer.map(|(_, epoch)| display(epoch)),
+            r#gen = identity.map(|identity| display(identity.r#gen)),
+            "{message}"
+        );
+    }
 
     /// Read on every check, so a run arms and disarms a fault without restarting a daemon.
     /// Names another fault file, so parallel test children each arm their own.
@@ -242,23 +267,22 @@ mod enabled {
         read(&path()).map(|_| ())
     }
 
-    pub(crate) async fn apply(verb: &'static str, identity: Option<Identity<'_>>) {
-        apply_at(&path(), verb, identity).await;
+    pub(crate) async fn apply(point: Point, identity: Option<Identity<'_>>) {
+        apply_at(&path(), point, identity).await;
     }
 
-    async fn apply_at(path: &Path, verb: &'static str, identity: Option<Identity<'_>>) {
+    async fn apply_at(path: &Path, point: Point, identity: Option<Identity<'_>>) {
         let Some(fault) = read(path).ok().flatten() else {
             return;
         };
+        let verb = point.name();
         match &fault {
             FaultPoint::DelayRpc { verb: wanted, secs } if wanted == verb => {
                 warn(Act::Delay { secs: *secs }, verb, identity);
                 let by = hold(path, &fault, Some(Duration::from_secs(*secs))).await;
                 warn(Act::Released { by }, verb, identity);
             }
-            FaultPoint::KillDaemon { verb: wanted }
-                if wanted == verb && !super::LONG_EFFECTS.contains(&verb) =>
-            {
+            FaultPoint::KillDaemon { verb: wanted } if wanted == verb && !point.outlives_rpc() => {
                 warn(Act::Kill, verb, identity);
                 std::process::abort();
             }
@@ -304,12 +328,12 @@ mod enabled {
         });
     }
 
-    /// Aborts the process running `verb`'s effect when `kill-daemon:<verb>` names it.
-    pub fn kill_inside(verb: &'static str, identity: Option<Identity<'_>>) {
+    /// Aborts the process running `point`'s effect when `kill-daemon:<point>` names it.
+    pub fn kill_inside(point: Point, identity: Option<Identity<'_>>) {
         if let Some(FaultPoint::KillDaemon { verb: wanted }) = armed()
-            && wanted == verb
+            && wanted == point.name()
         {
-            warn(Act::KillInside, verb, identity);
+            warn(Act::KillInside, point.name(), identity);
             std::process::abort();
         }
     }
@@ -400,7 +424,7 @@ mod enabled {
             let target: ployz_core::SnapshotName = "w-3-0".parse().unwrap();
             let identity = Identity {
                 volume: &volume,
-                want: super::super::Want::Mirror { target: &target },
+                want: Want::Mirror { target: &target },
                 r#gen: ployz_core::VolumeGen::new(5),
             };
             let dir = tempfile::tempdir().unwrap();
@@ -419,7 +443,11 @@ mod enabled {
             ] {
                 std::fs::write(&path, armed).unwrap();
                 let (capture, _logging) = crate::diag::test_support::capture();
-                let applied = apply_at(&path, "SetVolumeCopy.MirrorToMirror", Some(identity));
+                let applied = apply_at(
+                    &path,
+                    Point::Copy(ployz_core::CopyTransition::MirrorToMirror),
+                    Some(identity),
+                );
                 let disarming = async {
                     if disarm {
                         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -446,125 +474,118 @@ mod enabled {
             let by = hold(&path, &fault, Some(Duration::from_millis(100))).await;
             assert!(matches!(by, Release::Limit), "{by:?}");
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use ployz_core::{DockerVolumeName, SnapshotGuid, SnapshotName, VolumeGen, WriterEpoch};
-
-    use super::{Act, Identity, Release, Want, warn};
-
-    #[test]
-    fn fault_lines_name_the_volume_and_the_want() {
-        let volume = DockerVolumeName::parse("app_data").unwrap();
-        let round: SnapshotName = "w-1-2".parse().unwrap();
-        let snapshot: SnapshotName = "w-1-1".parse().unwrap();
-        let writer = Want::Writer {
-            at: SnapshotGuid::new(7_310_442),
-            epoch: WriterEpoch::new(1),
-        };
-        let delay = Act::Delay { secs: 6 };
-        for (act, verb, want, line) in [
-            (
-                delay,
-                "SetVolumeCopy.MirrorToMirror",
-                Some(Want::Mirror { target: &round }),
-                r#" WARN fault: delaying switch verb verb="SetVolumeCopy.MirrorToMirror" secs=6 volume=app_data target=w-1-2 gen=4"#,
-            ),
-            (
-                Act::Delay { secs: 20 },
-                "SetVolumeCopy.MirrorToWriter",
-                Some(writer),
-                r#" WARN fault: delaying switch verb verb="SetVolumeCopy.MirrorToWriter" secs=20 volume=app_data at=7310442 epoch=1 gen=4"#,
-            ),
-            (
-                delay,
-                "SetVolumeCopy.WriterToSnapshot",
-                Some(Want::Snapshot {
-                    snapshot: &snapshot,
-                }),
-                r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToSnapshot" secs=6 volume=app_data snapshot=w-1-1 gen=4"#,
-            ),
-            (
-                delay,
-                "SetVolumeCopy.WriterToForget",
-                Some(Want::Forget),
-                r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToForget" secs=6 volume=app_data gen=4"#,
-            ),
-            (
-                Act::KillInside,
-                "SetVolumeCopy.MirrorToMirror",
-                Some(Want::Mirror { target: &round }),
-                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToMirror" volume=app_data target=w-1-2 gen=4"#,
-            ),
-            (
-                Act::KillInside,
-                "SetVolumeCopy.MirrorToWriter",
-                Some(writer),
-                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=7310442 epoch=1 gen=4"#,
-            ),
-            (
-                Act::KillInside,
-                "SetVolumeCopy.WriterToSnapshot",
-                Some(Want::Snapshot {
-                    snapshot: &snapshot,
-                }),
-                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToSnapshot" volume=app_data snapshot=w-1-1 gen=4"#,
-            ),
-            (
-                Act::KillInside,
-                "SetVolumeCopy.WriterToForget",
-                Some(Want::Forget),
-                r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume=app_data gen=4"#,
-            ),
-            (
-                Act::Kill,
-                "SetVolumeCopy.WriterToWriter",
-                Some(writer),
-                r#" WARN fault: killing daemon verb="SetVolumeCopy.WriterToWriter" volume=app_data at=7310442 epoch=1 gen=4"#,
-            ),
-            (
-                Act::Unanswered,
-                "SetVolumeCopy",
-                Some(Want::Mirror { target: &round }),
-                r#" WARN fault: leaving switch verb unanswered verb="SetVolumeCopy" volume=app_data target=w-1-2 gen=4"#,
-            ),
-            (
-                Act::Released {
-                    by: Release::Disarm,
-                },
-                "SetVolumeCopy.MirrorToMirror",
-                Some(Want::Mirror { target: &round }),
-                r#" WARN fault: releasing switch verb verb="SetVolumeCopy.MirrorToMirror" by=disarm volume=app_data target=w-1-2 gen=4"#,
-            ),
-            (
-                Act::Released { by: Release::Limit },
-                "SetVolumeCopy",
-                Some(Want::Forget),
-                r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data gen=4"#,
-            ),
-            (
-                Act::Unanswered,
-                "SetVolumeCopy",
-                Some(Want::Floor),
-                r#" WARN fault: leaving switch verb unanswered verb="SetVolumeCopy" volume=app_data gen=4"#,
-            ),
-            (
-                Act::KillInside,
-                "Create",
-                None,
-                r#" WARN fault: killing daemon inside the effect verb="Create""#,
-            ),
-        ] {
-            let (capture, _logging) = crate::diag::test_support::capture();
-            let identity = want.map(|want| Identity {
-                volume: &volume,
-                want,
-                r#gen: VolumeGen::new(4),
-            });
-            warn(act, verb, identity);
-            assert_eq!(capture.text().lines().collect::<Vec<_>>(), vec![line]);
+        #[test]
+        fn fault_lines_name_the_volume_and_the_want() {
+            let volume = ployz_core::DockerVolumeName::parse("app_data").unwrap();
+            let round: ployz_core::SnapshotName = "w-1-2".parse().unwrap();
+            let snapshot: ployz_core::SnapshotName = "w-1-1".parse().unwrap();
+            let writer = Want::Writer {
+                at: ployz_core::SnapshotGuid::new(7_310_442),
+                epoch: ployz_core::WriterEpoch::new(1),
+            };
+            let delay = Act::Delay { secs: 6 };
+            for (act, verb, want, line) in [
+                (
+                    delay,
+                    "SetVolumeCopy.MirrorToMirror",
+                    Some(Want::Mirror { target: &round }),
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.MirrorToMirror" secs=6 volume=app_data target=w-1-2 gen=4"#,
+                ),
+                (
+                    Act::Delay { secs: 20 },
+                    "SetVolumeCopy.MirrorToWriter",
+                    Some(writer),
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.MirrorToWriter" secs=20 volume=app_data at=7310442 epoch=1 gen=4"#,
+                ),
+                (
+                    delay,
+                    "SetVolumeCopy.WriterToSnapshot",
+                    Some(Want::Snapshot {
+                        snapshot: &snapshot,
+                    }),
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToSnapshot" secs=6 volume=app_data snapshot=w-1-1 gen=4"#,
+                ),
+                (
+                    delay,
+                    "SetVolumeCopy.WriterToForget",
+                    Some(Want::Forget),
+                    r#" WARN fault: delaying switch verb verb="SetVolumeCopy.WriterToForget" secs=6 volume=app_data gen=4"#,
+                ),
+                (
+                    Act::KillInside,
+                    "SetVolumeCopy.MirrorToMirror",
+                    Some(Want::Mirror { target: &round }),
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToMirror" volume=app_data target=w-1-2 gen=4"#,
+                ),
+                (
+                    Act::KillInside,
+                    "SetVolumeCopy.MirrorToWriter",
+                    Some(writer),
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.MirrorToWriter" volume=app_data at=7310442 epoch=1 gen=4"#,
+                ),
+                (
+                    Act::KillInside,
+                    "SetVolumeCopy.WriterToSnapshot",
+                    Some(Want::Snapshot {
+                        snapshot: &snapshot,
+                    }),
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToSnapshot" volume=app_data snapshot=w-1-1 gen=4"#,
+                ),
+                (
+                    Act::KillInside,
+                    "SetVolumeCopy.WriterToForget",
+                    Some(Want::Forget),
+                    r#" WARN fault: killing daemon inside the effect verb="SetVolumeCopy.WriterToForget" volume=app_data gen=4"#,
+                ),
+                (
+                    Act::Kill,
+                    "SetVolumeCopy.WriterToWriter",
+                    Some(writer),
+                    r#" WARN fault: killing daemon verb="SetVolumeCopy.WriterToWriter" volume=app_data at=7310442 epoch=1 gen=4"#,
+                ),
+                (
+                    Act::Unanswered,
+                    "SetVolumeCopy",
+                    Some(Want::Mirror { target: &round }),
+                    r#" WARN fault: leaving switch verb unanswered verb="SetVolumeCopy" volume=app_data target=w-1-2 gen=4"#,
+                ),
+                (
+                    Act::Released {
+                        by: Release::Disarm,
+                    },
+                    "SetVolumeCopy.MirrorToMirror",
+                    Some(Want::Mirror { target: &round }),
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy.MirrorToMirror" by=disarm volume=app_data target=w-1-2 gen=4"#,
+                ),
+                (
+                    Act::Released { by: Release::Limit },
+                    "SetVolumeCopy",
+                    Some(Want::Forget),
+                    r#" WARN fault: releasing switch verb verb="SetVolumeCopy" by=limit volume=app_data gen=4"#,
+                ),
+                (
+                    Act::Unanswered,
+                    "SetVolumeCopy",
+                    Some(Want::Floor),
+                    r#" WARN fault: leaving switch verb unanswered verb="SetVolumeCopy" volume=app_data gen=4"#,
+                ),
+                (
+                    Act::KillInside,
+                    "Create",
+                    None,
+                    r#" WARN fault: killing daemon inside the effect verb="Create""#,
+                ),
+            ] {
+                let (capture, _logging) = crate::diag::test_support::capture();
+                let identity = want.map(|want| Identity {
+                    volume: &volume,
+                    want,
+                    r#gen: ployz_core::VolumeGen::new(4),
+                });
+                warn(act, verb, identity);
+                assert_eq!(capture.text().lines().collect::<Vec<_>>(), vec![line]);
+            }
         }
     }
 }

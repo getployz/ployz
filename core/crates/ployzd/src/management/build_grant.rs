@@ -41,9 +41,9 @@ use iroh::{
 };
 use ployz_core::{
     BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantId, BuildGrantInspected,
-    BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, ManagementScope,
-    MintBuildGrantRequest, MintedKey, OpenedSealed, RETAINED_DIGEST_TAG_PREFIX, RpcError,
-    RpcErrorCode, SealedRecord, authority::RecipientKey,
+    BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, MintBuildGrantRequest,
+    MintedKey, OpenedSealed, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode, SealedRecord,
+    authority::RecipientKey,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
@@ -68,23 +68,12 @@ pub struct BuildGrants {
 }
 
 struct Grant {
-    /// Who minted it. An Operator's grant opens nothing.
-    minted_by: Minter,
     repository: BuildGrantRepository,
     ingest: SocketAddr,
     expires: Instant,
     push: Mutex<Push>,
     /// Locked only under `push`.
     sealed: Mutex<Sealing>,
-}
-
-/// Who minted a grant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Minter {
-    Operator,
-    Full,
-    /// Any caller, under an automatic deploy rule this Machine checked.
-    Rule,
 }
 
 enum Sealing {
@@ -125,7 +114,6 @@ pub struct Mint {
     repository: BuildGrantRepository,
     key: Key,
     release: Option<Release>,
-    minted_by: Minter,
 }
 
 enum Key {
@@ -136,8 +124,8 @@ enum Key {
 }
 
 impl Mint {
-    /// Check `request` before anything is opened for it, and that its Sealed values
-    /// open with the Sealing Key in `key_dir`.
+    /// Check a Full caller's `request` before anything is opened for it, and that its
+    /// Sealed values open with the Sealing Key in `key_dir`.
     ///
     /// # Errors
     /// `InvalidArgument` when the holder is not a public key or Sealed values have no
@@ -147,7 +135,8 @@ impl Mint {
     }
 
     /// [`Self::check`] for a request whose rule build `admitted` passed every
-    /// `rule_grant` check, which the caller ran first.
+    /// `rule_grant` check, which the caller ran first. Without one, the caller has
+    /// refused an Operator.
     ///
     /// # Errors
     /// As [`Self::check`].
@@ -190,45 +179,24 @@ impl Mint {
                 .open_for_build(Some(key_dir()?))
                 .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
-        let (release, minted_by) = match (admitted, request.sealed) {
-            (None, None) => (None, Minter::Operator),
-            (None, Some(record)) => (
-                Some(Release::Plain {
-                    record,
-                    key_dir: key_dir()?.to_owned(),
-                }),
-                Minter::Operator,
-            ),
-            (Some(admitted), record) => (
-                Some(Release::Attested {
-                    record,
-                    key_dir: key_dir()?.to_owned(),
-                    recipient: admitted.recipient,
-                    audience: admitted.audience,
-                }),
-                Minter::Rule,
-            ),
+        let release = match (admitted, request.sealed) {
+            (None, None) => None,
+            (None, Some(record)) => Some(Release::Plain {
+                record,
+                key_dir: key_dir()?.to_owned(),
+            }),
+            (Some(admitted), record) => Some(Release::Attested {
+                record,
+                key_dir: key_dir()?.to_owned(),
+                recipient: admitted.recipient,
+                audience: admitted.audience,
+            }),
         };
         Ok(Mint {
             repository: request.repository,
             key,
             release,
-            // Until the caller says otherwise, a grant without a rule counts as an
-            // Operator's.
-            minted_by,
         })
-    }
-
-    /// Record the scope of the caller that asked for this grant. A rule grant stays one.
-    #[must_use]
-    pub fn minted_by(mut self, scope: ManagementScope) -> Self {
-        if self.minted_by != Minter::Rule {
-            self.minted_by = match scope {
-                ManagementScope::Operator => Minter::Operator,
-                ManagementScope::Full => Minter::Full,
-            };
-        }
-        self
     }
 }
 
@@ -254,7 +222,6 @@ impl BuildGrants {
             Key::Holder(holder) => (grant_id(holder.as_bytes()), MintedKey::Holder { machine }),
         };
         let grant = Arc::new(Grant {
-            minted_by: mint.minted_by,
             repository: mint.repository,
             ingest,
             expires: Instant::now() + GRANT_LIFETIME,
@@ -303,7 +270,7 @@ impl BuildGrants {
         })
     }
 
-    /// The live, unused grant `key` holds, unless an Operator minted it.
+    /// The live, unused grant `key` holds.
     fn admit(&self, key: &[u8; 32]) -> Option<Arc<Grant>> {
         let grant = Arc::clone(
             self.grants
@@ -311,7 +278,7 @@ impl BuildGrants {
                 .expect("grant registry lock")
                 .get(&grant_id(key))?,
         );
-        (grant.expires > Instant::now() && !grant.pushed() && !grant.refused()).then_some(grant)
+        (grant.expires > Instant::now() && !grant.pushed()).then_some(grant)
     }
 }
 
@@ -336,12 +303,6 @@ fn grant_id(key: &[u8; 32]) -> BuildGrantId {
 }
 
 impl Grant {
-    /// An Operator's grant is dead, however it was minted: Cloud could have minted it for
-    /// its own key.
-    fn refused(&self) -> bool {
-        self.minted_by == Minter::Operator
-    }
-
     fn pushed(&self) -> bool {
         matches!(*self.push.lock().expect("grant push lock"), Push::Pushed(_))
     }
@@ -474,12 +435,6 @@ where
     B: hyper::body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<axum::BoxError>,
 {
-    if grant.refused() {
-        return denied(
-            StatusCode::FORBIDDEN,
-            "this Machine runs only builds an approved device starts",
-        );
-    }
     let uri = request.uri();
     let Some(route) = Route::parse(request.method(), uri.path(), uri.query(), &grant.repository)
     else {
@@ -714,13 +669,7 @@ mod tests {
         let machine = ManagementIdentity::from_bytes([7; 32]);
         let ingest = SocketAddr::from(([127, 0, 0, 1], 5000));
         grants
-            .mint(
-                machine,
-                Mint::check(request, None)
-                    .unwrap()
-                    .minted_by(ManagementScope::Full),
-                ingest,
-            )
+            .mint(machine, Mint::check(request, None).unwrap(), ingest)
             .unwrap()
     }
 
@@ -743,9 +692,7 @@ mod tests {
 
     fn sealed_grant(cluster: &Cluster) -> Arc<Grant> {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0))
-            .unwrap()
-            .minted_by(ManagementScope::Full);
+        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -781,7 +728,6 @@ mod tests {
             Push::Pushed(ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap());
         let live = sealed_grant(&cluster);
         let expired = Grant {
-            minted_by: live.minted_by,
             repository: live.repository.clone(),
             ingest: live.ingest,
             expires: Instant::now(),
@@ -798,12 +744,10 @@ mod tests {
         }
     }
 
-    /// A registry holding a Sealed grant for [`holder`], minted by `scope`.
-    fn grants_minted_by(cluster: &Cluster, scope: ManagementScope) -> BuildGrants {
+    /// A registry holding a Sealed grant for [`holder`].
+    fn sealed_grants(cluster: &Cluster) -> BuildGrants {
         let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0))
-            .unwrap()
-            .minted_by(scope);
+        let mint = Mint::check(sealed_request(cluster), Some(&cluster.dir.0)).unwrap();
         grants
             .mint(
                 ManagementIdentity::from_bytes([7; 32]),
@@ -826,39 +770,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_operators_grant_opens_nothing() {
-        let cluster = Cluster::new();
-        let grants = grants_minted_by(&cluster, ManagementScope::Operator);
-        assert!(grants.admit(holder().as_bytes()).is_none());
-        let grant = Arc::clone(grants.grants.lock().unwrap().values().next().unwrap());
-        let (status, body) = get_sealed(&grant).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert!(!body.contains(MARKER), "{body}");
-        assert!(
-            matches!(*grant.sealed.lock().unwrap(), Sealing::Ready(_)),
-            "a refused request leaves the Sealed record unopened and unread"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_grant_with_no_recorded_scope_counts_as_an_operators() {
-        let cluster = Cluster::new();
-        let grants = BuildGrants::default();
-        let mint = Mint::check(sealed_request(&cluster), Some(&cluster.dir.0)).unwrap();
-        grants
-            .mint(
-                ManagementIdentity::from_bytes([7; 32]),
-                mint,
-                SocketAddr::from(([127, 0, 0, 1], 5000)),
-            )
-            .unwrap();
-        assert!(grants.admit(holder().as_bytes()).is_none());
-    }
-
-    #[tokio::test]
     async fn a_full_callers_grant_opens() {
         let cluster = Cluster::new();
-        let grants = grants_minted_by(&cluster, ManagementScope::Full);
+        let grants = sealed_grants(&cluster);
         let admitted = grants.admit(holder().as_bytes()).unwrap();
         let (status, body) = get_sealed(&admitted).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1127,9 +1041,7 @@ mod tests {
                 sealed: record,
                 ..request(Some(&hex::encode(holder().as_bytes())))
             };
-            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Some(admitted))
-                .unwrap()
-                .minted_by(ManagementScope::Operator);
+            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Some(admitted)).unwrap();
             let grants = BuildGrants::default();
             grants
                 .mint(

@@ -67,14 +67,6 @@ impl Tombstone {
             insert(format!("'{}' || id", Self::ID_PREFIX), "IS NULL"),
         ]
     }
-
-    /// Whether `query` is one of [`Tombstone::forget`]'s inserts.
-    #[cfg(test)]
-    pub(in crate::corrosion) fn is_forget(query: &str) -> bool {
-        [Self::IDENTITY_PREFIX, Self::ID_PREFIX]
-            .into_iter()
-            .any(|prefix| query.starts_with(&format!("{FORGET_INSERT}'{prefix}'")))
-    }
 }
 
 #[cfg(test)]
@@ -88,18 +80,5 @@ mod tests {
             Tombstone::Identity(identity).key(),
             format!("forgotten:{}", "ab".repeat(32))
         );
-    }
-
-    #[test]
-    fn the_fake_recognises_every_forget_insert() {
-        let id = MachineId::parse("b".repeat(32)).unwrap();
-        for statement in Tombstone::forget(&id) {
-            let sent = serde_json::to_value(statement).unwrap();
-            let query = sent.get("query").and_then(|query| query.as_str()).unwrap();
-            assert!(Tombstone::is_forget(query), "{query}");
-        }
-        assert!(!Tombstone::is_forget(
-            "INSERT INTO cluster (key, value) VALUES ('network', ?)"
-        ));
     }
 }

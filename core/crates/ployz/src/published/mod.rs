@@ -283,15 +283,13 @@ impl Setup {
             path: path.clone(),
             source,
         };
-        std::fs::create_dir_all(&self.dir).map_err(failed)?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.dir).map_err(failed)?;
         let cached = wire::Cached {
             cloud: self.cloud.clone(),
             manifest: manifest.clone(),
         };
-        serde_json::to_writer_pretty(&mut file, &cached).map_err(|error| failed(error.into()))?;
-        file.persist(&path).map_err(|error| failed(error.error))?;
-        Ok(())
+        let contents = serde_json::to_vec_pretty(&cached).map_err(|error| failed(error.into()))?;
+        crate::atomic_file::replace(&path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| failed(error.into()))
     }
 
     /// Forget one entry Cloud said it no longer has, so `--help` stops showing it.

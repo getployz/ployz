@@ -265,16 +265,10 @@ impl CredentialStore {
     }
 
     fn save(&self, stored: &Stored) -> Result<(), LoginError> {
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir).map_err(|source| self.failed(source))?;
-        // A named temp file is created 0600, so the bearer is never world-readable.
-        let mut file =
-            tempfile::NamedTempFile::new_in(dir).map_err(|source| self.failed(source))?;
-        serde_json::to_writer_pretty(&mut file, stored)
+        let contents = serde_json::to_vec_pretty(stored)
             .map_err(|source| self.failed(io::Error::other(source)))?;
-        file.persist(&self.path)
-            .map_err(|error| self.failed(error.error))?;
-        Ok(())
+        crate::atomic_file::replace(&self.path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| self.failed(error.into()))
     }
 
     fn clear(&self) -> Result<(), LoginError> {

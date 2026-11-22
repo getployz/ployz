@@ -17,6 +17,7 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::json;
 
 use crate::error;
+use crate::storage::json_text;
 
 const FINGERPRINT_VERSION: &str = "v1";
 
@@ -131,9 +132,8 @@ impl fmt::Debug for SealingKey {
 
 /// The fingerprint a plain or template value is compared by.
 pub(crate) fn plain_fingerprint(parts: &[ValuePart]) -> String {
-    let parts = serde_json::to_string(parts).expect("template parts are JSON");
-    let document = serde_json::to_string(&json!({ "kind": "plain", "value": parts }))
-        .expect("a fingerprint document is JSON");
+    let parts = json_text(parts);
+    let document = json_text(&json!({ "kind": "plain", "value": parts }));
     format!(
         "{FINGERPRINT_VERSION}:{}",
         hex::encode(digest(&SHA256, document.as_bytes()))

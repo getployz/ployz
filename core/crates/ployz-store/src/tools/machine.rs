@@ -213,20 +213,6 @@ impl ToolFacts {
     }
 }
 
-impl std::fmt::Debug for ToolFacts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolFacts")
-            .field("status", &self.status)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for ToolFacts {
-    fn eq(&self, other: &Self) -> bool {
-        self.status == other.status && std::ptr::fn_addr_eq(self.verb, other.verb)
-    }
-}
-
 const fn facts<T: Tool>() -> ToolFacts {
     ToolFacts {
         status: T::STATUS,
@@ -247,9 +233,6 @@ pub struct ToolDef {
     pub idempotent: bool,
     pub open_world: bool,
     pub gate: Gate,
-    #[serde(skip)]
-    #[ts(skip)]
-    pub facts: ToolFacts,
 }
 
 /// What one run of a plan sees: the recorded rounds and what it has used.
@@ -723,7 +706,6 @@ fn def<T: Tool>() -> ToolDef {
         idempotent: T::EFFECT.idempotent(),
         open_world: T::OPEN_WORLD,
         gate: T::GATE,
-        facts: facts::<T>(),
     }
 }
 

@@ -86,6 +86,15 @@ impl Call {
         Repeat::new(Replay::Read)
     }
 
+    /// A [`Self::read`] of one Machine under the targeted-read budget: after it the Machine
+    /// counts as silent.
+    #[must_use]
+    pub fn target_read(target: &MachineTarget) -> Budgeted<'_> {
+        Self::read()
+            .to(target)
+            .budget(crate::connect::target_read_timeout())
+    }
+
     /// A mutation whose request carries its key, sent again after a failure a resend can fix.
     #[must_use]
     pub const fn keyed() -> Repeat<'static> {

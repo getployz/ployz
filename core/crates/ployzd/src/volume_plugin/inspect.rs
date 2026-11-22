@@ -1,92 +1,17 @@
 //! What this Machine holds for one Volume name: its root or slot and its newest snapshot.
 
+use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView, VolumeOrigin, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, PullState, RpcError, SlotId, Snapshot, SnapshotGuid,
+    SnapshotName, VolumeCopy, VolumeCopyView,
 };
-use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
+
+use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
 
 use super::{
     Dataset, PluginError, Result, VolumeName, VolumeStorage, marks::Mark, transfer::Status,
 };
-
-/// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
-/// have left it read-only and name none.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct RootMarks {
-    /// `ployz:cut`, read only on a read-only root, the one place `parse` looks at it.
-    pub(super) cut: bool,
-    pub(super) promote: PromoteMark,
-}
-
-/// `ployz:promote`, and whether `ployz:seed` is beside it. `ployz:seed` without
-/// `ployz:promote` counts for nothing, so it has no place here.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PromoteMark {
-    Unset,
-    Set { seed: bool },
-}
-
-/// A Volume's root on this Machine, parsed once from its `readonly` and its marks for
-/// `Volume.Inspect` and every reply built by [`VolumeStorage::copy`]. Each variant claims
-/// only what those show. `seed` is a root Volume.Seed landed that Docker
-/// has not adopted: it carries both `ployz:seed` and `ployz:promote`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RootCopy {
-    /// Writable, whatever its marks.
-    Writable { seed: bool },
-    /// Read-only with `ployz:cut`. A cut (`copy_cut`) leaves it from that mark until its
-    /// rename into the slot, and a promote of a cut copy (`copy_writer`) from its rename
-    /// back until `make_writable`'s `readonly=off`. The marks do not tell those two apart.
-    Cut { seed: bool },
-    /// Read-only with `ployz:promote` and no `ployz:cut`. A promote of a pulled copy
-    /// (`copy_writer`) leaves it from its rename until `make_writable`'s `readonly=off`,
-    /// and a Seed landing from `Copied::land`'s rename until `Renamed::finish_landing`'s
-    /// `readonly=off`. So does a cut (`copy_cut`) of a root Docker has not registered, from
-    /// `readonly=on` until `ployz:cut`.
-    Promote { seed: bool },
-    /// Read-only with neither mark. A cut (`copy_cut`) of a registered root leaves it from
-    /// `readonly=on` until `ployz:cut`.
-    Unmarked,
-}
-
-impl RootCopy {
-    /// The read-only split is [`Dataset::switching`], the one [`super::storage::Held`]
-    /// reads too.
-    pub(super) fn parse(root: &Dataset, marks: RootMarks) -> Self {
-        let seed = marks.promote == PromoteMark::Set { seed: true };
-        match (root.switching(), marks.cut, marks.promote) {
-            (false, _, _) => Self::Writable { seed },
-            (true, true, _) => Self::Cut { seed },
-            (true, false, PromoteMark::Set { .. }) => Self::Promote { seed },
-            (true, false, PromoteMark::Unset) => Self::Unmarked,
-        }
-    }
-
-    /// The root as `Volume.Inspect` and every `SetVolumeCopy` reply carry it.
-    pub(super) fn view(
-        self,
-        newest: Option<Snapshot>,
-        epoch: WriterEpoch,
-        origin: Option<VolumeOrigin>,
-    ) -> VolumeCopy {
-        let (readonly, seed, mark) = match self {
-            Self::Writable { seed } => (false, seed, None),
-            Self::Cut { seed } => (true, seed, Some(RootMark::Cut)),
-            Self::Promote { seed } => (true, seed, Some(RootMark::Promote)),
-            Self::Unmarked => (true, false, None),
-        };
-        VolumeCopy::Root {
-            readonly,
-            newest,
-            epoch,
-            seed,
-            mark,
-            origin,
-        }
-    }
-}
 
 /// `copy` answering `failure`, which a route took from the receive registry to answer
 /// once, as its pull's failure.
@@ -263,7 +188,7 @@ impl VolumeStorage {
     ) -> Result<Option<VolumeCopy>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
-            let copy = RootCopy::parse(root, self.root_marks(root).await?);
+            let copy = RootCopy::parse(root.switching(), self.root_marks(root).await?);
             let newest = self.newest_snapshot(&root.name).await?;
             let origin = self
                 .origin_of(
