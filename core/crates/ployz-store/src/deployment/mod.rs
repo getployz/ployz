@@ -51,12 +51,12 @@ pub use ployz_core::deploy_progress::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, LowerDeploymentConfig,
-    LowerDeploymentConfigFile, LowerDeploymentInput, LowerDeploymentSnapshot,
-    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedConfigIntent, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, SealedFor, ServiceConfig, ServiceImageCredentials,
-    ServiceSource, ValuePartOwner, canonicalize_environment_intent, compile_environment_intent,
-    lower_deployment, parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
+    CompiledNodeConfig, EnvironmentNodeType, LowerDeploymentConfig, LowerDeploymentConfigFile,
+    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
+    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, SealedFor,
+    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
@@ -986,8 +986,6 @@ pub(crate) struct Frozen {
     /// Whether it also removes every Service of the Namespace this Store never held.
     pub(crate) prune: bool,
     pub(crate) namespace: Namespace,
-    /// Sealed registry credentials by runtime Service, fixed at admission.
-    pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.

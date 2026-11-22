@@ -565,7 +565,6 @@ pub(crate) fn freeze(
         full,
         prune,
         namespace,
-        credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
         sourceless,
         shipped: lowered.shipped,

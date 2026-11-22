@@ -489,7 +489,7 @@ fn admit_taking_everything_off(
             None,
             None,
         ),
-        id,
+        environment,
         deployment::NOTHING,
         &frozen,
     )?;

@@ -30,9 +30,10 @@ impl Admission<'_> {
     }
 }
 
-/// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
-/// superseded: the newest admission replaces the pending one and takes over the
-/// Services it would have torn down.
+/// Admit a frozen Deployment of Saved revision `saved`: refused when it hands the
+/// runner a Volume with Shared Writes on, with the registry credentials its image
+/// Services pull with. A Deployment still queued is superseded: the newest admission
+/// replaces the pending one and takes over the Services it would have torn down.
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -42,10 +43,20 @@ pub(crate) fn admit(
         Option<UploadedSource>,
         Option<String>,
     ),
-    environment: &EnvironmentId,
+    at: &scope::Environment,
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let environment = &at.summary.id;
+    let intent = saved_at(tx, environment, saved)?;
+    super::admit::refuse_shared_writes(
+        at,
+        (&intent, |service: &SavedServiceIntent| {
+            frozen.hands(service)
+        }),
+        super::admit::Shipping::Saved,
+    )?;
+    let credentials = crate::registry::freeze(tx, environment, &intent, frozen)?;
     let id = &admission.id();
     let (held, push) = match admission {
         Admission::New { push, .. } => (false, push.cloned()),
@@ -61,7 +72,6 @@ pub(crate) fn admit(
             (true, hold.push)
         }
     };
-    let intent = saved_at(tx, environment, saved)?;
     crate::volume::check_admitted(tx, environment, &intent)?;
     let environment_id = environment.as_str();
     // Without a new upload, each target Service without a source builds from the upload
@@ -109,7 +119,7 @@ pub(crate) fn admit(
         json_text(&targets),
         json_text(&nodes),
         json_text(&run),
-        json_text(&frozen.credentials),
+        json_text(&credentials),
     );
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
