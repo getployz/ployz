@@ -302,7 +302,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   // Values the Store seals itself go where the browser's do: to the recipient key once the Cluster activated.
-  if (sealing?.state === "ready") trusted.sealing = { publicKey: sealing.sealTo };
+  if (sealing?.state === "ready") trusted.sealing = { publicKey: sealing.publicKey };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (unanswered !== undefined) trusted.unanswered = unanswered;
   if (running !== undefined) trusted.running = running;

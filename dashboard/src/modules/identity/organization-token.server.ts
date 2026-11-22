@@ -112,10 +112,10 @@ const tokensReachableBy = (caller: Caller) => {
   return callerCan(caller, "tokens:manage") ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
 };
 
-/** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */
 /** A teammate's name as `scope` carries it: a CLI before 0.3.2 prints `scope` raw, so no control character reaches a terminal. */
 const printable = (name: string) => name.replace(/\p{Cc}/gu, "");
 
+/** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */
 export const listCredentials = Effect.fn("OrganizationToken.list")(function* (caller: Caller) {
   const database = yield* Database;
   const now = new Date();

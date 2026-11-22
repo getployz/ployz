@@ -30,18 +30,18 @@ export async function sealAndApprove(queryClient: QueryClient, organizationSlug:
 }
 
 /**
- * `authKey` sealed for the Cluster whose identity is `cluster.publicKey`, to `cluster.sealTo`, its recipient key once it
- * activated, with the person's passkey approval of exactly that sealed key.
+ * `authKey` sealed for the Cluster whose identity is `cluster.publicKey`, with the person's passkey approval of exactly
+ * that sealed key.
  */
 export async function approvedKey(
-  cluster: { readonly publicKey: string; readonly sealTo: string },
+  cluster: { readonly publicKey: string },
   authKey: string,
   now = Date.now(),
 ): Promise<BrowserOn> {
   const { publicKey } = cluster;
   let sealed: string;
   try {
-    sealed = await sealPlatform(cluster, "private-access", authKey.trim());
+    sealed = await sealPlatform(publicKey, "private-access", authKey.trim());
   } catch (error) {
     throw new KeyNotApproved(error instanceof SealError ? error.message : UNSEALED);
   }

@@ -1,9 +1,7 @@
-import { minimatch } from "minimatch";
 import { Data, Result, Schema } from "effect";
 import {
   GITHUB_CHECK_SUITE_ACTIONS,
   GITHUB_PULL_REQUEST_ACTIONS,
-  githubChangedPathsSchema,
   githubCheckSuiteActionSchema,
   githubCheckSuiteConclusionSchema,
   githubCheckSuiteStatusSchema,
@@ -11,7 +9,6 @@ import {
   githubIdSchema,
   githubSafeBranchRefSchema,
   githubTimestampSchema,
-  githubWatchPatternSchema,
   type GithubCheckSuiteWebhook,
   type GithubPullRequestAction,
   type GithubPullRequestWebhook,
@@ -110,19 +107,6 @@ export class GithubWebhookContractError extends Data.TaggedError(
   readonly code: "malformed_payload" | "unsupported_action";
   readonly message: string;
 }> {}
-
-export class GithubPathContractError extends Data.TaggedError(
-  "GithubPathContractError",
-)<{
-  readonly code: "invalid_changed_path" | "invalid_watch_pattern";
-  readonly message: string;
-}> {}
-
-export type {
-  GithubCheckSuiteWebhook,
-  GithubPullRequestWebhook,
-  GithubPushWebhook,
-} from "#/modules/github/github-ingestion.contracts";
 
 export function decodeGithubPushPayload<Input>(
   payload: Input,
@@ -264,137 +248,4 @@ export function decodeGithubInstallationRepositoriesPayload<Input>(
           message: "Malformed GitHub installation repositories payload.",
         }),
       );
-}
-
-export function canonicalizeGithubChangedPaths<Input>(
-  paths: Input,
-): Result.Result<readonly string[], GithubPathContractError> {
-  const parsed = Schema.decodeUnknownResult(githubChangedPathsSchema)(paths);
-  return Result.isSuccess(parsed)
-    ? Result.succeed(parsed.success)
-    : Result.fail(
-        new GithubPathContractError({
-          code: "invalid_changed_path",
-          message: "Changed path is not repository-relative and canonical.",
-        }),
-      );
-}
-
-type CompiledWatchPattern = {
-  readonly negated: boolean;
-  readonly pattern: string;
-  readonly matchBase: boolean;
-};
-
-function hasBalancedGlobDelimiters(value: string): boolean {
-  let inCharacterClass = false;
-  let braceDepth = 0;
-  let extglobDepth = 0;
-  const characters = Array.from(value);
-  for (const [index, character] of characters.entries()) {
-    if (inCharacterClass) {
-      if (character === "]") inCharacterClass = false;
-      continue;
-    }
-    if (character === "[") {
-      inCharacterClass = true;
-    } else if (character === "{") {
-      braceDepth += 1;
-    } else if (character === "}") {
-      if (braceDepth === 0) return false;
-      braceDepth -= 1;
-    } else if (
-      character === "(" &&
-      ["?", "*", "+", "@", "!"].includes(characters[index - 1] ?? "")
-    ) {
-      extglobDepth += 1;
-    } else if (character === ")" && extglobDepth > 0) {
-      extglobDepth -= 1;
-    }
-  }
-  return !inCharacterClass && braceDepth === 0 && extglobDepth === 0;
-}
-
-function invalidWatchPattern(): Result.Result<never, GithubPathContractError> {
-  return Result.fail(
-    new GithubPathContractError({
-      code: "invalid_watch_pattern",
-      message: "Watch path pattern is malformed or unsafe.",
-    }),
-  );
-}
-
-function compileWatchPattern<Input>(
-  value: Input,
-): Result.Result<CompiledWatchPattern, GithubPathContractError> {
-  const parsed = Schema.decodeUnknownResult(githubWatchPatternSchema)(value);
-  if (Result.isFailure(parsed)) return invalidWatchPattern();
-
-  const negated = parsed.success.startsWith("!");
-  let pattern = negated ? parsed.success.slice(1) : parsed.success;
-  if (
-    pattern.length === 0 ||
-    pattern.startsWith("!") ||
-    pattern.startsWith("//")
-  ) {
-    return invalidWatchPattern();
-  }
-
-  const rootAnchored = pattern.startsWith("/");
-  if (rootAnchored) pattern = pattern.slice(1);
-  const directoryPattern = pattern.endsWith("/");
-  if (directoryPattern) pattern = pattern.slice(0, -1);
-  if (
-    pattern.length === 0 ||
-    pattern.includes("//") ||
-    /^[A-Za-z]:\//.test(pattern) ||
-    !hasBalancedGlobDelimiters(pattern) ||
-    pattern.split("/").some((segment) => segment === "." || segment === "..")
-  ) {
-    return invalidWatchPattern();
-  }
-
-  const containsSlash = pattern.includes("/");
-  if (directoryPattern) {
-    pattern = rootAnchored || containsSlash ? `${pattern}/**` : `**/${pattern}/**`;
-  }
-  return Result.succeed({
-    negated,
-    pattern,
-    matchBase: !rootAnchored && !directoryPattern && !containsSlash,
-  });
-}
-
-export function matchGithubWatchPaths(input: {
-  readonly changedPaths: unknown;
-  readonly watchPaths: readonly unknown[];
-}): Result.Result<boolean, GithubPathContractError> {
-  const changedPaths = canonicalizeGithubChangedPaths(input.changedPaths);
-  if (Result.isFailure(changedPaths)) return Result.fail(changedPaths.failure);
-  if (input.watchPaths.length === 0) {
-    return Result.succeed(changedPaths.success.length > 0);
-  }
-
-          const compiled = Result.all(input.watchPaths.map(compileWatchPattern));
-  if (Result.isFailure(compiled)) return Result.fail(compiled.failure);
-  const patterns = compiled.success;
-
-  for (const changedPath of changedPaths.success) {
-    let selected = false;
-    for (const pattern of patterns) {
-      if (
-        minimatch(changedPath, pattern.pattern, {
-          dot: true,
-          matchBase: pattern.matchBase,
-          nocomment: true,
-          nonegate: true,
-        })
-      ) {
-        selected = !pattern.negated;
-      }
-    }
-    if (selected) return Result.succeed(true);
-  }
-
-  return Result.succeed(false);
 }

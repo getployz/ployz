@@ -3,10 +3,9 @@ import { getRequest } from "@tanstack/react-start/server";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { type CommandName, runCommand } from "#/modules/commands/commands.server";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerCan } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { acceptInvite, readInvite } from "#/modules/organization/invitation.server";
-import { manages } from "#/modules/organization/members.commands.server";
 import { Auth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Validation } from "#/server/public-error";
@@ -39,7 +38,7 @@ export const listMembersServerFn = createServerFn({ method: "GET" })
     const { headers } = getRequest();
     return runActor(context, dashboardCaller(headers, data.organizationSlug).pipe(Effect.flatMap((caller) => Effect.all({
       members: ranAs(caller, "org_member_ls", {}),
-      invites: manages(caller) ? ranAs(caller, "org_invite_ls", {}) : Effect.succeed([]),
+      invites: callerCan(caller, "members:manage") ? ranAs(caller, "org_invite_ls", {}) : Effect.succeed([]),
       mail: Effect.map(AppConfig, (config) => config.mail !== null),
       support: Effect.succeed(caller.support !== null),
     }))));

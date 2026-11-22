@@ -659,18 +659,6 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
   };
 }
 
-export const GithubAuthorityLocal = Layer.effect(GithubAuthority, Effect.gen(function* () {
-  const { authority } = (yield* AppConfig).github;
-  if (authority.mode !== "local") return yield* Effect.die("GithubAuthorityLocal needs GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET");
-  return yield* makeGithubAuthorityLocal(authority);
-}));
-
-export const GithubAuthorityMinter = Layer.effect(GithubAuthority, Effect.gen(function* () {
-  const { authority } = (yield* AppConfig).github;
-  if (authority.mode !== "minter") return yield* Effect.die("GithubAuthorityMinter needs GITHUB_MINTER_URL");
-  return makeGithubAuthorityMinter(authority);
-}));
-
 /** The minter when `GITHUB_MINTER_URL` is set, else this Cloud's own key. */
 export const GithubAuthorityLive = Layer.effect(GithubAuthority, Effect.gen(function* () {
   const { authority } = (yield* AppConfig).github;

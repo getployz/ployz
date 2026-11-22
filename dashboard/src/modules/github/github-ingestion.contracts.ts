@@ -1,18 +1,33 @@
 import { DateTime, Option, Schema, SchemaGetter } from "effect";
-import { GITHUB_CHECK_SUITE_ACTIONS, GITHUB_CHECK_SUITE_CONCLUSIONS, GITHUB_CHECK_SUITE_STATUSES, type GithubCheckSuiteAction, type GithubCheckSuiteConclusion, type GithubCheckSuiteStatus } from "#/modules/github/github-check-suite-vocabulary";
 
-export {
-  GITHUB_CHECK_SUITE_ACTIONS,
-  GITHUB_CHECK_SUITE_CONCLUSIONS,
-  GITHUB_CHECK_SUITE_STATUSES,
-};
-export type {
-  GithubCheckSuiteAction,
-  GithubCheckSuiteConclusion,
-  GithubCheckSuiteStatus,
-};
+export const GITHUB_CHECK_SUITE_ACTIONS = [
+  "requested",
+  "rerequested",
+  "completed",
+] as const;
 
-export const GITHUB_COMPARE_STATUSES = [
+const GITHUB_CHECK_SUITE_STATUSES = [
+  "queued",
+  "in_progress",
+  "completed",
+  "pending",
+  "waiting",
+  "requested",
+] as const;
+
+const GITHUB_CHECK_SUITE_CONCLUSIONS = [
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "success",
+  "skipped",
+  "stale",
+  "timed_out",
+  "startup_failure",
+] as const;
+
+const GITHUB_COMPARE_STATUSES = [
   "ahead",
   "behind",
   "diverged",
@@ -109,15 +124,6 @@ export const githubBranchNameSchema = Schema.String.check(
 
 export const githubRepositoryPathSchema = Schema.String.check(
   Schema.makeFilter(isCanonicalRepositoryPath),
-);
-export const githubWatchPatternSchema = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.makeFilter(
-    (value) =>
-      !value.includes("\0") &&
-      !value.includes("\\") &&
-      !containsAsciiControl(value),
-  ),
 );
 
 const githubChangedPathsTypeSchema = Schema.Array(githubRepositoryPathSchema);
@@ -275,32 +281,6 @@ export const githubResolvedRepositorySchema = Schema.Struct({
   id: githubIdSchema,
   fullName: githubRepositoryFullNameSchema,
 });
-export const githubBranchHeadObservationSchema = Schema.Union([
-  Schema.Struct({
-    state: Schema.Literal("present"),
-    ref: githubSafeBranchRefSchema,
-    headSha: githubExactShaSchema,
-  }),
-  Schema.Struct({
-    state: Schema.Literal("absent"),
-    ref: githubSafeBranchRefSchema,
-  }),
-]);
-export const githubCompareObservationSchema = Schema.Struct({
-  status: githubCompareStatusSchema,
-  baseSha: githubExactShaSchema,
-  headSha: githubExactShaSchema,
-  changedPaths: githubChangedPathsSchema,
-  pathsComplete: Schema.Boolean,
-});
-export const githubCheckSuiteObservationSchema = Schema.Struct({
-  checkSuiteId: githubIdSchema,
-  headSha: githubExactShaSchema,
-  status: githubCheckSuiteStatusSchema,
-  conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
-  updatedAt: githubTimestampSchema,
-});
-
 export const isValidGithubId: <Input>(input: Input) => input is Input & number =
   Schema.is(githubIdSchema);
 
@@ -316,8 +296,6 @@ export function isValidGithubExactSha<Input>(
   return Option.isSome(Schema.decodeUnknownOption(githubExactShaSchema)(input));
 }
 
-export type GithubId = typeof githubIdSchema.Type;
-export type GithubCompareStatus = typeof githubCompareStatusSchema.Type;
 export type GithubPushWebhook = typeof githubPushWebhookSchema.Type;
 export type GithubCheckSuiteWebhook = typeof githubCheckSuiteWebhookSchema.Type;
 export type GithubPullRequestAction = typeof githubPullRequestActionSchema.Type;
@@ -336,9 +314,3 @@ export type GithubCheckSuiteReceivedEventData =
   typeof githubCheckSuiteReceivedEventDataSchema.Type;
 export type GithubResolvedRepository =
   typeof githubResolvedRepositorySchema.Type;
-export type GithubBranchHeadObservation =
-  typeof githubBranchHeadObservationSchema.Type;
-export type GithubCompareObservation =
-  typeof githubCompareObservationSchema.Type;
-export type GithubCheckSuiteObservation =
-  typeof githubCheckSuiteObservationSchema.Type;

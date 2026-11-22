@@ -241,12 +241,6 @@ const setActiveOrganizationForSession = Effect.fn(
     .where(eq(session.id, sessionRecord.id));
 });
 
-export const handleUserCreated = Effect.fn("Organization.handleUserCreated")(
-  function* (user: PersonalOrganizationUser) {
-    return yield* ensurePersonalOrganizationForUser(user);
-  },
-);
-
 /**
  * A new session acts in an Organization from the start. A `ployz login` session redeeming `deviceCode` takes the one
  * the `/device` page named when it was approved; any other takes the user's first, made if they have none.
@@ -268,7 +262,6 @@ function* (
     if (!user) return;
     organizationId = yield* ensurePersonalOrganizationForUser(user);
   }
-  if (!organizationId) return;
   yield* setActiveOrganizationForSession(sessionRecord, organizationId, ctx);
 });
 

@@ -199,8 +199,6 @@ export const githubRepositoryOwner = Effect.fn("Github.repositoryOwner")(
   },
 );
 
-export { verifyWebhookSignature } from "#/modules/github/github.api";
-
 export const searchGithubFiles = Effect.fn("Github.searchFiles")(
   function* (actor: Actor, input: RepositoryInput & { readonly ref: string; readonly pattern: string }) {
     const repository = yield* readableRepository(actor, input);

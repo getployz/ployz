@@ -1,12 +1,13 @@
 import { githubRepoAccessQueryOptions } from "./github.queries";
 import type { QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
-import type { GithubRepositorySelection } from "#/modules/github/github";
+import type { GithubRepository } from "#/modules/github/github";
 import { listGithubRepositoriesServerFn } from "#/modules/github/github.functions";
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
 
 type GithubRepositoryRow = typeof schemaGithubRepositoryCache.$inferSelect;
-export type GithubRepositoryView = GithubRepositorySelection & {
+export type GithubRepositoryView = GithubRepository & {
+  installation_id: number;
   synced_at: string;
 };
 

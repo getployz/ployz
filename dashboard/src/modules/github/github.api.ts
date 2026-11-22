@@ -8,12 +8,17 @@ import {
   GithubApi,
   GithubObservationError,
 } from "#/modules/github/github-observation.api";
-import type {
-  GithubBranch,
-  GithubInstallationReposPage,
-} from "#/modules/github/github";
+import type { GithubRepository } from "#/modules/github/github";
 import { AppConfig } from "#/server/config.server";
 import { githubExactShaSchema, githubRepositoryPathSchema } from "./github-ingestion.contracts";
+
+type GithubBranch = { name: string };
+type GithubInstallationReposPage = {
+  repositories: GithubRepository[];
+  page: number;
+  totalCount: number;
+  hasNextPage: boolean;
+};
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
 const GithubBranchesResponse = Schema.Array(

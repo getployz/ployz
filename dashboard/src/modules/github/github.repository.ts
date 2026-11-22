@@ -100,18 +100,6 @@ export const unlinkGithubInstallation = Effect.fn("Github.unlinkInstallation")(
   },
 );
 
-export const getGithubInstallation = Effect.fn("Github.getInstallation")(
-  function* (installationId: number) {
-    const database = yield* Database;
-    const rows = yield* database.drizzle.select({
-      installationId: schemaGithubInstallation.installationId,
-      accountLogin: schemaGithubInstallation.accountLogin,
-      accountType: schemaGithubInstallation.accountType,
-    }).from(schemaGithubInstallation).where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
-    return rows[0] ?? null;
-  },
-);
-
 export const listGithubInstallationsById = Effect.fn("Github.listInstallationsById")(
   function* (installationIds: ReadonlyArray<number>) {
     if (installationIds.length === 0) return [];

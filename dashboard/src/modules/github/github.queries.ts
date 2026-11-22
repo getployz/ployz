@@ -29,7 +29,6 @@ export function githubFileSearchQueryOptions(input: GithubRepositoryRef & {
 
 export const githubKeys = {
   all: ["github"] as const,
-  repos: () => [...githubKeys.all, "repos"] as const,
   access: (organizationSlug: string) => [...githubKeys.all, "access", organizationSlug] as const,
   branches: (input: GithubRepositoryRef) =>
     [

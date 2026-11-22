@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { Context, Data, Effect, Layer, Result, Schema } from "effect";
 import type { GithubAccess, GithubDisconnected } from "#/modules/github/github-access";
 import {
-  GITHUB_COMPARE_STATUSES,
   githubBranchNameSchema,
   githubChangedPathsSchema,
   githubCheckSuiteConclusionSchema,
@@ -17,12 +16,6 @@ import {
   isValidGithubBranchRef,
   isValidGithubExactSha,
   isValidGithubId,
-  type GithubBranchHeadObservation,
-  type GithubCheckSuiteConclusion,
-  type GithubCheckSuiteObservation,
-  type GithubCheckSuiteStatus,
-  type GithubCompareObservation,
-  type GithubCompareStatus,
   type GithubResolvedRepository,
 } from "#/modules/github/github-ingestion.contracts";
 import { GITHUB_API_VERSION, GithubAuthority } from "#/modules/github/github-authority.server";
@@ -30,17 +23,6 @@ import { GithubTokens } from "#/modules/github/github-token.server";
 import { AppConfig } from "#/server/config.server";
 
 type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
-export { GITHUB_COMPARE_STATUSES };
-export type {
-  GithubBranchHeadObservation,
-  GithubCheckSuiteObservation,
-  GithubCompareObservation,
-  GithubCompareStatus,
-  GithubResolvedRepository,
-};
-export type GithubApiCheckSuiteStatus = GithubCheckSuiteStatus;
-export type GithubApiCheckSuiteConclusion = GithubCheckSuiteConclusion;
-
 export type GithubObservationOperation =
   | "resolve_repository"
   | "list_push_runs"

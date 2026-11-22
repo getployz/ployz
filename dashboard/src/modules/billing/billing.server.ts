@@ -24,12 +24,6 @@ import {
   organizationBillingState as schemaOrganizationBillingState,
 } from "#/modules/billing/tables";
 
-export class BillingValidation extends Data.TaggedError("SchemaError")<{
-  readonly message: string;
-}> {
-  readonly publicErrorCategory = "validation" as const;
-}
-
 export class BillingNotFound extends Data.TaggedError("NotFound")<{
   readonly resource: string;
 }> {
@@ -63,11 +57,6 @@ const hasCachedActiveSubscription = Effect.fn("Billing.hasCachedActiveSubscripti
 export const getActiveManagedSubscriptionSnapshot = Effect.fn(
   "Billing.getActiveSnapshot",
 )(function* (organizationId: string) {
-  if (organizationId.trim().length === 0) {
-    return yield* new BillingValidation({
-      message: "organizationId is required",
-    });
-  }
   const polar = yield* requireHostedPolar();
   const subscriptions = yield* polar.listActiveSubscriptions(organizationId);
   return selectManagedSubscriptionSnapshot(subscriptions, polar.productId);
