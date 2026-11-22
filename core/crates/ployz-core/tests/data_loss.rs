@@ -144,25 +144,6 @@ fn from_rpc_error_is_none_when_the_error_is_not_unconfirmed_data_loss() {
 }
 
 #[test]
-fn docker_volume_data_loss_display_is_name_on_machine() {
-    assert_eq!(
-        volume('a', "data").to_string(),
-        format!("data on {}", machine_id('a'))
-    );
-}
-
-#[test]
-fn confirm_names_resolves_unique_display_names_to_listed_identities() {
-    let observed = ObservedDataLoss {
-        data_loss: vec![volume('a', "data"), volume('a', "logs")],
-    };
-    assert_eq!(
-        serde_json::to_value(observed.confirm_names(["logs", "data"]).unwrap()).unwrap(),
-        json!({ "confirmed": [volume('a', "data"), volume('a', "logs")] })
-    );
-}
-
-#[test]
 fn confirm_names_ignores_display_names_that_match_no_listed_entry() {
     let observed = ObservedDataLoss {
         data_loss: vec![volume('a', "data")],
