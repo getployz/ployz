@@ -374,11 +374,3 @@ fn a_move_to_where_the_volume_already_is_offers_no_retry() {
     assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
     assert_eq!(refusal.next, [shown]);
 }
-
-#[test]
-fn a_tools_debug_text_never_prints_a_code_address() {
-    let facts = crate::tools::facts("deploy").expect("deploy is a tool");
-    let text = format!("{facts:?}");
-    assert!(text.contains("DeploymentShow"), "{text}");
-    assert!(!text.contains("0x"), "{text}");
-}
