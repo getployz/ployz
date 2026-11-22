@@ -53,7 +53,10 @@ export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
     Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
   );
 
-/** The build GitHub holds, or held until it ended; `null` once GitHub passed it to the next Builder. */
+/**
+ * The build GitHub holds, or held until it ended; `null` once GitHub passed it to the next Builder.
+ * A build's id is DEPLOYMENT.SERVICE.
+ */
 export const heldGithubBuild = Effect.fn("ConfigStore.heldGithubBuild")(function* (buildId: string) {
   const store = yield* cloudStore;
   const handOff = yield* storeTry(() => store.githubBuild(buildId));

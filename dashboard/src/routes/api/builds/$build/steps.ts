@@ -7,7 +7,6 @@ import { apiRoute } from "#/server/api-route";
 export const Route = createFileRoute("/api/builds/$build/steps")({
   server: {
     handlers: apiRoute<{ build: string }>({
-      // A build's id is DEPLOYMENT.SERVICE.
       POST: ({ request, params }) => buildCall(request, (text) => recordStoreGithubBuildSteps(request, params.build, text)),
     }),
   },
