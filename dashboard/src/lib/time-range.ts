@@ -7,6 +7,9 @@ const SECOND_MS = 1000;
 export const MINUTE_MS = 60 * SECOND_MS;
 export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * HOUR_MS;
+
+/** Whole Unix seconds of a clock reading in milliseconds, or of a Date. */
+export const unixSeconds = (at: number | Date) => Math.floor((typeof at === "number" ? at : at.getTime()) / 1000);
 const Unit = Schema.Literals(["s", "m", "h", "d", "w"]);
 type Unit = typeof Unit.Type;
 const isUnit = Schema.is(Unit);

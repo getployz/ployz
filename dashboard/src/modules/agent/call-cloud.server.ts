@@ -36,6 +36,7 @@ import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/runtime/naming";
 import { refreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { unixSeconds } from "#/lib/time-range";
 
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };
 
@@ -57,7 +58,7 @@ const session = (organizationId: string) =>
 
 /** Cloud's own answer for an Organization with no Servers: it needs none of them to know. */
 const noServers = (): ServersAnswer => {
-  const now = Math.floor(Date.now() / 1000);
+  const now = unixSeconds(Date.now());
   return { servers: [], seen: { seen_by: null, observed_at: now, read_at: now, age_seconds: 0, from: "cloud_cache", unanswered: [] } };
 };
 
@@ -117,7 +118,7 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
   yield* logForeignServers(organizationId, observed.foreign);
   const names = yield* serverNames(organizationId, [...observed.copies.map((copy) => copy.machine_id), ...observed.unanswered]);
   const server = (machine: MachineId) => ({ machine, name: names.get(machine) ?? machine });
-  const now = Math.floor(Date.now() / 1000);
+  const now = unixSeconds(Date.now());
   return answer<CopiesAnswer>({
     volumes: named.map(({ id, name }) => {
       const held = observed.copies.filter((copy) => copy.name === dockerVolumeName(namespace, id));
@@ -300,7 +301,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     const [run] = yield* operationsOn(organizationId, subject, id, 1, serverName);
     const requested = run === undefined ? yield* admittedAt(organizationId, attempt) : null;
     return answer<Operation>(run ?? {
-      attempt: id, run: what, state: "accepted", requested_at: Math.floor((requested ?? new Date()).getTime() / 1000), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
+      attempt: id, run: what, state: "accepted", requested_at: unixSeconds(requested ?? new Date()), ended_at: null, reason: null, servers: [], kept: [], unanswered: [],
     });
   });
   switch (action.action) {
@@ -368,7 +369,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         if (unsynced !== null) return unsynced;
         const synced = yield* refreshMirror({ userId: caller.userId, organizationId }, found.environment, action.volume);
         if (!synced.ok) return synced;
-        const now = Math.floor(Date.now() / 1000);
+        const now = unixSeconds(Date.now());
         return answer<Operation>({
           attempt: dashedAttempt(attempt), run: `sync ${found.name}`, state: "done", requested_at: now, ended_at: now,
           reason: synced.lines.join("\n"), servers: [], kept: [], unanswered: [],

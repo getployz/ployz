@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { type NeedsProduction, needsProduction } from "#/modules/billing/billing";
-import { addDays, dayStart, HOUR_MS, hourStart, localDay, nextHourStart } from "../local-time";
+import { HOUR_MS } from "#/lib/time-range";
+import { addDays, dayStart, hourStart, localDay, nextHourStart } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
 import type { RouteRow } from "../requests/routes";
 

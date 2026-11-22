@@ -19,8 +19,8 @@ import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server"
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { DAY_MS } from "#/lib/time-range";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LIFETIME_DAYS = { "1d": 1, "7d": 7, "30d": 30 } satisfies Record<FleetTokenLifetime, number>;
 const NAME_ATTEMPTS = 5;
 

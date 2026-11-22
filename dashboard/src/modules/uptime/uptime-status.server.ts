@@ -26,8 +26,8 @@ import {
 import { tally } from "./uptime";
 import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource } from "./uptime-range";
 import { type RangeWindow, resolveRange } from "#/lib/time-range";
+import { HOUR_MS } from "#/lib/time-range";
 
-const HOUR_MS = 3_600_000;
 // A probe request reads as checking until the slowest round ends: a self-host round's second probe goes 30 s after the
 // first, runs up to the check's timeout, and its result counts for ROUND_GRACE in uptime/src/control/detect.rs after.
 const ONE_REGION_SPACING_MS = 30_000;

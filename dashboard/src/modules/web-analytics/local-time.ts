@@ -1,7 +1,7 @@
 import { TZDate } from "@date-fns/tz";
+import { HOUR_MS } from "#/lib/time-range";
 import { RETENTION_DAYS } from "./model";
 
-export const HOUR_MS = 3_600_000;
 export const SESSION_GAP_SECONDS = 1800;
 
 export function localDay(timezone: string, instant: Date | number) {

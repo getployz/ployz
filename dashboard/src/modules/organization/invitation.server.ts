@@ -9,9 +9,9 @@ import { invitation, member, organization } from "#/modules/organization/tables"
 import { type InviteRole, MANAGING_ROLES } from "#/modules/organization/permissions";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { DAY_MS } from "#/lib/time-range";
 
 export const INVITE_DAYS = 7;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const hashInviteToken = (token: string) => sha256Hex(token);
 

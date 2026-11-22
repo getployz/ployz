@@ -11,13 +11,13 @@ import { organizationToken, session, user } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
+import { DAY_MS } from "#/lib/time-range";
 
 /** Marks a bearer as an Organization Token rather than a session token. */
 export const ORGANIZATION_TOKEN_PREFIX = "ployz_";
 /** The `ployz` CLI's User-Agent prefix; a session it started is a signed-in device. */
 export const CLI_USER_AGENT_PREFIX = "ployz-cli/";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function hashOrganizationTokenSecret(secret: string) {
   return sha256Hex(secret);

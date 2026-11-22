@@ -14,10 +14,10 @@ import { reassignUserMachines } from "#/modules/machines/organization-machines.s
 import { openOrganizationInSession } from "#/modules/organization/organization-state.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { HOUR_MS } from "#/lib/time-range";
 
 /** `ployz login` tokens default to 90 days; the claimed agent's token gets the same. */
 const CLAIMED_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 /** What the claim page shows for a secret, to a viewer who may be signed in. */
 export type Claim =
