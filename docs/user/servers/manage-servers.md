@@ -378,14 +378,21 @@ To swap a key for a new one with the same scope, for example on a schedule, run
 `ployz key rotate <code>`. It lists each service that runs a version the old key signed, with its
 image, when it was signed and its digest, and asks. Then it gives every server the new key,
 prints the new `PLOYZ_KEY=...`, redeploys those services under the new key and follows each
-deploy to the end. It removes the old key only once every deploy applied on every server and each
-server still holds both keys as the rotation left them. Until then the old key keeps working. If
+deploy to the end. Update the `PLOYZ_KEY` secret your CI deploys with before you rotate, or right
+after the new key prints: until the old key is removed, a deploy signed with it still lands. Before
+it removes the old key, the rotation looks again for services running a version only the old key
+signed, such as one CI shipped while it ran, and redeploys those too. If a deploy with the old key
+keeps landing after three looks, it keeps the old key, names those services and exits 3; put the
+new key in that CI secret and run the command again. It removes the old key only once every deploy
+applied on every server and each server still holds both keys as the rotation left them. Until
+then the old key keeps working. If
 it stops before that, run the same command again on the same computer: it carries on with the
 same new key, skips services whose redeploy applied on every server, and redeploys the rest. If
 someone changed the key's scope while it ran, it stops and says so; check `ployz key ls` and run
 it again. If the scope changed on a server just as the rotation removed the old key there, that
 server keeps the old key and the command names it and exits 3; match the new key's scope with
-`ployz key scope`, then run `ployz key rm` on the old one.
+`ployz key scope`, then run `ployz key rm` on the old one. Once `key rm` removes the old key from
+every server, it also deletes the new key the rotation kept on this computer.
 
 `ployz key rm <code>` removes only CI and agent keys. It refuses a device's or passkey's code;
 remove those with `ployz device rm`. Each server checks this too, so a server that holds the

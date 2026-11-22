@@ -3,7 +3,8 @@
 //! The versions the old key signed that still run are carried: each checked here under
 //! the old key, shown, signed again under the new key and redeployed, so nothing stays
 //! admitted under the old key. The old key is removed only once each redeploy applied
-//! with no gaps and a fresh read finds both grants as this run left them. The new key
+//! with no gaps, a read again finds nothing more the old key alone signed, and a fresh
+//! read finds both grants as this run left them. The new key
 //! waits beside the config until then, with the Services its redeploys applied, so a run
 //! that stops resumes with it and redeploys the rest.
 
@@ -42,7 +43,9 @@ pub(crate) fn rotate_command(command: Command) -> Command {
     .after_help(format!(
         "{LEAKED}\n\n\
          It follows each redeploy to the end, and removes the old key only once every \
-         one applied. If it stops before that, run the same command again.\n\n\
+         one applied. If it stops before that, run the same command again. Put the new \
+         PLOYZ_KEY where CI deploys from as soon as it prints: a deploy with the old key \
+         keeps the old key trusted.\n\n\
          Examples:\n  ployz key rotate mmg42klgyq"
     ))
     .arg(deploy::events_arg())
@@ -65,7 +68,7 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     let new = SigningPublicKey::from(key::public(&seed));
     let old = source(&roster, code)?;
     let missing = replacement(&roster, &old, new)?;
-    let applied_path = pending.with_extension(format!("{}.applied", new.code()));
+    let applied_path = applied_path(&pending, new);
     let mut applied = Applied::load(&applied_path)?;
     let carried = carried(&store, &old.grant, &applied)?;
     show(&old.grant, new, &carried, &roster);
@@ -128,25 +131,60 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     ui::stream(format_args!("PLOYZ_KEY={}", hex::encode(seed)));
     ui::note("Replace the old PLOYZ_KEY with this one where the key deploys from.");
     let resigner = DeviceSigning::from_seed(&seed);
-    let mut deployments = Vec::new();
-    for environment in &carried {
-        let events = events
-            .as_ref()
-            .map(|events| events.get_ref().try_clone().map(BufWriter::new))
-            .transpose()
-            .map_err(|source| {
-                Error::detailed_caused(
-                    ployz_core::RpcErrorCode::Internal,
-                    "Can't write the --events file for the next redeploy.",
-                    serde_json::Value::Null,
-                    Some(source),
-                )
-            })?;
-        deployments.extend(redeploy(leaf, &store, environment, &resigner, events)?);
-        for service in &environment.services {
-            applied.add(&service.version);
-        }
-        applied.save(&applied_path)?;
+    let carry = carry(
+        carried,
+        &mut applied,
+        &applied_path,
+        |applied| self::carried(&store, &old.grant, applied),
+        |environment| {
+            let events = events
+                .as_ref()
+                .map(|events| events.get_ref().try_clone().map(BufWriter::new))
+                .transpose()
+                .map_err(|source| {
+                    Error::detailed_caused(
+                        ployz_core::RpcErrorCode::Internal,
+                        "Can't write the --events file for the next redeploy.",
+                        serde_json::Value::Null,
+                        Some(source),
+                    )
+                })?;
+            redeploy(leaf, &store, environment, &resigner, events)
+        },
+    )?;
+    let deployments = carry.deployments;
+    if !carry.left.is_empty() {
+        let unretired = Unretired {
+            old: code,
+            new: new.code(),
+            deployments,
+            landing: carry
+                .left
+                .iter()
+                .flat_map(|environment| {
+                    environment.services.iter().map(|service| Landing {
+                        service: service.authored.clone(),
+                        namespace: environment.namespace.clone(),
+                        digest: service.version.digest,
+                    })
+                })
+                .collect(),
+        };
+        ui::finish(&BTreeMap::from([("rotation", &unretired)]), || {
+            ui::warn(format!(
+                "A deploy signed with key {code} keeps landing, so the old key stays trusted."
+            ));
+            for landing in &unretired.landing {
+                ui::note(format_args!(
+                    "  {} in {}: digest {}",
+                    landing.service, landing.namespace, landing.digest
+                ));
+            }
+            ui::note(format_args!(
+                "Something still deploys with the old key, likely CI. Put the new PLOYZ_KEY in that secret, then run ployz key rotate {code} again."
+            ));
+        })?;
+        return Err(Error::partial());
     }
     let now = runtime.block_on(Roster::read(&mut client))?;
     now.require_all()?;
@@ -165,18 +203,7 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
         removed: super::answered(&now.reach, removed),
     };
     if gaps.is_complete() {
-        for path in [&applied_path, &pending] {
-            match std::fs::remove_file(path) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    return Err(key::KeyError::Write {
-                        path: path.clone(),
-                        source: error,
-                    }
-                    .into());
-                }
-                _ => {}
-            }
-        }
+        forget_pending(&pending)?;
     }
     ui::finish_fanout("rotated", &rotated, &gaps, || {
         ui::stream(format_args!("Rotated key {code} to {}.", rotated.new));
@@ -193,6 +220,23 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// A rotation that left the old key trusted, since a deploy under it kept landing.
+#[derive(Serialize)]
+struct Unretired {
+    old: DeviceCode,
+    new: DeviceCode,
+    deployments: Vec<u64>,
+    /// What the old key alone signed after the last redeploy.
+    landing: Vec<Landing>,
+}
+
+#[derive(Serialize)]
+struct Landing {
+    service: ServiceName,
+    namespace: Namespace,
+    digest: PayloadDigest,
+}
+
 #[derive(Serialize)]
 struct Rotated {
     old: DeviceCode,
@@ -200,6 +244,40 @@ struct Rotated {
     /// The numbers of the redeploys that carried what the old key signed.
     deployments: Vec<u64>,
     removed: Vec<super::Answer>,
+}
+
+/// The new key and applied list a stopped rotation of `code` left on this computer,
+/// once the old key is removed and they carry nothing more.
+///
+/// # Errors
+/// Returns the read or delete that failed.
+pub(super) fn forget(config: &Path, code: DeviceCode) -> Result<(), Error> {
+    forget_pending(&pending_path(config, code))
+}
+
+fn forget_pending(pending: &Path) -> Result<(), Error> {
+    let Some(seed) = key::load(pending)? else {
+        return Ok(());
+    };
+    let new = SigningPublicKey::from(key::public(&seed));
+    for path in [applied_path(pending, new), pending.to_owned()] {
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(key::KeyError::Write {
+                    path,
+                    source: error,
+                }
+                .into());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Where a rotation to `new` keeps the Services its redeploys applied.
+fn applied_path(pending: &Path, new: SigningPublicKey) -> PathBuf {
+    pending.with_extension(format!("{}.applied", new.code()))
 }
 
 /// Where a rotation keeps its new key until the old one is removed.
@@ -355,18 +433,18 @@ fn moved(member: &Member, code: DeviceCode) -> Error {
 /// One Environment's Services the old key signed what runs.
 #[derive(Debug)]
 pub(super) struct Carried {
-    environment: EnvironmentRef,
-    namespace: Namespace,
-    services: Vec<CarriedVersion>,
+    pub(super) environment: EnvironmentRef,
+    pub(super) namespace: Namespace,
+    pub(super) services: Vec<CarriedVersion>,
 }
 
 #[derive(Debug)]
 pub(super) struct CarriedVersion {
     /// As Setting paths address it.
-    authored: ServiceName,
+    pub(super) authored: ServiceName,
     pub(super) version: ServiceVersion,
-    image: String,
-    pin: Option<TagPin>,
+    pub(super) image: String,
+    pub(super) pin: Option<TagPin>,
 }
 
 /// What the old key signed that runs now, in each place its grant names, checked here.
@@ -570,6 +648,11 @@ fn show(old: &TrustedGrant, new: SigningPublicKey, carried: &[Carried], roster: 
         return;
     }
     ui::note("Redeploys under the new key:");
+    list(carried);
+    ui::note("The old key is removed once every redeploy applied on every server.");
+}
+
+fn list(carried: &[Carried]) {
     for environment in carried {
         for service in &environment.services {
             ui::note(format_args!(
@@ -582,7 +665,55 @@ fn show(old: &TrustedGrant, new: SigningPublicKey, carried: &[Carried], roster: 
             ));
         }
     }
-    ui::note("The old key is removed once every redeploy applied on every server.");
+}
+
+/// How many times a rotation reads what the old key alone signed before it removes it.
+const PASSES: usize = 3;
+
+pub(super) struct Carry {
+    /// The numbers of the redeploys that applied.
+    pub(super) deployments: Vec<u64>,
+    /// What the old key alone signed at the last read. The old key stays while any is left.
+    pub(super) left: Vec<Carried>,
+}
+
+/// Redeploy each of `first`, then `read` what the old key alone signed again and redeploy
+/// that, up to [`PASSES`] reads. While the old key holds its grant, anything holding the
+/// key can still deploy with it, so what one read found isn't all that needs it by the
+/// time it's removed. Each applied redeploy is kept in `applied` at `path` at once.
+///
+/// # Errors
+/// Returns the first redeploy or read that failed.
+pub(super) fn carry(
+    first: Vec<Carried>,
+    applied: &mut Applied,
+    path: &Path,
+    mut read: impl FnMut(&Applied) -> Result<Vec<Carried>, Error>,
+    mut redeploy: impl FnMut(&Carried) -> Result<Option<u64>, Error>,
+) -> Result<Carry, Error> {
+    let mut deployments = Vec::new();
+    let mut next = first;
+    for pass in 0..PASSES {
+        if pass > 0 {
+            ui::note("Deployed with the old key while this ran, so redeployed too:");
+            list(&next);
+        }
+        for environment in &next {
+            deployments.extend(redeploy(environment)?);
+            for service in &environment.services {
+                applied.add(&service.version);
+            }
+            applied.save(path)?;
+        }
+        next = read(applied)?;
+        if next.is_empty() {
+            break;
+        }
+    }
+    Ok(Carry {
+        deployments,
+        left: next,
+    })
 }
 
 /// Sign each carried version again under the new key and deploy them, so every server

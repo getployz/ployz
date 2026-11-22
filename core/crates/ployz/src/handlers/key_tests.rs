@@ -6,11 +6,14 @@ use ployz_core::authority::{
 use ployz_core::{
     DeviceKey, Namespace, RequestedServiceSpec, RpcErrorCode, SealingPublicKey, ServiceName,
 };
-use ployz_store::Running;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
+use ployz_store::{EnvironmentRef, Running};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::rotate::{Applied, verified};
+use super::rotate::{Applied, Carried, CarriedVersion, carry, verified};
 use super::wanted::Wanted;
 use super::{Ask, Consent, Contents, consent};
 
@@ -130,7 +133,14 @@ fn spec() -> RequestedServiceSpec {
 
 /// A version of `web` naming the CI key as its signer, signed by `by`.
 fn version_by(by: &Signer, spec: &RequestedServiceSpec) -> Signed<ServiceVersion> {
-    let namespace = namespace("app-prod");
+    version_in(by, spec, namespace("app-prod"))
+}
+
+fn version_in(
+    by: &Signer,
+    spec: &RequestedServiceSpec,
+    namespace: Namespace,
+) -> Signed<ServiceVersion> {
     Signed::sign(
         &ServiceVersion {
             cluster: SealingPublicKey::from_bytes([9; 32]),
@@ -229,4 +239,106 @@ fn a_rotation_run_again_redeploys_until_its_own_redeploy_applied() {
 
     applied.add(&carried);
     assert_eq!(carries(&applied), None, "its own redeploy applied");
+}
+
+/// `web` at image `n`, signed by the CI key alone.
+fn ci_deploy(n: u64, namespace: &Namespace) -> Running {
+    let mut spec = spec();
+    spec.container.image = format!("nginx@sha256:{n:064x}");
+    Running {
+        versions: vec![version_in(&ci(), &spec, namespace.clone())],
+        spec: Box::new(spec),
+        pin: None,
+    }
+}
+
+/// Production and staging each run `web` the CI key deployed. The rotation redeploys
+/// production, then staging. CI deploys to production with the old key during any
+/// redeploy `deploying` names, given the Environment it carries and how many CI deploys
+/// landed so far.
+/// Returns the Environments each redeploy carried, in order, and what the old key alone
+/// still signed at the end.
+fn rotate_while(
+    mut deploying: impl FnMut(&Namespace, u64) -> bool,
+) -> (Vec<Namespace>, Vec<Namespace>) {
+    let old = TrustedGrant {
+        grant: Grant {
+            scope: KeyScope {
+                caps: CapSet::of(&[Cap::Spec]),
+                places: KeyPlaces::Cluster,
+            },
+            ..production_grant()
+        },
+        approved_by: PasskeyApprover::Unknown,
+    };
+    let (production, staging) = (namespace("app-prod"), namespace("app-staging"));
+    let world = RefCell::new(BTreeMap::from([
+        (production.clone(), ci_deploy(1, &production)),
+        (staging.clone(), ci_deploy(1, &staging)),
+    ]));
+    let read = |applied: &Applied| {
+        let mut carried = Vec::new();
+        for (namespace, running) in world.borrow().iter() {
+            if let Some(version) = verified((&old, applied), namespace, &web(), running)? {
+                carried.push(Carried {
+                    environment: EnvironmentRef::default(),
+                    namespace: namespace.clone(),
+                    services: vec![CarriedVersion {
+                        authored: web(),
+                        version,
+                        image: running.spec.container.image.clone(),
+                        pin: None,
+                    }],
+                });
+            }
+        }
+        Ok(carried)
+    };
+    let mut redeployed = Vec::new();
+    let mut deploys = 1;
+    let dir = tempfile::tempdir().unwrap();
+    let mut applied = Applied::default();
+    let first = read(&applied).unwrap();
+    let carried = carry(
+        first,
+        &mut applied,
+        &dir.path().join("applied"),
+        read,
+        |environment| {
+            redeployed.push(environment.namespace.clone());
+            if deploying(&environment.namespace, deploys) {
+                deploys += 1;
+                world
+                    .borrow_mut()
+                    .insert(production.clone(), ci_deploy(deploys, &production));
+            }
+            Ok(Some(redeployed.len() as u64))
+        },
+    )
+    .unwrap();
+    let left = carried
+        .left
+        .into_iter()
+        .map(|left| left.namespace)
+        .collect();
+    (redeployed, left)
+}
+
+/// CI ships a fresh image to production with the old key after the rotation redeployed
+/// production but before staging's redeploy finished. Production runs a version only
+/// the old key signed, so the rotation redeploys it again before removing the old key,
+/// and keeps the old key while a deployer with it keeps landing.
+#[test]
+fn a_rotation_redeploys_what_the_old_key_shipped_while_it_ran_before_retiring_it() {
+    let (production, staging) = (namespace("app-prod"), namespace("app-staging"));
+
+    let (redeployed, left) = rotate_while(|carried, deploys| *carried == staging && deploys == 1);
+    assert_eq!(
+        redeployed,
+        [production.clone(), staging, production.clone()]
+    );
+    assert!(left.is_empty(), "nothing needs the old key: {left:?}");
+
+    let (_, left) = rotate_while(|_, _| true);
+    assert_eq!(left, [production], "the old key stays trusted");
 }
