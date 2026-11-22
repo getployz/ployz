@@ -28,12 +28,13 @@ import {
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { type PageContext, typedText } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
+import type { ThreadSummary } from "#/modules/agent/persistence.server";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { answeredBy, pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
 import { ProposalCard } from "./proposal-card";
 import { pendingProposalsOptions } from "./proposals.queries";
-import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
+import { agentThreadsOptions, refetchAgentThreads } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;

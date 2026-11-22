@@ -1,4 +1,4 @@
-import { useEffect, useState, type Ref } from "react";
+import { createContext, useEffect, useState, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SparklesIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
@@ -11,6 +11,9 @@ import { pendingProposalsOptions } from "./proposals.queries";
 
 type Panel = typeof import("./agent-panel").default;
 const loadPanel = () => import("./agent-panel").then((module) => module.default);
+
+/** Where the open agent hosts the page's bottom bar, above its composer. Null while the agent is closed. */
+export const AgentDock = createContext<HTMLElement | null>(null);
 
 const threadKey = (organizationSlug: string) => `ployz.agent.thread.${organizationSlug}`;
 
