@@ -5,7 +5,8 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
+import { handleCheckin } from "#/routes/api/checkin/-handler";
+import { observedIp } from "#/server/client-ip";
 import { testConfigLayer } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 

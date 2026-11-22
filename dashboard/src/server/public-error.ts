@@ -225,17 +225,21 @@ export function publicErrorResponse(
   });
 }
 
-/**
- * The `ANY` answer of a route, for a method none of its handlers takes. Without it, that method falls through to the
- * page and answers an API client with the app's HTML shell. `Allow` names the route's own handlers.
- */
-export function methodNotAllowed(route: { options: { server?: { handlers?: object } } }): Response {
-  const methods = Object.keys(route.options.server?.handlers ?? {}).filter((method) => method !== "ANY");
+/** The 405 of a route whose handlers take `methods`, for a method none of them takes. */
+export function methodNotAllowedFor(methods: ReadonlyArray<string>): Response {
   const allow = methods.includes("GET") && !methods.includes("HEAD") ? [...methods, "HEAD"] : methods;
   return publicErrorResponse(new NotFound({ message: `This path takes ${allow.join(", ")}.` }), {
     status: 405,
     headers: { Allow: allow.join(", ") },
   });
+}
+
+/**
+ * The `ANY` answer of a route, for a method none of its handlers takes. Without it, that method falls through to the
+ * page and answers an API client with the app's HTML shell. `Allow` names the route's own handlers.
+ */
+export function methodNotAllowed(route: { options: { server?: { handlers?: object } } }): Response {
+  return methodNotAllowedFor(Object.keys(route.options.server?.handlers ?? {}).filter((method) => method !== "ANY"));
 }
 
 const noStore = { "cache-control": "no-store" };

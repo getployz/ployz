@@ -17,7 +17,7 @@ import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiti
 import { organizationMachine } from "#/modules/machines/tables";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
-import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
+import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/server/rate-limit.server";
 import { PAST_STORAGE, isReadyFor, joinCommitted, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";

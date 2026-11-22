@@ -1,21 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Effect } from "effect";
 import { checkInStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
-import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
+import { buildCall } from "#/routes/api/builds/-build-call";
+import { apiRoute } from "#/server/api-route";
 
 /** A GitHub runner's one check-in, authenticated by its OIDC token. */
 export const Route = createFileRoute("/api/builds/$build/check-in")({
   server: {
-    handlers: {
-      POST: async ({ request, params }) => {
-        const text = await request.text();
-        const options = { signal: request.signal };
-        // A build's id is DEPLOYMENT.SERVICE.
-        return runAppEffect(checkInStoreGithubBuild(request, params.build, text).pipe(Effect.map((body) => Response.json(body))), options)
-          .catch(publicErrorResponse);
-      },
-      ANY: (): Response => methodNotAllowed(Route),
-    },
+    handlers: apiRoute<{ build: string }>({
+      // A build's id is DEPLOYMENT.SERVICE.
+      POST: ({ request, params }) => buildCall(request, (text) => checkInStoreGithubBuild(request, params.build, text)),
+    }),
   },
 });

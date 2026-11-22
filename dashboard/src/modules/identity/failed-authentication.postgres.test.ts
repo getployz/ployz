@@ -6,12 +6,15 @@ import { expect, vi } from "vitest";
 import { MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
 import { ClientAddress, FAILED_AUTHENTICATION_WINDOWS, resolveCaller } from "#/modules/identity/caller.server";
 import { handleAgentSignup } from "#/routes/api/agent/-signup.handler";
-import { handleRunRequest, serveCli } from "#/routes/api/cli/-handlers";
+import { handleRunRequest } from "#/routes/api/cli/-handlers";
+import { cliRoute } from "#/server/api-route";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { publicErrorResponse } from "#/server/public-error";
 import * as run from "#/server/run.server";
 import { type StoreCloud, storeTestCloudWith } from "#/test/store-cloud";
+
+const whoami = cliRoute({ POST: ({ request }) => handleRunRequest(request, "whoami") });
 
 const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
   return yield* body.pipe(Effect.provide(yield* storeTestCloudWith(AuthLive)));
@@ -128,7 +131,7 @@ it.live("holds the client the proxy names, and says how long in Retry-After, ove
         headers: { authorization: `Bearer ${token}`, "x-forwarded-for": client },
         body: "{}",
       });
-      const response = await serveCli(request, handleRunRequest(request, "whoami"));
+      const response = await whoami.POST({ request, params: {} });
       return { status: response.status, retryAfter: response.headers.get("retry-after"), manifest: response.headers.get(MANIFEST_HEADER) };
     });
 

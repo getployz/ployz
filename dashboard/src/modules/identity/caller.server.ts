@@ -10,6 +10,7 @@ import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/module
 import { requireAccess } from "#/modules/organization/access.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth } from "#/server/auth.server";
+import { bearerToken } from "#/server/bearer";
 import { Database } from "#/server/database.server";
 import { Forbidden, RateLimited, Unauthorized } from "#/server/public-error";
 import {
@@ -17,7 +18,7 @@ import {
   forgetRateEvent,
   rateLimitAddress,
   type RateWindow,
-} from "#/modules/machines/waiting/rate-limit.server";
+} from "#/server/rate-limit.server";
 
 /** The client address of the request being served, as the app trusts it behind its proxy; null outside an HTTP request. */
 export const ClientAddress = Context.Reference<string | null>("ployz/ClientAddress", { defaultValue: () => null });
@@ -63,7 +64,7 @@ const waitOf = (seconds: number) => {
 };
 
 const callerOf = Effect.fn("Identity.callerOf")(function* (headers: Headers) {
-  const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
+  const bearer = bearerToken(headers);
   if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer, headers);
   const auth = yield* Auth;
   const presented = new Headers(headers);

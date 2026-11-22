@@ -12,7 +12,7 @@ import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/m
 import { bindServerEnrollment, closeStaleServerEnrollments, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
-import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
+import { pruneStaleRateLimits } from "#/server/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import {
   listWaitingServers,
