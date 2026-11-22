@@ -1,5 +1,3 @@
-//! The status rule's cases.
-
 use super::*;
 use Container::{Down, Idle, Running, Serving, Stopped};
 

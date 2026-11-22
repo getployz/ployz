@@ -705,7 +705,6 @@ fn admit(
     };
     // What a merge landed deploys whatever the Service follows: its config changed.
     let (merges, landed) = landed(tx, id, push)?;
-    // Each selected Service, and whether it builds the pushed head.
     let mut selected: Vec<(&SavedServiceIntent, bool)> = Vec::new();
     let mut wait = false;
     for service in &saved.intent.services {

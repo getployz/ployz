@@ -1453,7 +1453,6 @@ impl Standing {
         ended: Option<i64>,
     ) -> Self {
         use DeploymentStatus as S;
-        // A claim needs its runner and its start; none needs neither.
         let claim = match (&runner, started) {
             (Some(runner), Some(started)) => Some(Some(Claim {
                 runner: runner.clone(),
