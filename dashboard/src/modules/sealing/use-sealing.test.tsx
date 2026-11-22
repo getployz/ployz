@@ -10,7 +10,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as functions from "#/modules/sealing/sealing.functions";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { SealError } from "#/modules/sealing/seal-error";
-import { useSealing } from "./sealing";
+import { useSealing } from "./use-sealing";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 

@@ -2,7 +2,7 @@ import type { MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { rustMachineIdSchema, StrictOrganizationSlug, Uuid } from "#/lib/schema";
-import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
+import { RecoveryBackup, SealingPublicKey } from "#/modules/sealing/sealing-key";
 
 export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
   readonly publicErrorCategory = "conflict";

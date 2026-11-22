@@ -7,7 +7,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { storeVariableWriter } from "#/modules/config-store/store-variables";
 import type { StoreEdit, useStoreWriter } from "#/modules/config-store/store-write";
 import type { Write } from "#/modules/config-store/store-write";
-import type { SealItem, Sealing } from "#/modules/variables/sealing";
+import type { SealItem, Sealing } from "#/modules/sealing/use-sealing";
 import type { VariableRecord } from "#/modules/variables/variables";
 import { ServiceVariablesRawEditor } from "./ServiceVariablesRawEditor";
 

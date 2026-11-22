@@ -10,8 +10,8 @@ const SRC = join(process.cwd(), "src");
 const KEPT_OUT_OF_CYCLES = [
   "modules/runtime/organization-runtime.server.ts",
   "modules/machines/runtime-frame-records.server.ts",
-  "modules/machines/sealing-ensure.server.ts",
-  "modules/machines/sealing-key-read.server.ts",
+  "modules/sealing/sealing-ensure.server.ts",
+  "modules/sealing/sealing-key-read.server.ts",
 ];
 
 const IMPORT = /^(?:import|export)\s+(type\s+)?(?:[^;'"]*?\sfrom\s+)?["']([^"']+)["']/gm;

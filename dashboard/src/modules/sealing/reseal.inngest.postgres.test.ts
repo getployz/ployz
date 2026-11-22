@@ -13,7 +13,7 @@ import { callStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { clusterSealingKey } from "#/modules/machines/tables";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { recordSealingPublicKey } from "#/modules/sealing/sealing-key.server";
 import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/modules/inngest/run.server";
 import { testConfigEnvironment } from "#/test/config-environment";

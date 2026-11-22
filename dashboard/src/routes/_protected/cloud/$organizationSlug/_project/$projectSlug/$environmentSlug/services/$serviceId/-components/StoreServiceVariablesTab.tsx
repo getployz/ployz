@@ -4,7 +4,7 @@ import { brokenVariables } from "#/modules/config-store/store-broken";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
 import { useStoreWriter, type Write } from "#/modules/config-store/store-write";
-import { useSealing } from "#/modules/variables/sealing";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { Link } from "@tanstack/react-router";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";

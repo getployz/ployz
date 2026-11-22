@@ -16,7 +16,7 @@ import { onMergeCount, onMergeLists, onMergeQuery, prPlansQuery, pullRequestQuer
 import { branchQuery, fetchStoreView, servicesQuery, useCachedStoreView, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useSealing } from "#/modules/variables/sealing";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { useStoreMergeRowsPending } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";

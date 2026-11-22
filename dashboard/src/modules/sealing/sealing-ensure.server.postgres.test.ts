@@ -5,8 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { requestSealingKeyEnsure } from "#/modules/machines/sealing-ensure.server";
-import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { requestSealingKeyEnsure } from "#/modules/sealing/sealing-ensure.server";
+import { recordSealingPublicKey } from "#/modules/sealing/sealing-key.server";
 import {
   runtimeWatchFrameFixture,
   runtimeWatchMachineFixture,

@@ -6,11 +6,11 @@ import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createClusterResealRequestedEvent } from "#/modules/inngest/events";
 import { currentFounder, currentGeneration } from "#/modules/runtime/connections.server";
-import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
+import { readSealingPublicKey } from "#/modules/sealing/sealing-key-read.server";
 import type {
   CliReadSealingRecoveryInput,
   CliRotateSealingRecoveryInput,
-} from "#/modules/machines/sealing-key";
+} from "#/modules/sealing/sealing-key";
 import { clusterSealingKey, clusterSealingKeyGenerator, organizationSealingKey, sealingKeyOwner } from "#/modules/machines/tables";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccessById } from "#/modules/organization/access.server";

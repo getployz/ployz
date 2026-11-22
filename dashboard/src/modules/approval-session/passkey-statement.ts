@@ -8,24 +8,16 @@
  * dashboard goes through `passkeyAnswer`.
  */
 import type { PasskeyAssertion, Signed } from "@ployz/sdk";
+import { base64url } from "#/lib/bytes";
 
 /** What a signature is for, as `keys::Purpose` names it. Each purpose signs under its own prefix. */
 export type Purpose = "workflow" | "rule";
 
 const encoder = new TextEncoder();
 
-export const hex = (bytes: ArrayBuffer | Uint8Array) =>
-  Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
-
 /** The bytes a key signs, and a passkey's challenge hashes: `ployz-authority/v1`, the purpose, and the body. */
 export const signingInput = (body: string, purpose: Purpose = "workflow") =>
   encoder.encode(`ployz-authority/v1\n${purpose}\n${body}`);
-
-export const base64url = (bytes: ArrayBuffer | Uint8Array) => {
-  let text = "";
-  for (const byte of bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) text += String.fromCharCode(byte);
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
 
 /** The challenge a passkey answers for a statement of `purpose`: the SHA-256 of its signing input. */
 export const statementChallenge = async (body: string, purpose: Purpose) =>

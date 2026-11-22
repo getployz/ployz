@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { deployDialOf } from "#/modules/config-store/config-store.server";
-import { backfillClusterSealingKey, SealingBackfillUnreachable } from "#/modules/machines/sealing-backfill.server";
+import { backfillClusterSealingKey, SealingBackfillUnreachable } from "#/modules/sealing/sealing-backfill.server";
 import { OrganizationRuntimeLive } from "#/modules/machines/runtime-frame-records.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";

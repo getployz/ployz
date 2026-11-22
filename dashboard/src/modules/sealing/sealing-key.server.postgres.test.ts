@@ -11,7 +11,7 @@ import {
   recoveryDigest,
   rotateRecoveryBackup,
   SealingKeyHeldElsewhere,
-} from "#/modules/machines/sealing-key.server";
+} from "#/modules/sealing/sealing-key.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import type { Database } from "#/server/database.server";

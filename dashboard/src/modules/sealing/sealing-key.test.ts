@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { RecoveryBackup } from "#/modules/machines/sealing-key";
-import { recoveryDigest } from "#/modules/machines/sealing-key.server";
+import { RecoveryBackup } from "#/modules/sealing/sealing-key";
+import { recoveryDigest } from "#/modules/sealing/sealing-key.server";
 
 // The Engine's backup_format_stays_readable pins this vector and digest.
 const ENGINE_BACKUP =

@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import type { Write } from "#/modules/config-store/store-write";
-import { sealedValueProblem, warmSealing } from "#/modules/variables/seal-value";
+import { sealedValueProblem, warmSealing } from "#/modules/sealing/seal-value";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { VariableRecord } from "#/modules/variables/variables";
 import {

@@ -6,7 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
+import { recordSealingPublicKey } from "#/modules/sealing/sealing-key.server";
 import { OrganizationRuntime, type RuntimeEntry } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import {

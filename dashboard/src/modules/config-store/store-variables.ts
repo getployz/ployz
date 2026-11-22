@@ -5,7 +5,7 @@ import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete
 import { renameReferences } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
-import type { SealItem, Sealing } from "#/modules/variables/sealing";
+import type { SealItem, Sealing } from "#/modules/sealing/use-sealing";
 import { SealError } from "#/modules/sealing/seal-error";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";

@@ -6,11 +6,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { KeyApproval, PrivateAccessOn } from "@ployz/sdk";
 import { privateAccessApprovalBody } from "@ployz/sdk/authority";
-import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
+import { freshSealing } from "#/modules/sealing/sealing.queries";
 import { PasskeyRefused, passkeyAnswer, statementChallenge } from "#/modules/approval-session/passkey-statement";
 import { SealError } from "#/modules/sealing/seal-error";
-import { isUnauthorized } from "#/lib/error-message";
-import { sealPlatform } from "#/modules/variables/seal-value";
+import { sealPlatform } from "#/modules/sealing/seal-value";
 
 const UNSEALED = "Couldn't seal the key, so nothing was sent. Try again.";
 
@@ -22,9 +21,7 @@ export class KeyNotApproved extends Error {}
 
 /** `authKey` sealed to the Organization's Cluster, read afresh, with the person's passkey approval of that sealed key. */
 export async function sealAndApprove(queryClient: QueryClient, organizationSlug: string, authKey: string): Promise<BrowserOn> {
-  const fresh = await queryClient.fetchQuery({ ...sealingQueryOptions(organizationSlug), staleTime: 0 }).catch((error) => {
-    throw isUnauthorized(error) ? error : new KeyNotApproved(UNSEALED);
-  });
+  const fresh = await freshSealing(queryClient, organizationSlug, () => new KeyNotApproved(UNSEALED));
   if (fresh.sealing.state !== "ready") throw new KeyNotApproved("Add a server to turn private access on.");
   return approvedKey(fresh.sealing, authKey);
 }

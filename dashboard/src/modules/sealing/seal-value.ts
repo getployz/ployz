@@ -1,3 +1,4 @@
+import { fromBase64, toBase64 } from "#/lib/bytes";
 import { SealError } from "#/modules/sealing/seal-error";
 
 /** HPKE `info` and the first associated-data field of a value sealed to a Cluster's Sealing Key. */
@@ -131,14 +132,4 @@ function uuidBytes(uuid: string) {
   const hex = uuid.replaceAll("-", "");
   if (!/^[0-9a-f]{32}$/i.test(hex)) throw new SealError("This service has no ID a sealed value binds to.");
   return Uint8Array.from({ length: 16 }, (_, index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16));
-}
-
-function fromBase64(text: string) {
-  return Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
-}
-
-function toBase64(data: Uint8Array) {
-  let binary = "";
-  for (const byte of data) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }

@@ -6,7 +6,7 @@ import { Data, Effect } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
+import { readSealingPublicKey } from "#/modules/sealing/sealing-key-read.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
