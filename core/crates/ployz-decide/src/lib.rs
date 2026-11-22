@@ -17,4 +17,5 @@ pub mod issuance;
 pub mod rotation;
 pub mod service_floor;
 pub mod standing;
+pub mod volume_root;
 pub mod volume_size;
