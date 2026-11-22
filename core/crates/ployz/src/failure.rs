@@ -1,4 +1,7 @@
+mod diagnostic;
 mod reported;
+
+pub(crate) use diagnostic::{Detail, Diagnostic, LogTail, StartFailure};
 
 use ployz_core::error_chain;
 use std::{borrow::Cow, error::Error, fmt};
@@ -23,7 +26,7 @@ pub struct Failure {
     interrupted: bool,
     /// The printed result is itself the failure, not a partial one.
     outcome: bool,
-    diagnostic: Option<Box<ui::progress::Diagnostic>>,
+    diagnostic: Option<Box<Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
     connect_failure: Option<Box<ConnectFailure>>,
@@ -159,7 +162,7 @@ impl Failure {
         self.outcome
     }
 
-    pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
+    pub(crate) fn with_diagnostic(mut self, diagnostic: Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
@@ -201,7 +204,7 @@ impl Failure {
         self.connect_failure.as_deref()
     }
 
-    pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
+    pub(crate) fn diagnostic(&self) -> Option<&Diagnostic> {
         self.diagnostic.as_deref()
     }
 

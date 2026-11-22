@@ -542,8 +542,8 @@ pub(super) fn execute(
                 .transpose();
             let error = match cleanup {
                 Ok(_) => error,
-                Err(cleanup) => error.with_diagnostic(ui::progress::Diagnostic {
-                    failures: vec![ui::progress::Detail {
+                Err(cleanup) => error.with_diagnostic(crate::failure::Diagnostic {
+                    failures: vec![crate::failure::Detail {
                         message: cleanup.to_string(),
                         causes: cleanup.causes(),
                     }],

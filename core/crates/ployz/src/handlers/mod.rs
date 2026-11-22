@@ -959,7 +959,7 @@ mod tests {
 
     #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
-        use crate::ui::progress::{Diagnostic, LogTail};
+        use crate::failure::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};
         let failed = MachineId::random();
         let original = MachineId::random();

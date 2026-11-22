@@ -26,7 +26,7 @@ use crate::{
     cluster::RoleWaitError,
     connect::{Client, TARGET_RPC_TIMEOUT},
     context::Config,
-    ui::progress::StartFailure,
+    failure::StartFailure,
 };
 
 use super::{Error, leaf_matches, route, string_values, with_client};
@@ -1359,7 +1359,7 @@ mod tests {
         let one = MachineId::random();
         let failed_on = |machine| {
             Error::coded(RpcErrorCode::Internal, "ingress: create Container failed.")
-                .with_diagnostic(crate::ui::progress::Diagnostic {
+                .with_diagnostic(crate::failure::Diagnostic {
                     failed_machine: Some(machine),
                     start_failure: Some(StartFailure::PortTaken),
                     ..Default::default()
@@ -1407,7 +1407,7 @@ mod tests {
     /// repeat `next:` as `retry:` (#3341). Another Server stays selected by Machine ID.
     #[test]
     fn set_hints_select_the_server_as_typed() {
-        use crate::ui::progress::{Diagnostic, LogTail};
+        use crate::failure::{Diagnostic, LogTail};
         use ployz_core::QualifiedService;
         let (target, other) = (MachineId::random(), MachineId::random());
         let tail = |machine| LogTail {

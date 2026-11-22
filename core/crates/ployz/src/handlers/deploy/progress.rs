@@ -3,9 +3,8 @@
 pub(crate) mod rows;
 
 use crate::failure::Failure;
-use crate::ui::progress::{
-    Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing, Work,
-};
+use crate::failure::{Detail, Diagnostic, LogTail};
+use crate::ui::progress::{Frame, Row, Run, State, Subject, Timing, Work};
 use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::error_chain;
 use ployz_core::{
