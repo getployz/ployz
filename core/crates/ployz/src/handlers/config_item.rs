@@ -17,7 +17,7 @@ use super::shared::staged::{StagedReport, Then};
 use super::store;
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
-use crate::failure::io_code;
+use crate::coded::Coded;
 use crate::ui::{Cell, Fields, Table, Tone};
 
 pub(super) fn group(command: Command) -> Command {
@@ -159,7 +159,7 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
         InputError::Unreadable {
             source: Source::Path(path),
             error,
-        } => Error::caused(io_code(&error), format!("Can't read --from {path}"), error),
+        } => Error::caused(error.code(), format!("Can't read --from {path}"), error),
         other @ (InputError::Unreadable { .. }
         | InputError::TooLong { .. }
         | InputError::NotText { .. }) => other.into(),

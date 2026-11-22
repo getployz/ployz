@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useEffectEvent, useId, useState, type ReactNode } from "react";
 import { GitBranchIcon, HardDriveIcon, LayersIcon, PackageIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import {
@@ -20,24 +18,8 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { toErrorMessage } from "#/lib/error-message";
-import { lossMoment } from "#/modules/volume-placement/volume-placement";
-
-/** One thing a deletion takes with it, drawn with its canvas icon. */
-export type DeletionItem = {
-  kind: "service" | "volume" | "branch" | "environment" | "project" | "server";
-  name: string;
-  /** Replaces the kind's icon, such as a service's source icon. */
-  icon?: ReactNode;
-  /** A volume's used bytes, when its server reported them. */
-  bytes?: number;
-  /** Muted text after the name, such as the server a volume is on. */
-  detail?: string;
-  /** Changes after this are lost: a restore point, dated when it isn't from today, as the clock moves. */
-  lostAfter?: Date;
-};
-
-/** What the servers reported, and the evidence confirming exactly that takes. */
-export type DeletionCheck<Evidence> = { items: readonly DeletionItem[]; evidence: Evidence };
+import type { DeletionCheck, DeletionItem } from "#/modules/config-store/deletion";
+import { lossMoment } from "#/utils/relative-time";
 
 export type DeletionCallbacks<Evidence> = {
   /** Runs when the dialog opens: everything that goes, as the servers see it now. */

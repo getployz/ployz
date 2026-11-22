@@ -6,8 +6,9 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import type { ClosedGate } from "./analytics-model";
 import { type AnalyticsScope, useTurnOnAnalytics } from "./analytics.queries";
+import { docsUrl } from "#/lib/docs";
 
-const OBSERVE_SETUP_DOCS = "https://ployz.dev/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional";
+const OBSERVE_SETUP_DOCS = docsUrl("/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional");
 
 export function Gate({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (

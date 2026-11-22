@@ -3,15 +3,6 @@
 //! ```text
 //! <data_dir>/observe/                   other version dirs here are deleted
 //!   v1/                                 StoreRoot; other entries are ignored
-//!     metrics/
-//!       raw/
-//!         <hour>.jsonl                  every metric row of one hour, one
-//!                                       per line; <hour> is its start in
-//!                                       Unix seconds
-//!       rollup/
-//!         <hour>.jsonl                  that hour folded to 5 minute points
-//!                                       per Service and Deployment, plus
-//!                                       the host
 //!     outbox/
 //!       crash/
 //!         <seq>                         one crash marker waiting for Cloud,
@@ -23,32 +14,26 @@
 //!       <cid>-<exit|oom>-<ts>           an exit or OOM kill the harvester
 //!                                       settled, kept while a resumed
 //!                                       Docker event stream can repeat it
-//!       <cid>-<exit|oom>-<ts>.pending   one whose marker or crash is not
-//!                                       stored yet
+//!       <cid>-<exit|oom>-<ts>.pending   one whose crash is not queued yet
 //!     resume-from                       the newest Docker event's time, where
 //!                                       a restarted harvester resumes
 //! ```
 
 use std::{
-    fmt, fs, io,
+    fs, io,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
 
 const STORE_DIR: &str = "observe";
-pub const VERSION_DIR: &str = "v1";
+const VERSION_DIR: &str = "v1";
 
-pub const METRICS_DIR: &str = "metrics";
-pub const RAW_DIR: &str = "raw";
-pub const ROLLUP_DIR: &str = "rollup";
 const OUTBOX_DIR: &str = "outbox";
 const CRASH_DIR: &str = "crash";
 const RETIRED_OUTBOXES: [&str; 2] = ["pageviews", "requests"];
-const RETIRED_DIRS: [&str; 1] = ["analytics"];
+const RETIRED_DIRS: [&str; 2] = ["analytics", "metrics"];
 const SETTLED_DIR: &str = "settled";
 const RESUME_FILE: &str = "resume-from";
-const SEGMENT_SUFFIX: &str = ".jsonl";
-const HOUR_SECS: u64 = 60 * 60;
 /// Unix nanoseconds in a second, the unit metric rows are stamped in.
 pub(crate) const NANOS_PER_SEC: i64 = 1_000_000_000;
 
@@ -65,16 +50,6 @@ impl StoreRoot {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
-    }
-
-    #[must_use]
-    pub fn raw_metrics(&self) -> PathBuf {
-        self.0.join(METRICS_DIR).join(RAW_DIR)
-    }
-
-    #[must_use]
-    pub fn rollup_metrics(&self) -> PathBuf {
-        self.0.join(METRICS_DIR).join(ROLLUP_DIR)
     }
 
     #[must_use]
@@ -108,7 +83,7 @@ impl StoreRoot {
     ///
     /// Returns an error when a foreign version dir cannot be removed, the
     /// store dirs cannot be created, or one of them is a symlink or not a
-    /// dir, since cleanup deletes beneath them.
+    /// dir, since retired dirs are deleted beneath them.
     pub fn prepare(&self) -> io::Result<()> {
         let parent = self.base();
         create_store_dir(parent)?;
@@ -168,78 +143,6 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     }
 }
 
-fn canonical_u64(digits: &str) -> Option<u64> {
-    if digits.is_empty()
-        || !digits.bytes().all(|b| b.is_ascii_digit())
-        || (digits.len() > 1 && digits.starts_with('0'))
-    {
-        return None;
-    }
-    digits.parse().ok()
-}
-
-/// The name of one raw metric segment, `<start>.jsonl`, where `start` is
-/// the Unix second its hour begins.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SegmentName {
-    start_secs: u64,
-}
-
-impl SegmentName {
-    /// The segment holding a row stamped `ts` Unix nanoseconds, or `None`
-    /// before 1970.
-    #[must_use]
-    pub fn containing(ts: i64) -> Option<Self> {
-        let secs = u64::try_from(ts.div_euclid(NANOS_PER_SEC)).ok()?;
-        Some(Self {
-            start_secs: secs - secs % HOUR_SECS,
-        })
-    }
-
-    /// Parses a segment name. Only the exact form this type prints parses.
-    #[must_use]
-    pub fn parse(name: &[u8]) -> Option<Self> {
-        let name = std::str::from_utf8(name).ok()?;
-        let start_secs = canonical_u64(name.strip_suffix(SEGMENT_SUFFIX)?)?;
-        (start_secs % HOUR_SECS == 0).then_some(Self { start_secs })
-    }
-
-    #[must_use]
-    pub fn start_secs(self) -> u64 {
-        self.start_secs
-    }
-
-    /// The first Unix second after this segment's hour.
-    #[must_use]
-    pub fn end_secs(self) -> u64 {
-        self.start_secs.saturating_add(HOUR_SECS)
-    }
-
-    /// The Unix nanosecond this segment's hour begins at.
-    #[must_use]
-    pub fn start_nanos(self) -> i64 {
-        secs_to_nanos(self.start_secs())
-    }
-
-    /// The first Unix nanosecond after this segment's hour.
-    #[must_use]
-    pub fn end_nanos(self) -> i64 {
-        secs_to_nanos(self.end_secs())
-    }
-}
-
-fn secs_to_nanos(secs: u64) -> i64 {
-    i64::try_from(secs)
-        .unwrap_or(i64::MAX)
-        .saturating_mul(NANOS_PER_SEC)
-}
-
-impl fmt::Display for SegmentName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{SEGMENT_SUFFIX}", self.start_secs)
-    }
-}
-
 /// What a container was, read from its labels when the store first saw it.
 pub use ployz_core::labels::Class as ContainerKind;
 
@@ -259,47 +162,8 @@ pub struct ContainerMeta {
 
 #[cfg(test)]
 mod tests {
-    use super::{SegmentName, StoreRoot};
+    use super::StoreRoot;
     use crate::test_dir::TestDir;
-
-    #[test]
-    fn a_segment_spans_its_hour_in_unix_nanoseconds() {
-        let name = SegmentName::parse(b"1759996800.jsonl").unwrap();
-        assert_eq!(name.start_nanos(), 1_759_996_800_000_000_000);
-        assert_eq!(name.end_nanos(), 1_760_000_400_000_000_000);
-        assert_eq!(SegmentName::containing(name.end_nanos() - 1), Some(name));
-        assert_ne!(SegmentName::containing(name.end_nanos()), Some(name));
-    }
-
-    #[test]
-    fn segment_names_cover_one_hour_and_parse_only_in_their_printed_form() {
-        let name = SegmentName::containing(1_760_000_123_456_789_000).unwrap();
-        assert_eq!(name.to_string(), "1759996800.jsonl");
-        assert_eq!(
-            (name.start_secs(), name.end_secs()),
-            (1_759_996_800, 1_760_000_400)
-        );
-        assert_eq!(
-            SegmentName::containing(1_759_996_800_000_000_000),
-            Some(name)
-        );
-        assert_eq!(
-            SegmentName::containing(1_760_000_399_999_999_999),
-            Some(name)
-        );
-        assert_eq!(SegmentName::parse(b"1759996800.jsonl"), Some(name));
-        assert_eq!(SegmentName::containing(-1), None);
-        for foreign in [
-            &b"1759996801.jsonl"[..],
-            b"01759996800.jsonl",
-            b"1759996800.jsonl.tmp",
-            b"1759996800",
-            b".jsonl",
-            b"1-2.log",
-        ] {
-            assert_eq!(SegmentName::parse(foreign), None, "{foreign:?}");
-        }
-    }
 
     #[test]
     fn prepare_replaces_unknown_versions_and_leaves_other_entries() {
@@ -318,15 +182,19 @@ mod tests {
     }
 
     #[test]
-    fn prepare_deletes_the_pageviews_outbox_beta_releases_left() {
+    fn prepare_deletes_what_earlier_releases_left() {
         let docker = TestDir::new("ployzd-observe-layout-retired");
         let root = StoreRoot::under(&docker.0);
         let pageviews = root.path().join("outbox/pageviews");
-        std::fs::create_dir_all(&pageviews).unwrap();
-        std::fs::write(pageviews.join("1.jsonl"), b"{}\n").unwrap();
+        let segments = root.path().join("metrics/raw");
+        for dir in [&pageviews, &segments] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("1.jsonl"), b"{}\n").unwrap();
+        }
         root.prepare().unwrap();
         root.prepare().unwrap();
         assert!(!pageviews.exists());
+        assert!(!root.path().join("metrics").exists());
     }
 
     #[test]

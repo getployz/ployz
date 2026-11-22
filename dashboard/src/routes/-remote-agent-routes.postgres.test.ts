@@ -1,13 +1,8 @@
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
-import { afterAll, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { runAsSelfHostedCloud } from "#/test/config-environment";
 
-// A Self-hosted Cloud is one with no Polar settings. The app runtime reads them when this file's first request builds it.
-const POLAR = ["POLAR_ACCESS_TOKEN", "POLAR_SERVER", "POLAR_WEBHOOK_SECRET", "POLAR_PRODUCT_ID"];
-const saved = POLAR.map((name) => [name, process.env[name]] as const);
-for (const name of POLAR) delete process.env[name];
-afterAll(() => {
-  for (const [name, value] of saved) if (value !== undefined) process.env[name] = value;
-});
+runAsSelfHostedCloud();
 
 const PATHS = [
   "/mcp",

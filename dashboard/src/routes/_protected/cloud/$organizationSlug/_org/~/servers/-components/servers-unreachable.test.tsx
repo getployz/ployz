@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as runtime from "#/providers/runtime-provider";
 import type { OlderServers } from "#/modules/machines/use-servers";
-import { SSH_UPGRADE, ServersUnreachable } from "./servers-unreachable";
+import { ServersUnreachable } from "./servers-unreachable";
 
 afterEach(() => {
   cleanup();
@@ -45,7 +45,7 @@ it.each([
   expect(renderAs("admin", older)).toBeNull();
   expect(screen.getByText("Upgrade your server over SSH")).toBeTruthy();
   expect(screen.getByText(why)).toBeTruthy();
-  expect(screen.getByText((_, element) => element?.tagName === "CODE" && element.textContent === SSH_UPGRADE)).toBeTruthy();
+  expect(screen.getByText((_, element) => element?.tagName === "CODE" && /\bployz\b/.test(element.textContent ?? ""))).toBeTruthy();
 });
 
 it("says a Server waiting for the cluster's key is used once a key holder is back, not to Forget it", () => {

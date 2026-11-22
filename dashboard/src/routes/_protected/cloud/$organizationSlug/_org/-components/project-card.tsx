@@ -3,9 +3,9 @@ import { Background, BackgroundVariant, ReactFlowProvider } from "@xyflow/react"
 import "@xyflow/react/dist/style.css";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import type { RuntimeLensStatus, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
-import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
+import { serviceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-icon";
 import { cn } from "#/lib/utils";
-import { servicesOnline } from "../../-components/services-online";
+import { servicesOnline } from "#/modules/runtime/services-online";
 
 // Two rows of tiles fit the canvas's minimum height; the narrowest card holds four per row.
 const MAX_TILES = 8;
@@ -44,7 +44,7 @@ export function ProjectCard({
           <div className="relative flex flex-1 flex-wrap content-center items-center justify-center gap-3 p-4" aria-label="Services">
             {shown.map(service => (
               <span key={service.id} title={service.name} className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-card [&_svg]:size-6">
-                {getServiceIcon(service.config)}
+                {serviceIcon(service.config.source.type)}
                 <span className="sr-only">{service.name}</span>
               </span>
             ))}

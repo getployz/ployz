@@ -1,6 +1,7 @@
 import { createFileRoute, useLoaderData } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemote, prefetchStoreConfig } from "#/collections/route-data";
+import { prefetchRemote } from "#/collections/route-data";
+import { prefetchStoreConfig } from "#/modules/config-store/store.route-data";
 import { configsQuery, requireView, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
@@ -9,10 +10,10 @@ import {
   CanvasInspectorError,
   CanvasInspectorPending,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
-import { ENVIRONMENT_ROUTE_FROM } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { StoreConfigDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer";
-import { StoreVolumeDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeDrawer";
-import { volumeSearchSchema } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/volume-pages";
+import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { StoreConfigDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreConfigDrawer";
+import { StoreVolumeDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreVolumeDrawer";
+import { volumeSearchSchema } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/volume-pages";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId",

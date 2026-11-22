@@ -9,7 +9,7 @@ import { callStore, storeSystem } from "#/modules/config-store/config-store.serv
 import { permissionsOf } from "#/modules/organization/permissions";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
-import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
+import { connectionsLoader, gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -29,7 +29,7 @@ const asked = (command: JsonObject) => Effect.gen(function* () {
   const read = vi.fn(async (query: ConfigQuery) => query.query === "environments"
     ? { view: "environments", environments: [{ name: "production" }, { name: "staging" }] }
     : { view: "removals", volumes: [] });
-  const evidence = yield* gatherVolumeEvidence(ORGANIZATION, { operation: "write", command: raw(command) }, asTestDouble<StoreRead>()(read));
+  const evidence = yield* gatherVolumeEvidence(yield* connectionsLoader(ORGANIZATION), { operation: "write", command: raw(command) }, asTestDouble<StoreRead>()(read));
   expect(evidence).toBeUndefined();
   return read.mock.calls.map(([query]) => query);
 });
@@ -52,7 +52,7 @@ it.live("a push asks which Volumes a Save accepted losing, and without Servers t
     const services = yield* storeTestCloud();
     const pushed = (volumes: string[]) => Effect.gen(function* () {
       const read = vi.fn(async (_query: ConfigQuery) => ({ view: "consented", volumes }));
-      const evidence = yield* systemVolumeEvidence(ORGANIZATION, asTestDouble<StoreRead>()(read)).pipe(Effect.provide(services));
+      const evidence = yield* systemVolumeEvidence(yield* connectionsLoader(ORGANIZATION), asTestDouble<StoreRead>()(read)).pipe(Effect.provide(services));
       return { evidence, asked: read.mock.calls.map(([query]) => query) };
     });
 
@@ -115,7 +115,7 @@ it.live("a removal names the Servers that didn't answer, Volumes or not, and eve
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const silent = machineId("1");
     const unanswered = (command: JsonObject, observe: (connections: Connection[], sought: string[]) => Promise<VolumeObservation>) =>
-      provided(gatherUnanswered(ORGANIZATION, { operation: "write", command: raw(command) }, undefined)
+      provided(Effect.flatMap(connectionsLoader(ORGANIZATION), (connections) => gatherUnanswered(connections, { operation: "write", command: raw(command) }, undefined))
         .pipe(Effect.provideService(VolumeObserver, { observe })));
     const remove = { command: "remove", project: "shop", environment: "staging" };
     const admit = { command: "admit", admit: "remove", environment: staging };
@@ -143,7 +143,7 @@ it.live("a malformed removal probes no Server", () =>
       { command: "admit", admit: "remove", environment: 5 },
     ];
     for (const command of malformed) {
-      expect(yield* provided(gatherUnanswered(ORGANIZATION, { operation: "write", command: raw(command) }, undefined)
+      expect(yield* provided(gatherUnanswered(yield* connectionsLoader(ORGANIZATION), { operation: "write", command: raw(command) }, undefined)
         .pipe(Effect.provideService(VolumeObserver, { observe })))).toBeUndefined();
     }
     expect(observe).not.toHaveBeenCalled();
@@ -156,7 +156,7 @@ it.live("a removal whose Server connections fail to load says Cloud couldn't loo
     const silent = machineId("0");
     const admit = { command: "admit", admit: "remove", environment: staging };
     const observe = async (): Promise<VolumeObservation> => ({ sought: [], held: [], unanswered: [silent] });
-    const unanswered = () => provided(gatherUnanswered(ORGANIZATION, { operation: "write", command: raw(admit) }, undefined)
+    const unanswered = () => provided(Effect.flatMap(connectionsLoader(ORGANIZATION), (connections) => gatherUnanswered(connections, { operation: "write", command: raw(admit) }, undefined))
       .pipe(Effect.provideService(VolumeObserver, { observe })));
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const capability = (value: EncryptedSecretValue) => provided(Effect.gen(function* () {

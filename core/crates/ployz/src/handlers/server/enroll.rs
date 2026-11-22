@@ -20,13 +20,16 @@ use serde_json::json;
 use super::super::{Error, config_path, leaf_matches, runtime};
 use super::Shaping;
 use crate::cli::{base, positional, switch, value};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, LoginError, Organization};
-use crate::cloud_origin::{CloudOrigin, DEFAULT_CLOUD};
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::cloud::login::{CredentialStore, LoginError, Organization};
+use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
 use crate::env;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
+/// The Cluster network a founding Server takes when `--network` gives none.
+pub(super) const CLUSTER_NETWORK: &str = "10.210.0.0/16";
 
 #[path = "enroll_waiting.rs"]
 mod waiting;
@@ -75,7 +78,7 @@ pub(crate) fn command(command: Command) -> Command {
     )
     .arg(
         value("network", None)
-            .default_value("10.210.0.0/16")
+            .default_value(CLUSTER_NETWORK)
             .value_parser(clap::value_parser!(Ipv4Net))
             .help("Cluster network, when this Server founds the Cluster"),
     )
@@ -118,7 +121,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
     // PLOYZ_TOKEN or this device's sign-in, as every Cloud command: one Organization.
-    let credential = match runtime.block_on(cloud_account::from_env(&store)) {
+    let credential = match runtime.block_on(cloud::account::from_env(&store)) {
         Err(LoginError::SignedOut)
             if !matches.get_flag("command") && matches.get_one::<String>("wait").is_none() =>
         {
@@ -129,7 +132,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         credential => credential?,
     };
     let acting = runtime.block_on(async {
-        let organization = cloud_account::acting_in(&credential).await?;
+        let organization = cloud::account::acting_in(&credential).await?;
         Ok::<_, LoginError>(Acting {
             credential,
             organization,
@@ -288,7 +291,7 @@ impl Acting {
         if let Some(object) = body.as_object_mut() {
             object.insert("organizationId".into(), json!(self.organization.id));
         }
-        cloud_account::call(&self.credential, reqwest::Method::POST, path, Some(&body)).await
+        cloud::account::call(&self.credential, reqwest::Method::POST, path, Some(&body)).await
     }
 }
 
@@ -460,7 +463,7 @@ pub(super) fn storage_or_default(given: Option<StoragePreparation>) -> StoragePr
 /// Every input the enrollment engine reads from `root`, in the order it reads them, as text:
 /// the first refusal, or the parsed values and flags.
 #[cfg(test)]
-pub(crate) fn engine_view(root: &ArgMatches) -> String {
+fn engine_view(root: &ArgMatches) -> String {
     let plan = super::EnrollPlan::from_matches(root);
     let shaping = plan.shaping();
     let parsed = (|| -> Result<_, Error> {
@@ -471,13 +474,13 @@ pub(crate) fn engine_view(root: &ArgMatches) -> String {
         Ok((policy, name, cluster, shaping.storage(), request))
     })()
     .map_err(|error| format!("{error} {:?}", error.hints()));
-    let reach = plan.reach();
+    let reach = leaf_matches(root);
     let text = |id: &str| reach.get_one::<String>(id).cloned();
     format!(
         "{parsed:?} {:?} {:?}",
         (
             plan.destination().map(str::to_owned),
-            plan.ssh_key().map(str::to_owned),
+            text("ssh-key"),
             plan.no_install(),
             shaping.reset(),
             shaping.yes(),
@@ -539,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
-        let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
+        let cloud = crate::cloud::account::testing::fake_cloud(|route, _| match route {
             "POST /api/cli/servers/enrollment" => (
                 404,
                 json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),
@@ -549,8 +552,8 @@ mod tests {
         let acting = Acting {
             credential: Credential::Token {
                 cloud,
-                token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
-                from: crate::cloud_account::TokenFrom::Env,
+                token: crate::cloud::login::Secret::new("ployz_secret".to_owned()),
+                from: crate::cloud::account::TokenFrom::Env,
             },
             organization: Organization {
                 id: "o1".to_owned(),

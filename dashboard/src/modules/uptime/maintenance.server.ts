@@ -3,10 +3,11 @@ import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { failureClassSql, failureColumn, failureColumns, failureTextSql } from "./failure-sql.server";
-import { PRUNE_BATCH_ROWS, type Retained, retentionCutoff } from "./retention";
+import { PRUNE_BATCH_ROWS } from "#/modules/inngest/prune";
+import { type Retained, retentionCutoff } from "./retention";
 import { FAILURE_CLASSES } from "./uptime-status";
+import { HOUR_MS } from "#/lib/time-range";
 
-const HOUR_MS = 3_600_000;
 
 /**
  * The hours a rollup at `now` recomputes: the two closed hours before the current one. Every closed hour is

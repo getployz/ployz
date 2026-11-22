@@ -10,7 +10,7 @@ const VALUE_IMPORT_ALLOWLIST = new Set([
   "modules/agent/agent-steps.test.ts",
   "modules/agent/agent-tools.ts",
   "modules/agent/agent-tools.test.ts",
-  "modules/anonymous/teardown.inngest.postgres.test.ts",
+  "modules/sandbox/teardown.inngest.postgres.test.ts",
   "modules/approvals/approvals.postgres.test.ts",
   "modules/config-store/config-store.server.postgres.test.ts",
   "modules/config-store/running-evidence.server.ts",

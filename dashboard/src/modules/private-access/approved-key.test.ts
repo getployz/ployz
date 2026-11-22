@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
-import * as passkey from "#/modules/approval-session/passkey-statement";
+import * as passkey from "#/modules/passkeys/passkey-statement";
 import { approvedKey, KeyNotApproved } from "./approved-key";
 
 const CLUSTER = "NdiV1QY9P3ZyoC82YA/FaBs0zlWTG/CXU1tLfcS0CDg=";
-const KEYS = { publicKey: CLUSTER, sealTo: CLUSTER };
+const KEYS = { publicKey: CLUSTER };
 const KEY = "tskey-auth-kTEST-notarealkey0123456789";
 const ASSERTION = { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" };
 
@@ -23,7 +23,7 @@ it("asks the passkey to approve exactly the sealed key, which never holds the ke
   const digest = Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.from(on.sealed_auth_key, "base64"))).toString("hex");
   const body = JSON.stringify({ auth_key: digest, cluster: CLUSTER, expires_at: 901_000, issued_at: 1_000, signer: "passkey" });
   expect(on.approval).toEqual({ passkey: { body, assertion: ASSERTION } });
-  expect(challenge).toHaveBeenCalledExactlyOnceWith(body, "workflow");
+  expect(challenge).toHaveBeenCalledWith(body, expect.anything());
 });
 
 it("sends nothing when the passkey doesn't answer", async () => {

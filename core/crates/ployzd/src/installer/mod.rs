@@ -468,15 +468,20 @@ pub(super) fn run_command(
     if output.status.success() {
         Ok(output)
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         Err(Error::Command {
             stage,
-            message: if stderr.is_empty() {
-                format!("exited with {}", output.status)
-            } else {
-                stderr
-            },
+            message: failure(&output),
         })
+    }
+}
+
+/// What a failed host command said: its stderr, or its exit status when it printed nothing.
+pub(super) fn failure(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        format!("exited with {}", output.status)
+    } else {
+        stderr
     }
 }
 

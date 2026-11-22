@@ -5,25 +5,24 @@
 
 use std::process::Stdio;
 
+use crate::{
+    dataset_layout::DatasetLayout,
+    machine_pool::MachinePool,
+    volume_send::begin::{self, READ_BOUND},
+};
 use axum::{Json, extract::State};
 use ployz_core::{
     DockerVolumeName, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
     VolumeCopyView,
-};
-use ployzd::{
-    dataset_layout::DatasetLayout,
-    machine_pool::MachinePool,
-    volume_send::begin::{self, READ_BOUND},
 };
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
     holders::{Unheld, copy_held_for_other_data, copy_unlisted},
-    inspect::{answering, internal},
+    inspect::answering,
     marks::{Mark, Marks},
     origin::Origin,
-    slot,
     storage::HeldMutation,
     transfer::{Busy, Stop, ZfsChild, exited},
 };
@@ -82,27 +81,20 @@ impl Renamed {
     async fn finish_landing(self, storage: &VolumeStorage) -> Result<(), RpcError> {
         let root = &self.root;
         if let Some(parent) = &self.parent
-            && storage.record(parent).await.map_err(internal)?.is_some()
+            && storage.record(parent).await?.is_some()
         {
             return Err(SwitchError::Precondition.rpc_error(format!(
                 "{root} left slot {parent} before its origin was stamped; forget it and seed again"
             )));
         }
-        storage
-            .zfs(&["inherit", "mountpoint", root])
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["set", "readonly=off", root])
-            .await
-            .map_err(internal)?;
+        storage.zfs(&["inherit", "mountpoint", root]).await?;
+        storage.zfs(&["set", "readonly=off", root]).await?;
         if let Some(parent) = &self.parent {
-            storage.zfs(&["destroy", parent]).await.map_err(internal)?;
+            storage.zfs(&["destroy", parent]).await?;
         }
         storage
             .zfs(&["destroy", &format!("{root}@{}", self.received)])
-            .await
-            .map_err(internal)?;
+            .await?;
         Ok(())
     }
 }
@@ -126,12 +118,8 @@ impl Copied {
         guid: SnapshotGuid,
     ) -> Result<(), RpcError> {
         let fs = &self.fs;
-        storage.complete(&self.parent, fs).await.map_err(internal)?;
-        let carried = storage
-            .point(fs, &self.snapshot)
-            .await
-            .map_err(internal)?
-            .origin;
+        storage.complete(&self.parent, fs).await?;
+        let carried = storage.point(fs, &self.snapshot).await?.origin;
         storage
             .admit_holders(into, carried)
             .await
@@ -142,15 +130,8 @@ impl Copied {
                 }
             })?;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
-        storage
-            .marks(fs)
-            .apply(&Marks::landed(guid))
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["rename", fs, &self.root])
-            .await
-            .map_err(internal)?;
+        storage.marks(fs).apply(&Marks::landed(guid)).await?;
+        storage.zfs(&["rename", fs, &self.root]).await?;
         Renamed {
             root: self.root,
             parent: Some(self.parent),
@@ -174,17 +155,14 @@ impl Stale {
     /// may alone hold.
     async fn clear(self, storage: &VolumeStorage, into: &VolumeName) -> Result<(), RpcError> {
         if let Some(fs) = &self.fs
-            && storage.written_here(fs).await.map_err(internal)?
+            && storage.written_here(fs).await?
         {
             return Err(SwitchError::Precondition.rpc_error(format!(
                 "Volume {into} is held in slot {}; promote or restore it before seeding it",
                 self.parent
             )));
         }
-        storage
-            .zfs(&["destroy", "-r", &self.parent])
-            .await
-            .map_err(internal)?;
+        storage.zfs(&["destroy", "-r", &self.parent]).await?;
         Ok(())
     }
 }
@@ -200,12 +178,12 @@ struct Source {
 
 impl VolumeStorage {
     async fn seed_volume(&self, request: &SeedVolumeRequest) -> Result<VolumeCopyView, RpcError> {
-        let name = slot::name(&request.name)?;
-        let into = slot::name(&request.into)?;
+        let name = VolumeName::try_from(&request.name)?;
+        let into = VolumeName::try_from(&request.into)?;
         let guid = request.guid;
-        let (held, _installation) = self.admit_mutation().await.map_err(internal)?;
-        let pool = self.one_pool().await.map_err(internal)?;
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        let (held, _installation) = self.admit_mutation().await?;
+        let pool = self.one_pool().await?;
+        let datasets = self.datasets(&pool).await?;
         match self
             .seed_progress(&held, &pool, &datasets, &into, guid)
             .await?
@@ -241,11 +219,8 @@ impl VolumeStorage {
                     .seed_source(&pool, &datasets, &name, &into, guid)
                     .await?;
                 self.ensure_commitment(&pool, &datasets, source.bound)
-                    .await
-                    .map_err(internal)?;
-                self.ensure_mirror_root(&pool, &datasets)
-                    .await
-                    .map_err(internal)?;
+                    .await?;
+                self.ensure_mirror_root(&pool, &datasets).await?;
                 self.copy_point(&held, &pool, &into, source).await
             }
         }
@@ -266,15 +241,12 @@ impl VolumeStorage {
         let root = DatasetLayout::of(pool).root(into);
         let parent = DatasetLayout::of(pool).slot_parent(into);
         let slot = Self::slot(datasets, pool, into).is_some();
-        if Self::dataset(datasets, pool, into)
-            .map_err(internal)?
-            .is_some()
-        {
-            let seed = self.marks(&root).get(Mark::Seed).await.map_err(internal)?;
+        if Self::dataset(datasets, pool, into)?.is_some() {
+            let seed = self.marks(&root).get(Mark::Seed).await?;
             if seed != Some(guid.to_string()) {
                 return Ok(SeedProgress::Taken);
             }
-            let snapshots = self.snapshots(&root).await.map_err(internal)?;
+            let snapshots = self.snapshots(&root).await?;
             return Ok(
                 match snapshots.into_iter().find(|snapshot| snapshot.guid == guid) {
                     Some(received) => SeedProgress::Renamed(Renamed {
@@ -287,7 +259,7 @@ impl VolumeStorage {
             );
         }
         let pulling = if slot {
-            self.marks(&parent).pull_target().await.map_err(internal)?
+            self.marks(&parent).pull_target().await?
         } else {
             None
         };
@@ -298,12 +270,7 @@ impl VolumeStorage {
         }
         let fs = Self::slot_fs(datasets, pool, into).map(|fs| fs.name.clone());
         if let Some(fs) = &fs {
-            let newest = self
-                .snapshots(fs)
-                .await
-                .map_err(internal)?
-                .into_iter()
-                .next();
+            let newest = self.snapshots(fs).await?.into_iter().next();
             if let Some(newest) = newest.filter(|newest| newest.guid == guid) {
                 return Ok(SeedProgress::Copied(Copied {
                     fs: fs.clone(),
@@ -343,8 +310,7 @@ impl VolumeStorage {
         };
         let point = self
             .snapshots(&root)
-            .await
-            .map_err(internal)?
+            .await?
             .into_iter()
             .find(|snapshot| snapshot.guid == guid)
             .ok_or_else(|| {
@@ -363,7 +329,7 @@ impl VolumeStorage {
                 if let PluginError::Unstamped(message) = error {
                     SwitchError::Precondition.rpc_error(message)
                 } else {
-                    internal(error)
+                    RpcError::from(error)
                 }
             })?;
         if read.guid != guid {
@@ -395,12 +361,9 @@ impl VolumeStorage {
             origin,
             bound,
         } = source;
-        self.create_slot(&parent, bound).await.map_err(internal)?;
-        self.marks(&parent)
-            .set_pull(point.name.as_str())
-            .await
-            .map_err(internal)?;
-        self.write_record(&parent, origin).await.map_err(internal)?;
+        self.create_slot(&parent, bound).await?;
+        self.marks(&parent).set_pull(point.name.as_str()).await?;
+        self.write_record(&parent, origin).await?;
         let storage = self.clone();
         let snapshot = format!("{root}@{}", point.name);
         // A receive still alive refuses the spawn, and the copy as it stands answers then too.
@@ -420,7 +383,7 @@ impl VolumeStorage {
         pool: &MachinePool,
         into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
-        let copy = self.current_copy(pool, into).await.map_err(internal)?;
+        let copy = self.current_copy(pool, into).await?;
         Ok(VolumeCopyView { copy })
     }
 

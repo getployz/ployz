@@ -11,6 +11,7 @@ use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
 use crate::scope::{self, EnvironmentSummary, Project};
 use crate::storage::Tx;
+use crate::storage::json_text;
 use crate::trusted::Trusted;
 
 /// The Default Environment every new Project starts with.
@@ -211,10 +212,7 @@ pub(crate) fn insert_environment(
             project.id.as_str().into(),
             name.as_str().into(),
             scope::revision_param(revision)?.into(),
-            serde_json::to_string(&working)
-                .expect("Working State is JSON")
-                .as_str()
-                .into(),
+            json_text(&working).as_str().into(),
         ],
     )?;
     Ok(EnvironmentSummary {

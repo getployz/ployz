@@ -14,10 +14,10 @@ import {
   FieldLabel,
 } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { DnsNameHint } from "#/components/dns-name-hint";
+import { DnsNameHint } from "../dns-name-hint";
 import { dnsName } from "#/utils/dns-name";
 import type { VolumeKind } from "@ployz/sdk";
-import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
+import { VolumeStorageFields } from "./VolumeStorageFields";
 import { DEFAULT_VOLUME_GB, volumeStorage } from "#/modules/config-store/store-volumes";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { FlowPosition } from "./types";

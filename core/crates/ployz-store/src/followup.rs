@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::scope::EnvironmentSummary;
-use crate::{EnvironmentName, ProjectName, RegionKey};
+use crate::{EnvironmentName, ProjectName};
 
 const KEY: &str = "follow_up";
 const NEXT: &str = "next";
@@ -58,8 +58,12 @@ pub(crate) enum SetupLeft {
 pub(crate) enum FollowUp {
     ServerAdd {
         /// The region the Server joins, when the command names one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        region: Option<RegionKey>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::region::deserialize_optional_key"
+        )]
+        region: Option<ployz_core::Region>,
     },
     ServerClean {
         namespace: String,

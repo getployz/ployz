@@ -9,9 +9,9 @@ const SRC = join(process.cwd(), "src");
 // writes through the leaf `sealing-key-read.server`, never through `cluster-sealing.server`, which reads frames.
 const KEPT_OUT_OF_CYCLES = [
   "modules/runtime/organization-runtime.server.ts",
-  "modules/runtime/runtime-frame-record.server.ts",
-  "modules/machines/sealing-ensure.server.ts",
-  "modules/machines/sealing-key-read.server.ts",
+  "modules/machines/runtime-frame-records.server.ts",
+  "modules/sealing/sealing-ensure.server.ts",
+  "modules/sealing/sealing-key-read.server.ts",
 ];
 
 const IMPORT = /^(?:import|export)\s+(type\s+)?(?:[^;'"]*?\sfrom\s+)?["']([^"']+)["']/gm;
@@ -83,5 +83,10 @@ describe("Dashboard import cycles", () => {
   it.each(KEPT_OUT_OF_CYCLES)("keep %s out of every import cycle", (module) => {
     expect(existsSync(join(SRC, module))).toBe(true);
     expect(found.filter((cycle) => cycle.includes(module))).toEqual([]);
+  });
+
+  it("keeps runtime and machines modules out of one cycle", () => {
+    const both = found.filter((cycle) => cycle.some((path) => path.startsWith("modules/runtime/")) && cycle.some((path) => path.startsWith("modules/machines/")));
+    expect(both).toEqual([]);
   });
 });

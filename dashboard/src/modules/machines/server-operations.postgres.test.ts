@@ -8,7 +8,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createVolumeCommand } from "#/modules/config-store/store-volumes";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { dockerVolumeName } from "#/modules/volume-run/volume-run";
+import { dockerVolumeName } from "#/modules/runtime/naming";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { nameLostVolumes, planRemove } from "./server-operations.server";

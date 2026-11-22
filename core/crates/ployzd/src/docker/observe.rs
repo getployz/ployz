@@ -319,12 +319,7 @@ impl ContainerRuntime {
         let Some(door) = Door::of(&observation.identity()) else {
             return Ok(None);
         };
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(observation.container_id.as_str(), None)
-            .await
-            .map_err(|error| super::docker_error(&observation.container_id, error))?;
+        let inspected = self.docker.inspect(&observation.container_id).await?;
         Ok(Some(door_facts(observation, door, &inspected)))
     }
 
@@ -998,7 +993,7 @@ mod tests {
         };
         use tokio_util::sync::CancellationToken;
 
-        use crate::corrosion::store_tests::{corrosion_db, identity_store};
+        use crate::corrosion::fake_cluster::{corrosion_db, identity_store};
         use crate::docker::test_support::runtime_with_running_container;
         use crate::machine::{LocalMachineStore, RecordOwner};
         use crate::storage::test_support::FakePlugin;
@@ -1089,7 +1084,7 @@ mod tests {
     async fn replicating(rescan: std::time::Duration) -> Replicating {
         use ployz_core::{AdvertisedEndpoint, MachineId, MachineName};
 
-        use crate::corrosion::store_tests::{corrosion_db, identity_store};
+        use crate::corrosion::fake_cluster::{corrosion_db, identity_store};
         use crate::docker::test_support::runtime_with_running_container;
         use crate::machine::{LocalMachineStore, RecordOwner};
 

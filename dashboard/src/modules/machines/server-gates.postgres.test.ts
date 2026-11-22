@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { runCommand } from "#/modules/commands/commands.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member, organization } from "#/modules/organization/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { enqueueMachineRemove, loadMachineDataLoss } from "#/modules/machines/machine-removal.server";
 import { loadNamespaceDataLoss, removeNamespace } from "#/modules/machines/namespace-cleanup.server";
@@ -18,9 +19,10 @@ import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { provideServerAccess } from "#/modules/machines/server-access.server";
-import { organization } from "#/modules/organization/tables";
 import { requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import { OrganizationRuntime, type ConnectedRuntimeClient, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { testConfigLayer } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
 const LAB = "00000000-0000-4000-8000-00000000c002";
@@ -36,6 +38,12 @@ const inngest = asTestDouble<Inngest>()({
     sent.push(event.name);
     return { ids: [] };
   },
+});
+
+/** A Cluster whose first report never arrives. */
+const silentCluster = asTestDouble<OrganizationRuntimeService>()({
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({ watchFirstFrame: () => Effect.succeed(null) }) }),
 });
 
 type Gated = (actor: Actor) => Effect.Effect<unknown, unknown, never>;
@@ -68,8 +76,8 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
     startServerEnrollment(actor, { organizationSlug: SLUG, ids: [MISSING], storage: { kind: "none" } } as never) as never, "Validation: Pick the first server: it sets up the cluster the rest join.", []],
   ["cancelServerEnrollment", (actor) => cancelServerEnrollment(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such enrollment.", []],
   ["deleteCopy", (actor) =>
-    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE },
-      () => Effect.fail("unreachable")) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
+    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE }).pipe(
+      Effect.provideService(OrganizationRuntime, silentCluster)) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
   ["server_upgrade_policy_set", (actor) => runCommand(caller(actor.userId), "server_upgrade_policy_set", { automatic: true }, { approvalId: null, key: null }) as never, JSON.stringify({ ok: true, output: { channel: "stable", automatic: true } }), ["server/upgrade.requested"]],
 ];
 
@@ -77,6 +85,7 @@ const outcomeOf = async (gate: Gated, userId: string) => {
   const exit = await harness.runEffect(Effect.exit(gate({ userId }).pipe(
     Effect.provideService(SupportStaff, supportStaffOf([])),
     Effect.provideService(InngestClient, inngest),
+    Effect.provide(testConfigLayer({ DATABASE_URL: "postgres://unused" })),
   )));
   if (Exit.isSuccess(exit)) return exit.value instanceof Function ? "a plan" : JSON.stringify(exit.value) ?? "undefined";
   const error = Cause.squash(exit.cause);

@@ -10,7 +10,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { user, verification } from "#/modules/identity/tables";
-import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
+import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/runtime/connections.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { codeOfPasskeyKey, passkeyKeyOf, type PasskeyKey } from "#/modules/passkeys/passkey-key";
 import { passkeyRequest } from "#/modules/passkeys/tables";
@@ -132,7 +132,7 @@ export type PasskeyApproval =
   | null;
 
 /** What one Server says of a passkey; `unanswered` when Cloud couldn't read it. */
-export type ServerTrust = { readonly server: string; readonly approval: PasskeyApproval | "unanswered" };
+type ServerTrust = { readonly server: string; readonly approval: PasskeyApproval | "unanswered" };
 
 /**
  * The passkeys this person added in the Organization, newest first, each with what every Server says about it. Cloud's

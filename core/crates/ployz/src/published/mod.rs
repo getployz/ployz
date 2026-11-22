@@ -22,9 +22,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{self, CredentialStore, LoginError};
-use crate::cloud_origin::CloudOrigin;
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::cloud::login::{CredentialStore, LoginError};
+use crate::cloud::origin::CloudOrigin;
+use crate::coded::Coded;
 
 /// The manifest one Cloud serves, as `ployz` uses it.
 #[derive(Debug, Clone)]
@@ -145,13 +147,13 @@ pub(crate) enum PublishError {
     Slow { cloud: String, budget: Duration },
 }
 
-impl PublishError {
-    pub(crate) fn code(&self) -> RpcErrorCode {
+impl Coded for PublishError {
+    fn code(&self) -> RpcErrorCode {
         match self {
             Self::Unsupported { .. } => RpcErrorCode::Unsupported,
             Self::Unavailable(_) => RpcErrorCode::Unavailable,
             Self::Refused(error) => error.code.clone(),
-            Self::Cloud(error) => crate::failure::login_code(error),
+            Self::Cloud(error) => error.code(),
             Self::Malformed { .. } | Self::Cache { .. } | Self::Runtime(_) => {
                 RpcErrorCode::Internal
             }
@@ -182,11 +184,11 @@ pub(crate) const UNKNOWN_COMMAND: &str = "unknown_command";
 const FEATURE_UNAVAILABLE: &str = "feature_unavailable";
 
 impl Setup {
-    /// The Cloud the credential acts in, as [`cloud_account::named_cloud`] picks it from
+    /// The Cloud the credential acts in, as [`cloud::account::named_cloud`] picks it from
     /// `PLOYZ_TOKEN`, `cloud` (`PLOYZ_CLOUD_URL`) and the sign-in beside `config`.
     pub(crate) fn beside(config: &Path, cloud: Option<String>) -> Self {
-        let token = cloud_account::env_token().is_some();
-        let named = cloud_account::named_cloud(&CredentialStore::beside(config), token, cloud)
+        let token = cloud::account::env_token().is_some();
+        let named = cloud::account::named_cloud(&CredentialStore::beside(config), token, cloud)
             .ok()
             .flatten();
         let configured = named.is_some() || token;
@@ -214,7 +216,7 @@ impl Setup {
     ///
     /// Returns a sign-in that exists but cannot be used; signed out is `None`.
     pub(crate) async fn credential(&self) -> Result<Option<Credential>, LoginError> {
-        match cloud_account::from_env(&CredentialStore::beside(&self.config)).await {
+        match cloud::account::from_env(&CredentialStore::beside(&self.config)).await {
             Ok(credential) => Ok(Some(credential)),
             Err(LoginError::SignedOut) => Ok(None),
             Err(error) => Err(error),
@@ -283,15 +285,13 @@ impl Setup {
             path: path.clone(),
             source,
         };
-        std::fs::create_dir_all(&self.dir).map_err(failed)?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.dir).map_err(failed)?;
         let cached = wire::Cached {
             cloud: self.cloud.clone(),
             manifest: manifest.clone(),
         };
-        serde_json::to_writer_pretty(&mut file, &cached).map_err(|error| failed(error.into()))?;
-        file.persist(&path).map_err(|error| failed(error.error))?;
-        Ok(())
+        let contents = serde_json::to_vec_pretty(&cached).map_err(|error| failed(error.into()))?;
+        crate::atomic_file::replace(&path, &contents, crate::atomic_file::OWNER_ONLY)
+            .map_err(|error| failed(error.into()))
     }
 
     /// Forget one entry Cloud said it no longer has, so `--help` stops showing it.
@@ -338,7 +338,7 @@ impl Setup {
     ) -> Result<Published, PublishError> {
         let cached = self.cached();
         let url = format!("{}/api/cli/manifest", self.cloud);
-        let client = crate::cloud_account::client()?;
+        let client = crate::cloud::http::client()?;
         let send = |credential: Option<&Credential>| {
             let mut request = client.get(&url);
             if let Some(credential) = credential {
@@ -351,7 +351,7 @@ impl Setup {
         };
         let mut response = send(None)
             .await
-            .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
+            .map_err(|error| cloud::login::unreachable(&self.cloud, error))?;
         let mut refused = LoginError::TokenRefused;
         if matches!(
             response.status(),
@@ -363,21 +363,21 @@ impl Setup {
             refused = credential.token_refused();
             response = send(Some(&credential))
                 .await
-                .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
+                .map_err(|error| cloud::login::unreachable(&self.cloud, error))?;
         }
         let status = response.status();
-        cloud_account::notice_revision(&response);
+        cloud::http::notice_revision(&response);
         let bytes = response
             .bytes()
             .await
-            .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
+            .map_err(|error| cloud::login::unreachable(&self.cloud, error))?;
         if status == StatusCode::NOT_MODIFIED
             && let Some(cached) = cached
         {
             return Ok(cached);
         }
         if !status.is_success() {
-            if let Some(refused) = cloud_account::refusal(&bytes) {
+            if let Some(refused) = cloud::account::refusal(&bytes) {
                 return Err(match refused.code.as_str() {
                     FEATURE_UNAVAILABLE => PublishError::Unavailable(refused.message),
                     _ => PublishError::Refused(refused),
@@ -757,7 +757,7 @@ mod tests {
         });
         std::fs::write(home.path().join("cloud.json"), stored.to_string()).unwrap();
         let store = CredentialStore::beside(&home.path().join("config.yaml"));
-        let device = || async { cloud_account::credential(&store, None, None).await.ok() };
+        let device = || async { cloud::account::credential(&store, None, None).await.ok() };
         let (url, seen) = refusing_cloud();
         let elsewhere = setup(tempfile::tempdir().unwrap().path(), &url);
 

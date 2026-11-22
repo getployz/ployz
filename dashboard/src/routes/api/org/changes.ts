@@ -1,33 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Effect, Option, Schema } from "effect";
-import { currentChangeCursor } from "#/modules/organization/change-log.server";
-import { authorizeRequest } from "#/modules/organization/access.server";
+import { Schema } from "effect";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
-import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
-import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
-
-const OrgChangesSearch = Schema.Struct({ organizationSlug: organizationSlugSchema });
-const decodeOrgChangesSearch = Schema.decodeUnknownOption(OrgChangesSearch);
+import { organizationSearchRoute } from "#/server/api-route";
 
 export const Route = createFileRoute("/api/org/changes")({
-  validateSearch: Schema.toStandardSchemaV1(OrgChangesSearch),
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ organizationSlug: organizationSlugSchema })),
   server: {
-    handlers: {
-      GET: async ({ request }) => {
-        const search = decodeOrgChangesSearch(Object.fromEntries(new URL(request.url).searchParams));
-        if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "A valid organization slug is required" }));
-        return handleOrgChangesRequest(request, search.value.organizationSlug, {
-          authorize: (organizationSlug) =>
-            runAppEffect(authorizeRequest(request.headers, organizationSlug, "org:read").pipe(
-              Effect.map((access) => ({ organizationId: access.organization.id })),
-            ), { signal: request.signal }),
-          currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),
-          readChanges: (input) => runAppEffect(readOrganizationChanges(input), { signal: request.signal }),
-        });
-      },
-      ANY: (): Response => methodNotAllowed(Route),
-    },
+    handlers: organizationSearchRoute(handleOrgChangesRequest),
   },
 });

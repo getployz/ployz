@@ -4,8 +4,8 @@ import { Cause, Data, Effect, Exit, Layer, Logger, References, Tracer } from "ef
 import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
 import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { RedactedLogsLive, redactingLogger, redactSpanExits } from "#/server/log-redaction";
-import { encodePublicBoundaryError, loggableCause } from "#/server/public-error";
+import { loggableCause, RedactedLogsLive, redactingLogger, redactSpanExits } from "#/server/log-redaction";
+import { encodePublicBoundaryError } from "#/server/public-error";
 
 const failedQuery = () => new EffectDrizzleQueryError({
   query: "insert into machine_enrollment_token (token_hash) values ($1)",

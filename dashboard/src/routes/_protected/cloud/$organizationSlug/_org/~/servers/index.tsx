@@ -10,7 +10,7 @@ import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/mod
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
 import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
-import { AddServersDialog } from "./-components/add-servers-dialog";
+import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRun } from "./-components/first-run-card";
 import { FirstTunnelStatus } from "./-components/first-tunnel";
@@ -23,12 +23,13 @@ import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unr
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
 import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
 import { RenameRegionDialog } from "./-components/rename-region-dialog";
-import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
+import { useEnrollmentStatus, useWaitingServers } from "#/modules/machines/waiting/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
+  staticData: { section: "servers" },
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ token: Schema.optional(Schema.String) })),
   // The release on the Servers' own line waits for the versions they report.
   loader: ({ params, context }) => prefetchRemote(

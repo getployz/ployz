@@ -1,48 +1,25 @@
-import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { asRecord } from "#/lib/json";
-import { runCommand, MANIFEST_HEADER, MANIFEST_REVISION } from "#/modules/commands/commands.server";
-import { refusal } from "#/modules/config-store/config-store.server";
+import { runCommand } from "#/modules/commands/commands.server";
 import type { Caller } from "#/modules/identity/actor";
-import { ClientAddress, resolveCaller } from "#/modules/identity/caller.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { observedIp } from "#/routes/api/checkin/-handler";
-import { AppConfig } from "#/server/config.server";
-import { Forbidden, publicErrorResponse, Validation } from "#/server/public-error";
-import type { AppServices } from "#/server/runtime.server";
-import { runAppEffect } from "#/server/run.server";
-
-/** Serves `reply` knowing the client address the request came from, which the Caller's failed-authentication limit keys on. */
-export function fromClient<A, E, R>(request: Request, reply: Effect.Effect<A, E, R>) {
-  const peer = getRequestIP();
-  return Effect.gen(function* () {
-    const { auth } = yield* AppConfig;
-    return yield* Effect.provideService(reply, ClientAddress, observedIp(request.headers, auth.clientIpHeaders, peer));
-  });
-}
-
-/** Runs one `/api/cli` call; every reply, a failure too, names the manifest revision. */
-export async function serveCli<E>(request: Request, reply: Effect.Effect<Response, E, AppServices>) {
-  const response = await runAppEffect(fromClient(request, reply), { signal: request.signal }).catch(publicErrorResponse);
-  const headers = new Headers(response.headers);
-  headers.set(MANIFEST_HEADER, MANIFEST_REVISION);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
+import { cliRefusalResponse, Forbidden, Validation } from "#/server/public-error";
 
 /**
  * One CLI call in an Organization, named by its ID, which a slug rename never moves: the Caller (a signed-in device or
  * an Organization Token) acts, the JSON body is the input. A token acts only in its own Organization.
  */
-export function handleCliRequest<I extends { readonly organizationId: string }, A, E, R>(
+export function handleOrganizationCliRequest<I extends { readonly organizationId: string }, A, E, R>(
   request: Request,
   input: Schema.Decoder<I>,
   operation: (caller: Caller, input: I) => Effect.Effect<A, E, R>,
 ) {
-  return Effect.flatMap(resolveCaller(request.headers), (caller) => handleCliRequestAs(caller, request, input, operation));
+  return Effect.flatMap(resolveCaller(request.headers), (caller) => handleOrganizationCliRequestAs(caller, request, input, operation));
 }
 
-/** {@link handleCliRequest} for a Caller already resolved from this request. */
-export function handleCliRequestAs<I extends { readonly organizationId: string }, A, E, R>(
+/** {@link handleOrganizationCliRequest} for a Caller already resolved from this request. */
+function handleOrganizationCliRequestAs<I extends { readonly organizationId: string }, A, E, R>(
   caller: Caller,
   request: Request,
   input: Schema.Decoder<I>,
@@ -69,14 +46,14 @@ export function handleCliRequestAs<I extends { readonly organizationId: string }
 export const handleRunRequest = Effect.fn("Commands.handleRun")(function* (request: Request, name: string) {
   const caller = yield* resolveCaller(request.headers);
   const key = requestKeyOf(request.headers.get(REQUEST_KEY_HEADER));
-  if (!key.ok) return refusal(key.refusal);
+  if (!key.ok) return cliRefusalResponse(key.refusal);
   const body = yield* Effect.tryPromise({
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const input = asRecord(body)?.["input"] ?? null;
   const ran = yield* runCommand(caller, name, input, { approvalId: request.headers.get("x-ployz-approval"), key: key.key });
-  if (!ran.ok) return refusal(ran.refusal);
+  if (!ran.ok) return cliRefusalResponse(ran.refusal);
   const reply = ran.message === undefined ? { output: ran.output } : { output: ran.output, message: ran.message };
   return Response.json(reply, { headers: { "cache-control": "no-store" } });
 });

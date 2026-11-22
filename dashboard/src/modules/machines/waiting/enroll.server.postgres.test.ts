@@ -5,8 +5,8 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { serverEnrollmentReportedEvent } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { serverEnrollmentReported } from "#/modules/machines/waiting/server-enrollment.events";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { enrollMachine, hashEnrollmentToken, insertEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { forgetEmptiedPairing, revokeOrganizationPairing, seeCluster } from "#/modules/machines/pairing-removal.server";
@@ -26,12 +26,12 @@ import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
-import { removeOrganization } from "#/modules/organization/organization-removal.server";
+import { removeOrganization } from "#/modules/organization-teardown/organization-removal.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { makeSecretEncryption, type SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { invokeOnFailure } from "#/test/inngest-failure";
@@ -292,7 +292,7 @@ it.each(["installing", "enrolling", "queued", "storage"])("reports a failed ZFS 
   sent.mockClear();
   expect(await checkin(a, { prep: { docker: "ready", zfs: "failed" } })).toEqual({ kind: "wait", retryAfter: 10 });
   expect(sent).toHaveBeenCalledWith(expect.objectContaining({
-    name: serverEnrollmentReportedEvent,
+    name: serverEnrollmentReported.name,
     data: { attemptId: started?.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } },
   }));
 });
@@ -347,7 +347,7 @@ it("spares a join the host reported committed before its run recorded it, and ke
   const attemptId = await committing(a);
   sent.mockClear();
   expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
-  expect(sent).toHaveBeenCalledWith(expect.objectContaining({ name: serverEnrollmentReportedEvent, data: { attemptId, stage: "joining" } }));
+  expect(sent).toHaveBeenCalledWith(expect.objectContaining({ name: serverEnrollmentReported.name, data: { attemptId, stage: "joining" } }));
   expect(await reports()).toEqual([{ reported_attempt_id: attemptId, reported_stage: "joining" }]);
   expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1, spared: [a.id] });
   expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);

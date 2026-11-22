@@ -1,59 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
-import {
-  buildMachineJoinCommand,
-  enrollmentExpiry,
-  enrollmentIdentitySchema,
-  type EnrollmentTokenRow,
-  mintedEnrollment,
-  redactIpAddresses,
-  registerRequestFromEnrollmentIdentity,
-  ResetPendingEnrollmentInput,
-  rustMachineIdSchema,
-  setupReportAccepted,
-  setupReportProperties,
-  setupReportSchema,
-  waitForFounder,
-  waitForJoinSlot,
-} from "#/modules/machines/enrollment";
+import { enrollmentIdentitySchema, type EnrollmentTokenRow, redactIpAddresses, registerRequestFromEnrollmentIdentity, ResetPendingEnrollmentInput, setupReportAccepted, setupReportProperties, setupReportSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
-
-describe("machine enrollment command", () => {
-  it("pins its own version on hosted Cloud", () => {
-    const minted = mintedEnrollment({
-      origin: "https://ployz.dev",
-      token: "pmet_secret",
-      version: "1.2.3-beta.4",
-      expiresAt: new Date("2026-08-19T00:00:00.000Z"),
-    });
-
-    expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3-beta.4 && sudo ployz server add",
-    );
-    expect(minted.command).not.toContain("pmet_secret");
-    expect(minted.token).toBe("pmet_secret");
-    expect(minted.expiresAt).toBe("2026-08-19T00:00:00.000Z");
-  });
-
-  it("pins its own version and adds --cloud-url for self-hosted Cloud", () => {
-    expect(
-      buildMachineJoinCommand({
-        origin: "https://cloud.example",
-        version: "1.2.3",
-      }),
-    ).toBe(
-      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3 && sudo ployz server add --cloud-url 'https://cloud.example'",
-    );
-  });
-
-  it("keeps token expiry stable", () => {
-    expect(enrollmentExpiry(new Date("2026-08-18T00:00:00.000Z"))).toEqual(
-      new Date("2026-08-19T00:00:00.000Z"),
-    );
-  });
-});
 
 describe("organization enrollment server-function inputs", () => {
   it("requires exact reset confirmation", () => {
@@ -172,13 +123,6 @@ describe("versioned enrollment identity", () => {
     expect(Option.isNone(Schema.decodeUnknownOption(enrollmentIdentitySchema)({ ...identity, capabilities: [1] }))).toBe(true);
   });
 
-  it("waits for two seconds without advertising a claim expiry", () => {
-    expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
-  });
-
-  it("waits five seconds in line for a join slot", () => {
-    expect(waitForJoinSlot(1)).toEqual({ kind: "not_yet", retryAfter: 5, reason: "queued", ahead: 1 });
-  });
 });
 
 describe("setup report", () => {

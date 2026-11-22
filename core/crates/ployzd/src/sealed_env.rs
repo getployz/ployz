@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
-    path::Path,
+    path::PathBuf,
 };
 
 use futures_util::StreamExt;
@@ -57,79 +57,91 @@ pub(crate) struct OpenedEnv {
     pub(crate) record: Option<SealedRecord>,
 }
 
-/// Open `environment` for a Container of the spec `admitted` stands for. A Sealed value
-/// opens only for a spec a signature stands behind, and each of its Sealed parts only
-/// when that signature reaches it, as [`AdmittedSpec::opens`] says.
-///
-/// # Errors
-/// Returns [`OpenError::Unsigned`] for a Sealed value under an unsigned spec,
-/// [`OpenError::OutOfReach`] for a part the admission doesn't reach, and the other
-/// [`OpenError`]s when a value does not open.
-pub(crate) fn open(
-    environment: BTreeMap<String, EnvValue>,
-    identity: Option<&SealedIdentity>,
-    key_dir: Option<&Path>,
-    admitted: &AdmittedSpec,
-) -> Result<OpenedEnv, OpenError> {
-    let (sealed, text): (BTreeMap<_, _>, BTreeMap<_, _>) = environment
-        .into_iter()
-        .partition(|(_, value)| value.is_sealed());
-    let mut values: BTreeMap<String, String> = text
-        .into_iter()
-        .filter_map(|(key, value)| Some((key, value.text()?.to_owned())))
-        .collect();
-    let Some((first, _)) = sealed.first_key_value() else {
-        return Ok(OpenedEnv {
-            values,
-            record: None,
-        });
-    };
-    if !admitted.signed() {
-        return Err(OpenError::Unsigned(first.clone()));
-    }
-    let identity = identity.ok_or_else(|| OpenError::MissingIdentity(first.clone()))?;
-    for (name, value) in &sealed {
-        let reached = value.sealed_parts().into_iter().all(|part| {
-            admitted.opens(&ValueReach {
-                environment: identity.environment,
-                scope: part.scope,
-            })
-        });
-        if !reached {
-            return Err(OpenError::OutOfReach(name.clone()));
+/// Where this Machine keeps its Sealing Key, read afresh at each open. A Machine given
+/// none holds no key, and every open answers [`OpenError::KeyMissing`].
+#[derive(Clone, Debug, Default)]
+pub struct SealingKeyStore {
+    data_dir: Option<PathBuf>,
+}
+
+impl SealingKeyStore {
+    /// The Sealing Key kept in `data_dir`.
+    #[must_use]
+    pub fn at(data_dir: PathBuf) -> Self {
+        Self {
+            data_dir: Some(data_dir),
         }
     }
-    let record = SealedRecord::new(identity.clone(), sealed);
-    check_bindings(&record)?;
-    let key = load(key_dir)?;
-    for opened in opened(&record, &key)? {
-        values.insert(opened.name.to_owned(), opened.whole);
+
+    fn load(&self) -> Result<SealingKey, OpenError> {
+        let dir = self.data_dir.as_deref().ok_or(OpenError::KeyMissing)?;
+        SealingKey::load(dir)
+            .map_err(OpenError::KeyUnreadable)?
+            .ok_or(OpenError::KeyMissing)
     }
-    Ok(OpenedEnv {
-        values,
-        record: Some(record),
-    })
-}
 
-pub(crate) fn record_from_label(
-    label: Option<&str>,
-) -> Result<Option<SealedRecord>, serde_json::Error> {
-    label.map(serde_json::from_str).transpose()
-}
+    /// Open `environment` for a Container of the spec `admitted` stands for. A Sealed
+    /// value opens only for a spec a signature stands behind, and each of its Sealed
+    /// parts only when that signature reaches it, as [`AdmittedSpec::opens`] says.
+    ///
+    /// # Errors
+    /// Returns [`OpenError::Unsigned`] for a Sealed value under an unsigned spec,
+    /// [`OpenError::OutOfReach`] for a part the admission doesn't reach, and the other
+    /// [`OpenError`]s when a value does not open.
+    pub(crate) fn open_env(
+        &self,
+        environment: BTreeMap<String, EnvValue>,
+        identity: Option<&SealedIdentity>,
+        admitted: &AdmittedSpec,
+    ) -> Result<OpenedEnv, OpenError> {
+        let (sealed, text): (BTreeMap<_, _>, BTreeMap<_, _>) = environment
+            .into_iter()
+            .partition(|(_, value)| value.is_sealed());
+        let mut values: BTreeMap<String, String> = text
+            .into_iter()
+            .filter_map(|(key, value)| Some((key, value.text()?.to_owned())))
+            .collect();
+        let Some((first, _)) = sealed.first_key_value() else {
+            return Ok(OpenedEnv {
+                values,
+                record: None,
+            });
+        };
+        if !admitted.signed() {
+            return Err(OpenError::Unsigned(first.clone()));
+        }
+        let identity = identity.ok_or_else(|| OpenError::MissingIdentity(first.clone()))?;
+        for (name, value) in &sealed {
+            let reached = value.sealed_parts().into_iter().all(|part| {
+                admitted.opens(&ValueReach {
+                    environment: identity.environment,
+                    scope: part.scope,
+                })
+            });
+            if !reached {
+                return Err(OpenError::OutOfReach(name.clone()));
+            }
+        }
+        let record = SealedRecord::new(identity.clone(), sealed);
+        check_bindings(&record)?;
+        let key = self.load()?;
+        for opened in opened(&record, &key)? {
+            values.insert(opened.name.to_owned(), opened.whole);
+        }
+        Ok(OpenedEnv {
+            values,
+            record: Some(record),
+        })
+    }
 
-/// Opening a record with this Machine's Sealing Key.
-pub(crate) trait Unseal {
-    fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError>;
-
-    /// Open every value for a Build: each whole by name, with the parts that hide
-    /// them in what it reports.
-    fn open_for_build(&self, key_dir: Option<&Path>) -> Result<OpenedSealed, OpenError>;
-}
-
-impl Unseal for SealedRecord {
-    fn secrets(&self, key_dir: Option<&Path>) -> Result<SealedValues, OpenError> {
-        let key = load(key_dir)?;
-        Ok(opened(self, &key)?
+    /// Every opened value of `record`, whole and in parts, to hide them in what the
+    /// Container writes.
+    ///
+    /// # Errors
+    /// Returns the [`OpenError`] when the key is missing or a value does not open.
+    pub(crate) fn secrets(&self, record: &SealedRecord) -> Result<SealedValues, OpenError> {
+        let key = self.load()?;
+        Ok(opened(record, &key)?
             .into_iter()
             .flat_map(|opened| {
                 std::iter::once((opened.name.to_owned(), opened.whole)).chain(opened.parts)
@@ -137,17 +149,58 @@ impl Unseal for SealedRecord {
             .collect())
     }
 
-    fn open_for_build(&self, key_dir: Option<&Path>) -> Result<OpenedSealed, OpenError> {
-        check_bindings(self)?;
-        let key = load(key_dir)?;
+    /// Open every value of `record` for a Build: each whole by name, with the parts that
+    /// hide them in what it reports.
+    ///
+    /// # Errors
+    /// Returns the [`OpenError`] when a value is bound to another name, the key is
+    /// missing, or a value does not open.
+    pub(crate) fn open_for_build(&self, record: &SealedRecord) -> Result<OpenedSealed, OpenError> {
+        check_bindings(record)?;
+        let key = self.load()?;
         let mut values = BTreeMap::new();
         let mut parts = Vec::new();
-        for opened in opened(self, &key)? {
+        for opened in opened(record, &key)? {
             values.insert(opened.name.to_owned(), opened.whole);
             parts.extend(opened.parts);
         }
         Ok(OpenedSealed::new(values, parts))
     }
+
+    /// Open a value the platform sealed to this Cluster for `purpose`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this
+    /// Machine holds no usable Sealing Key, and [`OpenError::TunnelToken`] or
+    /// [`OpenError::PrivateAccessKey`] when the value was sealed for another Cluster or
+    /// another purpose.
+    pub(crate) fn open_platform(
+        &self,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+        self.load()?
+            .open_platform(purpose, sealed)
+            .ok_or(match purpose {
+                PlatformPurpose::IngressTunnel => OpenError::TunnelToken,
+                PlatformPurpose::PrivateAccess => OpenError::PrivateAccessKey,
+            })
+    }
+
+    /// The Cluster's build attest key pair, derived from the Sealing Key.
+    ///
+    /// # Errors
+    /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
+    pub(crate) fn attest(&self) -> Result<ployz_core::X25519Secret, OpenError> {
+        Ok(self.load()?.attest())
+    }
+}
+
+pub(crate) fn record_from_label(
+    label: Option<&str>,
+) -> Result<Option<SealedRecord>, serde_json::Error> {
+    label.map(serde_json::from_str).transpose()
 }
 
 fn opened<'a>(record: &'a SealedRecord, key: &SealingKey) -> Result<Vec<Opened<'a>>, OpenError> {
@@ -220,11 +273,11 @@ impl Lines {
     pub(crate) fn new(
         container: ContainerId,
         record: Result<Option<SealedRecord>, impl std::fmt::Display>,
-        key_dir: Option<&Path>,
+        sealing: &SealingKeyStore,
     ) -> Self {
         let forms = match record {
             Ok(None) => return Self::Shown,
-            Ok(Some(record)) => record.secrets(key_dir).map_err(|error| error.to_string()),
+            Ok(Some(record)) => sealing.secrets(&record).map_err(|error| error.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match forms {
@@ -330,53 +383,6 @@ fn parts(value: &EnvValue) -> Box<dyn Iterator<Item = Part<'_>> + '_> {
     }
 }
 
-/// Open a tunnel token the platform sealed to this Cluster.
-///
-/// # Errors
-///
-/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
-/// holds no usable Sealing Key, and [`OpenError::TunnelToken`] when the token was
-/// sealed for another Cluster or another purpose.
-pub(crate) fn open_tunnel_token(
-    sealed: &Ciphertext,
-    key_dir: Option<&Path>,
-) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-    load(key_dir)?
-        .open_platform(PlatformPurpose::IngressTunnel, sealed)
-        .ok_or(OpenError::TunnelToken)
-}
-
-/// Open a Tailscale auth key the platform sealed to this Cluster.
-///
-/// # Errors
-///
-/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
-/// holds no usable Sealing Key, and [`OpenError::PrivateAccessKey`] when the key was
-/// sealed for another Cluster or another purpose.
-pub(crate) fn open_private_access_key(
-    sealed: &Ciphertext,
-    key_dir: Option<&Path>,
-) -> Result<Zeroizing<Vec<u8>>, OpenError> {
-    load(key_dir)?
-        .open_platform(PlatformPurpose::PrivateAccess, sealed)
-        .ok_or(OpenError::PrivateAccessKey)
-}
-
-/// The Cluster's build attest key pair, derived from the Sealing Key in `key_dir`.
-///
-/// # Errors
-/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
-pub(crate) fn attest_key(key_dir: Option<&Path>) -> Result<ployz_core::X25519Secret, OpenError> {
-    Ok(load(key_dir)?.attest())
-}
-
-fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
-    let dir = key_dir.ok_or(OpenError::KeyMissing)?;
-    SealingKey::load(dir)
-        .map_err(OpenError::KeyUnreadable)?
-        .ok_or(OpenError::KeyMissing)
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use uuid::Uuid;
@@ -419,13 +425,14 @@ pub(crate) mod test_support {
             value
         }
 
+        /// This Cluster's Sealing Key, as a Machine holding it keeps it.
+        pub(crate) fn store(&self) -> SealingKeyStore {
+            SealingKeyStore::at(self.dir.0.clone())
+        }
+
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
-            open(
-                env,
-                Some(&self.identity),
-                Some(&self.dir.0),
-                &AdmittedSpec::test_unbound(true),
-            )
+            self.store()
+                .open_env(env, Some(&self.identity), &AdmittedSpec::test_unbound(true))
         }
 
         /// `plaintext` sealed to this Cluster for `purpose`, as a client seals it.
@@ -487,7 +494,7 @@ mod tests {
         );
         let record = opened.record.unwrap();
         assert_eq!(record.keys().collect::<Vec<_>>(), ["TOKEN", "URL"]);
-        let secrets = record.secrets(Some(&cluster.dir.0)).unwrap();
+        let secrets = cluster.store().secrets(&record).unwrap();
         assert_eq!(format!("{secrets:?}"), r#"["PASSWORD", "TOKEN", "URL"]"#);
         let label = serde_json::to_string(&record).unwrap();
         assert_eq!(
@@ -499,13 +506,13 @@ mod tests {
 
     #[test]
     fn text_only_env_needs_no_key_or_identity() {
-        let opened = open(
-            BTreeMap::from([("A".to_owned(), EnvValue::from("b"))]),
-            None,
-            None,
-            &AdmittedSpec::test_unbound(true),
-        )
-        .unwrap();
+        let opened = SealingKeyStore::default()
+            .open_env(
+                BTreeMap::from([("A".to_owned(), EnvValue::from("b"))]),
+                None,
+                &AdmittedSpec::test_unbound(true),
+            )
+            .unwrap();
         assert_eq!(opened.values.get("A").map(String::as_str), Some("b"));
         assert!(opened.record.is_none());
     }
@@ -576,7 +583,7 @@ mod tests {
             Some("postgres://app:pa55@db")
         );
         assert!(matches!(
-            open(url(), Some(&elsewhere), Some(&cluster.dir.0), &AdmittedSpec::test_unbound(true)),
+            cluster.store().open_env(url(), Some(&elsewhere), &AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "URL"
         ));
     }
@@ -603,11 +610,7 @@ mod tests {
             opened.values.get("URL").map(String::as_str),
             Some("postgres://app:pa55@db")
         );
-        let secrets = opened
-            .record
-            .unwrap()
-            .secrets(Some(&cluster.dir.0))
-            .unwrap();
+        let secrets = cluster.store().secrets(&opened.record.unwrap()).unwrap();
         assert_eq!(
             format!("{secrets:?}"),
             r#"["DB_PASSWORD", "DB_USER", "URL"]"#
@@ -635,10 +638,9 @@ mod tests {
             scope,
         };
         let open_reaching = |values| {
-            open(
+            cluster.store().open_env(
                 env.clone(),
                 Some(&cluster.identity),
-                Some(&cluster.dir.0),
                 &AdmittedSpec::test_reaching(ployz_core::authority::Reach {
                     values,
                     volumes: Vec::new(),
@@ -673,7 +675,7 @@ mod tests {
         };
         let env = BTreeMap::from([("TOKEN".to_owned(), EnvValue::Sealed(value))]);
         assert!(matches!(
-            open(env, Some(&elsewhere), Some(&cluster.dir.0), &AdmittedSpec::test_unbound(true)),
+            cluster.store().open_env(env, Some(&elsewhere), &AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "TOKEN"
         ));
     }
@@ -686,12 +688,7 @@ mod tests {
             EnvValue::Sealed(cluster.seal("TOKEN", own(), "x")),
         )]);
         assert!(matches!(
-            open(
-                token,
-                Some(&cluster.identity),
-                Some(&cluster.dir.0),
-                &AdmittedSpec::test_unbound(false),
-            ),
+            cluster.store().open_env(token, Some(&cluster.identity), &AdmittedSpec::test_unbound(false)),
             Err(OpenError::Unsigned(key)) if key == "TOKEN"
         ));
     }
@@ -706,10 +703,9 @@ mod tests {
             )])
         };
         assert!(matches!(
-            open(
+            SealingKeyStore::default().open_env(
                 token(),
                 Some(&cluster.identity),
-                None,
                 &AdmittedSpec::test_unbound(true)
             ),
             Err(OpenError::KeyMissing)
@@ -717,21 +713,17 @@ mod tests {
         let empty = TestDir::new("sealed-env-no-key");
         std::fs::create_dir_all(&empty.0).unwrap();
         assert!(matches!(
-            open(
+            SealingKeyStore::at(empty.0.clone()).open_env(
                 token(),
                 Some(&cluster.identity),
-                Some(&empty.0),
                 &AdmittedSpec::test_unbound(true)
             ),
             Err(OpenError::KeyMissing)
         ));
         assert!(matches!(
-            open(
-                token(),
-                None,
-                Some(&cluster.dir.0),
-                &AdmittedSpec::test_unbound(true)
-            ),
+            cluster
+                .store()
+                .open_env(token(), None, &AdmittedSpec::test_unbound(true)),
             Err(OpenError::MissingIdentity(_))
         ));
         let port = BTreeMap::from([(
@@ -820,9 +812,7 @@ mod tests {
     #[tokio::test]
     async fn a_live_log_never_shows_a_value_split_across_frames() {
         let cluster = Cluster::new();
-        let secrets = token_record(&cluster)
-            .secrets(Some(&cluster.dir.0))
-            .unwrap();
+        let secrets = cluster.store().secrets(&token_record(&cluster)).unwrap();
         let source: LogSource = Box::pin(futures_util::stream::iter([
             entry(1, "login hunter2-"),
             entry(2, "secret ok\nbye hunter2-sec"),

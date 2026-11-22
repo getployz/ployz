@@ -966,7 +966,7 @@ mod tests {
         );
     }
 
-    /// The vector `dashboard/src/modules/variables/seal-value.test.ts` seals in the
+    /// The vector `dashboard/src/modules/sealing/seal-value.test.ts` seals in the
     /// browser, from the same literals. Test keys only.
     #[test]
     fn a_value_the_browser_sealed_opens_only_for_the_variable_it_was_sealed_as() {
@@ -1036,7 +1036,7 @@ mod tests {
         );
     }
 
-    /// The Private Access vector `dashboard/src/modules/variables/seal-value.test.ts`
+    /// The Private Access vector `dashboard/src/modules/sealing/seal-value.test.ts`
     /// seals in the browser with `sealPlatform`. Test keys only.
     #[test]
     fn an_auth_key_the_browser_sealed_opens_only_for_private_access() {

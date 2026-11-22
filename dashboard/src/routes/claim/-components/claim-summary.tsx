@@ -1,5 +1,5 @@
 import { plural } from "#/lib/plural";
-import type { Claim } from "#/modules/identity/claim.queries";
+import type { Claim } from "#/modules/sandbox/claim.queries";
 
 export function ClaimSummary({ claim }: { claim: Extract<Claim, { state: "pending" }> }) {
   return (

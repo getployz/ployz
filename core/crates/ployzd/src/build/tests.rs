@@ -443,14 +443,10 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
 
     let error = fixture
         .local
-        .request_upgrade(
-            ployz_core::RequestMachineUpgradeRequest {
-                attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
-                release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
-            },
-            false,
-            ployz_core::ManagementScope::Full,
-        )
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(
@@ -615,14 +611,10 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
 
     let error = fixture
         .local
-        .request_upgrade(
-            ployz_core::RequestMachineUpgradeRequest {
-                attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
-                release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
-            },
-            false,
-            ployz_core::ManagementScope::Full,
-        )
+        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
+            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(
@@ -801,7 +793,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         fixture.local.clone(),
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
-        None,
+        crate::sealed_env::SealingKeyStore::default(),
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),

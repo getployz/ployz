@@ -12,9 +12,9 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ByteCapacity, ContainerAddress, ContainerId, ContainerObservation, ContainerRuntimeObservation,
-    CopyRotation, EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation,
-    MachineTarget, MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
+    ByteCapacity, ContainerAddress, ContainerId, ContainerObservation, CopyRotation,
+    EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation, MachineTarget,
+    MembershipObservation, Namespace, QualifiedService, ReadRoutedAddressesRequest,
     RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, ServiceContainer, ServiceMode,
     ServiceName, ServiceObservation, ServingContainer, Unacked, op, serving_containers,
 };
@@ -25,7 +25,7 @@ use super::server;
 use super::shared::disk;
 use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
-use crate::cloud_login::LoginError;
+use crate::cloud::login::LoginError;
 use crate::context::ContextError;
 
 pub(super) const UNCHECKED: &str =
@@ -723,7 +723,7 @@ fn service_names(services: &[QualifiedService]) -> String {
 /// crashes. `StartedAt` is on the copy's Machine's clock and `now` on this one, so skew
 /// shifts the window: a start after `now` counts as settled rather than just restarted.
 fn just_restarted(copy: &ContainerObservation, now: SystemTime) -> Option<(i64, Duration)> {
-    if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+    if !copy.runtime.is_running() {
         return None;
     }
     let run = copy.run.as_ref().filter(|run| run.restart_count > 0)?;
@@ -763,9 +763,7 @@ fn shortfall<'service>(
         .map(|copy| copy.as_observation())
         .filter(|copy| match copy.rotation() {
             CopyRotation::In => !copy.stopped,
-            CopyRotation::Out => {
-                matches!(copy.runtime, ContainerRuntimeObservation::Running { .. })
-            }
+            CopyRotation::Out => copy.runtime.is_running(),
             CopyRotation::Pending | CopyRotation::Held(_) => false,
         })
         .collect();

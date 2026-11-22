@@ -3,18 +3,15 @@ import { and, eq } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
 import { type Actor, type Caller, callerEnvironments, callerOrSupportCan } from "#/modules/identity/actor";
 import { FULL_GRANT, granted, outsideEnvironments, type TokenGrant } from "#/modules/identity/token-grant";
-import { member } from "#/modules/identity/tables";
-import type { SupportShows } from "#/modules/support-access/support-access";
+import { member, organization } from "#/modules/organization/tables";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
-import { Auth } from "#/server/auth.server";
+import { Auth } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { RequestScope } from "#/server/request-scope.server";
-import { can, type Permission, permissionsOf, reads } from "./permissions";
-import { organization } from "./tables";
+import { can, type MemberRole, type Permission, permissionsOf, refusalFor, reads, type SupportShows } from "./permissions";
 
-export type Role = typeof member.$inferSelect.role;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
 /** What an Access may do: its role's permissions narrowed by a token's grant, and the Environments it may write, if limited. */
@@ -25,14 +22,14 @@ type Held = { readonly permissions: Permission[]; readonly environments: string[
  * Support reads only what `shows` lets it, as of this request.
  */
 export type Access = Held & (
-  | { readonly kind: "member"; readonly userId: string; readonly role: Role; readonly organization: OrganizationRef }
+  | { readonly kind: "member"; readonly userId: string; readonly role: MemberRole; readonly organization: OrganizationRef }
   | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows }
 );
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
   readonly organization: OrganizationRef;
-  readonly role: Role | null;
+  readonly role: MemberRole | null;
   readonly supportAllowed: boolean;
   readonly supportShows: SupportShows;
 };
@@ -71,7 +68,7 @@ export const admit = (input: {
 }): AccessDecision => {
   const { userId, facts, isStaff, permission, grant = FULL_GRANT, lands = landsOf(permission) } = input;
   if (facts === null) return { kind: "not_found" };
-  const hold = (role: Role | "support"): Held | Refused => {
+  const hold = (role: MemberRole | "support"): Held | Refused => {
     if (!can(role, permission)) return { kind: "forbidden", permission, message: refusalOf(permission, "role") };
     const permissions = granted(permissionsOf(role), grant);
     if (!permissions.includes(permission)) return { kind: "forbidden", permission, message: refusalOf(permission, "grant") };
@@ -95,9 +92,7 @@ export const admit = (input: {
 export const refusalOf = (permission: Permission, by: "role" | "grant" = "role") =>
   by === "grant"
     ? `This token's grant doesn't include ${permission}.`
-    : can("admin", permission)
-      ? "Only an owner or admin of this Organization can do this."
-      : "Only an owner of this Organization can do this.";
+    : refusalFor(permission);
 
 /** Why `caller` doesn't hold `permission`, worded for its role or its token's grant, or null when it does. */
 type Holder = Pick<Caller, "role" | "support"> & Partial<Pick<Caller, "credential">>;

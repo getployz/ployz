@@ -2,9 +2,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { setResponseHeader } from "@tanstack/react-start/server";
 import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
+import { resolvePublicGithubRepository } from "#/modules/github/readable-repository.server";
 import {
   githubRepositoryOwner,
-  resolvePublicGithubRepository,
   getGithubWeb,
   getGithubRepoAccessState,
   listGithubBranches,
@@ -12,15 +12,13 @@ import {
   requestGithubRepoSync,
   searchGithubFiles,
 } from "#/modules/github/github.server";
-import { listGithubBuildRepositories } from "#/modules/github/github-build.server";
+import { listGithubBuildRepositories } from "#/modules/config-store/store-github-repositories.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
 
-const authenticated = [publicErrorMiddleware, actorMiddleware] as const;
 const OrganizationScope = Schema.Struct({
   organizationSlug: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
 });

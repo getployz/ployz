@@ -15,11 +15,11 @@ import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
 import { useStoreBusy } from "#/modules/config-store/store-pending";
-import { StoreRefused } from "#/modules/config-store/store.contract";
-import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
+import { StoreRefused } from "#/lib/refusal";
+import { diffQuery, historyPreviewQuery, historyQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DashboardPage } from "#/components/dashboard-page";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 import { notSetToast, sealedOnlyPaths } from "./history-not-set";
 import { toErrorMessage } from "#/lib/error-message";
@@ -103,8 +103,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   const [limit, setLimit] = useState<number | null>(() =>
     picked !== undefined && diff.saved !== null && diff.saved >= picked ? Math.max(diff.saved - picked + 1, HISTORY_PAGE) : null);
   const [loadingOlder, startOlder] = useTransition();
-  const history = requireView(useStoreView(params.organizationSlug,
-    limit === null ? { query: "history", environment: store } : { query: "history", environment: store, limit }));
+  const history = requireView(useStoreView(params.organizationSlug, historyQuery(store, limit)));
   const scope = useCollectionScope();
   const writer = useStoreWriter(params.organizationSlug);
   const request = useRef(0);
@@ -135,7 +134,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
     setReview({ kind: "loading" });
     try {
       const result = await scope.queryClient.fetchQuery({
-        ...storeViewOptions(params.organizationSlug, scope, { query: "history_preview", environment: store, revision, action, change }),
+        ...storeViewOptions(params.organizationSlug, scope, historyPreviewQuery(store, revision, action, change)),
         staleTime: 0,
       });
       if (requested !== request.current) return;

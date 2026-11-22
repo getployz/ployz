@@ -1,6 +1,6 @@
 //! `status.json`: what the last check-in pass saw, kept for `ployz status`.
 
-use std::{fs, io, os::unix::fs::PermissionsExt, path::Path};
+use std::{fs, io, path::Path};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -314,8 +314,6 @@ impl LocalCheckin {
 
     fn write(&self, path: &Path) -> io::Result<()> {
         let directory = path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(directory)?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
         // Whether the loop writing this held its lock, for `loop_stopped`.
         #[derive(Serialize)]
         struct Written<'a> {
@@ -328,11 +326,8 @@ impl LocalCheckin {
             record: self,
             locked: holds(directory),
         };
-        serde_json::to_writer_pretty(&mut file, &written)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(STATUS_READABLE_BY_ALL))?;
-        file.as_file().sync_all()?;
-        file.persist(path).map_err(|error| error.error)?;
+        let contents = serde_json::to_vec_pretty(&written)?;
+        crate::atomic_file::replace(path, &contents, STATUS_READABLE_BY_ALL)?;
         Ok(())
     }
 }

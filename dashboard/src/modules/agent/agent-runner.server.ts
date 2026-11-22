@@ -7,22 +7,20 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
 import { carriedInto, gateOperation, onceFor, redeemApproval, redeeming, requestApproval, reviewedDiff, unheldApproval } from "#/modules/approvals/approvals.server";
-import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
+import { type Called, type Command, inputSchema } from "#/modules/commands/define";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
-import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
+import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
+import { refused, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
-import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { type AgentCaller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
-import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
-
-/** A Caller acting through an agent: the sidebar, or a remote MCP client. */
-export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
+import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 
 /**
  * One tool call. `key` admits it once; `approvalId` is the approval a retry carries; `page` is where it runs; `origin`
@@ -41,7 +39,6 @@ export type AgentCall = {
 
 export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
 
-/** What a call came to: an outcome, or an approval it waits on. */
 export type AgentResult = { readonly outcome: ToolOutcome } | { readonly asking: Asking };
 
 export type AgentTool = {
@@ -76,7 +73,7 @@ export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "servi
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
 const STAGE_SEVERAL = "For several steps under one approval, stage them in a proposal.";
 /** What the catalog's gated tools end with, said of a published command that asks too: its `about` is the CLI's help. */
-const ASKS = "May stop to ask a human to approve.";
+export const ASKS = "May stop to ask a human to approve.";
 /** A proposal's place in a Service tool: a gated call already says it asks, an ungated one asks only as a step. */
 const inProposal = (gated: boolean): string =>
   gated ? STAGE_SEVERAL : `It runs without approval; as a step of a proposal, a human approves it in the dashboard. ${STAGE_SEVERAL}`;
@@ -173,10 +170,7 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
 
 const KNOWN_TOOLS = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
-/** The proposal a call stages into, when its input names one. */
 export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
-
-const refused = (code: string, message: string): ToolOutcome => ({ ok: false, refusal: { code, message, details: null } });
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
 const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });

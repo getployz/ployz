@@ -1,104 +1,33 @@
 import { describe, expect, it } from "vitest";
-import type { ValuePart } from "./variable-template";
 import {
   buildRefToken,
   caretToken,
-  isPureLiteral,
   parseDisplayToParts,
-  partsToDisplay,
-  partsToLiteralString,
   referencesDeletedOwner,
   renameReferences,
-  type LookupLineage,
-  type LookupSlug,
 } from "./variable-template";
 
-const DB_LINEAGE = "11111111-1111-1111-1111-111111111111";
-const SET_LINEAGE = "22222222-2222-2222-2222-222222222222";
-
-const lookupSlug: LookupSlug = (lineageId) => {
-  if (lineageId === DB_LINEAGE) return "db";
-  if (lineageId === SET_LINEAGE) return "shared";
-  return null;
-};
-
-const lookupLineage: LookupLineage = (slug) => {
-  if (slug === "db") return { lineageId: DB_LINEAGE, scope: "service" };
-  if (slug === "shared") return { lineageId: SET_LINEAGE, scope: "service" };
-  return null;
-};
-
-describe("partsToLiteralString", () => {
-  it("returns null when any ref is present", () => {
-    expect(
-      partsToLiteralString([
-        { kind: "text", value: "x" },
-        { kind: "ref", owner: { scope: "self" }, key: "Y" },
-      ]),
-    ).toBeNull();
-  });
-});
-
-describe("partsToDisplay", () => {
-  it("renders a deleted producer with a sentinel", () => {
-    const parts: ValuePart[] = [
-      { kind: "ref", owner: { scope: "service", lineageId: "deadbeef" }, key: "X" },
-    ];
-    expect(partsToDisplay(parts, lookupSlug)).toBe("${{ <deleted>.X }}");
-  });
-
-  it("escapes a literal ${{ in text", () => {
-    expect(partsToDisplay([{ kind: "text", value: "echo ${{not a ref}}" }], lookupSlug)).toBe(
-      "echo $${{not a ref}}",
-    );
-  });
-});
+const known = (name: string) => name === "db" || name === "shared";
 
 describe("parseDisplayToParts", () => {
-  it("round-trips with partsToDisplay", () => {
-    const display =
-      "postgres://u:${{ db.PASSWORD }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}/app?r=${{ REGION }}&s=${{ shared.STRIPE }}";
-    const { parts, unresolved } = parseDisplayToParts(display, lookupLineage);
-    expect(unresolved).toEqual([]);
-    expect(partsToDisplay(parts, lookupSlug)).toBe(display);
+  it("reports unknown names and keeps their tokens as literal text", () => {
+    const { parts, unresolved } = parseDisplayToParts("x=${{ ghost.Y }} ${{ db.Z }}", known);
+    expect(unresolved).toEqual(["ghost"]);
     expect(parts).toEqual([
-      { kind: "text", value: "postgres://u:" },
-      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PASSWORD" },
-      { kind: "text", value: "@" },
-      { kind: "ref", owner: { scope: "service", lineageId: DB_LINEAGE }, key: "PLOYZ_PRIVATE_DOMAIN" },
-      { kind: "text", value: "/app?r=" },
-      { kind: "ref", owner: { scope: "self" }, key: "REGION" },
-      { kind: "text", value: "&s=" },
-      { kind: "ref", owner: { scope: "service", lineageId: SET_LINEAGE }, key: "STRIPE" },
+      { kind: "text", value: "x=${{ ghost.Y }} " },
+      { kind: "ref", owner: "db", key: "Z" },
     ]);
   });
 
-  it("reports unresolved slugs and keeps them as literal text", () => {
-    const { parts, unresolved } = parseDisplayToParts(
-      "x=${{ ghost.Y }}",
-      lookupLineage,
-    );
-    expect(unresolved).toEqual(["ghost"]);
-    expect(isPureLiteral(parts)).toBe(true);
-    expect(partsToLiteralString(parts)).toBe("x=${{ ghost.Y }}");
-  });
-
-  it("treats $${{ as a literal ${{", () => {
-    const { parts } = parseDisplayToParts("echo $${{ FOO }}", lookupLineage);
-    expect(isPureLiteral(parts)).toBe(true);
-    expect(partsToLiteralString(parts)).toBe("echo ${{ FOO }}");
-  });
-
-  it("leaves a malformed ${{ as literal text", () => {
-    const { parts } = parseDisplayToParts("${{ not-valid", lookupLineage);
-    expect(isPureLiteral(parts)).toBe(true);
-    expect(partsToLiteralString(parts)).toBe("${{ not-valid");
+  it("treats $${{ and a malformed ${{ as literal text", () => {
+    expect(parseDisplayToParts("echo $${{ FOO }}", known).parts).toEqual([{ kind: "text", value: "echo ${{ FOO }}" }]);
+    expect(parseDisplayToParts("${{ not-valid", known).parts).toEqual([{ kind: "text", value: "${{ not-valid" }]);
   });
 
   it("reads a removed service's token, named or not, as the Store shows it", () => {
     const display =
       "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #3f2a9c01>.URL }},${{ db.URL }}";
-    const { unresolved } = parseDisplayToParts(display, lookupLineage);
+    const { unresolved } = parseDisplayToParts(display, known);
     expect(unresolved).toEqual(["<deleted redis-2>", "<deleted redis-2#2>", "<deleted>", "<deleted #3f2a9c01>"]);
     expect(renameReferences(display, "api", "db", "URL", "DSN")).toBe(
       "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #3f2a9c01>.URL }},${{ db.DSN }}",
@@ -109,6 +38,17 @@ describe("parseDisplayToParts", () => {
     expect(referencesDeletedOwner("${{ <deleted redis-2>.URL }}")).toBe(true);
     expect(referencesDeletedOwner("${{<deleted>.URL}}")).toBe(true);
     expect(referencesDeletedOwner("$${{ <deleted redis>.URL }}")).toBe(false);
+  });
+});
+
+describe("renameReferences", () => {
+  it("renames references to the key of the service, own or by name, and keeps escaped text", () => {
+    expect(renameReferences("a=${{ db.URL }} b=${{ URL }} c=${{ web.URL }} d=$${{ db.URL }}", "db", "db", "URL", "DSN"))
+      .toBe("a=${{ db.DSN }} b=${{ DSN }} c=${{ web.URL }} d=$${{ db.URL }}");
+  });
+
+  it("returns null when nothing references the key", () => {
+    expect(renameReferences("${{ web.URL }}", "api", "db", "URL", "DSN")).toBeNull();
   });
 });
 

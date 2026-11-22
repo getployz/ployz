@@ -19,7 +19,7 @@ use crate::checkin::{
     key_failure,
 };
 use crate::cli::{base, switch, value};
-use crate::cloud_origin::DEFAULT_CLOUD;
+use crate::cloud::origin::DEFAULT_CLOUD;
 use crate::env;
 
 pub(crate) fn command(command: Command) -> Command {

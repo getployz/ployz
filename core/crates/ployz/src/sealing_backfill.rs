@@ -462,12 +462,7 @@ async fn observe(mut client: Client, id: MachineId) -> (MachineId, Sight) {
     let target = MachineTarget::from(&id);
     let unknown = |reason: String| (id, Sight::Unknown { reason });
     let description = match client
-        .call::<op::DescribeContract>(
-            DescribeContractRequest {},
-            Call::read()
-                .to(&target)
-                .budget(crate::connect::target_read_timeout()),
-        )
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::target_read(&target))
         .await
         .map_err(crate::connect::rpc_error)
     {
@@ -475,12 +470,7 @@ async fn observe(mut client: Client, id: MachineId) -> (MachineId, Sight) {
         Err(error) => return unknown(error.to_string()),
     };
     let details = match client
-        .call::<op::Inspect>(
-            InspectRequest::default(),
-            Call::read()
-                .to(&target)
-                .budget(crate::connect::target_read_timeout()),
-        )
+        .call::<op::Inspect>(InspectRequest::default(), Call::target_read(&target))
         .await
         .map_err(crate::connect::rpc_error)
     {

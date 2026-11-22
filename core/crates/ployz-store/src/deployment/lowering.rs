@@ -118,18 +118,17 @@ fn ran_as(
         .iter()
         .find(|service| service.id == id.as_str())
     {
-        name = Some(
-            ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?,
-        );
+        name = Some(crate::scope::service_name(service)?);
         runtimes.extend([service.config.private_dns.clone()]);
     }
     let rows = tx.query(
-        "SELECT nodes, run, status FROM config_deployment \
+        &format!(
+            "SELECT nodes, run, status FROM config_deployment \
          WHERE environment_id = ?1 AND number IS NOT NULL \
-         AND (started IS NOT NULL OR status = 'queued') \
+         AND (started IS NOT NULL OR status = '{QUEUED}') \
          AND nodes LIKE ?2 \
-         ORDER BY number DESC",
+         ORDER BY number DESC"
+        ),
         &[
             environment.as_str().into(),
             node_pattern(id.as_str()).as_str().into(),
@@ -202,8 +201,7 @@ fn renamed(
         if !runtimes.is_empty() {
             retire.push(Retire {
                 id,
-                name: ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
+                name: crate::scope::service_name(service)?,
                 runtimes,
             });
         }
@@ -233,7 +231,7 @@ pub(crate) fn dropped(
         &format!(
             "SELECT nodes FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
-             AND status != 'applied' AND NOT {in_flight}"
+             AND status != '{APPLIED}' AND NOT {in_flight}"
         ),
         &[environment.as_str().into()],
     )?;
@@ -349,8 +347,7 @@ pub(crate) fn freeze(
     let mut named = services.to_vec();
     if every_saved {
         for service in saved.services.iter().filter(|service| changed(service)) {
-            let name = ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?;
+            let name = crate::scope::service_name(service)?;
             if !named.contains(&name) {
                 named.push(name);
             }
@@ -568,7 +565,6 @@ pub(crate) fn freeze(
         full,
         prune,
         namespace,
-        credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
         sourceless,
         shipped: lowered.shipped,
@@ -617,6 +613,18 @@ pub(crate) struct Lowered {
     /// then Config file references whose resolved value may break the file or is
     /// left empty.
     pub(crate) warnings: Vec<DeploymentWarning>,
+}
+
+impl Lowered {
+    /// The specs it creates: a `narrowed` one only those it ships, while the rest ride
+    /// along unchanged.
+    pub(crate) fn created(self, narrowed: bool) -> Vec<ployz_core::RequestedServiceSpec> {
+        let mut target = self.intent.target;
+        if narrowed {
+            target.retain(|spec| self.shipped.contains(&spec.name));
+        }
+        target
+    }
 }
 
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]
@@ -898,8 +906,7 @@ pub(super) fn lower(
             .map(|file| file.content.len())
             .sum();
         let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
-        let name =
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+        let name = crate::scope::service_name(service)?;
         if let Some(error) = crate::config_item::mounts_too_much(&name, &names, bytes) {
             return Err(error);
         }

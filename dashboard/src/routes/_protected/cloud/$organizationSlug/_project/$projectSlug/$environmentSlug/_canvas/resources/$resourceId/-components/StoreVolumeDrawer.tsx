@@ -1,0 +1,287 @@
+import { StoreVolumeMounts } from "./StoreMounts";
+import { useState } from "react";
+import { Schema } from "effect";
+import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
+import { Trash2Icon } from "lucide-react";
+import type { DiffView, EnvironmentRef, EnvironmentView, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { Button } from "#/components/ui/button";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { FieldError } from "#/components/ui/field";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
+import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
+import { CanvasInspectorHeader } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorHeader";
+import { mountSplit } from "#/modules/config-store/deploy-waits";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { StoreRefused } from "#/lib/refusal";
+import { InfoHint } from "#/components/info-hint";
+import { Switch } from "#/components/ui/switch";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
+import { serviceSettingRows } from "#/modules/config-store/store-services";
+import { SHARED_VOLUME_WHY } from "#/modules/volume-placement/volume-placement";
+import { SettingsEmpty } from "#/components/settings/settings-list";
+import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { useVolumeCopies, type VolumeCopiesData, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { StoreVolumeSize } from "./StoreVolumeSize";
+import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
+import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
+import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
+import { ServiceSettingInput } from "#/components/settings/ServiceSettingInput";
+import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
+import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
+import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
+import { changedProps } from "#/modules/config-store/store-services";
+import { useStoreChangeActions } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions";
+import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
+import { volumeNodePath } from "#/modules/config-store/setting-paths";
+
+type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
+
+const RESOURCE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
+
+type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
+
+/**
+ * A Volume in the Config Store, in two tabs. Copies: the live one and every place it survives a dead Server, with a
+ * mirror opening in detail at its own address. Settings: its space, who mounts it, and its removal. Every edit is staged
+ * like any other change, except deleting an old copy, which runs at once after a confirm.
+ */
+export function StoreVolumeDrawer({ params, volumeId = params.resourceId, copy = null }: {
+  params: VolumeResourceRouteParams;
+  volumeId?: string;
+  /** The mirror open in detail, from its own resource address. */
+  copy?: MachineId | null;
+}) {
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationSlug } = params;
+  const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store)] as const);
+  const listings = requireView(views[0]).volumes;
+  const services = requireView(views[1]).services;
+  const settings = requireView(views[3]);
+  const volumes = effectiveVolumes(listings, services, settings);
+  const volume = volumes.find((candidate) => candidate.id === volumeId);
+  const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === volumeId);
+  // A stale link, or removed while open (a new Volume's removal, or from the CLI). Any resource id that isn't a Config
+  // lands here, a deleted Config's too, so only a mirror's own address is known to be a Volume.
+  if (!volume) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun={copy === null ? "Resource" : "Volume"} />;
+  return <VolumeDrawer params={params} environment={store} volume={volume} volumes={volumes} services={services}
+    settings={settings} diff={requireView(views[2])} copy={copy} />;
+}
+
+function VolumeDrawer({ params, environment, volume, volumes, services, settings, diff, copy }: {
+  params: VolumeResourceRouteParams;
+  environment: EnvironmentRef;
+  volume: VolumeListing;
+  volumes: readonly VolumeListing[];
+  services: readonly ServiceListing[];
+  settings: EnvironmentView;
+  diff: DiffView;
+  copy: MachineId | null;
+}) {
+  const { organizationSlug } = params;
+  const { tab } = useSearch({ from: RESOURCE_ROUTE_FROM });
+  const navigate = useNavigate({ from: ENVIRONMENT_RESOURCE_ROUTE_TO });
+  const writer = useStoreWriter(organizationSlug);
+  const data = useVolumeCopies(organizationSlug, environment, volume);
+  // Staged counts count: a shared volume warns before the Deploy that would share it.
+  const replicasOf = (service: string) => { const row = serviceSettingRows(settings, service).get("replicas"); return row?.value ?? row?.default ?? 1; };
+  const { machines, volumeCopies } = useRuntimeLens(organizationSlug);
+  const split = (service: string) => mountSplit(service, volume, { home: settings.region ?? null, copies: volumeCopies, servers: machines,
+    services: services.map(({ name }) => ({ name, replicas: replicasOf(name) })) });
+  const state: StoreVolume = { organizationSlug, environment, volume };
+  const removing = volume.change === "delete";
+  const shownName = useStorePendingName(organizationSlug, environment, "volume", volume.name);
+  const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
+    ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) =>
+    volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined));
+  const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
+  // A mirror shows only in Copies, whatever tab the address carried in.
+  const page = copy !== null || !Schema.is(volumePageSchema)(tab) ? "copies" : tab;
+  const open = (next: MachineId | null) => void navigate({
+    params: { ...params, resourceId: next === null ? volume.id : mirrorResourceId(volume.id, next) },
+    search: (prev) => ({ ...prev, tab: "copies" as const }),
+  });
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <CanvasInspectorHeader params={params}>
+        {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
+          <div className="min-w-0"><CanvasInspectorNameEditor value={shownName} schema={nameSchema} editTitle="Edit volume name"
+            editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
+            {...changedProps(renamed)}
+            onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} /></div>
+        )}
+      </CanvasInspectorHeader>
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <Tabs value={page}
+          onValueChange={(value) => {
+            if (!Schema.is(volumePageSchema)(value)) return;
+            // Leaving Copies closes the mirror open there.
+            if (copy !== null) void navigate({ params: { ...params, resourceId: volume.id }, search: (prev) => ({ ...prev, tab: value }) });
+            else void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
+          }}
+          className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
+          <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
+            {VOLUME_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
+          </TabsList>
+          <TabsContent value="copies" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+                {managed ? <VolumeCopiesPanel {...data} open={copy} onOpen={open} /> : (
+                  <Empty variant="placeholder">
+                    <EmptyDescription>{removing ? "Removed on next deploy." : volume.deployed ? "Managed volumes only." : "Deploy first."}</EmptyDescription>
+                  </Empty>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+                <SettingsSection id="space" title="Space">
+                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} copies={data} />
+                </SettingsSection>
+                {removing ? <SettingsSection id="mounts" title="Mounts">
+                    <SettingsEmpty title="Removed on next deploy." />
+                  </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={environment}
+                    services={services} volumes={volumes} diff={diff} replicas={replicasOf} split={split} />}
+                <StoreVolumeDanger state={state} params={params} version={diff.version} environmentId={diff.environment.id} volumes={volumes} />
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}
+
+function StoreVolumeStorage({ state, removing, copies }: { state: StoreVolume; removing: boolean; copies: Pick<VolumeCopiesData, "holders" | "running"> }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const { storage, storage_locked, recorded_storage, deployed } = state.volume;
+  const [managed, holdManaged] = useCommitHold(storage.kind === "provisioned");
+  const sizeGB = managed && storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
+  const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
+    writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
+
+  const growable = storage_locked && deployed && !removing && storage.kind === "provisioned" && recorded_storage !== undefined;
+  if (growable) {
+    return (
+      <>
+        <StoreVolumeSize organizationSlug={state.organizationSlug} environment={state.environment} volume={state.volume}
+          recorded={recorded_storage} holders={copies.holders} running={copies.running} />
+        <StoreSharedWrites state={state} />
+      </>
+    );
+  }
+  if (storage_locked || removing) {
+    return (
+      <>
+        <SettingsRow label={managed ? "Managed volume" : "Docker volume"} hint="Fixed after the first deploy." commit="none"
+          control={<span className="text-sm">{volumeStorageText(storage)}</span>} />
+        {removing ? null : <StoreSharedWrites state={state} />}
+      </>
+    );
+  }
+  return (
+    <>
+      {managed ? (
+        <SettingsRow label="Storage limit" commit="confirm" control={(
+          <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB"
+            placeholder={DEFAULT_VOLUME_GB} value={sizeGB} isChanged={false}
+            validate={(raw) => volumeStorage(true, raw) ? null : "Enter at least 0.001 GB."}
+            onCommit={(raw) => save(volumeStorage(true, raw) ?? storage)} />
+        )} />
+      ) : null}
+      <SettingsRow label="Plain Docker volume" hint={managed ? "Not recommended." : "No size limit. Not recommended."} commit="change"
+        control={<Switch aria-label="Use a plain Docker volume (not recommended)" checked={!managed}
+          onCheckedChange={(docker) => holdManaged(!docker, save(docker ? { kind: "docker" } : { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 }))} />} />
+      <StoreSharedWrites state={state} />
+    </>
+  );
+}
+
+function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
+  state: StoreVolume; params: VolumeResourceRouteParams; version: string; environmentId: string; volumes: readonly VolumeListing[];
+}) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const navigate = useNavigate();
+  const placements = useStagedPlacements(state.organizationSlug, state.environment, environmentId, volumes);
+  // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
+  const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
+  const { volume } = state;
+  const removing = volume.change === "delete";
+  const mounts = volume.mounts.length;
+
+  function remove() {
+    // Staged: the canvas marks it Removing, and a Deploy that deletes its data asks first.
+    writer.commit({ command: "remove_volume", environment: state.environment, volume: volume.name });
+    void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (prev) => prev });
+  }
+
+  return (
+    <>
+      <SettingsSection id="danger" title="Danger">
+        <SettingsDanger
+          label={removing && volume.deployed ? "Delete its data" : removing ? "Removed on next deploy" : "Delete this volume"}
+          hint={removing && volume.deployed
+            ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+            : removing
+            ? "Nothing of it is on your servers yet. Keep the volume to undo this."
+            : volume.deployed
+            ? "Its data on your servers goes with it. Deploy asks you to confirm first."
+            : mounts > 0 ? `Removed on next deploy, with ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Removed on next deploy."}
+          action={removing ? (
+            <>
+              {/* The staged removal goes; the Volume stays as deployed. */}
+              <Button variant="outline" onClick={() => actions.discard(volumeNodePath(volume.name))}>Keep volume</Button>
+              {volume.deployed ? (
+                <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete data
+                </Button>
+              ) : null}
+            </>
+          ) : (
+            <Button variant="destructive" onClick={remove}>
+              <Trash2Icon data-icon="inline-start" />
+              Delete volume
+            </Button>
+          )} />
+      </SettingsSection>
+      {actions.dialog}
+    </>
+  );
+}
+
+/**
+ * Whether more than one container may write this volume. Shared writes are paused, so the switch only turns them off,
+ * for a volume that had them on before. Applies at once, not staged. Turning it off with several writers is refused;
+ * the reason shows here.
+ */
+function StoreSharedWrites({ state }: { state: StoreVolume }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [shared, holdShared] = useCommitHold(state.volume.shared_writes);
+  return (
+    <SettingsRow label="Shared writes" commit="change"
+      hint={<>
+        {shared ? "Paused. Turn off to deploy." : "Paused for now."}{" "}
+        <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>
+      </>}
+      control={(
+        <Switch id="volume-shared-writes" aria-label="Shared writes" checked={shared} disabled={!shared}
+          onCheckedChange={(sharedWrites) => {
+            setRefusal(null);
+            const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
+            holdShared(sharedWrites, write);
+            write.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
+          }} />
+      )}>
+      {refusal ? <FieldError>{refusal}</FieldError> : null}
+    </SettingsRow>
+  );
+}

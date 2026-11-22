@@ -1,28 +1,28 @@
 import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { CloudIcon, HardDriveIcon, TriangleAlertIcon } from "lucide-react";
+import { HardDriveIcon, TriangleAlertIcon } from "lucide-react";
 import type { ReviewLifecycleKind } from "@ployz/sdk";
 import { Badge } from "#/components/ui/badge";
 import { Spinner } from "#/components/ui/spinner";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import {
-  cardLine, hangingCopies, LAST_REPORTED, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
+  cardLine, hangingCopies, LAST_REPORTED, type MirrorCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
 } from "#/modules/volume-copies/volume-copies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 
 const STAGED_LIFECYCLE = { new: "create", primary: "update", removing: "delete" } as const satisfies Record<StagedCopy, ReviewLifecycleKind>;
 
-function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy: MirrorCopy | OffsiteCopy; now: Date | null }) {
+function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy: MirrorCopy; now: Date | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const selectedNodeId = useCanvasInspectorSelection().selectedNodeId;
   const surface = stagedSurface(copy.staged === null ? null : STAGED_LIFECYCLE[copy.staged]);
   const line = now === null ? null : cardLine(copy, now);
-  const name = copy.kind === "mirror" ? copy.name : copy.bucket;
+  const { name } = copy;
   const className = cn(
     "relative flex h-14 w-44 shrink-0 flex-col justify-center gap-1 rounded-xl border bg-card px-3 text-xs text-muted-foreground data-[selected=true]:ring-2 data-[selected=true]:ring-foreground",
     "before:absolute before:-top-3.25 before:left-1/2 before:h-3 before:border-l before:border-dashed before:border-muted-foreground/60",
@@ -30,7 +30,7 @@ function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy:
   );
   const content: ReactNode = <>
     <span className={cn("flex items-center gap-1.5 text-foreground", surface && "text-inherit")}>
-      {copy.kind === "offsite" ? <CloudIcon className="size-3.5 shrink-0" /> : <HardDriveIcon className="size-3.5 shrink-0" />}
+      <HardDriveIcon className="size-3.5 shrink-0" />
       <span className={cn("min-w-0 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</span>
     </span>
     <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
@@ -40,7 +40,6 @@ function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy:
     </span>
   </>;
 
-  if (copy.kind === "offsite") return <div className={className} data-copy={name} data-changed={surface === "changed" || undefined}>{content}</div>;
   const resourceId = mirrorResourceId(volume.id, copy.server.id);
   const kind = copy.lastReported ? `${LAST_REPORTED.toLowerCase()} mirror` : "mirror";
   return (

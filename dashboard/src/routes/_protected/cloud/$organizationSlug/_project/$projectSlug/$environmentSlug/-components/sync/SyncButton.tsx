@@ -3,8 +3,9 @@ import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentListing, EnvironmentRef, Synced } from "@ployz/sdk";
 import { ChevronDownIcon, GitBranchIcon } from "lucide-react";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
-import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { getDashboardDestination } from "#/components/shell/dashboard-navigation-model";
+import { DeletionDialog } from "#/components/deletion-dialog";
+import { type DeletionItem } from "#/modules/config-store/deletion";
 import { Button } from "#/components/ui/button";
 import { ButtonGroup } from "#/components/ui/button-group";
 import { Spinner } from "#/components/ui/spinner";
@@ -13,7 +14,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { useCommitHold } from "#/components/store-write/use-commit-hold";
 import { plural } from "#/lib/plural";
 import { useStoreBusy } from "#/modules/config-store/store-pending";
 import { closesIn, syncButtonState } from "#/modules/config-store/store-sync";
@@ -23,9 +24,10 @@ import {
 } from "#/modules/config-store/store-view.queries";
 import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/environment-routes";
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
 
 /**
  * Sync, at the canvas's top right: it opens the one Sync dialog, which makes a picked place match this one. On a
@@ -107,7 +109,7 @@ function BranchSync({ params, store, branch, environments }: {
   const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
   function deployAgain() {
-    writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
+    writer.commit(admitDeploy(store, crypto.randomUUID()));
   }
 
   return (

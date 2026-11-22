@@ -1,83 +1,18 @@
+/** @data-source remote: one bounded Config Store view per query (an Environment's Settings, its diff or plan, a Deployments page, one Deployment), prefetched by loaders; the change stream refetches the views each Store table family backs; a domains view polls every 30s while a domain is setting up or needs DNS (certificates and DNS change without a Store write); an in-flight Deployment polls every 5s in case the stream missed its progress; this tab's pending edits show over it until they commit */
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, HistoryAction, DeploymentQuery, DeploymentsQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { StoreViewName } from "#/collections/read.contract";
+import { storeViewRefreshedBy, type StoreViewName } from "./store.change-sources";
 import { readStoreViewServerFn } from "./store.functions";
-import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
+import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { usePendingMarks, showPending } from "./store-pending";
-
-/**
- * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
- * or the Organization change stream never refreshes its views.
- */
-const refreshedBy = {
-  environment: ["store_environment"],
-  diff: ["store_environment", "store_deployment"],
-  // Live and Failed follow Deployments; a check suite's verdict shows on one waiting for CI.
-  history: ["store_environment", "store_deployment", "store_check_suite"],
-  history_preview: ["store_environment", "store_deployment", "store_check_suite"],
-  plan: ["store_environment", "store_deployment"],
-  // The rule a Device or a passkey signed, beside the Saved State it approves.
-  rule: ["store_environment"],
-  // A Service's lifecycle comes from the review, which compares against what's deployed.
-  service: ["store_environment", "store_deployment"],
-  services: ["store_environment", "store_deployment"],
-  // A check suite's verdict shows on a Deployment waiting for CI, which polls nothing while it waits.
-  deployments: ["store_deployment", "store_check_suite"],
-  deployment: ["store_deployment", "store_check_suite"],
-  numbered_deployment: ["store_deployment", "store_check_suite"],
-  build_log: ["store_deployment"],
-  // Admission fixes an Environment's Namespace.
-  namespace: ["store_environment", "store_deployment"],
-  namespaces: ["store_environment", "store_deployment"],
-  sealed_names: ["store_environment"],
-  // Where a CLI write's secrets land: the Environment's Services, by ID.
-  sealing_targets: ["store_environment"],
-  // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, which
-  // change with no Store write, so a domains view also polls while one is on its way (`DOMAIN_POLL_MS`).
-  domains: ["store_environment", "store_deployment"],
-  domain: ["store_environment", "store_deployment"],
-  // Whether a Volume is deployed, and what a Deploy removes, come from Applied State.
-  volumes: ["store_environment", "store_deployment"],
-  volume: ["store_environment", "store_deployment"],
-  configs: ["store_environment", "store_deployment"],
-  config: ["store_environment", "store_deployment"],
-  removals: ["store_environment", "store_deployment"],
-  removed: ["store_environment", "store_deployment"],
-  // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
-  // request's Destination.
-  branch: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
-  // A plan reads the Environment's Working State and what it and its ancestors run.
-  branch_plan: ["store_environment", "store_deployment"],
-  build_order: ["store_organization"],
-  // Region names; the regions Servers are in come with the query, from the Runtime.
-  regions: ["store_region"],
-  new_region: ["store_region"],
-  // A Sync compares two Environments over what they last shared.
-  sync: ["store_environment", "store_deployment"],
-  // The Project names its Default Environment; a removal is a Deployment.
-  environments: ["store_project", "store_environment", "store_deployment"],
-  projects: ["store_project", "store_environment"],
-  // Removals the Store still owes: Environments marked for removal and their Deployments.
-  due: ["store_environment", "store_deployment"],
-  consented: ["store_environment", "store_deployment"],
-  // Which uploads Cloud holds still build: Deployments and each Environment's Saved State.
-  uploads: ["store_environment", "store_deployment"],
-  // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
-  pr_plans: ["store_project", "store_environment"],
-  // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
-  pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
-  // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
-  on_merge: ["store_environment", "store_pull_request"],
-  // Signed versions arrive with a Deploy and are never rewritten.
-  versions: ["store_deployment"],
-} satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
+import { environmentKey } from "./environment-ref";
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
 const DOMAIN_POLL_MS = 30_000;
@@ -137,14 +72,6 @@ export function queryOf(query: Query): ConfigQuery | null {
   return prefix === "store-view" && isStoreQuery(config) ? config : null;
 }
 
-const isAnswered = Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: StoreView }));
-
-/** The `kind` view a cached Store view query holds, if it answered with one. */
-export function cachedView<K extends ConfigQuery["query"]>(query: Query, kind: K) {
-  const result = query.state.data;
-  return isAnswered(result) ? viewOf(result.value, { query: kind }) : undefined;
-}
-
 /** Views with one more read queued behind the read in flight. */
 const rereads = new WeakSet<Query>();
 
@@ -158,24 +85,20 @@ export function refetchStoreViews(organizationSlug: string, scope: CollectionSco
     queryKey: storeViewPrefix(organizationSlug),
     predicate: (query: Query) => {
       const config = queryOf(query);
-      return config !== null && refreshedBy[config.query].some((name) => names.includes(name));
+      return config !== null && storeViewRefreshedBy[config.query].some((name) => names.includes(name));
     },
   };
   for (const query of scope.queryClient.getQueryCache().findAll({ ...filters, fetchStatus: "fetching" })) {
     const reading = query.promise;
     if (reading === undefined || rereads.has(query)) continue;
     rereads.add(query);
+    // The reread follows a failed read too; the failure shows on the query itself.
     void reading.catch(() => undefined).finally(() => {
       rereads.delete(query);
       void scope.queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false });
     });
   }
   void scope.queryClient.invalidateQueries(filters, { cancelRefetch: false });
-}
-
-/** Names an Environment the same way however a ref spells it; the Store resolves omitted names to defaults. */
-export function environmentKey(ref: EnvironmentRef) {
-  return `${ref.project ?? ""}/${ref.environment ?? ""}`;
 }
 
 /** Whether a cached view reads the Environment: its own views, and a Sync's from either side. */
@@ -297,27 +220,15 @@ export function diffQuery(environment: EnvironmentRef): { query: "diff" } & Diff
   return { query: "diff", environment };
 }
 
-/** The plan a Deploy of the whole Environment ships, with each Service's spec as its runner will send it. */
-export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } & PlanQuery {
-  return { query: "plan", environment, services: [], target: true };
-}
-
-/** A redeploy of Deployment `deployment`, lowered as its runner will lower it, for this browser to approve. */
-export function redeployPlanQuery(environment: EnvironmentRef, deployment: string): { query: "plan" } & PlanQuery {
-  return { query: "plan", environment, services: [], target: true, deployment };
-}
-
 /** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
 export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & RuleQuery {
   return { query: "rule", environment };
 }
 
-/** An Environment's public domains with their status: the Networking section of every Service drawer. */
 export function domainsQuery(environment: EnvironmentRef): { query: "domains" } & DomainsQuery {
   return { query: "domains", environment, service: null };
 }
 
-/** An Environment's Volumes with where Services mount them: the canvas's Volumes and their links. */
 export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } & VolumesQuery {
   return { query: "volumes", environment };
 }
@@ -327,12 +238,24 @@ export function configsQuery(environment: EnvironmentRef): { query: "configs" } 
   return { query: "configs", environment };
 }
 
-/** One Config with every file's text, references by Service name: its drawer. */
 export function configQuery(environment: EnvironmentRef, config: string): { query: "config" } & ConfigItemQuery {
   return { query: "config", environment, config };
 }
 
-/** The Organization's Projects, each with its Default Environment and its Environments' names. */
+/** The order Git builds run in for the Organization's Servers: the Builds settings. */
+export function buildOrderQuery() {
+  return { query: "build_order" } as const;
+}
+
+export function historyQuery(environment: EnvironmentRef, limit: number | null = null): Extract<ConfigQuery, { query: "history" }> {
+  return limit === null ? { query: "history", environment } : { query: "history", environment, limit };
+}
+
+/** What taking one Saved version's `action` (or one `change` of it) would stage. */
+export function historyPreviewQuery(environment: EnvironmentRef, revision: number, action: HistoryAction, change?: string): Extract<ConfigQuery, { query: "history_preview" }> {
+  return { query: "history_preview", environment, revision, action, change };
+}
+
 export function projectsQuery(): { query: "projects" } & ProjectsQuery {
   return { query: "projects" };
 }
@@ -347,12 +270,10 @@ export function removalsQuery(environment: EnvironmentRef): { query: "removals" 
   return { query: "removals", environment, remove: true };
 }
 
-/** One Deployment: its Node Outcomes, builds, recorded Deploy Preview and outcome. */
 export function deploymentQuery(id: string): { query: "deployment" } & DeploymentQuery {
   return { query: "deployment", id };
 }
 
-/** One Service's build log in a Deployment, by its name when admitted. */
 export function buildLogQuery(deployment: string, service: string): { query: "build_log" } & BuildLogQuery {
   return { query: "build_log", deployment, service };
 }
@@ -382,7 +303,6 @@ export function useBranchPlan(organizationSlug: string, query: ReturnType<typeof
   return useQuery({ ...options, staleTime: Infinity, queryFn: query ? options.queryFn : skipToken, placeholderData: keepPreviousData }).data;
 }
 
-/** The first page of a paged Store view has no cursor. */
 const FIRST_PAGE: string | null = null;
 
 const deploymentsPage = (environment: EnvironmentRef, cursor: string | null): { query: "deployments" } & DeploymentsQuery =>
@@ -405,7 +325,6 @@ export function storeDeploymentsOptions(organizationSlug: string, scope: Collect
   });
 }
 
-/** An Environment's Deployments, prefetched by the page's loader (`prefetchStoreDeployments`). */
 export function useStoreDeployments(organizationSlug: string, environment: EnvironmentRef) {
   return useSuspenseInfiniteQuery(storeDeploymentsOptions(organizationSlug, useCollectionScope(), environment));
 }
@@ -424,6 +343,12 @@ export function requireView<T>(result: StoreResult<T>): T {
 /** A fresh read of one Store view as a step of a user command (what a removal deletes, before confirming). */
 export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
   return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
+}
+
+/** The Services a Sync or On merge row can land in, read fresh: the `receiver` that `receivingValues` seals for. */
+export async function receivingEnvironment(organizationSlug: string, scope: CollectionScope, destination: EnvironmentRef) {
+  const view = await fetchStoreView(organizationSlug, scope, servicesQuery(destination));
+  return { environment: view.environment.id, services: view.services };
 }
 
 /**
@@ -446,7 +371,6 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
   }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
 }
 
-/** Reads one Store view; see `useStoreViews`. */
 export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
   return useStoreViews(organizationSlug, [query] as const)[0];
 }
@@ -459,16 +383,15 @@ export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: stri
   return useCachedQuery(organizationSlug, query)?.data;
 }
 
-/** A Store view as last read, if ever, and whether its latest read failed. */
 export type CachedStoreRead<T> = { result: StoreResult<T> | undefined; failed: boolean };
 
 /**
  * `useCachedStoreView`, with whether its latest read failed. Each refetch puts an unanswered query back to pending, so
  * only the read times remember a failure.
  */
-export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> {
+export function useCachedStoreRead<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): CachedStoreRead<StoreViewOf<Q>> & { refetch: () => void } {
   const read = useCachedQuery(organizationSlug, query);
-  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt };
+  return { result: read?.data, failed: read !== undefined && read.errorUpdatedAt > read.dataUpdatedAt, refetch: () => void read?.refetch() };
 }
 
 function useCachedQuery<Q extends ConfigQuery>(organizationSlug: string, query: Q | null) {

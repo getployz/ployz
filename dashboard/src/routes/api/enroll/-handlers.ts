@@ -1,242 +1,84 @@
 import { Effect, Option, Result, Schema } from "effect";
-import type { PublicError } from "#/lib/public-error";
 import { asRecord } from "#/lib/json";
-import {
-  encodePublicBoundaryError,
-  encodePublicError,
-  statusForPublicError,
-  Unauthorized,
-  Validation,
-} from "#/server/public-error";
 import {
   JoinApprovalRequired,
   ENROLLMENT_PROTOCOL_VERSION,
   enrollmentCallbackBodySchema,
   enrollmentIdentitySchema,
   setupReportSchema,
-  type EnrollResponse,
 } from "#/modules/machines/enrollment";
 import {
   completeMachineEnrollment,
   enrollMachine,
   recordMachineSetupReport,
 } from "#/modules/machines/enrollment.server";
+import { bearerToken } from "#/server/bearer";
+import { machineErrorResponse, machineRefusal, Unauthorized, Validation } from "#/server/public-error";
 
-type EnrollmentResponseBody =
-  | EnrollResponse
-  | { error: string; details?: { capability: string } }
-  | { machineId: string; recoveryBackupDigest?: string | undefined };
+const noStore = { "cache-control": "no-store" };
 
-function response(body: EnrollmentResponseBody, status: number, code?: PublicError["code"]) {
-  const headers = new Headers({ "cache-control": "no-store" });
-  if (code) headers.set("Ployz-Error-Code", code);
-  return Response.json(body, { status, headers });
-}
-
-const isUserFacing = Schema.is(Schema.Struct({
-  userFacing: Schema.Literal(true),
-  message: Schema.String,
-}));
-
-function errorResponse(cause: unknown) {
-  const publicError = encodePublicError(cause);
-  return response(
-    { error: publicError.message },
-    statusForPublicError(publicError),
-    isUserFacing(cause) && publicError.code !== "INTERNAL" ? publicError.code : undefined,
-  );
-}
+const errorResponse = (cause: unknown) => machineErrorResponse(cause, { codeHeader: true });
 
 /** A failure of the enrollment step itself. The answer names no internal failure, so the log does, with its route. */
 function failureResponse(cause: unknown, route: "join" | "completion" | "setup report") {
-  const publicError = encodePublicBoundaryError(cause, {
+  return machineErrorResponse(cause, {
+    codeHeader: true,
+    details: cause instanceof JoinApprovalRequired ? cause.details : undefined,
     report: (kind, logged) => {
       const log = kind === "interruption" ? Effect.logDebug : Effect.logError;
       Effect.runFork(log(`Enrollment ${route} ${kind}.`, logged));
     },
   });
-  const body = cause instanceof JoinApprovalRequired
-    ? { error: publicError.message, details: cause.details }
-    : { error: publicError.message };
-  return response(
-    body,
-    statusForPublicError(publicError),
-    isUserFacing(cause) && publicError.code !== "INTERNAL" ? publicError.code : undefined,
+}
+
+const invalidTokenResponse = () => errorResponse(new Unauthorized());
+
+const readJson = (request: Request) =>
+  Effect.option(
+    Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => new Validation({ message: "Invalid JSON body." }),
+    }),
   );
-}
 
-function invalidTokenResponse() {
-  return errorResponse(
-    new Unauthorized(),
+export const handleMachineEnrollmentJoin = Effect.fn("Enrollment.join")(function* (request: Request) {
+  const token = bearerToken(request.headers);
+  if (!token) return invalidTokenResponse();
+
+  const body = Option.getOrNull(yield* readJson(request));
+  if (asRecord(body)?.["protocolVersion"] !== ENROLLMENT_PROTOCOL_VERSION) {
+    return machineRefusal(426, `Unsupported enrollment protocol version; Cloud accepts version ${ENROLLMENT_PROTOCOL_VERSION}.`);
+  }
+  const parsed = Schema.decodeUnknownOption(enrollmentIdentitySchema)(body);
+  if (Option.isNone(parsed)) return errorResponse(new Validation({ message: "Invalid enrollment identity." }));
+
+  const enrolled = yield* Effect.result(enrollMachine({ token, identity: parsed.value }));
+  return Result.isFailure(enrolled) ? failureResponse(enrolled.failure, "join") : Response.json(enrolled.success, { headers: noStore });
+});
+
+export const handleMachineEnrollmentCallback = Effect.fn("Enrollment.callback")(function* (request: Request) {
+  const token = bearerToken(request.headers);
+  if (!token) return invalidTokenResponse();
+
+  const parsed = Schema.decodeUnknownOption(enrollmentCallbackBodySchema)(
+    Option.getOrNull(yield* readJson(request)),
+    { onExcessProperty: "error" },
   );
-}
+  if (Option.isNone(parsed)) return errorResponse(new Validation({ message: "Invalid enrollment callback." }));
 
-function bearerToken(request: Request) {
-  const match = /^Bearer (\S+)$/u.exec(request.headers.get("authorization") ?? "");
-  return match?.[1];
-}
+  const stored = yield* Effect.result(completeMachineEnrollment({ token, ...parsed.value }));
+  return Result.isFailure(stored) ? failureResponse(stored.failure, "completion") : Response.json(stored.success, { headers: noStore });
+});
 
-type JoinEffect = ReturnType<typeof enrollMachine>;
-type JoinRequirements = JoinEffect extends Effect.Effect<
-  unknown,
-  unknown,
-  infer R
->
-  ? R
-  : never;
+export const handleMachineSetupReport = Effect.fn("Enrollment.setupReport")(function* (request: Request) {
+  const token = bearerToken(request.headers);
+  if (!token) return invalidTokenResponse();
 
-type JoinOperation<R> = (
-  request: Parameters<typeof enrollMachine>[0],
-) => Effect.Effect<Effect.Success<JoinEffect>, Effect.Error<JoinEffect>, R>;
+  const parsed = Schema.decodeUnknownOption(setupReportSchema)(Option.getOrNull(yield* readJson(request)));
+  if (Option.isNone(parsed)) return errorResponse(new Validation({ message: "Invalid setup report." }));
 
-export function handleMachineEnrollmentJoin(
-  request: Request,
-): Effect.Effect<Response, never, JoinRequirements>;
-export function handleMachineEnrollmentJoin<R>(
-  request: Request,
-  enrollOperation: JoinOperation<R>,
-): Effect.Effect<Response, never, R>;
-export function handleMachineEnrollmentJoin<R>(
-  request: Request,
-  enrollOperation?: JoinOperation<R>,
-) {
-  return Effect.gen(function* () {
-    const token = bearerToken(request);
-    if (!token) return invalidTokenResponse();
-
-    const json = yield* Effect.option(
-      Effect.tryPromise({
-        try: () => request.json(),
-        catch: () => new Validation({ message: "Invalid JSON body." }),
-      }),
-    );
-    const body = Option.getOrNull(json);
-    if (asRecord(body)?.["protocolVersion"] !== ENROLLMENT_PROTOCOL_VERSION) {
-      return response(
-        {
-          error: `Unsupported enrollment protocol version; Cloud accepts version ${ENROLLMENT_PROTOCOL_VERSION}.`,
-        },
-        426,
-      );
-    }
-    const parsed = Schema.decodeUnknownOption(enrollmentIdentitySchema)(body);
-    if (Option.isNone(parsed)) {
-      return errorResponse(
-        new Validation({
-          message: "Invalid enrollment identity.",
-        }),
-      );
-    }
-
-    const input = { token, identity: parsed.value };
-    const enrolled = enrollOperation
-      ? yield* Effect.result(enrollOperation(input))
-      : yield* Effect.result(enrollMachine(input));
-    if (Result.isFailure(enrolled)) return failureResponse(enrolled.failure, "join");
-    return response(enrolled.success, 200);
-  });
-}
-
-type CompleteEffect = ReturnType<typeof completeMachineEnrollment>;
-type CompleteRequirements = CompleteEffect extends Effect.Effect<
-  unknown,
-  unknown,
-  infer R
->
-  ? R
-  : never;
-
-type CompleteOperation<R> = (
-  request: Parameters<typeof completeMachineEnrollment>[0],
-) => Effect.Effect<
-  Effect.Success<CompleteEffect>,
-  Effect.Error<CompleteEffect>,
-  R
->;
-
-export function handleMachineEnrollmentCallback(
-  request: Request,
-): Effect.Effect<Response, never, CompleteRequirements>;
-export function handleMachineEnrollmentCallback<R>(
-  request: Request,
-  completeOperation: CompleteOperation<R>,
-): Effect.Effect<Response, never, R>;
-export function handleMachineEnrollmentCallback<R>(
-  request: Request,
-  completeOperation?: CompleteOperation<R>,
-) {
-  return Effect.gen(function* () {
-    const token = bearerToken(request);
-    if (!token) return invalidTokenResponse();
-
-    const json = yield* Effect.option(
-      Effect.tryPromise({
-        try: () => request.json(),
-        catch: () => new Validation({ message: "Invalid JSON body." }),
-      }),
-    );
-    const parsed = Schema.decodeUnknownOption(enrollmentCallbackBodySchema)(
-      Option.getOrNull(json),
-      { onExcessProperty: "error" },
-    );
-    if (Option.isNone(parsed)) {
-      return errorResponse(
-        new Validation({
-          message: "Invalid enrollment callback.",
-        }),
-      );
-    }
-
-    const input = {
-      token,
-      ...parsed.value,
-    };
-    const stored = completeOperation
-      ? yield* Effect.result(completeOperation(input))
-      : yield* Effect.result(completeMachineEnrollment(input));
-    if (Result.isFailure(stored)) return failureResponse(stored.failure, "completion");
-    return response(stored.success, 200);
-  });
-}
-
-type RecordReportEffect = ReturnType<typeof recordMachineSetupReport>;
-type RecordReportRequirements = RecordReportEffect extends Effect.Effect<unknown, unknown, infer R> ? R : never;
-
-type RecordReportOperation<R> = (
-  request: Parameters<typeof recordMachineSetupReport>[0],
-) => Effect.Effect<Effect.Success<RecordReportEffect>, Effect.Error<RecordReportEffect>, R>;
-
-export function handleMachineSetupReport(
-  request: Request,
-): Effect.Effect<Response, never, RecordReportRequirements>;
-export function handleMachineSetupReport<R>(
-  request: Request,
-  recordOperation: RecordReportOperation<R>,
-): Effect.Effect<Response, never, R>;
-export function handleMachineSetupReport<R>(
-  request: Request,
-  recordOperation?: RecordReportOperation<R>,
-) {
-  return Effect.gen(function* () {
-    const token = bearerToken(request);
-    if (!token) return invalidTokenResponse();
-
-    const json = yield* Effect.option(
-      Effect.tryPromise({
-        try: () => request.json(),
-        catch: () => new Validation({ message: "Invalid JSON body." }),
-      }),
-    );
-    const parsed = Schema.decodeUnknownOption(setupReportSchema)(Option.getOrNull(json));
-    if (Option.isNone(parsed)) {
-      return errorResponse(new Validation({ message: "Invalid setup report." }));
-    }
-
-    const input = { token, report: parsed.value };
-    const recorded = recordOperation
-      ? yield* Effect.result(recordOperation(input))
-      : yield* Effect.result(recordMachineSetupReport(input));
-    if (Result.isFailure(recorded)) return failureResponse(recorded.failure, "setup report");
-    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
-  });
-}
+  const recorded = yield* Effect.result(recordMachineSetupReport({ token, report: parsed.value }));
+  return Result.isFailure(recorded)
+    ? failureResponse(recorded.failure, "setup report")
+    : new Response(null, { status: 204, headers: noStore });
+});

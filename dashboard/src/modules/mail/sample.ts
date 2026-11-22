@@ -1,3 +1,4 @@
+import { unsubscribeLink } from "#/modules/mail/cloud-link";
 import type { MailContent } from "#/modules/mail/layout";
 
 /** A made-up uptime email that exercises every part of the layout, for previews and test sends. */
@@ -13,5 +14,5 @@ export const sampleMail = (origin: string): MailContent => ({
     { label: "Error", value: "502 Bad Gateway" },
   ],
   reason: "You're getting this as a member of Acme on Ployz.",
-  unsubscribe: { label: "Turn off uptime emails", url: `${origin}/api/mail/unsubscribe?token=sample` },
+  unsubscribe: { label: "Turn off uptime emails", url: unsubscribeLink(origin, "sample") },
 });

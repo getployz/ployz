@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Meter } from "@base-ui/react/meter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { meterIndicatorClass, meterValue } from "#/components/metric-meter";
+import { meterIndicatorClass, meterValue } from "./metric-meter";
 import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/MetricsOffState";
 import { MetricChart, useMetricCursor, type MetricSeries } from "#/components/metrics/metric-chart";
 import { Card } from "#/components/ui/card";
@@ -10,8 +10,9 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { bytesText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
 import { serverMetrics, type DiskSample, type ServerMetrics } from "#/modules/metrics/metrics-model";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
-import { chartWindow, steps, type TimeWindow } from "#/modules/uptime/uptime";
-import { resolveRange } from "#/modules/uptime/uptime-range";
+import { chartWindow } from "#/modules/uptime/uptime";
+import { steps, type TimeWindow } from "#/lib/time-range";
+import { resolveRange } from "#/lib/time-range";
 import { DISK_SAMPLE_MS, freshLast, NOW_RANGE, serverNow, usageFraction, type Usage } from "./server-now";
 import { diskSegments, type DiskSegment } from "./server-usage";
 

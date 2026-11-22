@@ -9,7 +9,7 @@ import { createServer } from "vite";
 import { expect, it } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { Auth, AuthLive } from "#/server/auth.server";
+import { Auth, AuthLive } from "#/modules/identity/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";

@@ -10,14 +10,12 @@ use std::{
     time::Duration,
 };
 
-use ployzd::{
+use crate::{
     dataset_layout::{DatasetLayout, MOUNT_ROOT, Place, SlotAt},
+    host_command::{self, Exit, Ran},
     machine_pool::MachinePool,
 };
-use tokio::{
-    process::Command,
-    sync::{Mutex, OwnedMutexGuard},
-};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::{
     PluginError, Result, VolumeName,
@@ -32,7 +30,7 @@ pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
     pub(super) mutation: MutationLock,
-    pub(super) installation: ployzd::mutation::MutationGate,
+    pub(super) installation: crate::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
@@ -114,7 +112,7 @@ impl VolumeStorage {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
             mutation: MutationLock::default(),
-            installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
+            installation: crate::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
@@ -135,7 +133,7 @@ impl VolumeStorage {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
             mutation: MutationLock::default(),
-            installation: ployzd::mutation::MutationGate::new(
+            installation: crate::mutation::MutationGate::new(
                 fixture.join("admission-run"),
                 fixture.join("admission-data"),
             ),
@@ -149,7 +147,7 @@ impl VolumeStorage {
 
     pub(super) async fn admit_mutation(
         &self,
-    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
+    ) -> Result<(HeldMutation, crate::mutation::MutationGuard)> {
         let local = self.mutation.lock().await;
         let installation = self
             .installation
@@ -176,7 +174,7 @@ impl VolumeStorage {
             let marks = self.marks(&existing.name);
             if marks.unregistered().await? {
                 marks.clear_promote().await?;
-                ployzd::faults::kill_inside("Create", None);
+                crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
             return Ok(());
         }
@@ -190,9 +188,7 @@ impl VolumeStorage {
 
         // A Container kept from an earlier Volume of this name may still mount it. A fresh
         // root goes under the name only if every such Container expects its origin.
-        let docker_name = ployz_core::DockerVolumeName::parse(name.as_str())
-            .map_err(|error| PluginError::from(error.to_string()))?;
-        match self.admit_holders(&docker_name, origin).await {
+        match self.admit_holders(&name.wire(), origin).await {
             Ok(()) => {}
             Err(super::holders::Unheld::Foreign) => {
                 return Err(PluginError::HeldForOtherData {
@@ -396,13 +392,11 @@ impl VolumeStorage {
         checked_command(&self.zfs, args).await
     }
 
-    /// Like [`Self::zfs`], for a listing an absence is judged from. ZFS exits 0 when it
-    /// stopped iterating on an error and says so only on stderr, so any stderr fails it.
+    /// Like [`Self::zfs`], under [`Exit::Listing`].
     pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
-        let output = run_command(&self.zfs, args).await;
+        let output = host_command::run(&self.zfs, args).await;
         if let Ok(output) = &output
-            && output.status.success()
-            && !output.stderr.trim_ascii().is_empty()
+            && Exit::Listing.judge(output) == Ran::StoppedEarly
         {
             return Err(format!(
                 "{} {} stopped early: {}",
@@ -475,7 +469,7 @@ impl Held<'_> {
     }
 
     /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches
-    /// while [`Dataset::switching`], the split [`super::inspect::RootCopy::parse`] takes
+    /// while [`Dataset::switching`], the split [`ployz_decide::volume_root::RootCopy::parse`] takes
     /// too, so every root it parses as read-only switches. A slot switches only while a
     /// receive runs into it: its pull mark stays until a later pull settles, and its copy's
     /// cut mark until a pull or a promote clears it, so a mark alone says nothing about a
@@ -689,22 +683,8 @@ fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
     ]
 }
 
-pub(super) async fn run_command(program: &PathBuf, args: &[&str]) -> io::Result<Output> {
-    let mut attempt = 0;
-    loop {
-        match Command::new(program).args(args).output().await {
-            // ETXTBSY means exec never started; only that launch error is safe to retry.
-            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
-                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
-                attempt += 1;
-            }
-            output => return output,
-        }
-    }
-}
-
-pub(super) async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
-    checked_output(program, args, run_command(program, args).await)
+pub(super) async fn checked_command(program: &Path, args: &[&str]) -> Result<String> {
+    checked_output(program, args, host_command::run(program, args).await)
 }
 
 pub(super) fn checked_output(

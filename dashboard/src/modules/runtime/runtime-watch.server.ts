@@ -1,16 +1,10 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { Effect, Exit, Logger, Scope } from "effect";
-import { redactedLoggers } from "#/server/log-redaction";
-import { onIngressChange } from "#/modules/cluster-domain/ingress-running";
-import { InngestClient, sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createClusterDomainSyncRequestedEvent,
-  type InngestSendableEvent,
-} from "#/modules/inngest/events";
+import { Effect, Exit, Scope } from "effect";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { AppConfig } from "#/server/config.server";
 
 export type OpenedRuntimeWatch =
   | {
@@ -26,21 +20,26 @@ export type OpenedRuntimeWatch =
       error: PloyzProviderError | null;
     };
 
+/** A feature's view of one Organization's frames: passes them on and may act on what it sees. */
+export type RuntimeWatchTap = (organizationId: string) => (frames: AsyncIterable<RuntimeWatchView>) => AsyncIterable<RuntimeWatchView>;
+
 export const openRuntimeWatch = Effect.fn("Runtime.openWatch")(function* (input: {
   request: Request;
   organizationSlug: string;
+  tap?: RuntimeWatchTap | undefined;
 }) {
   const access = yield* authorizeRequest(input.request.headers, input.organizationSlug, "project:read");
   return yield* openRuntimeWatchForOrganization({
     request: input.request,
     organizationId: access.organization.id,
+    tap: input.tap,
   });
 });
 
 export const openRuntimeWatchForOrganization = Effect.fn(
   "Runtime.openWatchForOrganization",
-)(function* (input: { request: Request; organizationId: string }) {
-  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_RUNTIME"] === "1") {
+)(function* (input: { request: Request; organizationId: string; tap?: RuntimeWatchTap | undefined }) {
+  if (import.meta.env.DEV && (yield* AppConfig).verify.runtime) {
     const { verifyRuntimeFrameHeldOpen } = yield* Effect.promise(() => import("./runtime-watch.verify-fixture"));
     return { status: "connected" as const, frames: verifyRuntimeFrameHeldOpen(input.request.signal), close: Effect.void } satisfies OpenedRuntimeWatch;
   }
@@ -59,22 +58,9 @@ export const openRuntimeWatchForOrganization = Effect.fn(
   const frames = yield* session.connected
     .watch({ signal: input.request.signal })
     .pipe(Effect.onError(() => close));
-  const inngest = yield* InngestClient;
-  const sendOnChange = (event: InngestSendableEvent, failed: string) => () => Effect.runFork(
-    sendInngestEvent(event).pipe(
-      Effect.provideService(InngestClient, inngest),
-      Effect.catch((error) => Effect.logWarning(failed, error)),
-      Effect.provideService(Logger.CurrentLoggers, redactedLoggers),
-    ),
-  );
-  const { organizationId } = input;
-  const requestDomainSync = sendOnChange(
-    createClusterDomainSyncRequestedEvent({ organizationId }),
-    "Cluster Domain sync request failed; the hourly sync covers it.",
-  );
   return {
     status: "connected" as const,
-    frames: onIngressChange(frames, requestDomainSync),
+    frames: input.tap === undefined ? frames : input.tap(input.organizationId)(frames),
     close,
   } satisfies OpenedRuntimeWatch;
 });

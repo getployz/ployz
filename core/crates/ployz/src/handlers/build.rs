@@ -261,7 +261,7 @@ fn built_under_rule(
         rule::cache_scope(&policy, &checked_in.attest)?,
     );
     let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
-    let image = ployz_core::authority::ImageDigest::parse(&pushed.digest)
+    let image = ployz_core::authority::BuiltImageDigest::parse(&pushed.digest)
         .map_err(|_| BuildCommandError::NotDigestIdentified)?;
     let built = rule::built_claim(&grant_claim, image, checked_in.attest);
     let token = runtime.block_on(until_cancelled(cancellation, async {

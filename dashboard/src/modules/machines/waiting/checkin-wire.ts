@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { EnrollInstruction, EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import type { EnrollInstruction, EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 
 export const CHECKIN_PROTOCOL_VERSION = 1 as const;
 export const CHECKIN_MAX_BYTES = 64 * 1024;

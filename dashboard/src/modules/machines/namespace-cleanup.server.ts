@@ -1,29 +1,27 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { Data, Effect, Schedule } from "effect";
+import { and, eq, lt } from "drizzle-orm";
+import { Data, Effect } from "effect";
+import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import type { Actor } from "#/modules/identity/actor";
-import { readStore } from "#/modules/config-store/config-store.server";
-import { createNamespaceCleanupRequestedEvent, type NamespaceCleanupRequestedEventData } from "#/modules/inngest/events";
+import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
+import { type NamespaceCleanupRequestedEventData, namespaceCleanupRequested } from "#/modules/machines/machines.events";
+import { CLEANUP_PENDING_LIMIT_MS, CLEANUP_RUNNING_LIMIT_MS } from "#/modules/machines/namespace-cleanup";
 import {
   CLEANUP_END_CODES,
-  CLEANUP_PENDING_LIMIT_MS,
-  CLEANUP_RUNNING_LIMIT_MS,
+  CLEANUP_END_WORDS,
   type CleanupEndCode,
   type CleanupEndCodeWithoutMessage,
   type CleanupState,
-} from "#/modules/machines/namespace-cleanup";
+} from "#/modules/machines/namespace-cleanup-states";
 import { namespaceCleanup } from "#/modules/machines/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { attemptRows, ready, settled, within } from "#/modules/inngest/attempt-row.server";
+import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
-
-/** The Namespaces the Organization's Environments own, as the Store names them. A failed read fails: nothing reads as unowned. */
-export const ownedNamespaces = (organizationId: string) =>
-  readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces.map(({ namespace }) => namespace)));
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (
@@ -44,7 +42,7 @@ const unownedSession = Effect.fn("NamespaceCleanup.session")(function* (actor: A
     return yield* new Conflict({ userFacing: true, message: `${namespace} belongs to an Environment: delete that Environment in its Settings instead.` });
   }
   const session = yield* (yield* OrganizationRuntime).open(organization.id);
-  if (session.status !== "connected") return yield* new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." });
+  if (session.status !== "connected") return yield* new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
   return session.connected;
 });
 
@@ -75,30 +73,25 @@ export const removeNamespace = Effect.fn("NamespaceCleanup.remove")(function* (
   return outcome;
 }, Effect.scoped);
 
-export class NamespaceCleanupUnreachable extends Data.TaggedError("NamespaceCleanupUnreachable")<{
+class NamespaceCleanupUnreachable extends Data.TaggedError("NamespaceCleanupUnreachable")<{
   readonly cause: unknown;
 }> {}
 
 type CleanupRow = typeof namespaceCleanup.$inferSelect;
 type CleanupRequest = NamespaceCleanupRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
-export type CleanupRunReply = { readonly cleanupId: string; readonly state: CleanupState };
+type CleanupRunReply = { readonly cleanupId: string; readonly state: CleanupState };
 
-const ACTIVE_STATES: readonly CleanupState[] = ["pending", "running"];
-const MESSAGE_LIMIT = 1024;
+const rows = attemptRows(namespaceCleanup, "The namespace clean was not found.");
 
 const ended = (code: CleanupEndCodeWithoutMessage) =>
   ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: null, endedAt: new Date() }) as const;
-const endedSaying = (code: "refused" | "incomplete", message: string) => ({
-  state: CLEANUP_END_CODES[code],
-  endCode: code,
-  endMessage: message.length > MESSAGE_LIMIT ? `${message.slice(0, MESSAGE_LIMIT - 1)}…` : message,
-  endedAt: new Date(),
-}) as const;
+const endedSaying = (code: "refused" | "incomplete", message: string) =>
+  ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: within(message), endedAt: new Date() }) as const;
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueCleanup = (row: CleanupRow) =>
-  enqueueEvent(createNamespaceCleanupRequestedEvent({ cleanupId: row.id, organizationId: row.organizationId }));
+  enqueueEvent(namespaceCleanupRequested.create({ cleanupId: row.id, organizationId: row.organizationId }));
 
 /**
  * A clean the signed-in CLI asked for, deleting exactly the Volumes it previewed, under the attempt its request admits.
@@ -133,76 +126,48 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
   const [active] = consumed.length > 0 ? consumed : yield* drizzle.select().from(namespaceCleanup).where(and(
     eq(namespaceCleanup.organizationId, caller.organizationId),
     eq(namespaceCleanup.namespace, input.namespace),
-    inArray(namespaceCleanup.state, ACTIVE_STATES),
+    rows.active,
   )).limit(1);
   if (active === undefined) return yield* new Conflict({ userFacing: true, message: "A clean of this namespace just ended. Try again." });
   return active.id;
 });
 
-/** Bind the run to its pending row, so only it may claim and end the row. A row no longer pending is settled. */
-export const bindCleanupRun = Effect.fn("NamespaceCleanup.bind")(function* (request: CleanupRequest, runId: string) {
-  const { drizzle } = yield* Database;
-  const [bound] = yield* drizzle.update(namespaceCleanup).set({ inngestRunId: runId }).where(and(
-    eq(namespaceCleanup.id, request.cleanupId),
-    eq(namespaceCleanup.organizationId, request.organizationId),
-    eq(namespaceCleanup.state, "pending"),
-    or(isNull(namespaceCleanup.inngestRunId), eq(namespaceCleanup.inngestRunId, runId)),
-  )).returning({ id: namespaceCleanup.id });
-  if (bound !== undefined) return { kind: "bound" } as const;
-  const [row] = yield* drizzle.select({ state: namespaceCleanup.state, organizationId: namespaceCleanup.organizationId })
-    .from(namespaceCleanup).where(eq(namespaceCleanup.id, request.cleanupId));
-  if (row === undefined || row.organizationId !== request.organizationId) {
-    return yield* new NotFound({ message: "The namespace clean was not found." });
-  }
-  return { kind: "settled", state: row.state } as const;
-});
-
-const stateOf = Effect.fn("NamespaceCleanup.stateOf")(function* (cleanupId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ state: namespaceCleanup.state }).from(namespaceCleanup).where(eq(namespaceCleanup.id, cleanupId));
-  if (row === undefined) return yield* new NotFound({ message: "The namespace clean was not found." });
-  return { cleanupId, state: row.state } satisfies CleanupRunReply;
-});
+export const bindCleanupRun = (request: CleanupRequest, runId: string) =>
+  rows.bind(request.cleanupId, runId, [eq(namespaceCleanup.organizationId, request.organizationId)]);
 
 export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function* (request: CleanupRequest, runId: string) {
   const { drizzle } = yield* Database;
-  const owned = and(eq(namespaceCleanup.id, request.cleanupId), eq(namespaceCleanup.inngestRunId, runId));
-  const current = yield* stateOf(request.cleanupId);
-  if (current.state === "running") {
-    yield* drizzle.update(namespaceCleanup).set(ended("lost")).where(and(owned, eq(namespaceCleanup.state, "running")));
-    return yield* stateOf(request.cleanupId);
-  }
-  if (current.state !== "pending") return current;
-  const [row] = yield* drizzle.select({
-    namespace: namespaceCleanup.namespace, confirmDataLoss: namespaceCleanup.confirmDataLoss,
-  })
-    .from(namespaceCleanup).where(eq(namespaceCleanup.id, request.cleanupId));
-  if (row === undefined) return yield* stateOf(request.cleanupId);
-  const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
-  if (session.status !== "connected") return yield* new NamespaceCleanupUnreachable({ cause: session.status });
-  if (row.namespace === SYSTEM_NAMESPACE || (yield* ownedNamespaces(request.organizationId)).includes(row.namespace)) {
-    const [refused] = yield* drizzle.update(namespaceCleanup)
-      .set(endedSaying("refused", `${row.namespace} belongs to an Environment now. Nothing was removed.`))
-      .where(and(owned, eq(namespaceCleanup.state, "pending"))).returning({ state: namespaceCleanup.state });
-    return refused === undefined ? yield* stateOf(request.cleanupId) : { cleanupId: request.cleanupId, state: refused.state };
-  }
-  const [claimed] = yield* drizzle.update(namespaceCleanup).set({ state: "running", startedAt: new Date() })
-    .where(and(owned, eq(namespaceCleanup.state, "pending"))).returning({ id: namespaceCleanup.id });
-  if (claimed === undefined) return yield* stateOf(request.cleanupId);
-  const volumes = row.confirmDataLoss.map(({ id }) => id.name).sort();
-  const end = yield* session.connected.destroyNamespace(row.namespace, { confirmed: row.confirmDataLoss }).pipe(
-    Effect.map((outcome) => outcome.type === "success"
-      ? ({ state: "finished", volumes, endedAt: new Date(), endCode: null, endMessage: null }) as const
-      : endedSaying("incomplete", "Some servers didn't finish removing the namespace.")),
-    Effect.catchTag("MissingDataLossIdentities", () =>
-      Effect.succeed(endedSaying("refused", "The servers hold Volumes this clean didn't confirm. Nothing was removed."))),
-    Effect.catch(() => Effect.succeed(ended("lost"))),
-    Effect.timeoutOrElse({ duration: CLEANUP_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
-  );
-  const [written] = yield* drizzle.update(namespaceCleanup).set(end)
-    .where(and(owned, inArray(namespaceCleanup.state, ["running", "unknown"]))).returning({ state: namespaceCleanup.state })
-    .pipe(Effect.retry({ times: 4, schedule: Schedule.exponential("500 millis") }));
-  return written === undefined ? yield* stateOf(request.cleanupId) : { cleanupId: request.cleanupId, state: written.state };
+  const id = request.cleanupId;
+  const state = yield* rows.executeOnce({
+    id,
+    runId,
+    lost: ended("lost"),
+    endsFrom: ["running", "unknown"],
+    prepare: Effect.gen(function* () {
+      const [row] = yield* drizzle.select({ namespace: namespaceCleanup.namespace, confirmDataLoss: namespaceCleanup.confirmDataLoss })
+        .from(namespaceCleanup).where(eq(namespaceCleanup.id, id));
+      if (row === undefined) return settled(yield* rows.stateOf(id));
+      const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
+      if (session.status !== "connected") return yield* new NamespaceCleanupUnreachable({ cause: session.status });
+      if (row.namespace === SYSTEM_NAMESPACE || (yield* ownedNamespaces(request.organizationId)).includes(row.namespace)) {
+        const refused = yield* rows.end(
+          id, runId, endedSaying("refused", `${row.namespace} belongs to an Environment now. Nothing was removed.`), ["pending"],
+        );
+        return settled(refused ?? (yield* rows.stateOf(id)));
+      }
+      return ready({ row, connected: session.connected });
+    }),
+    call: ({ row, connected }) => connected.destroyNamespace(row.namespace, { confirmed: row.confirmDataLoss }).pipe(
+      Effect.map((outcome) => outcome.type === "success"
+        ? ({ state: "finished", volumes: row.confirmDataLoss.map(({ id }) => id.name).sort(), endedAt: new Date(), endCode: null, endMessage: null }) as const
+        : endedSaying("incomplete", "Some servers didn't finish removing the namespace.")),
+      Effect.catchTag("MissingDataLossIdentities", () =>
+        Effect.succeed(endedSaying("refused", "The servers hold Volumes this clean didn't confirm. Nothing was removed."))),
+      Effect.catch(() => Effect.succeed(ended("lost"))),
+      Effect.timeoutOrElse({ duration: CLEANUP_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
+    ),
+  });
+  return { cleanupId: id, state } satisfies CleanupRunReply;
 }, Effect.scoped);
 
 const RUN_ENDS = {
@@ -214,57 +179,34 @@ const RUN_ENDS = {
  * A run that failed for good or was cancelled must not leave its row active. A run cancelled before it bound its row
  * names the row by `cleanupId` from its event. How many rows this call ended.
  */
-export const closeCleanupRun = Effect.fn("NamespaceCleanup.closeRun")(function* (
-  runId: string,
-  reason: keyof typeof RUN_ENDS,
-  cleanupId?: string,
-) {
-  const { drizzle } = yield* Database;
+export const closeCleanupRun = (runId: string, reason: keyof typeof RUN_ENDS, cleanupId?: string) => {
   const { pending, running } = RUN_ENDS[reason];
-  const isPending = sql`${namespaceCleanup.state} = 'pending'`;
-  const unbound = cleanupId === undefined ? undefined : and(
-    eq(namespaceCleanup.id, cleanupId),
-    eq(namespaceCleanup.state, "pending"),
-    or(isNull(namespaceCleanup.inngestRunId), eq(namespaceCleanup.inngestRunId, runId)),
-  );
-  const rows = yield* drizzle.update(namespaceCleanup).set({
-    state: sql<CleanupState>`case when ${isPending} then ${CLEANUP_END_CODES[pending]} else ${CLEANUP_END_CODES[running]} end`,
-    endCode: sql<CleanupEndCode>`case when ${isPending} then ${pending} else ${running} end`,
-    endedAt: new Date(),
-  })
-    .where(or(and(eq(namespaceCleanup.inngestRunId, runId), inArray(namespaceCleanup.state, ACTIVE_STATES)), unbound))
-    .returning({ id: namespaceCleanup.id });
-  return rows.length;
-});
+  return rows.closeRun(runId, cleanupId, (whenPending) => ({
+    state: whenPending(CLEANUP_END_CODES[pending], CLEANUP_END_CODES[running]),
+    endCode: whenPending(pending, running),
+  }));
+};
 
 /** The hourly sweep: a request no run picked up in time never starts; a clean running this long lost its run. */
 export const closeStaleCleanups = Effect.fn("NamespaceCleanup.closeStale")(function* () {
-  const { drizzle } = yield* Database;
-  const now = Date.now();
-  const unknown = yield* drizzle.update(namespaceCleanup).set(ended("lost"))
-    .where(and(eq(namespaceCleanup.state, "running"), lt(namespaceCleanup.startedAt, new Date(now - CLEANUP_RUNNING_LIMIT_MS))))
-    .returning({ id: namespaceCleanup.id });
-  const failed = yield* drizzle.update(namespaceCleanup).set(ended("not_started"))
-    .where(and(eq(namespaceCleanup.state, "pending"), lt(namespaceCleanup.requestedAt, new Date(now - CLEANUP_PENDING_LIMIT_MS))))
-    .returning({ id: namespaceCleanup.id });
-  return { failed: failed.length, unknown: unknown.length };
+  const { running, pending } = yield* rows.closeStale({
+    running: { limitMs: CLEANUP_RUNNING_LIMIT_MS, end: ended("lost") },
+    pending: {
+      end: ended("not_started"),
+      when: (now) => lt(namespaceCleanup.requestedAt, new Date(now - CLEANUP_PENDING_LIMIT_MS)),
+    },
+  });
+  return { failed: pending, unknown: running };
 });
-
-const END_MESSAGES = {
-  not_started: "The clean never started.",
-  cancelled: "The clean was cancelled before it started.",
-  interrupted: "The clean was cancelled while it ran; some Volumes may be gone.",
-  lost: "Cloud lost track of the clean; some Volumes may be gone.",
-} as const satisfies Record<CleanupEndCodeWithoutMessage, string>;
-
-/** Why a clean ended without finishing: the Engine's words when it gave some, else Cloud's. */
-export const cleanupEndMessage = (row: Pick<typeof namespaceCleanup.$inferSelect, "endCode" | "endMessage">) =>
-  row.endCode === null || row.endCode === "refused" || row.endCode === "incomplete" ? row.endMessage : END_MESSAGES[row.endCode];
 
 export type CliNamespaceCleanup =
   | { readonly state: "pending" | "running" }
   | { readonly state: "finished"; readonly volumes: readonly string[] }
   | { readonly state: "ended"; readonly code: CleanupEndCode; readonly message: string };
+
+/** Why a clean ended without finishing: the Engine's words when it gave some, else Cloud's. */
+export const cleanupEndMessage = (row: Pick<CleanupRow, "endCode" | "endMessage">) =>
+  row.endCode === null || row.endCode === "refused" || row.endCode === "incomplete" ? row.endMessage : CLEANUP_END_WORDS[row.endCode];
 
 /** One clean in the caller's Organization as the CLI polls it; null when there is none. */
 export const readCliNamespaceCleanup = Effect.fn("NamespaceCleanup.readCli")(function* (organizationId: string, cleanupId: string) {

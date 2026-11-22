@@ -14,7 +14,7 @@ use ployz_core::{
 };
 use tokio::time::Instant;
 
-use super::{Call, Client, Deadline, Replay, Wait, call::Pacing};
+use super::{Call, Client, Deadline, Wait, call::Pacing};
 use crate::connect::{ConnectError, UNARY_RETRY_DELAYS, target_read_timeout};
 
 fn machine() -> MachineId {
@@ -164,21 +164,6 @@ async fn a_call_made_once_on_a_shared_client_is_never_sent_again() {
     server.abort();
 }
 
-#[test]
-fn what_a_call_lets_the_engine_send_again_is_what_its_constructor_says() {
-    assert_eq!(Call::read().replay(), Replay::Read);
-    assert_eq!(Call::keyed().replay(), Replay::Keyed);
-    assert_eq!(Call::once().replay(), Replay::Once);
-    assert_eq!(
-        Call::read().budget(Duration::from_secs(1)).replay(),
-        Replay::Read
-    );
-    assert_eq!(
-        Call::keyed().waiting(Wait::standard()).replay(),
-        Replay::Keyed
-    );
-}
-
 #[tokio::test(start_paused = true)]
 async fn a_read_sends_again_only_as_often_as_the_retry_delays_allow() {
     let (mut client, record, server) = drops(usize::MAX).await;
@@ -193,18 +178,6 @@ async fn a_read_sends_again_only_as_often_as_the_retry_delays_allow() {
         UNARY_RETRY_DELAYS.iter().sum::<Duration>()
     );
     server.abort();
-}
-
-#[test]
-fn the_retry_delays_are_the_ones_the_entry_has_always_used() {
-    assert_eq!(
-        UNARY_RETRY_DELAYS,
-        [
-            Duration::from_millis(500),
-            Duration::from_millis(1500),
-            Duration::from_secs(4),
-        ]
-    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -5,10 +5,11 @@ import { eq } from "drizzle-orm";
 import { Effect, Schedule } from "effect";
 import type { Change, ClientSealedValue, EnvironmentRef } from "@ployz/sdk";
 import { callStore } from "#/modules/config-store/config-store.server";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
-import { sealValue } from "#/modules/variables/seal-value";
+import { sealValue } from "#/modules/sealing/seal-value";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 

@@ -18,7 +18,7 @@ use super::Error;
 use super::deploy;
 use super::shared::accepted::{accepted, not_applied, with_accepted};
 use super::store::{self, Store, mint};
-use crate::cloud_account::StoreCallError;
+use crate::cloud::account::StoreCallError;
 
 use crate::ui::{self, Tree};
 

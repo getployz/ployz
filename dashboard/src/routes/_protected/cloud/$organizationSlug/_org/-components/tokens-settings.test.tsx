@@ -148,17 +148,17 @@ const token = {
 
 it("says whose a teammate's token is, unless its scope already names them", () => {
   const grace = { name: "Grace", email: "grace@example.test", you: false };
-  const { rerender } = render(<TokenItem timeZone="UTC" token={token} revoking={false} onRevoke={vi.fn()} />);
+  const { rerender } = render(<TokenItem timeZone="UTC" token={token} onRevoke={vi.fn()} />);
   expect(screen.getByText(/^Deploy staging · Expires/)).toBeTruthy();
-  rerender(<TokenItem timeZone="UTC" token={{ ...token, owner: grace }} revoking={false} onRevoke={vi.fn()} />);
+  rerender(<TokenItem timeZone="UTC" token={{ ...token, owner: grace }} onRevoke={vi.fn()} />);
   expect(screen.getByText(/^Deploy staging · by Grace · Expires/)).toBeTruthy();
-  rerender(<TokenItem timeZone="UTC" token={{ ...token, scope: "Full as Grace", owner: grace }} revoking={false} onRevoke={vi.fn()} />);
+  rerender(<TokenItem timeZone="UTC" token={{ ...token, scope: "Full as Grace", owner: grace }} onRevoke={vi.fn()} />);
   expect(screen.getByText(/^Full as Grace · Expires/)).toBeTruthy();
 });
 
 it("asks before revoking a token, and revokes only on confirm", async () => {
   const onRevoke = vi.fn();
-  render(<TokenItem timeZone="UTC" token={token} revoking={false} onRevoke={onRevoke} />);
+  render(<TokenItem timeZone="UTC" token={token} onRevoke={onRevoke} />);
   fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
 
   const dialog = await screen.findByRole("alertdialog", { name: "Revoke ci-deploy?" });
@@ -171,7 +171,7 @@ it("asks before revoking a token, and revokes only on confirm", async () => {
 
 it("keeps the token when the confirm is cancelled", async () => {
   const onRevoke = vi.fn();
-  render(<TokenItem timeZone="UTC" token={token} revoking={false} onRevoke={onRevoke} />);
+  render(<TokenItem timeZone="UTC" token={token} onRevoke={onRevoke} />);
   fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
 
   fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
@@ -179,8 +179,8 @@ it("keeps the token when the confirm is cancelled", async () => {
 });
 
 it("shows a token's expiry as the day it falls on in the viewer's zone", () => {
-  const { rerender } = render(<TokenItem timeZone="UTC" token={{ ...token, expires_at: "2026-12-05T02:00:00Z" }} revoking={false} onRevoke={vi.fn()} />);
+  const { rerender } = render(<TokenItem timeZone="UTC" token={{ ...token, expires_at: "2026-12-05T02:00:00Z" }} onRevoke={vi.fn()} />);
   expect(screen.getByText("Deploy staging · Expires Dec 5, 2026")).toBeTruthy();
-  rerender(<TokenItem timeZone="Pacific/Pago_Pago" token={{ ...token, expires_at: "2026-12-05T02:00:00Z" }} revoking={false} onRevoke={vi.fn()} />);
+  rerender(<TokenItem timeZone="Pacific/Pago_Pago" token={{ ...token, expires_at: "2026-12-05T02:00:00Z" }} onRevoke={vi.fn()} />);
   expect(screen.getByText("Deploy staging · Expires Dec 4, 2026")).toBeTruthy();
 });

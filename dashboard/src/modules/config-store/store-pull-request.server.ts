@@ -7,11 +7,12 @@ import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/c
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { installationAccess } from "#/modules/github/github-access";
-import { fetchInstallationPullRequest, githubLacksPermission, postInstallationCheckRun } from "#/modules/github/github-observation.api";
+import { postInstallationCheckRun } from "#/modules/github/github-authority.server";
+import { fetchInstallationPullRequest, githubLacksPermission } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
 import { listLinkedOrganizationIds } from "#/modules/github/github.repository";
-import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData, DeploymentTrigger } from "#/modules/config-store/config-store.events";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -158,7 +159,6 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
     config.app.url.href,
   );
   if (!run) return "skipped" as const;
-  if (views.length === 0) return "skipped" as const;
   return yield* postInstallationCheckRun(installationAccess(payload.installationId), payload.repositoryId, {
     ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,

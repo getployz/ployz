@@ -7,9 +7,11 @@ import { SealError } from "#/modules/sealing/seal-error";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
-import { commandEnvironment, commandEnvironments, isProtectedAsk, StoreRefused } from "./store.contract";
-import { cachedRevision, dropHiddenRefusals, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
+import { commandEnvironment, commandEnvironments, isProtectedAsk } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
+import { cachedRevision, dropHiddenRefusals, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
+import { environmentKey } from "./environment-ref";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {
@@ -25,16 +27,104 @@ export type StoreEdit = {
  * another Environment, and may make or close one, which the Project's views (its Environments, the Projects) list.
  * A Project's Default Environment, Branch setup and protection show in those Project views, which name no Environment.
  */
-const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set([
-  "sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node", "set_default_environment", "set_branch_setup",
-  "set_environment_protected",
-]);
+const SPANS = {
+  create_project: false,
+  rename_project: false,
+  create_environment: false,
+  create_service: false,
+  create_git_service: false,
+  rename_service: false,
+  remove_service: false,
+  create_volume: false,
+  set_volume_storage: false,
+  set_volume_shared_writes: false,
+  remove_volume: false,
+  rename_volume: false,
+  create_config: false,
+  put_config_file: false,
+  remove_config_file: false,
+  rename_config: false,
+  delete_config: false,
+  attach_config: false,
+  detach_config: false,
+  edit: false,
+  publish: false,
+  stage_history: false,
+  discard: false,
+  admit: false,
+  start: false,
+  cancel: false,
+  add_domain: false,
+  set_generated_domain: false,
+  remove_domain: false,
+  create_branch: true,
+  sync: true,
+  undo_sync: true,
+  remove_proposal: true,
+  take: true,
+  copy_node: true,
+  never_sync: false,
+  set_merge_value: false,
+  keep_branch: false,
+  set_build_order: false,
+  name_region: false,
+  set_default_environment: true,
+  set_branch_setup: true,
+  set_environment_protected: true,
+  remove: false,
+  cancel_removal: false,
+  set_pr_plan: false,
+  approve_rule: false,
+  approve_pull_request: false,
+  batch: false,
+} satisfies Record<ConfigCommand["command"], boolean>;
 
 /** The Environment revision a write produced; a Batch's is its last command's. */
 function writtenRevision(written: ConfigWritten): number | null {
-  const last = written.written === "batch" ? written.results.at(-1) : written;
-  return last?.written === "service" || last?.written === "volume" || last?.written === "config" || last?.written === "edited" || last?.written === "discarded" || last?.written === "history_staged"
-    ? last.environment.revision : null;
+  switch (written.written) {
+    case "batch": {
+      const last = written.results.at(-1);
+      return last === undefined ? null : writtenRevision(last);
+    }
+    case "service":
+    case "volume":
+    case "config":
+    case "edited":
+    case "discarded":
+    case "history_staged":
+      return written.environment.revision;
+    case "project":
+    case "project_renamed":
+    case "environment":
+    case "service_renamed":
+    case "service_removed":
+    case "volume_removed":
+    case "volume_renamed":
+    case "config_removed":
+    case "config_renamed":
+    case "published":
+    case "deployment":
+    case "domain_added":
+    case "domain":
+    case "automated":
+    case "rule":
+    case "branch":
+    case "build_order":
+    case "region_named":
+    case "synced":
+    case "undone":
+    case "removed":
+    case "taken":
+    case "never_synced":
+    case "on_merge":
+    case "default_environment":
+    case "branch_setup":
+    case "protected":
+    case "removal":
+    case "removal_cancelled":
+    case "pr_plans":
+      return null;
+  }
 }
 
 const isStaleRevision = Schema.is(Schema.Struct({ revision: Schema.Number }));
@@ -50,7 +140,6 @@ const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Chec
 const FAILED = "Ployz Cloud couldn't save this change, so it was undone. Try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
-/** A write to the Config Store: a Promise of what it wrote. */
 export interface Write<T = unknown> extends Promise<T> {}
 
 /** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
@@ -85,7 +174,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   /** The Environments whose views a command moves (null, every view). */
   function keysOf(command: ConfigCommand): ReadonlySet<string> | null {
     const refs = commandEnvironments(command);
-    return refs.length === 0 || SPANS.has(command.command) ? null : new Set(refs.map(environmentKey));
+    return refs.length === 0 || SPANS[command.command] ? null : new Set(refs.map(environmentKey));
   }
 
   /** Sends `command` with the views this tab shows of its Environments, and installs their answers. */
@@ -180,7 +269,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         return written;
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
-      const spans = SPANS.has(command.command) || commandEnvironments(command).length > 1;
+      const spans = SPANS[command.command] || commandEnvironments(command).length > 1;
       const preceding = spans ? [...unsettled] : [];
       const work = async () => { await Promise.all(preceding); return save(prepare ? await prepare() : command); };
       const promise = queued(key, command, work, expects, handles);
@@ -199,7 +288,6 @@ export function useStoreWriter(organizationSlug: string) {
   return getStoreWriter(organizationSlug, useCollectionScope());
 }
 
-/** GitHub sign-in that returns the user to the page they were on. */
 function signInHere() {
   const callbackURL = window.location.pathname + window.location.search;
   return `/auth/github?${new URLSearchParams({ callbackURL })}`;

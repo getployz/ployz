@@ -78,7 +78,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await?
                 .1;
         }
-        let policy = policy.settle(listed.or(joining), matches)?;
+        let policy = policy.settle(listed.or(joining), |args| {
+            crate::handlers::rerun(matches, args)
+        })?;
         let claimed = crate::enrollment::claims(&token.runtime);
         let first_key = token.first_key;
 

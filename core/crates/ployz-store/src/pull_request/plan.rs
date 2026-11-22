@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::followup::FollowUp;
+use crate::storage::json_text;
 
 /// A repository no plan was saved for: off, removed on close.
 pub(super) fn off() -> Stored {
@@ -18,10 +19,7 @@ pub(crate) fn set_plan(
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
     // Serialize plan writes per Project.
-    tx.execute(
-        "UPDATE config_project SET name = name WHERE id = ?1",
-        &[project.id.as_str().into()],
-    )?;
+    scope::lock_project(tx, &project.id)?;
     let repositories = repositories(tx, &project.id)?;
     let Some(Repository {
         id: repository_id, ..
@@ -114,7 +112,7 @@ pub(crate) fn set_plan(
             (*repository_id).into(),
             who.organization.as_str().into(),
             name.into(),
-            serde_json::to_string(&plan).expect("a plan is JSON").as_str().into(),
+            json_text(&plan).as_str().into(),
         ],
     )?;
     plans(

@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
-import { getRouteApi } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { getClusterDomainCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -12,11 +11,10 @@ import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-
 import { type ClusterNameView, clusterNameProblem, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useClusterIngress } from "#/modules/ingress/doors.queries";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { useMemberGate } from "#/modules/organization/members.queries";
 import { WebTrafficSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection";
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 export function NetworkSection({ organizationSlug }: { organizationSlug: string }) {
   const { setup } = useClusterIngress(organizationSlug);
@@ -32,9 +30,7 @@ export function NetworkSection({ organizationSlug }: { organizationSlug: string 
 function ClusterNameSection({ organizationSlug }: { organizationSlug: string }) {
   const { view, rename } = useClusterName(organizationSlug);
   const [draft, setDraft] = useState<string | null>(null);
-  const { access } = organizationRoute.useLoaderData();
-  const gate = useRoleGate(organizationSlug, "servers:operate");
-  const editable = access !== "support" && gate.allowed;
+  const editable = useMemberGate(organizationSlug, "servers:operate").allowed;
   return (
     <SettingsSection id="cluster" title="Cluster">
       {draft === null ? (

@@ -3,10 +3,7 @@ use std::future::Future;
 
 use bollard::{
     errors::Error as DockerError,
-    models::{
-        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
-        NetworkConnectRequest,
-    },
+    models::{ContainerCreateBody, Mount, MountType, NetworkConnectRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
@@ -24,7 +21,7 @@ use ployz_core::MachineGateway;
 use crate::{
     docker_image::{ImagePull, UnsignedImage, prepare_image},
     machine::AdmittedSpec,
-    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME},
+    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME, bridge},
 };
 
 use super::{
@@ -33,6 +30,7 @@ use super::{
     create::CreationNetwork,
     doors::Door,
     error::{Status, classify, docker_error},
+    inspect::{self, Inspected, inspect},
     malformed_container,
     recovery::IngressRecovery,
     spec_store::ConfigOperation,
@@ -572,7 +570,7 @@ impl Lifecycle {
             namespace,
             spec,
             &network,
-            self.observation.sealing_key_dir(),
+            self.observation.sealing(),
             &creating.admitted,
         )?;
         create::ingress_sysctls(
@@ -637,7 +635,10 @@ impl Lifecycle {
             return Err(Error::UnsignedImage(UnsignedImage::Moved));
         }
         // A daemon killed here leaves a Container no spec describes.
-        crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
+        crate::faults::kill_inside(
+            crate::faults::Point::Verb("CreateContainer.BeforeSpec"),
+            None,
+        );
         let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
         if let Err(error) = config_operation
             .put(
@@ -666,16 +667,7 @@ impl Lifecycle {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<String>, Error> {
-        let made = self
-            .docker
-            .client
-            .inspect_container(
-                container_id.as_str(),
-                None::<bollard::query_parameters::InspectContainerOptions>,
-            )
-            .await
-            .map_err(Error::Docker)?;
-        Ok(made.image)
+        Ok(self.docker.inspect(container_id).await?.image)
     }
 
     /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
@@ -762,30 +754,19 @@ impl Lifecycle {
         if self.specs.get(container_id).await?.is_some() {
             return Ok(false);
         }
-        let inspected = match self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
+        let Some(inspected) = inspect(&self.docker.client, container_id.as_str())
             .await
-            .map_err(|error| docker_error(container_id, error))
-        {
-            Ok(inspected) => inspected,
-            Err(Error::ContainerNotFound(_)) => return Ok(true),
-            Err(error) => return Err(error),
+            .map_err(inspect::failed)?
+        else {
+            return Ok(true);
         };
-        let labels = inspected
-            .config
-            .and_then(|config| config.labels)
-            .unwrap_or_default();
         let (true, Some(service_id)) = (
-            labels.contains_key(labels::CREATION_KEY)
-                && inspected.state.and_then(|state| state.status)
-                    == Some(ContainerStateStatusEnum::CREATED),
-            labels.get(labels::SERVICE_ID),
+            inspected.creation_key().is_some() && inspected.status() == Some("created"),
+            inspected.label(labels::SERVICE_ID),
         ) else {
             return Ok(false);
         };
-        Ok(!self.specs.holds_absent(present, service_id.clone()).await?)
+        Ok(!self.specs.holds_absent(present, service_id.into()).await?)
     }
 
     pub(crate) async fn inspect_slot(
@@ -847,19 +828,13 @@ impl Lifecycle {
         name: &str,
         key: &str,
     ) -> Result<Option<ContainerObservation>, Error> {
-        let inspected = match self.docker.client.inspect_container(name, None).await {
-            Ok(inspected) => inspected,
-            Err(error) if classify(&error) == Status::Absent => return Ok(None),
-            Err(error) => return Err(error.into()),
+        let Some(inspected) = inspect(&self.docker.client, name)
+            .await
+            .map_err(inspect::failed)?
+        else {
+            return Ok(None);
         };
-        if inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(labels::CREATION_KEY))
-            .map(String::as_str)
-            != Some(key)
-        {
+        if inspected.creation_key() != Some(key) {
             return Err(Error::SlotNameOccupied(name.into()));
         }
         let container_id = ContainerId::parse(
@@ -917,7 +892,7 @@ impl Lifecycle {
     pub(super) async fn start_inspected(
         &self,
         container_id: &ContainerId,
-        inspected: &ContainerInspectResponse,
+        inspected: &Inspected,
     ) -> Result<(), Error> {
         if let Some(network) = lost_network(inspected)
             && let Err(error) = self.rejoin(container_id, network, inspected).await
@@ -926,15 +901,11 @@ impl Lifecycle {
         {
             return Err(error);
         }
-        let container_labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref());
-        if let Some(container_labels) = container_labels {
+        if let Some(container_labels) = inspected.labels() {
             self.collector.cover(container_labels).await?;
         }
         let spec = self.specs.get(container_id).await?;
-        match super::holder::start(&self.docker.client, inspected, spec.as_ref()).await {
+        match super::holder::start_inspected(&self.docker.client, inspected, spec.as_ref()).await {
             Err(Error::Docker(error)) => idempotent_lifecycle_result(container_id, Err(error)),
             started => started,
         }
@@ -947,14 +918,10 @@ impl Lifecycle {
         &self,
         container_id: &ContainerId,
         network: &str,
-        inspected: &ContainerInspectResponse,
+        inspected: &Inspected,
     ) -> Result<(), Error> {
         let joined = if network == DOCKER_NETWORK_NAME {
-            let ipv6 = inspected
-                .config
-                .as_ref()
-                .and_then(|config| config.labels.as_ref())
-                .is_some_and(super::takes_bridge_ipv6);
+            let ipv6 = inspected.labels().is_some_and(bridge::takes_ipv6);
             self.docker.join_bridge(container_id, ipv6).await
         } else {
             self.docker.ensure_tunnel_network().await?;
@@ -1164,7 +1131,7 @@ impl super::LocalDocker {
         let address = match self.bridge().await {
             Ok(bridge) => bridge
                 .subnet
-                .and_then(|subnet| super::bridge_address::next(subnet, &bridge.taken, *last)),
+                .and_then(|subnet| bridge::address::next(subnet, &bridge.taken, *last)),
             Err(_) => None,
         };
         if address.is_some() {
@@ -1175,7 +1142,7 @@ impl super::LocalDocker {
                 DOCKER_NETWORK_NAME,
                 NetworkConnectRequest {
                     container: container_id.to_string(),
-                    endpoint_config: Some(super::bridge_address::endpoint(ipv6, address)),
+                    endpoint_config: Some(bridge::address::endpoint(ipv6, address)),
                 },
             )
             .await
@@ -1198,7 +1165,7 @@ impl super::LocalDocker {
             return Err(Error::EndpointCapacity);
         }
         if on_bridge && let Some(subnet) = bridge.subnet {
-            let address = super::bridge_address::next(subnet, &bridge.taken, *last)
+            let address = bridge::address::next(subnet, &bridge.taken, *last)
                 .ok_or(Error::EndpointCapacity)?;
             let endpoints = body
                 .networking_config
@@ -1206,8 +1173,7 @@ impl super::LocalDocker {
                 .endpoints_config
                 .get_or_insert_default();
             let endpoint = endpoints.entry(DOCKER_NETWORK_NAME.to_owned()).or_default();
-            endpoint.ipam_config =
-                super::bridge_address::endpoint(false, Some(address)).ipam_config;
+            endpoint.ipam_config = bridge::address::endpoint(false, Some(address)).ipam_config;
             *last = Some(address);
         }
         let _creating = super::Creating::new(&self.creates);
@@ -1323,47 +1289,17 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
     }
 }
 
-/// Docker left this container created and recorded why its start failed.
-/// Docker clears `State.Error` when a start succeeds, so a container at rest with one
-/// recorded is one whose last start failed: its first, or the one at boot that
-/// leaves it exited with no retry.
-pub(super) fn failed_start(inspected: &ContainerInspectResponse) -> bool {
-    inspected.state.as_ref().is_some_and(|state| {
-        matches!(
-            state.status,
-            Some(ContainerStateStatusEnum::CREATED | ContainerStateStatusEnum::EXITED)
-        ) && state
-            .error
-            .as_deref()
-            .is_some_and(|error| !error.is_empty())
-    })
-}
-
-pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
-    inspected.state.as_ref().and_then(|state| state.status)
-        == Some(ContainerStateStatusEnum::RUNNING)
-}
-
 /// Docker 29 empties a container's networks when its start fails, and a later start
 /// then runs it with no network and no published ports. A Container in another's
 /// network has none to lose. Answers the network a Container on the `ployz` bridge
 /// or a Tunnel Origin lost.
-fn lost_network(inspected: &ContainerInspectResponse) -> Option<&'static str> {
-    let network = match inspected
-        .host_config
-        .as_ref()
-        .and_then(|host| host.network_mode.as_deref())
-    {
+fn lost_network(inspected: &Inspected) -> Option<&'static str> {
+    let network = match inspected.network_mode() {
         Some(DOCKER_NETWORK_NAME) => DOCKER_NETWORK_NAME,
         Some(TUNNEL_NETWORK_NAME) => TUNNEL_NETWORK_NAME,
         _ => return None,
     };
-    let attached = inspected
-        .network_settings
-        .as_ref()
-        .and_then(|settings| settings.networks.as_ref())
-        .is_some_and(|networks| networks.contains_key(network));
-    (!attached).then_some(network)
+    (!inspected.attached_to(network)).then_some(network)
 }
 
 #[cfg(test)]
@@ -1376,7 +1312,7 @@ mod tests {
         },
     };
 
-    fn inspected(network_mode: &str, networks: serde_json::Value) -> ContainerInspectResponse {
+    fn inspected(network_mode: &str, networks: serde_json::Value) -> Inspected {
         serde_json::from_value(serde_json::json!({
             "HostConfig": { "NetworkMode": network_mode },
             "NetworkSettings": { "Networks": networks },

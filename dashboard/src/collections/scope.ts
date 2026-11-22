@@ -27,6 +27,22 @@ export function getDbClient(queryClient: QueryClient) {
 /** Org Store scope: collections are org-wide. Filter environments in live queries, never in keys. */
 export type CollectionScope = { queryClient: QueryClient; sessionId: string; userId: string };
 
+/** The scope a signed-in session's user reads the Org Store in. */
+export function scopeOf(queryClient: QueryClient, session: { session: { id: string }; user: { id: string } }): CollectionScope {
+  return { queryClient, sessionId: session.session.id, userId: session.user.id };
+}
+
+/** The identity of one Organization's data in one session: what a scope's caches are keyed by. */
+export const scopeKey = (scope: CollectionScope, organizationSlug: string) => JSON.stringify([scope.sessionId, scope.userId, organizationSlug]);
+
+/** The Query key of an Org Store collection. Keys hold session, user and Organization only. */
+export const collectionKey = (scope: CollectionScope, organizationSlug: string, table: string) =>
+  ["collections", scope.sessionId, scope.userId, organizationSlug, table] as const;
+
+/** The Query key of an Organization's Org Store readiness. */
+export const orgStoreKey = (scope: CollectionScope, organizationSlug: string) =>
+  ["org-store", scope.sessionId, scope.userId, organizationSlug] as const;
+
 export function cachedByCollectionScope<T>(create: (organizationSlug: string, scope: CollectionScope) => T) {
   const clients = new WeakMap<QueryClient, Map<string, T>>();
   return (organizationSlug: string, scope: CollectionScope): T => {
@@ -35,7 +51,7 @@ export function cachedByCollectionScope<T>(create: (organizationSlug: string, sc
       cache = new Map();
       clients.set(scope.queryClient, cache);
     }
-    const key = JSON.stringify([scope.sessionId, scope.userId, organizationSlug]);
+    const key = scopeKey(scope, organizationSlug);
     const existing = cache.get(key);
     if (existing) return existing;
     const collection = create(organizationSlug, scope);

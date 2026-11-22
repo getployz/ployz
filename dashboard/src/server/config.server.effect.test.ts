@@ -73,6 +73,20 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect.each(["0", "10001", "nope", "1.5", "9007199254740992"])("samples one dial in 100 when PLOYZ_DIAL_SAMPLE_N is %s", (rate) =>
+    Effect.gen(function* () {
+      const config = yield* load({ ...requiredEnvironment, PLOYZ_DIAL_SAMPLE_N: rate });
+      assert.strictEqual(config.dialSampleRate, 100);
+    }),
+  );
+
+  it.effect("samples one dial in the whole number PLOYZ_DIAL_SAMPLE_N names", () =>
+    Effect.gen(function* () {
+      const config = yield* load({ ...requiredEnvironment, PLOYZ_DIAL_SAMPLE_N: "1" });
+      assert.strictEqual(config.dialSampleRate, 1);
+    }),
+  );
+
   it.effect("names each missing required variable", () =>
     Effect.gen(function* () {
       for (const name of Object.keys(requiredEnvironment)) {

@@ -38,10 +38,6 @@ pub struct EnrollRequest {
     pub pinned: PinnedAddresses,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a wire type, kept unboxed so serde and ts-rs see the payload"
-)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnrollAs {
@@ -110,10 +106,6 @@ pub enum LeftPhase {
 }
 
 /// A resend on a Machine already Resetting or Uninitialized replies `Left` with that phase.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a wire type, kept unboxed so serde and ts-rs see the payload"
-)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Left {
@@ -133,10 +125,6 @@ pub struct ForgetRequest {
 }
 
 /// A missing row is success.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a wire type, kept unboxed so serde and ts-rs see the payload"
-)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Forgotten {

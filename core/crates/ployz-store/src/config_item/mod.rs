@@ -265,8 +265,7 @@ pub(crate) fn put_file(
                 .any(|mount| mount.config_resource_id == id)
         });
         for node in mounting {
-            let service =
-                ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let service = crate::scope::service_name(node)?;
             if let Some(error) = collision(&service, node, configs)
                 .or_else(|| oversized(&service, node, configs, &names))
             {
@@ -334,8 +333,7 @@ pub(crate) fn delete_config(
         .detach_resource(EnvironmentNodeType::Config, config.id.as_str());
     for service in &environment.working.services {
         if detached.contains(&service.lineage_id) {
-            let name =
-                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let name = crate::scope::service_name(service)?;
             staged.push(SettingPath::at(
                 &name,
                 Target::ConfigMount(config.name.clone().into()),

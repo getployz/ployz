@@ -23,8 +23,8 @@ import {
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { AppConfig } from "#/server/config.server";
-import type { Database, ReportingDatabase } from "#/server/database.server";
-import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
+import type { Database } from "#/server/database.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000b01";
@@ -57,7 +57,7 @@ describe("sync-cluster-domain", () => {
   const publishedMaterial: PublishCertificateMaterialRequest[] = [];
 
   const runEffect = makeInngestEffectRunner(<A, E>(
-    operation: Effect.Effect<A, E, Database | ReportingDatabase | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
+    operation: Effect.Effect<A, E, Database | AppConfig | SecretEncryption | OrganizationRuntime | InngestClient>,
   ) => {
     const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
       env: {

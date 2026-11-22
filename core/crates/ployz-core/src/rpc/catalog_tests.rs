@@ -95,6 +95,22 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "SetKey",
+        "set_key",
+        "ployz.machine.set-key.v1",
+        "Always",
+        "Full",
+        "Unary",
+    ),
+    (
+        "ConfirmJoin",
+        "confirm_join",
+        "ployz.machine.join.confirm.v1",
+        "Always",
+        "Operator",
+        "Unary",
+    ),
+    (
         "SetPushTarget",
         "set_push_target",
         "ployz.machine.set-push-target.v1",
@@ -475,6 +491,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
 /// Capabilities that name no route, in catalog order: `(capability, advertisement)`.
 const EXTRAS: &[(&str, &str)] = &[
     ("ployz.machine.join.device-approval.v1", "Always"),
+    ("ployz.machine.join-trust.v1", "Always"),
     ("ployz.volume.copy.floor.v1", "Container"),
     ("ployz.volume.size.shrink.v1", "Container"),
     ("ployz.volume.origin.v1", "Container"),
@@ -602,6 +619,7 @@ fn each_advertisement_lists_its_capabilities_in_catalog_order() {
             .collect();
         assert_eq!(listed, expected, "{class:?}");
     }
+    assert_eq!(served_capabilities().len(), ROWS.len() + EXTRAS.len());
 }
 
 #[test]

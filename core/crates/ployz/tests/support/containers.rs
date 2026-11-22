@@ -2,11 +2,11 @@
 
 #![allow(dead_code, reason = "each cluster test uses only some of these")]
 
-use ployz::connect::Client;
+use ployz::connect::{Carried, Client};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, CreationKey, Drain,
     MachineId, Namespace, NewContainer, ResolvedServiceSpec, RpcError, RunRotation, RunTarget,
-    SlotKey, StopOptions,
+    SlotKey, StopOptions, op,
 };
 
 /// Create and start a Container in a fresh slot.
@@ -101,5 +101,9 @@ pub async fn ensure(
     machine_id: MachineId,
     want: ContainerWant,
 ) -> Result<ContainerNow, RpcError> {
-    client.ensure_container(&machine_id, want, None).await
+    client
+        .ensure::<op::EnsureContainer>(&machine_id, want, async |_| Carried::default(), None)
+        .await?
+        .into_settled()
+        .map(|(now, _)| now)
 }

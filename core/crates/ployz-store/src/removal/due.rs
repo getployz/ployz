@@ -154,7 +154,7 @@ pub(super) fn go_on(
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
             Standing::Due => {
-                let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+                let id = DeploymentId::fresh();
                 let admitting = (&environment, &id);
                 match admit_member(tx, who, admitting, mark, trusted, true) {
                     Ok(admitted) if !admitted.in_flight => continue,
@@ -191,9 +191,7 @@ fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
         .working
         .services
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
+        .map(crate::scope::service_name)
         .collect()
 }
 
@@ -491,7 +489,7 @@ fn admit_taking_everything_off(
             None,
             None,
         ),
-        id,
+        environment,
         deployment::NOTHING,
         &frozen,
     )?;

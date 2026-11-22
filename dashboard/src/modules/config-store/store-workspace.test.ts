@@ -2,7 +2,7 @@ import type { ConfigCommand, ConfigWritten, DeploymentStatus, EnvironmentListing
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { removalDeployment, removeTarget, removing, storeEnvironmentNotes, storeEnvironmentTree } from "./store-workspace";
-import { StoreRefused } from "./store.contract";
+import { StoreRefused } from "#/lib/refusal";
 
 const refused = (code: string, details: JsonValue) => new StoreRefused({ code, message: code, details });
 

@@ -477,8 +477,7 @@ fn referrers(
                     if wanted == key.as_str() && references(owner, own, lineage))
             });
             if uses {
-                let name = ServiceName::parse(&referrer.slug)
-                    .map_err(|_| error::corrupt("Service name"))?;
+                let name = crate::scope::service_name(referrer)?;
                 found.push((name, VariableKey::parse(&variable.key)?));
             }
         }

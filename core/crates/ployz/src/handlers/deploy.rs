@@ -8,7 +8,7 @@ pub(super) mod approve;
 #[cfg(test)]
 mod follow_tests;
 mod forget;
-mod progress;
+pub(crate) mod progress;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
@@ -29,7 +29,7 @@ use ployz_store::{
 use super::store::{Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
-use crate::cloud_account::StoreCallError;
+use crate::cloud::account::StoreCallError;
 
 pub(super) fn deploy_command(command: Command) -> Command {
     following(
@@ -1878,7 +1878,7 @@ mod tests {
     /// following it raises the floors the first run would have.
     #[test]
     fn a_volume_loss_retry_keeps_forget_older() {
-        use crate::cloud_account::StoreCallError;
+        use crate::cloud::account::StoreCallError;
         use crate::handlers::store::{Backend, Store};
         use ployz_core::Hint;
         use ployz_store::{Actor, ConfigStore, OrganizationId, SealingKey};

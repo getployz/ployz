@@ -203,12 +203,20 @@ pub(in crate::handlers) async fn connect_direct(
     matches: &ArgMatches,
     connection: &Connection,
 ) -> Result<Client, ConnectError> {
+    connect_direct_within(crate::cli::ssh_timeout(matches), connection).await
+}
+
+/// [`connect_direct`] with this SSH setup budget.
+pub(in crate::handlers) async fn connect_direct_within(
+    ssh_timeout: std::time::Duration,
+    connection: &Connection,
+) -> Result<Client, ConnectError> {
     connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
             connections: vec![connection.clone()],
         },
-        Arc::new(SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches))),
+        Arc::new(SystemConnector::default().with_ssh_timeout(ssh_timeout)),
     )
     .await
 }

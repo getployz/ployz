@@ -1,0 +1,414 @@
+import type { ConfigStore, MachineId, WantedCopy } from "@ployz/sdk";
+import { Effect } from "effect";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { PloyzProviderError, type PloyzSession, RpcError } from "#/modules/runtime/ployz.server";
+import { syncMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.server";
+import type { Member } from "#/modules/volume-run/volume-run";
+import { askCopy, type CopyAnswer, SwitchAttemptError, type VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
+import { holdDeployLane, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { answeringWith, COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
+import type { Database } from "#/server/database.server";
+import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import type { SecretEncryption } from "#/utils/encrypted-secret.server";
+
+const organizationId = "00000000-0000-4000-8000-000000000f06";
+const volumeId = "vol1";
+const environment = { project: "shop", environment: "production" };
+const volume = { volumeId, name: "db", dockerVolume: "shop-production_vol-vol1", environment };
+const web = (name: string) => name.padEnd(32, "0") as MachineId;
+const inngest = new Inngest({ id: "mirror-sync-test" });
+vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+const NEWEST = { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 };
+// The SDK's rejection when it can't dial: no Machine sent it, so it is unanswered, under `internal`, not `unavailable`.
+const DIAL_FAILED = new RpcError({ code: "internal", message: "Couldn't open a connection to the Server: connection refused", details: null, unanswered: true });
+// A Machine's own refusal, which it sent, so it is answered.
+const DRAINING = new RpcError({ code: "unavailable", message: "web-2 is draining", details: null });
+// The entry Machine's status when its dial to the target failed: the target never got the call, so it is not unanswered.
+const UNDIALED = new RpcError({ code: "unavailable", message: "tcp connect error", details: null, targetUnreached: true });
+
+type Ask = (typeof VolumeCluster.Service)["ask"];
+
+/** The real askCopy, over a session whose SetVolumeCopy rejects with `rejection` as the SDK does. */
+const askRejected = (rejection: InstanceType<typeof RpcError>): Ask => (asker, machine, expected, want) => askCopy(asker, machine, expected, want).pipe(
+  Effect.provideService(OrganizationRuntime, {
+    cancel: () => Effect.void,
+    open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
+      volumeSwitch: () => Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: rejection })),
+    }) }),
+  }),
+);
+
+describe("the mirror sync", () => {
+  let harness: PostgresTestHarness;
+  let members: Member[];
+  let asked: string[];
+  let mirrorAnswer: CopyAnswer;
+  let gens: number[];
+  let onDeployment: () => Promise<void>;
+
+  const run = <A, E>(
+    operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>,
+    cluster: Partial<typeof VolumeCluster.Service> = {},
+  ) => harness.runEffect(operation.pipe(
+    answeringWith(cluster),
+    Effect.provideService(InngestClient, inngest),
+    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
+    Effect.provideService(CloudStore, {
+      open: Effect.succeed(asTestDouble<ConfigStore>()({
+        read: async (_: string, query: { query: string }) => {
+          if (query.query === "deployment") {
+            await onDeployment();
+            return { in_flight: false };
+          }
+          if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
+          return {
+            environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
+            volumes: [{ id: volumeId, name: "db", storage: { kind: "provisioned", maximumBytes: 1 } }],
+          };
+        },
+      })),
+    }),
+  ));
+  const ask: Ask = (asker, machine, _expect, want: WantedCopy) => {
+    asked.push(`${want.kind} ${machine.name}`);
+    gens.push(asker.gen);
+    return Effect.succeed<CopyAnswer>(want.kind === "snapshot" ? { ok: true, copy: { ...COPIES.writer, newest: NEWEST } } : mirrorAnswer);
+  };
+  const sync = () => run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask });
+  const runs = async () => (await harness.pool.query(`select kind from volume_run`)).rows.map((row) => row.kind);
+  const status = async () => (await harness.pool.query(`select ok_snapshot, ok_at, failed_snapshot, failed_at, failure from volume_mirror_status`)).rows;
+
+  beforeAll(async () => { harness = await startPostgresTestHarness(); }, 60_000);
+  afterAll(async () => { await harness?.stop(); });
+  beforeEach(async () => {
+    asked = [];
+    gens = [];
+    onDeployment = async () => {};
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    mirrorAnswer = { ok: true, copy: COPIES.pulling };
+    await harness.pool.query(`
+      truncate table organization cascade;
+      insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
+      insert into volume_placement (volume_id, organization_id, environment_id, mirrors) values ('${volumeId}', '${organizationId}', 'env-1', '["${web("web-2")}"]');
+    `);
+  });
+
+  it("skips while a Server lacks copies, a lack before a silence, then names the silent, then waits for a report, asking nobody", async () => {
+    const silent = member("web-3", "unanswered");
+    const lacking: Member = { machine: member("web-2", "unanswered").machine, answered: false, lack: "Volume copies need a newer Ployz on web-2." };
+    const waiting: Member = { machine: member("web-4", "unanswered").machine, answered: false, incomplete: true };
+    members = [member("web-1", "writer"), silent, lacking, waiting];
+    expect((await sync()).lines).toEqual(["skipped db: Volume copies need a newer Ployz on web-2."]);
+    members = [member("web-1", "writer"), silent, waiting];
+    expect((await sync()).lines).toEqual(["skipped db, web-3 isn't answering"]);
+    members = [member("web-1", "writer"), waiting];
+    expect((await sync()).lines).toEqual(["skipped db, waiting for every server's report"]);
+    expect(asked).toEqual([]);
+  });
+
+  it("refreshes a CLI mirror on a restored Volume", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '[]'`);
+    expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
+  it("leaves the old primary a move left alone", async () => {
+    await harness.pool.query(`delete from volume_placement`);
+    members = [member("web-1", "writer"), member("web-2", "old")];
+    expect((await sync()).lines).toEqual(["db has no mirror"]);
+    expect(asked).toEqual([]);
+  });
+
+  it("takes one snapshot and makes one hand-off, with no run", async () => {
+    expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+    expect(await runs()).toEqual([]);
+  });
+
+  it("names each sync's snapshot apart from one taken the same millisecond, above any lane run's round", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
+    const names: string[] = [];
+    const naming: Ask = (asker, machine, expected, want) => {
+      if (want.kind === "snapshot") names.push(want.name);
+      return ask(asker, machine, expected, want);
+    };
+    try {
+      await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: naming });
+      await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: naming });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    for (const name of names) expect(name).toMatch(/^w-1-1790000000000\d+$/);
+  });
+
+  it("skips a sync of a Volume another sync is running, without waiting for it or taking a snapshot", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reached = () => {};
+    const snapshotting = new Promise<void>((resolve) => { reached = resolve; });
+    const observe = () => Effect.succeed(members);
+    const gated: Ask = (asker, machine, expected, want) => want.kind === "snapshot"
+      ? Effect.promise(() => { reached(); return gate; }).pipe(Effect.andThen(ask(asker, machine, expected, want)))
+      : ask(asker, machine, expected, want);
+    const first = run(syncMirrors(organizationId, volume), { observe, ask: gated });
+    await snapshotting;
+    expect((await run(syncMirrors(organizationId, volume), { observe, ask: gated })).lines).toEqual(["skipped db, another sync of it is running"]);
+    release();
+    expect((await first).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
+  it("takes no snapshot while a lane is open, and names the lane", async () => {
+    const release = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "release", args: {} }));
+    if (!release.ok) throw new Error(release.refusal.message);
+    expect((await sync()).lines).toEqual([`skipped db, release run ${release.run.id} is open`]);
+    expect(asked).toEqual([]);
+  });
+
+  it("reports a failed pull once, before the lane check, even with a move open", async () => {
+    const move = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+    if (!move.ok) throw new Error(move.refusal.message);
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    expect((await sync()).lines).toEqual(["db-web-2 could not receive w-1-4: no space", `db refresh is covered by move run ${move.run.id}`]);
+    expect((await sync()).lines).toEqual([`db refresh is covered by move run ${move.run.id}`]);
+    expect(asked).toEqual([]);
+  });
+
+  it("logs a Busy reply as still pulling and does not fail", async () => {
+    mirrorAnswer = { ok: false, reason: "busy", copy: COPIES.pulling, message: "web-2 is busy with db" };
+    expect(await sync()).toMatchObject({ sync: { kind: "synced" }, lines: ["still pulling w-1-4 on db-web-2"] });
+  });
+
+  it("records a refused hand-off as the mirror's failure, so the Copies view says why it skipped", async () => {
+    mirrorAnswer = { ok: false, reason: "no_capacity", copy: COPIES.mirror, message: "web-2 has no room for db" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: web-2 has no room for db"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: "w-1-5", failure: "web-2 has no room for db" })]);
+  });
+
+  it("hands the next mirror its pull when the dial to one fails, and blames that one for nothing, since the SDK can't say the pull never reached it", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const unreached: Ask = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
+      ? askRejected(DIAL_FAILED)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: unreached })).lines).toEqual([
+      "web-2 didn't answer in time, so db's sync may have reached it; volume sync db again says where its mirrors got to",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-3"]);
+    expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("hands the next mirror its pull when one refuses with its own unavailable, and records why that one skipped", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const draining: Ask = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
+      ? askRejected(DRAINING)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: draining })).lines).toEqual([
+      "db-web-2 refused the pull: set_volume_copy on web-2: unavailable: web-2 is draining",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect((await harness.pool.query(`select machine_id, failure from volume_mirror_status where failure is not null`)).rows)
+      .toEqual([{ machine_id: web("web-2"), failure: "set_volume_copy on web-2: unavailable: web-2 is draining" }]);
+  });
+
+  it("says it didn't ask a mirror the Cluster couldn't dial, asks the next one, and blames no mirror for it", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const undialed: Ask = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
+      ? askRejected(UNDIALED)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: undialed })).lines).toEqual([
+      "didn't ask web-2 to pull db, the dial to web-2 failed",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-3"]);
+    expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("takes no snapshot when the Cluster couldn't dial a mirror to resend its pull, and calls it unasked, not refused", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
+    members = [member("web-1", "writer"), member("web-2", "pulling"), member("web-3", "pulling")];
+    const undialed: Ask = (asker, machine, expected, want) => machine.name === "web-2"
+      ? askRejected(UNDIALED)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: undialed })).lines).toEqual([
+      "didn't ask web-2 to pull db, the dial to web-2 failed",
+      "still pulling w-1-4 on db-web-3",
+    ]);
+    expect(asked).toEqual(["mirror web-3"]);
+    expect(await status()).toEqual([]);
+  });
+
+  it("says it didn't ask the writer for a snapshot when the Cluster couldn't dial it", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const undialed: Ask = (asker, machine, expected, want) => want.kind === "snapshot"
+      ? askRejected(UNDIALED)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect(await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: undialed })).toMatchObject({
+      sync: { kind: "unasked", server: "web-1" },
+      lines: ["skipped db, the dial to web-1 failed before asking web-1 for a snapshot"],
+    });
+    expect(asked).toEqual([]);
+    expect(await status()).toEqual([]);
+  });
+
+  it("says it didn't ask a mirror whose session didn't open, asks the next one, and blames no mirror for it", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const disconnected: Ask = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
+      ? Effect.fail(new Error("The cluster is disconnected."))
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: disconnected })).lines).toEqual([
+      "didn't ask web-2 to pull db, Cloud couldn't reach the Cluster",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-3"]);
+    expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("answers with the round's pull failures when the sync fails after reporting them", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    await harness.pool.query(`alter table volume_run rename to volume_run_gone`);
+    const answer = await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask })
+      .finally(() => harness.pool.query(`alter table volume_run_gone rename to volume_run`));
+    expect(answer).toEqual({
+      reported: [{ mirror: "db-web-2", target: "w-1-4", failure: "no space" }],
+      sync: { kind: "failed" },
+      lines: ["db-web-2 could not receive w-1-4: no space", "db's sync failed before it finished; volume sync db tries again"],
+    });
+    expect(asked).toEqual([]);
+  });
+
+  it("answers with the round's pull failures when the writer refuses its snapshot", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    const refused: Ask = () => Effect.fail(new SwitchAttemptError(null, "set_volume_copy on web-1: internal: disk full"));
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: refused })).lines).toEqual([
+      "db-web-2 could not receive w-1-4: no space",
+      "skipped db: set_volume_copy on web-1: internal: disk full",
+    ]);
+  });
+
+  it("takes no snapshot when the dial to resend a pull in flight fails, and still resends the others", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
+    members = [member("web-1", "writer"), member("web-2", "pulling"), member("web-3", "pulling")];
+    const unreached: Ask = (asker, machine, expected, want) => machine.name === "web-2"
+      ? askRejected(DIAL_FAILED)(asker, machine, expected, want)
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: unreached })).lines).toEqual([
+      "web-2 didn't answer in time, so db's sync may have reached it; volume sync db again says where its mirrors got to",
+      "still pulling w-1-4 on db-web-3",
+    ]);
+    expect(asked).toEqual(["mirror web-3"]);
+    expect(await status()).toEqual([]);
+  });
+
+  it("takes no snapshot when no reply came back to a resent pull, since the mirror may still be pulling", async () => {
+    members = [member("web-1", "writer"), member("web-2", "pulling")];
+    const lost = askRejected(new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null, unanswered: true }));
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: lost })).lines).toEqual([
+      "web-2 didn't answer in time, so db's sync may have reached it; volume sync db again says where its mirrors got to",
+    ]);
+    expect(await status()).toEqual([]);
+  });
+
+  it("records no failure when a newer run fences the hand-off", async () => {
+    mirrorAnswer = { ok: false, reason: "stale", copy: COPIES.mirror, message: "a newer run took db" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: a newer run took db"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: null, failure: null })]);
+  });
+
+  it("records no failure when another sync's hand-off moved the copy first, and says it is pulling when it is", async () => {
+    mirrorAnswer = { ok: false, reason: "mismatch", copy: COPIES.pulling, message: "db's copy on web-2 changed" };
+    expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
+    mirrorAnswer = { ok: false, reason: "mismatch", copy: COPIES.mirror, message: "db's copy on web-2 changed" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: db's copy on web-2 changed"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: null, failure: null })]);
+  });
+
+  it("takes no snapshot while a pull runs, so the writer keeps its source", async () => {
+    members = [member("web-1", "writer"), member("web-2", "pulling")];
+    expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
+    expect(asked).toEqual(["mirror web-2"]);
+  });
+
+  it("finishes a pull that landed, then refreshes the mirror again", async () => {
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, pull: { target: "w-1-4", failure: null } } } } as Member];
+    const finishing: Ask = (asker, machine, expected, want) => want.kind === "mirror" && want.target === "w-1-4"
+      ? Effect.sync(() => { asked.push(`finish ${machine.name}`); return { ok: true, copy: COPIES.mirror } satisfies CopyAnswer; })
+      : ask(asker, machine, expected, want);
+    expect((await run(syncMirrors(organizationId, volume), { observe: () => Effect.succeed(members), ask: finishing })).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["finish web-2", "snapshot web-1", "mirror web-2"]);
+    expect(await status()).toEqual([expect.objectContaining({ ok_snapshot: "w-1-4" })]);
+  });
+
+  it("carries a gen below any lane opened after its lane check", async () => {
+    await harness.pool.query(`update volume_placement set deployment_id = 'dep-1'`);
+    let moveGen = 0;
+    onDeployment = async () => {
+      const move = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+      if (!move.ok) throw new Error(move.refusal.message);
+      moveGen = (await harness.pool.query(`select gen from volume_run where id = $1`, [move.run.id])).rows[0].gen;
+    };
+    await sync();
+    expect(gens.length).toBeGreaterThan(0);
+    expect(gens.every((gen) => gen < Number(moveGen))).toBe(true);
+  });
+
+  it("carries the newest run's gen, never a Deploy hold's, since a hold floored no Machine", async () => {
+    const move = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+    if (!move.ok) throw new Error(move.refusal.message);
+    await harness.pool.query(`update volume_run set state = 'done', finished_at = now() where id = $1`, [move.run.id]);
+    await run(holdDeployLane({ userId: null, organizationId }, {
+      input: { volumeId, kind: "deploy", args: { deployment: "dep-1", resume: null, hold: true } },
+      volume: { environmentId: "env-1", volumeName: "db", dockerVolume: volume.dockerVolume, refquotaBytes: 1, recordedBytes: 0 },
+      id: crypto.randomUUID(),
+    }, "deploy-1"));
+    await harness.pool.query(`update volume_run set state = 'lost', finished_at = now() where kind = 'deploy'`);
+    const [moved = 0, held = 0] = (await harness.pool.query(`select gen from volume_run order by gen`)).rows.map((row) => Number(row.gen));
+    expect(held).toBeGreaterThan(moved);
+
+    await sync();
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+    expect([...new Set(gens)]).toEqual([moved]);
+  });
+
+  it("keeps an older failure when a newer pull lands", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    await sync();
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    await sync();
+    expect(await status()).toEqual([expect.objectContaining({ ok_snapshot: "w-1-4", failed_snapshot: "w-1-4", failure: "no space" })]);
+    const [row] = await status();
+    expect(row.ok_at > row.failed_at).toBe(true);
+  });
+
+  it("dates a mirror that never catches a written Volume by the snapshot it last landed", async () => {
+    const landed = { name: "w-1-4", guid: "11", created_unix_seconds: 1_790_000_050 };
+    members = [member("web-1", "writer"), member("web-2", "behind")];
+    await sync();
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: landed } } } as Member];
+    await sync();
+    const matched = async () => (await harness.pool.query(`select matched_at from volume_mirror_status`)).rows[0].matched_at;
+    expect(await matched()).toEqual(new Date(landed.created_unix_seconds * 1000));
+    await harness.pool.query(`update volume_mirror_status set ok_snapshot = 'w-1-3'`);
+    members = [member("web-1", "writer"), { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: { ...landed, created_unix_seconds: 1_790_000_010 } } } } as Member];
+    await sync();
+    expect(await matched()).toEqual(new Date(landed.created_unix_seconds * 1000));
+  });
+
+  it("says the mirror already holds the writer's newest", async () => {
+    const [writer, mirror] = [member("web-1", "writer"), member("web-2", "mirror")];
+    if (!mirror.answered) throw new Error("fixture");
+    members = [writer, { ...mirror, view: { copy: { ...COPIES.mirror, newest: NEWEST } } }];
+    expect((await sync()).lines).toEqual(["db-web-2 already holds w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1"]);
+  });
+});

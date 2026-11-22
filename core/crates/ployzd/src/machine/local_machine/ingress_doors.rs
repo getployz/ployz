@@ -226,7 +226,9 @@ impl Joined<'_> {
         .filter(|_| !fresh);
         let kept_id = kept.map(|entry| entry.facts.id);
         let step = match (reserved::step(kept, entries.iter().copied()), kept) {
-            (Step::Keep(id), Some(entry)) if entry.facts.running() && self.stale(entry) => {
+            (Step::Keep(id), Some(entry))
+                if entry.facts.runtime.is_running() && self.stale(entry) =>
+            {
                 JoinedStep::Rejoin(id)
             }
             (Step::Keep(id), _) => JoinedStep::Keep(id),
@@ -417,7 +419,8 @@ impl LocalMachine {
                 .ok_or(Error::TunnelTokenMissing)?;
             let containers = self.docker()?;
             let token = containers
-                .open_tunnel_token(sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::IngressTunnel, sealed)
                 .map_err(Error::TunnelToken)?;
             (Some(sealed), Some(token))
         } else {
@@ -452,7 +455,7 @@ impl LocalMachine {
     pub(crate) async fn restore_doors(&self) -> Result<Option<IngressDoorsSet>, Error> {
         let containers = self.docker()?.clone();
         self.door_effect()?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let inventory = containers.doors().door_inventory(&local.record().id()).await?;
@@ -465,7 +468,7 @@ impl LocalMachine {
                     Err(error) => return Err(error.into()),
                 }
             }
-            let Some(held) = doors_held(&inventory, containers.tunnel_door_closed()) else {
+            let Some(held) = doors_held(&inventory, containers.machine_files().tunnel_door_closed()) else {
                 return Ok(None);
             };
             if let Some(declared) = local.declared_doors().await
@@ -480,7 +483,7 @@ impl LocalMachine {
             let pinned = doors_as_found(
                 &inventory,
                 held.specs.proxy.service_id,
-                containers.tunnel_door_closed(),
+                containers.machine_files().tunnel_door_closed(),
             );
             if pinned != held.specs {
                 tracing::warn!(
@@ -497,13 +500,14 @@ impl LocalMachine {
             }
             if let Some(sealed) = &held.sealed {
                 let token = containers
-                    .open_tunnel_token(sealed)
+                    .sealing()
+                .open_platform(ployz_core::PlatformPurpose::IngressTunnel, sealed)
                     .map_err(Error::TunnelToken)?;
                 containers
-                    .write_tunnel_token(&token)
+                    .machine_files().write_tunnel_token(&token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             local
                 .converge_doors_admitted(&containers, &inventory, &pinned, Legacy::No)
                 .await
@@ -525,7 +529,7 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.door_effect()?;
         let specs = specs.clone();
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let machine_id = local.record().id();
@@ -534,7 +538,7 @@ impl LocalMachine {
                 Legacy::Caddy => doors_as_found(
                     &inventory,
                     specs.proxy.service_id,
-                    containers.tunnel_door_closed(),
+                    containers.machine_files().tunnel_door_closed(),
                 ),
                 Legacy::No => specs,
             };
@@ -549,15 +553,17 @@ impl LocalMachine {
             }
             if let Some(token) = &token {
                 containers
+                    .machine_files()
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let set = local
                 .converge_doors_admitted(&containers, &inventory, &specs, legacy)
                 .await?;
             if specs.tunnel.is_none() && set.failure.is_none() {
                 containers
+                    .machine_files()
                     .remove_tunnel_token()
                     .map_err(Error::TunnelTokenFile)?;
             }
@@ -594,9 +600,10 @@ impl LocalMachine {
         let plan = plan_doors(inventory, specs, legacy == Legacy::Caddy);
         let mut set = IngressDoorsSet::default();
         let mut effects = Effects::default();
-        let reopening = specs.tunnel.is_some() && containers.tunnel_door_closed();
+        let reopening = specs.tunnel.is_some() && containers.machine_files().tunnel_door_closed();
         if reopening {
             containers
+                .machine_files()
                 .clear_tunnel_door_closed()
                 .map_err(Error::TunnelDoorMarker)?;
         }
@@ -620,7 +627,7 @@ impl LocalMachine {
             let connector_may_run = stage == IngressStage::Tunnel && !undone;
             if reopening
                 && !connector_may_run
-                && let Err(marker) = containers.mark_tunnel_door_closed()
+                && let Err(marker) = containers.machine_files().mark_tunnel_door_closed()
             {
                 tracing::warn!(
                     error = %ployz_core::error_chain::inline(&marker),
@@ -631,7 +638,7 @@ impl LocalMachine {
             return Ok(set);
         }
         let marked = if specs.tunnel.is_none() && !plan.retire_tunnels.is_empty() {
-            containers.mark_tunnel_door_closed()
+            containers.machine_files().mark_tunnel_door_closed()
         } else {
             Ok(())
         };
@@ -656,6 +663,7 @@ impl LocalMachine {
                 marked.map_err(Error::TunnelDoorMarker)?;
             } else {
                 containers
+                    .machine_files()
                     .clear_tunnel_door_closed()
                     .map_err(Error::TunnelDoorMarker)?;
             }
@@ -795,13 +803,7 @@ impl LocalMachine {
     /// The Machine may place a reserved Container now. `gate` names the role it needs.
     pub(super) fn reserved_effect(&self, gate: Gate) -> Result<(), Error> {
         let record = self.record();
-        if !matches!(
-            record.phase(),
-            ployz_core::LocalMachinePhase::Joining | ployz_core::LocalMachinePhase::Participating
-        ) {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         if gate == Gate::Ingress && !machine.accepts_ingress {
             return Err(crate::docker::Error::WorkNotAccepted.into());
         }
@@ -835,7 +837,7 @@ impl LocalMachine {
                 .await?
                 .runtime
                 .clone();
-            if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+            if runtime.is_running() {
                 return Ok(());
             }
             if runtime.at_rest() || tokio::time::Instant::now() >= deadline {

@@ -6,6 +6,8 @@
 use ployz_core::ManagementScope;
 use tonic::codegen::http::{HeaderMap, HeaderValue};
 
+use crate::machine::{Call, Caller};
+
 /// The scope a call is admitted at, and whether Cloud routed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Provenance {
@@ -45,12 +47,9 @@ impl Provenance {
         self.scope
     }
 
-    pub(super) fn operator(self) -> bool {
-        self.scope == ManagementScope::Operator
-    }
-
-    pub(super) fn cloud_routed(self) -> bool {
-        self.cloud_routed
+    /// The call `caller` makes with these marks.
+    pub(super) fn call(self, caller: Caller) -> Call {
+        Call::new(caller, self.scope, self.cloud_routed)
     }
 
     /// Sets these marks on a call about to reach the Machine. A mark a caller already sent

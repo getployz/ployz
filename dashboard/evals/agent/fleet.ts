@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Connection } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 
 const MACHINES = new URL("./machines.json", import.meta.url);
 

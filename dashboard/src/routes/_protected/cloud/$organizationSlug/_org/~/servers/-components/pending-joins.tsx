@@ -2,7 +2,7 @@ import type { JoinApproval, Signed } from "@ployz/sdk";
 import { passkeyJoinStep } from "@ployz/sdk/authority";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "#/components/ui/button";
-import { type OnlyPasskey, PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
+import { type OnlyPasskey, PasskeyDeclined, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { approvePasskeyJoinServerFn, pendingPasskeyJoinsServerFn } from "#/modules/machines/waiting/passkey-join.functions";
 import { WAITING_POLL_MS } from "#/modules/machines/waiting/waiting.queries";
@@ -23,9 +23,9 @@ export async function answerJoin(join: JoinApproval, only?: OnlyPasskey, now = D
   try {
     return { body: draft.step, signatures: [], proposal: await signWithPasskey(draft.bundle, "workflow", only) };
   } catch (error) {
-    if (error instanceof PasskeyRefused) throw error;
-    if (error instanceof Error && error.name === "NotAllowedError") throw new PasskeyRefused("Your passkey didn't answer. Try again.");
-    throw new PasskeyRefused("Your browser couldn't use a passkey here.");
+    if (error instanceof PasskeyDeclined) throw error;
+    if (error instanceof Error && error.name === "NotAllowedError") throw new PasskeyDeclined("Your passkey didn't answer. Try again.");
+    throw new PasskeyDeclined("Your browser couldn't use a passkey here.");
   }
 }
 

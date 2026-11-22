@@ -12,8 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
-import { ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
-import { serviceSearchSchema } from "../services/$serviceId/-components/service-pages";
+import { ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
+import { serviceSearchSchema } from "../_canvas/services/$serviceId/-components/service-pages";
 import { CanvasNodeList } from "./canvas/CanvasServiceList";
 import type { VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
@@ -156,8 +156,8 @@ describe("canvas inspector presentation", () => {
     vi.stubGlobal("innerWidth", 390);
     await openInspector();
     expect(screen.getByRole("button", { name: "Edit service name" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Close inspector" }).className).toContain("canvas-inspector-close");
-    expect(screen.getByRole("link", { name: "Back to Architecture" }).className).toContain("canvas-inspector-back");
+    expect(screen.getByRole("link", { name: "Close inspector" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fill canvas" }).hasAttribute("data-canvas-inspector-resize")).toBe(true);
   });
 

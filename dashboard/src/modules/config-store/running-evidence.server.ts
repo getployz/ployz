@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { observeRunning, type RunningObservation } from "@ployz/sdk";
 import { Context, Effect, Option, Schema } from "effect";
-import { clusterExpectation, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { clusterExpectation } from "#/modules/runtime/connections.server";
+import type { ConnectionsLoader } from "#/modules/config-store/volume-evidence.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreCall } from "./store.contract";
 
@@ -26,12 +27,11 @@ const DeployCommand = Schema.Struct({
  * one the prune removes and refuses a caller who can't destroy. Each Server's answer has its own deadline. Left out when
  * Cloud couldn't try, which the Store reads as not knowing what the prune removes.
  */
-export const gatherRunning = Effect.fn("ConfigStore.gatherRunning")(function* (organizationId: string, call: StoreCall) {
+export const gatherRunning = Effect.fn("ConfigStore.gatherRunning")(function* (loadConnections: ConnectionsLoader, call: StoreCall) {
   if (call.operation !== "write") return undefined;
   const command = Option.getOrUndefined(Schema.decodeUnknownOption(DeployCommand)(call.command));
   if (command === undefined || (command.services ?? []).length > 0 || command.no_prune === true) return undefined;
-  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
-  const connections = Option.getOrUndefined(loaded);
+  const connections = yield* loadConnections;
   if (connections?.kind !== "ready" || connections.connections.length === 0) return undefined;
   const { observe } = yield* RunningObserver;
   const observed = yield* storeTry(() => observe(connections.connections, clusterExpectation(connections))).pipe(Effect.option);

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
-import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
+import { endClusterIngress } from "#/modules/ingress/cloudflare.cluster-gone.server";
 import { closeDoorsRun, closedFounding, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";

@@ -20,6 +20,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId};
 use crate::storage::Tx;
+use crate::storage::json_text;
 
 /// Which of these Deployments' uploads still build something. Cloud keeps each
 /// upload under the Deployment that sent it.
@@ -213,10 +214,10 @@ pub(crate) fn claimed(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcErr
                 .summary
                 .upload
                 .as_ref()
-                .map(super::json_text)
+                .map(json_text)
                 .as_deref()
                 .into(),
-            super::json_text(&uploads).as_str().into(),
+            json_text(&uploads).as_str().into(),
         ],
     )?;
     stored.service_uploads = Some(uploads);

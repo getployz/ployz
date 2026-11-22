@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-
-const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
+import { BASE32 } from "#/lib/base32";
 
 /**
  * The code `ployz device approve --join` takes for a joining Server: the first 100 bits of a SHA-256 over its Machine ID
@@ -15,7 +14,7 @@ export function joinCode(machineId: string, publicKey: readonly number[]): strin
   const bits = BigInt(`0x${digest.subarray(0, 16).toString("hex")}`);
   let code = "";
   for (let index = 1n; index <= 20n; index += 1n) {
-    code += ALPHABET[Number((bits >> (128n - 5n * index)) & 31n)];
+    code += BASE32[Number((bits >> (128n - 5n * index)) & 31n)];
   }
   return code;
 }

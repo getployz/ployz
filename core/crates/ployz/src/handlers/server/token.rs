@@ -8,9 +8,10 @@ use serde_json::json;
 use super::super::account::in_cloud;
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
-use crate::cloud_account::{self, Credential};
-use crate::cloud_login::LoginError;
-use crate::cloud_origin::CloudOrigin;
+use crate::cloud;
+use crate::cloud::account::Credential;
+use crate::cloud::login::LoginError;
+use crate::cloud::origin::CloudOrigin;
 use crate::ui::{self, Cell, Table, Tone};
 
 const INSTALLER_URL: &str = "https://ployz.sh";
@@ -216,9 +217,9 @@ async fn ask<T: DeserializeOwned>(
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<Result<T, RpcError>, LoginError> {
-    match cloud_account::call(credential, method, path, body).await {
+    match cloud::account::call(credential, method, path, body).await {
         Err(LoginError::Status { body, .. })
-            if let Some(refused) = cloud_account::refusal_of(body.as_bytes()) =>
+            if let Some(refused) = cloud::account::refusal_of(body.as_bytes()) =>
         {
             Ok(Err(refused))
         }

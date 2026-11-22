@@ -458,7 +458,7 @@ async fn recover_replaces_an_unusable_key_file() {
     let code = RecoveryCode::generate();
     let wrapped = holder
         .local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() })
         .unwrap();
     replicated
         .publish_sealing_public_key(wrapped.public_key)
@@ -473,13 +473,10 @@ async fn recover_replaces_an_unusable_key_file() {
 
     let recovered = peer
         .local
-        .recover_sealing_key(
-            RecoverSealingKeyRequest {
-                code,
-                backup: Some(wrapped.backup),
-            },
-            false,
-        )
+        .recover_sealing_key(RecoverSealingKeyRequest {
+            code,
+            backup: Some(wrapped.backup),
+        })
         .await;
 
     assert!(
@@ -619,7 +616,7 @@ async fn routes_refuse_a_key_file_they_cannot_read_and_leave_it() {
     let code = RecoveryCode::generate();
     let wrapped = holder
         .local
-        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
+        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() })
         .unwrap();
     replicated
         .publish_sealing_public_key(wrapped.public_key)
@@ -644,13 +641,10 @@ async fn routes_refuse_a_key_file_they_cannot_read_and_leave_it() {
         .await;
     let recovered = peer
         .local
-        .recover_sealing_key(
-            RecoverSealingKeyRequest {
-                code,
-                backup: Some(wrapped.backup),
-            },
-            false,
-        )
+        .recover_sealing_key(RecoverSealingKeyRequest {
+            code,
+            backup: Some(wrapped.backup),
+        })
         .await;
 
     assert_eq!(
@@ -979,13 +973,9 @@ async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_the
     trust_device(&joiner.local, &signer).await;
     let refused = joiner
         .local
-        .admit_spec(
-            &want,
-            crate::machine::Presented::Operator {
-                rule: None,
-                versions: &[older],
-            },
-        )
+        .clone()
+        .at_operator_scope()
+        .admit_spec(&want, None, &[older])
         .await;
 
     assert!(

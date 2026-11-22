@@ -82,10 +82,6 @@ pub struct EnsureContainerRequest {
 /// answers with what it then observes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a Running want carries the whole resolved spec; one request holds one"
-)]
 pub enum ContainerWant {
     Running {
         container: RunTarget,
@@ -159,10 +155,6 @@ impl From<crate::RemoveContainerPurpose> for AnonymousVolumes {
 /// What `Running` runs: a new creation in a slot, or a Container that already exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a new creation carries the whole resolved spec; one request holds one"
-)]
 pub enum RunTarget {
     New(NewContainer),
     Existing(ContainerLocator),
@@ -266,10 +258,6 @@ pub enum EnsuredContainer {
 /// What the Machine observes at the asked-for Container, after any effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "is", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a present Container is the whole observation; one reply holds one"
-)]
 pub enum ContainerNow {
     Present(ContainerObservation),
     Absent { of: ContainerLocator },

@@ -23,7 +23,7 @@ use crate::domain::{
     UnixMs, http_error_str,
 };
 
-/// `controlPlaneStatements.open` in `dashboard/src/modules/uptime/incident-fence.ts`, verbatim
+/// `controlPlaneStatements.open` in `dashboard/src/modules/uptime/incident-fence.test-fixture.ts`, verbatim
 /// up to whitespace. A test holds the two copies together.
 /// $1 check id, $2 revision, $3 incident id, $4 opened_at, $5 opened_by, $6 alert payload.
 pub const OPEN: &str = "

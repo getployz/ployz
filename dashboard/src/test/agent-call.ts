@@ -1,6 +1,7 @@
 import { type FakeResponse, type FakeResponseStep, fakeText } from "@tanstack/ai/testing";
 import { asRecord } from "#/lib/json";
-import { type AgentCall, type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { type AgentCall, runAgentCall } from "#/modules/agent/agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 
 /** A call as hosted /mcp would hand it over, for tests that care about what the tool does and not who called. */
 const FROM_MCP: AgentCall["origin"] = {

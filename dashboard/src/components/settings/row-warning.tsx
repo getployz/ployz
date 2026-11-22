@@ -18,6 +18,3 @@ export function RowWarning({ why, action, children }: { why?: ReactNode; action?
     </div>
   );
 }
-
-/** Why several writers on one volume are a warning: said once, wherever it's warned. */
-export const SHARED_VOLUME_WHY = "These containers write to the same files at the same time. Databases like Postgres and MySQL expect to be the only writer, so their data can be corrupted. Run 1 replica, or give each service its own volume.";

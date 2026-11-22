@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { type createServerEnrollmentFoundedEvent, serverEnrollmentReportedEvent } from "#/modules/inngest/events";
+import { type createServerEnrollmentFoundedEvent, serverEnrollmentReported } from "#/modules/machines/waiting/server-enrollment.events";
 import { executeServerEnrollment, FOUNDER_ROUNDS } from "#/modules/machines/waiting/server-enrollment.inngest";
-import type { runInngestEffect } from "#/server/run.server";
+import type { runInngestEffect } from "#/modules/inngest/run.server";
 
 const attemptId = "00000000-0000-4000-8000-0000000000f1";
 const joinerId = "00000000-0000-4000-8000-0000000000f2";
 const machineId = "a".repeat(32);
 const data = { attemptId, organizationId: "org-1" };
 type News = { stage: string; failure?: { stage: string; message: string } } | { completed: true } | { founded: true };
-const heard = (news: News) => ({ name: serverEnrollmentReportedEvent, data: { attemptId, ...news } });
+const heard = (news: News) => ({ name: serverEnrollmentReported.name, data: { attemptId, ...news } });
 type StepAnswer =
   | boolean
   | undefined
@@ -43,7 +43,6 @@ async function enroll(answers: Readonly<Record<string, StepAnswer>>) {
 describe("executeServerEnrollment", () => {
   it("hears its founder and its own completion on the one event each round waits for", async () => {
     const { ended, waitedFor } = await enroll({
-      "normalize-request": data,
       "bind-run": { kind: "bound", role: "joiner", state: "awaiting_founder" },
       "founded-0": false,
       "founder-wait-0": heard({ founded: true }),
@@ -56,12 +55,11 @@ describe("executeServerEnrollment", () => {
       "join-1": true,
     });
     expect(ended).toEqual({ attemptId, state: "joined", machineId });
-    expect(waitedFor).toEqual([serverEnrollmentReportedEvent, serverEnrollmentReportedEvent, serverEnrollmentReportedEvent]);
+    expect(waitedFor).toEqual([serverEnrollmentReported.name, serverEnrollmentReported.name, serverEnrollmentReported.name]);
   });
 
   it("ends failed on the failure a check-in reports", async () => {
     const { ended } = await enroll({
-      "normalize-request": data,
       "bind-run": { kind: "bound", role: "founder", state: "instructed" },
       "report-0": heard({ stage: "storage", failure: { stage: "storage", message: "Docker install failed" } }),
       "fail-0": undefined,
@@ -71,7 +69,6 @@ describe("executeServerEnrollment", () => {
 
   it("tells each joiner still waiting that the founder it waited for joined", async () => {
     const { ended, sent } = await enroll({
-      "normalize-request": data,
       "bind-run": { kind: "bound", role: "founder", state: "instructed" },
       "report-0": heard({ completed: true }),
       "check-0": { kind: "joined", machineId },
@@ -81,7 +78,7 @@ describe("executeServerEnrollment", () => {
     expect(ended).toEqual({ attemptId, state: "joined", machineId });
     expect(sent).toEqual([[{
       id: `organization-founded-${attemptId}-${joinerId}`,
-      name: serverEnrollmentReportedEvent,
+      name: serverEnrollmentReported.name,
       data: { attemptId: joinerId, founded: true },
     }]]);
   });
@@ -89,7 +86,6 @@ describe("executeServerEnrollment", () => {
   it("releases a joiner whose founder joins during the last founder wait", async () => {
     const rounds = Object.fromEntries(Array.from({ length: FOUNDER_ROUNDS }, (_, round) => [`founded-${round}`, false]));
     const { ended } = await enroll({
-      "normalize-request": data,
       "bind-run": { kind: "bound", role: "joiner", state: "awaiting_founder" },
       ...rounds,
       [`founded-${FOUNDER_ROUNDS}`]: true,

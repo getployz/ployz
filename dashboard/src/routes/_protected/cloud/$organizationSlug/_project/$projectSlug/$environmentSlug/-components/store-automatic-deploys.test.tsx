@@ -5,7 +5,7 @@ import type { RuleView, Signed } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { draftRule } from "#/modules/github/auto-deploy-rule";
+import { draftRule } from "./auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { RuleDialog } from "./store-automatic-deploys";
 
@@ -100,7 +100,10 @@ const approve = async () => {
 
 const generation = (rule: Signed | undefined) => rule === undefined ? null : JSON.parse(rule.body).generation;
 
-afterEach(() => { cleanup(); });
+afterEach(() => {
+  cleanup();
+  Reflect.deleteProperty(navigator, "credentials");
+});
 
 it("lets a person try again after cancelling the passkey prompt", async () => {
   const get = passkey("cancel", "answer");

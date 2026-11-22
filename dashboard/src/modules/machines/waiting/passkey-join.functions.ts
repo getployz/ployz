@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { approvePasskeyJoin, pendingPasskeyJoins } from "#/modules/machines/waiting/passkey-join.server";
-import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
+import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 const OrganizationSlug = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());
 
@@ -10,11 +10,11 @@ const PendingJoinsInput = Schema.Struct({ organizationSlug: OrganizationSlug });
 const ApproveJoinInput = Schema.Struct({ organizationSlug: OrganizationSlug, approval: Schema.String.check(Schema.isMaxLength(64_000)) });
 
 export const pendingPasskeyJoinsServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(PendingJoinsInput))
   .handler(({ context, data }) => runActor(context, pendingPasskeyJoins(context.actor, data)));
 
 export const approvePasskeyJoinServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ApproveJoinInput))
   .handler(({ context, data }) => runActor(context, approvePasskeyJoin(context.actor, data)));

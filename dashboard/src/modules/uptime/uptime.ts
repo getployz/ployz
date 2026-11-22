@@ -1,4 +1,5 @@
-import { type PointSource, pointSource, type RangeWindow } from "./uptime-range";
+import { HOUR_MS, MINUTE_MS, roundStep, stepAt, steps, type RangeWindow, type TimeWindow } from "#/lib/time-range";
+import { type PointSource, pointSource } from "./uptime-range";
 import {
   type EnvironmentUptimeCheck,
   FAILURE_CLASSES,
@@ -41,7 +42,6 @@ export function unreachableHost(checks: readonly EnvironmentUptimeCheck[], servi
 /** "99.98%": floored, so a failure never reads as 100%. Null when no probe counted. */
 export const uptimePercent = (fraction: number | null) => fraction === null ? null : `${Math.floor(fraction * 10_000) / 100}%`;
 
-/** The FAILURE_CLASSES a failing observation lands in. */
 export function failureClass(observation: Pick<IncidentObservation, "status" | "error" | "failedPhase">): FailureClass {
   if (observation.status !== 0) return "status";
   if (observation.error === "timed_out") return "timeout";
@@ -74,18 +74,6 @@ export function wrongPathIncident(uptime: ServiceUptime): UptimeIncidentEntry | 
   return open && failure && failure.status >= 400 && failure.status < 500 && neverPassed ? open : null;
 }
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-
-/** A stretch of time cut into equal steps; every chart on the tab shares one, so a single cursor lines them up. */
-export type TimeWindow = { readonly from: number; readonly to: number; readonly stepMs: number };
-
-const STEPS_MS = [MINUTE_MS, 5 * MINUTE_MS, 15 * MINUTE_MS, 30 * MINUTE_MS, HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 12 * HOUR_MS, DAY_MS];
-
-/** The first round step of at least `ms`, or whole days past the last. */
-const roundStep = (ms: number) => STEPS_MS.find((step) => step >= ms) ?? Math.ceil(ms / DAY_MS) * DAY_MS;
-
 /** The finest step each source's points fill: a probe interval, an hour, 6 hours. */
 const SOURCE_STEP_MS = { raw: 0, hourly: HOUR_MS, sixHourly: 6 * HOUR_MS } satisfies Record<PointSource, number>;
 
@@ -110,21 +98,6 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
   return { from: to - length, to };
 }
 
-/**
- * The step a time falls in. The first step starts at `from`, so a range's partial first step is not lost, and a time at
- * `to` falls in the last step, since reads include it.
- */
-export const stepAt = (window: TimeWindow, at: number) =>
-  Math.max(window.from, Math.floor(Math.min(at, window.to - 1) / window.stepMs) * window.stepMs);
-
-/** The start of each step in a window: `from`, then each round step after it. */
-export function steps(window: TimeWindow): number[] {
-  const first = Math.ceil(window.from / window.stepMs) * window.stepMs;
-  const round = Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
-  return first > window.from && window.from < window.to ? [window.from, ...round] : round;
-}
-
-/** A number for each of `keys`. */
 export function tally<K extends string>(keys: readonly K[], value: (key: K) => number): Record<K, number> {
   // SAFETY: the entries hold exactly one value for each of `keys`.
   return Object.fromEntries(keys.map((key) => [key, value(key)])) as Record<K, number>;

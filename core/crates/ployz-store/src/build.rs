@@ -7,21 +7,21 @@ use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryN
 use std::collections::BTreeMap;
 
 use ployz_core::authority::{
-    AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, ImageDigest, RuleEvidence, RuleProof,
-    Signed, VerifiedBuild,
+    AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority, RuleEvidence,
+    RuleProof, Signed, VerifiedBuild,
 };
-use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
+use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
-use ployz_decide::github_build::{EndKind, Hold, Target, github_end_holds};
+use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::builders::{self, Builder};
-use crate::deployment::{self, Stored};
+use crate::deployment::{self, Stored, clipped};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::{Param, Tx, name_of};
+use crate::storage::{Param, Tx, json_text, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -184,10 +184,13 @@ impl PartialEq<BuildStatus> for RowStatus {
 /// GitHub holds stays Building, so Cloud still finds its run to cancel
 /// ([`github_outstanding`]). Settling again changes nothing.
 pub(crate) fn settle(tx: &mut dyn Tx, id: &DeploymentId, ended: i64) -> Result<(), RpcError> {
+    let (failed, building) = (name_of(BuildStatus::Failed), name_of(BuildStatus::Building));
     tx.execute(
-        "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+        &format!(
+            "UPDATE config_build SET status = '{failed}', interrupted = 1, message = ?2, \
          finished = COALESCE(finished, ?3) \
-         WHERE deployment_id = ?1 AND status = 'building' AND github IS NULL",
+         WHERE deployment_id = ?1 AND status = '{building}' AND github IS NULL"
+        ),
         &[id.as_str().into(), INTERRUPTED.into(), ended.into()],
     )?;
     Ok(())
@@ -302,7 +305,7 @@ pub(crate) fn record(
     }
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = report.message.as_deref().map(trimmed);
+    let message = report.message.as_deref().map(clipped);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = NULL, \
          server = COALESCE(?6, server) \
@@ -424,7 +427,7 @@ pub struct VerifiedClaim {
 }
 
 impl VerifiedClaim {
-    fn image(&self) -> Option<ImageDigest> {
+    fn image(&self) -> Option<BuiltImageDigest> {
         match self.claim.stage {
             BuildStage::Built { image, .. } => Some(image),
             BuildStage::Grant { .. } => None,
@@ -566,10 +569,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let github = row
-            .optional_text(5)?
-            .map(|github| serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build")))
-            .transpose()?;
+        let github = row.optional_json(5, "GitHub build")?;
         Ok(BuildRow {
             service: row.parse::<ServiceName>(0, "build")?,
             commit: row.parse_optional(1, "build commit")?,
@@ -584,20 +584,12 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             started: row.optional_int(7)?,
             finished: row.optional_int(8)?,
             github_skipped: row.optional_text(10)?.map(str::to_owned),
-            receipt: json_column(row.optional_text(12)?, "build receipt")?,
-            image_token: json_column(row.optional_text(13)?, "image token")?,
-            verified: json_column(row.optional_text(14)?, "verified build")?,
+            receipt: row.optional_json(12, "build receipt")?,
+            image_token: row.optional_json(13, "image token")?,
+            verified: row.optional_json(14, "verified build")?,
         })
     })
     .collect()
-}
-
-fn json_column<T: serde::de::DeserializeOwned>(
-    text: Option<&str>,
-    what: &str,
-) -> Result<Option<T>, RpcError> {
-    text.map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
-        .transpose()
 }
 
 /// The Services `stored` targets that have no source of their own: they build from
@@ -697,10 +689,7 @@ fn source_of(
         repository: RepositoryName::parse(repository.as_str()).ok()?,
         repository_id: RepositoryId::parse(*repository_id).ok()?,
         access: access.clone(),
-        branch: match branch {
-            ServiceGitBranch::Connected { name } => BranchName::parse(name.as_str()).ok(),
-            ServiceGitBranch::Disconnected { .. } => None,
-        },
+        branch: crate::git::branch_name(branch).and_then(|name| BranchName::parse(name).ok()),
         root_dir: root_dir.clone(),
         dockerfile_path: (config.build.build_method == BuildMethod::Dockerfile).then(|| {
             config
@@ -736,10 +725,6 @@ fn append(log: &mut String, more: &str) {
             .unwrap_or(log.len());
         log.drain(..cut);
     }
-}
-
-fn trimmed(message: &str) -> String {
-    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -844,6 +829,14 @@ struct Started {
 }
 
 impl GithubHold {
+    const fn hold(&self) -> Hold {
+        match self {
+            Self::Dispatched { .. } => Hold::Dispatched,
+            Self::CheckedIn { .. } => Hold::CheckedIn,
+            Self::Reported { .. } => Hold::Reported,
+        }
+    }
+
     const fn run(&self) -> &GithubRun {
         match self {
             Self::Dispatched { run } | Self::CheckedIn { run, .. } | Self::Reported { run, .. } => {
@@ -1026,8 +1019,7 @@ fn save_github(
     github: Option<&GithubHold>,
 ) -> Result<(), RpcError> {
     let status = status.into();
-    let github =
-        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
+    let github = github.map(json_text);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
@@ -1265,7 +1257,7 @@ pub(crate) fn keep_verified(
         ));
     }
     for (service, verified) in kept {
-        let verified = serde_json::to_string(verified).expect("a verified build is JSON");
+        let verified = json_text(verified);
         tx.execute(
             "UPDATE config_build SET verified = ?3 WHERE deployment_id = ?1 AND service = ?2",
             &[
@@ -1289,7 +1281,7 @@ pub(crate) fn verified_proof(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&ployz_core::Namespace, &ServiceName),
-    image: ImageDigest,
+    image: BuiltImageDigest,
 ) -> Result<Option<RuleProof>, RpcError> {
     // The claim names its image in hex, so this narrows the rows; the decode below
     // confirms each.
@@ -1323,7 +1315,7 @@ pub(crate) fn verified_proof(
     Ok(None)
 }
 
-fn hex_of(image: &ImageDigest) -> String {
+fn hex_of(image: &BuiltImageDigest) -> String {
     let text = image.to_string();
     text.strip_prefix("sha256:").unwrap_or(&text).to_owned()
 }
@@ -1398,14 +1390,16 @@ pub(crate) fn github_check_in(
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    let Some(GithubHold::Dispatched { run }) = row.building_on(run_id) else {
+    let held = row.building_on(run_id);
+    let in_flight = stored.summary.status.in_flight();
+    let (Some(held), true) = (
+        held,
+        github_check_in_holds(held.map(GithubHold::hold), in_flight),
+    ) else {
         return Err(no_longer_wanted());
     };
-    if !stored.summary.status.in_flight() {
-        return Err(no_longer_wanted());
-    }
     let github = GithubHold::CheckedIn {
-        run: run.clone(),
+        run: held.run().clone(),
         started: Started {
             grant: grant.clone(),
             at: std::time::SystemTime::now()
@@ -1504,11 +1498,7 @@ pub(crate) fn github_end(
     };
     let target = match run_id {
         Some(run_id) => Target::Run {
-            building_on: row.building_on(run_id).map(|hold| match hold {
-                GithubHold::Dispatched { .. } => Hold::Dispatched,
-                GithubHold::CheckedIn { .. } => Hold::CheckedIn,
-                GithubHold::Reported { .. } => Hold::Reported,
-            }),
+            building_on: row.building_on(run_id).map(GithubHold::hold),
         },
         None => Target::BeforeGithub {
             waiting_unskipped: matches!(row.stage, Stage::Waiting) && row.github_skipped.is_none(),
@@ -1537,14 +1527,14 @@ pub(crate) fn github_end(
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                Some(trimmed(message)),
+                Some(clipped(message)),
                 row.stage.github(),
             )
         }
         // The next Builder starts it afresh: the run holds it no more.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, Some(trimmed(message)), None)
+            (BuildStatus::Pending, Some(clipped(message)), None)
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
@@ -1599,7 +1589,7 @@ fn keep_built(
     token: Option<&ImageToken>,
 ) -> Result<(), RpcError> {
     let receipt = receipt.to_string();
-    let token = token.map(|token| serde_json::to_string(token).expect("an image token is JSON"));
+    let token = token.map(json_text);
     tx.execute(
         "UPDATE config_build SET receipt = ?3, image_token = ?4 \
          WHERE deployment_id = ?1 AND service = ?2",

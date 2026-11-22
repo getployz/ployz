@@ -1,34 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import {
-  MintMachineEnrollmentInput,
   ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
 import {
-  mintMachineEnrollment,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
 
-const mintInput = strictValidator(MintMachineEnrollmentInput);
-
-export const mintMachineEnrollmentServerFn = createServerFn({
-  method: "POST",
-})
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(mintInput)
-  .handler(({ context, data }) =>
-    runActor(context, mintMachineEnrollment(context.actor, data)),
-  );
-
 export const resetPendingOrganizationEnrollmentServerFn = createServerFn({
   method: "POST",
 })
-  .middleware([publicErrorMiddleware, actorMiddleware])
+  .middleware(authenticated)
   .validator(strictValidator(ResetPendingEnrollmentInput))
   .handler(({ context, data }) =>
     runActor(context, resetPendingOrganizationEnrollment(context.actor, data)),

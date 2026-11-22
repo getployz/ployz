@@ -1,5 +1,10 @@
 //! Domain and wire contracts shared byte-for-byte by the Ployz CLI and daemon.
 
+#![expect(
+    clippy::large_enum_variant,
+    reason = "wire and request enums keep the whole payload unboxed so serde, ts-rs and `Rpc::Request` see it; one request or reply holds one"
+)]
+
 pub mod authority;
 pub mod cloud_contract;
 pub mod config;
@@ -100,14 +105,6 @@ pub const MACHINE_START_WAIT: std::time::Duration = std::time::Duration::from_se
 /// or `MintBuildGrant`. Clients compare against it to show the refusal as it is.
 pub const BUILD_REFUSED_BY_ENFORCEMENT: &str =
     "This server runs only builds an approved device starts.";
-
-/// What a Machine that enforces Device approval says when an Operator asks it to `Leave`.
-/// Clients compare against it to show the refusal as it is.
-pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str = "This server leaves only when you approve it, with ployz server rm from an approved device or your passkey in the dashboard";
-
-/// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
-/// another Machine.
-pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it, with ployz server forget from an approved device or your passkey in the dashboard";
 
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.

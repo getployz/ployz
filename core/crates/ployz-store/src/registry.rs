@@ -21,6 +21,7 @@ use crate::scope::Environment;
 use crate::sealing::SealingKey;
 use crate::settings::{SecretInput, ServiceSetting};
 use crate::storage::Tx;
+use crate::storage::json_text;
 use crate::{Actor, deployment::Frozen};
 
 const SETTING: ServiceSetting = ServiceSetting::RegistryCredential;
@@ -71,8 +72,7 @@ pub(crate) fn set(
                 None => false,
             };
             if !unchanged {
-                let sealed = sealing
-                    .seal(&serde_json::to_string(&new).expect("a registry credential is JSON"));
+                let sealed = sealing.seal(&json_text(&new));
                 store(tx, who, &environment_id, &node.id, &sealed)?;
             }
             !unchanged
@@ -200,10 +200,7 @@ pub(crate) fn store(
             environment.as_str().into(),
             service_id.into(),
             who.organization.as_str().into(),
-            serde_json::to_string(sealed)
-                .expect("a sealed credential is JSON")
-                .as_str()
-                .into(),
+            json_text(sealed).as_str().into(),
         ],
     )?;
     Ok(())

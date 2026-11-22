@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
-import { prefetchRemote, requireOrganization, streamRemote } from "#/collections/route-data";
+import { prefetchRemote, streamRemote } from "#/collections/route-data";
+import { requireOrganization } from "#/modules/organization/organization.route-data";
 import { accountReads, AccountSections } from "../-components/account-sections";
 import { passkeysQueryOptions } from "#/modules/passkeys/passkeys.queries";
 import { PasskeysSection } from "../-components/passkeys-section";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/account")({
+  staticData: { section: "account" },
   loader: async ({ context, params }) => {
     const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
     const { access } = await requireOrganization(context, params.organizationSlug);

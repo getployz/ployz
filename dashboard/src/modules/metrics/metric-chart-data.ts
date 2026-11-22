@@ -1,5 +1,5 @@
 import { scaleLinear } from "@tanstack/charts/scales/linear";
-import { stepAt, steps, type TimeWindow } from "#/modules/uptime/uptime";
+import { stepAt, steps, type TimeWindow } from "#/lib/time-range";
 import type { Sample } from "./metrics-model";
 
 export function onGrid(samples: readonly Sample[], window: TimeWindow): (number | null)[] {

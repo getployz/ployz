@@ -5,7 +5,7 @@ import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-
 import { presetGrant, type TokenGrant } from "#/modules/identity/token-grant";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { handleRunRequest } from "#/routes/api/cli/-handlers";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

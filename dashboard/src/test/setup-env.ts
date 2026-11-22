@@ -1,7 +1,7 @@
-import { generateKeyPairSync } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
+import { TEST_SERVICE_DEFAULTS } from "./test-env";
 
 const envFile = process.env["PLOYZ_TEST_ENV_FILE"] ?? ".env.test";
 const envPath = resolve(process.cwd(), envFile);
@@ -14,26 +14,6 @@ if (!existsSync(envPath)) {
 
 loadEnvFile(envPath);
 
-if (!process.env["GITHUB_APP_ID"]) {
-  process.env["GITHUB_APP_ID"] = "test-app";
-}
-if (!process.env["GITHUB_APP_CLIENT_ID"]) {
-  process.env["GITHUB_APP_CLIENT_ID"] = "test-app-client";
-}
-if (!process.env["GITHUB_APP_CLIENT_SECRET"]) {
-  process.env["GITHUB_APP_CLIENT_SECRET"] = "test-app-client-secret";
-}
-if (!process.env["GITHUB_APP_SLUG"]) {
-  process.env["GITHUB_APP_SLUG"] = "test-app";
-}
-if (!process.env["GITHUB_APP_WEBHOOK_SECRET"]) {
-  process.env["GITHUB_APP_WEBHOOK_SECRET"] = "test-webhook-secret";
-}
-if (!process.env["GITHUB_APP_PRIVATE_KEY"]) {
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  process.env["GITHUB_APP_PRIVATE_KEY"] = privateKey;
+for (const [name, defaultValue] of Object.entries(TEST_SERVICE_DEFAULTS)) {
+  process.env[name] ||= defaultValue();
 }

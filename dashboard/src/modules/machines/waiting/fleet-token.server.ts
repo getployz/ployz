@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, asc, eq, gt, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import type { Actor } from "#/modules/identity/actor";
 import {
   type CreateFleetTokenInput,
@@ -10,7 +11,7 @@ import {
   type FleetTokenView,
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
-import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import { generateTokenName } from "#/modules/machines/waiting/names";
 import { user } from "#/modules/identity/tables";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
@@ -18,13 +19,13 @@ import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server"
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { DAY_MS } from "#/lib/time-range";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LIFETIME_DAYS = { "1d": 1, "7d": 7, "30d": 30 } satisfies Record<FleetTokenLifetime, number>;
 const NAME_ATTEMPTS = 5;
 
 export function hashFleetToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  return sha256Hex(token);
 }
 
 /** Makes a Fleet Token. The token is returned here and never again; Cloud keeps only its hash. */

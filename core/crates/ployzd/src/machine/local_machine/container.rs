@@ -16,17 +16,16 @@ use ployz_core::{
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
     PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
-    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal,
-    RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
     HealthcheckSpec, ReadyWait, SETTLE_INSPECT_GRACE, health_monitor, settle_deadline,
 };
 
-use self::rotation::RotationWant;
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
-use super::{AdmittedSpec, Error, LocalMachine};
+use super::{AdmittedSpec, Error, LocalMachine, turns::Installed};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
@@ -34,6 +33,7 @@ use crate::docker::{
 use crate::docker_image::ImagePull;
 use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
+use ployz_decide::rotation::{RotationWant, in_rotation, in_rotation_refusal};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
@@ -142,10 +142,7 @@ impl LocalMachine {
             let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
             let mut mounted = std::collections::BTreeMap::new();
@@ -403,12 +400,13 @@ impl LocalMachine {
         })
         .await
     }
+}
 
+impl Installed {
     /// Take one running managed Container out of ingress, wait `drain`, stop it.
     ///
-    /// Contract: the caller holds `installation` and no admission turn. The
-    /// helper takes the exclusive turn for the Docker stop itself, so a caller
-    /// already holding a turn deadlocks.
+    /// The helper takes the exclusive turn for the Docker stop itself, so a caller
+    /// holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy and
     /// Internal DNS during the drain. An idle copy ends its drain early, though not
@@ -429,7 +427,6 @@ impl LocalMachine {
     /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
         &self,
-        installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         fence: Option<(&DockerVolumeName, VolumeGen)>,
         drain: Drain,
@@ -440,8 +437,7 @@ impl LocalMachine {
             container,
             fence,
         };
-        self.stop_checked(installation, container, drain, stop, guard)
-            .await
+        self.stop_checked(container, drain, stop, guard).await
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
@@ -449,7 +445,6 @@ impl LocalMachine {
     /// stop was planned keeps the copy running.
     async fn stop_out_of_rotation(
         &self,
-        installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         target: RotationTarget,
         drain: Drain,
@@ -460,8 +455,7 @@ impl LocalMachine {
             container,
             target: &target,
         };
-        self.stop_checked(installation, container, drain, stop, guard)
-            .await
+        self.stop_checked(container, drain, stop, guard).await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what the
@@ -477,13 +471,11 @@ impl LocalMachine {
     /// crash.
     async fn stop_checked<G: StopGuard>(
         &self,
-        installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         drain: Drain,
         stop: &StopOptions,
         guard: G,
     ) -> Result<Result<ContainerObservation, G::Refusal>, Error> {
-        let _ = installation;
         let containers = self.docker()?;
         let machine_id = self.record().id();
         let observed = containers
@@ -538,7 +530,9 @@ impl LocalMachine {
             .inspect_managed(container, &machine_id)
             .await?))
     }
+}
 
+impl LocalMachine {
     /// Ends once the copy holds no connection it may still answer, per
     /// `drain_idle::holds_connection`, with the listening ports remembered across the
     /// drain's reads, and no earlier than `not_before`: a client may still connect
@@ -598,7 +592,7 @@ impl LocalMachine {
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     {
-        self.finish_installed(move |local, installation| async move {
+        self.finish_installed(move |local| async move {
             let containers = local.docker()?;
             let stop = StopOptions::default();
             let holders = containers.volumes().volume_holder_ids(&name).await?;
@@ -613,7 +607,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }
                 let observed = match local
-                    .stop_behind_ingress(&installation, &holder, Some((&name, r#gen)), drain, &stop)
+                    .stop_behind_ingress(&holder, Some((&name, r#gen)), drain, &stop)
                     .await?
                 {
                     Ok(observed) => observed,
@@ -810,8 +804,7 @@ impl LocalMachine {
     ///
     /// Returns when Docker is unavailable, admission is busy, or the pull fails.
     pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
-        let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, move |local| async move {
+        self.finish_shared(move |local| async move {
             let exposed_ports = local
                 .docker()?
                 .images()
@@ -837,8 +830,7 @@ impl LocalMachine {
         &self,
         request: PullFreeImageRequest,
     ) -> Result<ImagePulled, Error> {
-        let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, move |local| async move {
+        self.finish_shared(move |local| async move {
             let exposed_ports = local
                 .docker()?
                 .images()
@@ -859,8 +851,7 @@ impl LocalMachine {
         &self,
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
-        let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, move |local| async move {
+        self.finish_shared(move |local| async move {
             let containers = local.docker()?;
             if let Err(error) = crate::docker::pull_from_ingest(
                 &containers.local_docker(),
@@ -890,8 +881,7 @@ impl LocalMachine {
         container_id: ContainerId,
         spec: ResolvedServiceSpec,
     ) -> Result<ContainerLimitsUpdated, Error> {
-        let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, move |local| async move {
+        self.finish_shared(move |local| async move {
             Ok(local.docker()?.update_limits(&container_id, &spec).await?)
         })
         .await
@@ -909,13 +899,9 @@ impl LocalMachine {
         container_id: ContainerId,
         spec: ResolvedServiceSpec,
     ) -> Result<ContainerPlacementUpdated, Error> {
-        let shared = self.owner.admission_lock().read_owned().await;
-        self.finish_admitted(shared, move |local| async move {
+        self.finish_shared(move |local| async move {
             let record = local.record();
-            if !record.has_cluster_identity() {
-                return Err(Error::NotParticipating);
-            }
-            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             Ok(local
                 .docker()?
                 .update_placement(machine, &container_id, &spec, local.observe_storage())
@@ -1058,8 +1044,7 @@ impl LocalMachine {
             });
         }
         let record = self.record();
-        let participating = record.has_cluster_identity();
-        let Some(machine) = record.machine().filter(|_| participating) else {
+        let Some(machine) = record.cluster_machine() else {
             return Ok(EnsuredContainer::Refused {
                 now: self.container_now(&locator).await?,
                 refusal: refuse(
@@ -1455,15 +1440,9 @@ impl LocalMachine {
                 }
             }
             ContainerStep::Stop { id, drain, stop } => {
-                self.finish_installed(move |local, installation| async move {
+                self.finish_installed(move |local| async move {
                     Ok(local
-                        .stop_out_of_rotation(
-                            &installation,
-                            &id,
-                            RotationTarget::Stopped,
-                            drain,
-                            &stop,
-                        )
+                        .stop_out_of_rotation(&id, RotationTarget::Stopped, drain, &stop)
                         .await?
                         .err())
                 })
@@ -1489,10 +1468,9 @@ impl LocalMachine {
                 anonymous_volumes,
                 logs_to_read,
             } => {
-                self.finish_installed(move |local, installation| async move {
+                self.finish_installed(move |local| async move {
                     match local
                         .stop_out_of_rotation(
-                            &installation,
                             &id,
                             RotationTarget::Gone,
                             drain,
@@ -1523,7 +1501,7 @@ impl LocalMachine {
                 anonymous_volumes,
                 logs_to_read,
             } => {
-                self.finish_installed(move |local, _installation| async move {
+                self.finish_installed(move |local| async move {
                     local.await_log_read(&id, logs_to_read).await;
                     let _turn = local.exclusive_turn().await;
                     let containers = local.docker()?;
@@ -1591,10 +1569,6 @@ impl LocalMachine {
                 ),
             )
         }))
-    }
-
-    async fn wait_for_admitted_work(&self) {
-        drop(self.owner.admission_lock().write_owned().await);
     }
 
     pub(super) async fn container_now(
@@ -1722,10 +1696,7 @@ impl LocalMachine {
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
-        if !record.has_cluster_identity() {
-            return Err(Error::NotParticipating);
-        }
-        let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         containers
             .lifecycle()
             .create_with_admission(
@@ -2106,24 +2077,6 @@ fn start_fence(want: &ContainerWant) -> Option<StartFence> {
         | ContainerWant::Out { .. }
         | ContainerWant::Held { .. } => None,
     }
-}
-
-/// True when the copy must leave routing through an Out want first.
-fn in_rotation(rotation: &CopyRotation, target: &RotationTarget) -> bool {
-    matches!(
-        rotation.edge(target),
-        RotationEdge::Refused(RotationRefusal::InRotation)
-    )
-}
-
-fn in_rotation_refusal(container: &ContainerId, rotation: &CopyRotation) -> ContainerRefusal {
-    refuse(
-        ContainerRefusalReason::InRotation,
-        format!(
-            "Container {container} is {}; take it out of routing first",
-            rotation::describe(rotation)
-        ),
-    )
 }
 
 async fn leave_rotation<'a>(

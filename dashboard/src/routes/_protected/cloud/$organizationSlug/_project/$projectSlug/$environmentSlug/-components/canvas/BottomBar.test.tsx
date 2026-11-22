@@ -10,7 +10,7 @@ import type { DeploymentSummary } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import type { Busy } from "#/modules/config-store/store-pending";
 import { asTestDouble } from "#/lib/test-double";
-import { AgentDock } from "#/components/agent-sidebar/agent-dock";
+import { AgentDock } from "#/components/agent-sidebar/agent-sidebar";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];

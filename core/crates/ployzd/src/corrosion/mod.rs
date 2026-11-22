@@ -56,11 +56,6 @@ pub enum Error {
     Toml(#[from] toml::ser::Error),
     #[error("Docker operation for Corrosion failed")]
     Docker(#[from] bollard::errors::Error),
-    #[error("{primary}; cleanup: {cleanup}")]
-    CleanupAfter {
-        primary: Box<Error>,
-        cleanup: Box<Error>,
-    },
     #[error("Corrosion API error: {0}")]
     Api(String),
     #[error("invalid catch-up target: {0}")]

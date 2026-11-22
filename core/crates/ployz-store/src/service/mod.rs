@@ -249,7 +249,7 @@ fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
 pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {
     Ok(ServiceSummary {
         id: ServiceLineageId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
-        name: ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service name"))?,
+        name: crate::scope::service_name(node)?,
         private_dns: node.config.private_dns.clone(),
     })
 }

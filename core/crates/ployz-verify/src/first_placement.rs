@@ -19,10 +19,10 @@
 //!   `deployment::record`): one atomic step that pins the Server of a first copy, keeps the
 //!   pin a later Preview names, and ends a Deployment whose Preview starts the Volume
 //!   elsewhere, before it sends anything;
-//! - Prepare on a Server (`prepare_volumes`): a copy in a slot refuses; with no copy, the
-//!   plain-mount check (`admit_plain_mount`) refuses when its view shows a root elsewhere,
-//!   and that view may lag and show none; otherwise the Volume is ensured, which makes a
-//!   root when there is none;
+//! - Prepare on a Server (`prepare_volumes`): the plain-mount check, called as
+//!   `ployz_core::admit_plain_mount` on the Server's copy and its view of the others, which
+//!   may lag and show none; once it admits, the Volume is ensured, which makes a root when
+//!   there is none;
 //! - Create on a Server (`create_container`): a slot refuses (`create_volume`'s
 //!   `InSlot`); otherwise the Volume is ensured, with no plain-mount check;
 //! - one Move, while no Deploy holds the row: the root's Server keeps an old copy in a
@@ -576,15 +576,18 @@ impl FirstPlacement {
             .lanes
             .get(usize::from(request.lane))
             .is_some_and(|lane| lane.step == Step::Over);
-        let root_elsewhere = IDS
-            .into_iter()
-            .any(|server| server != request.to && host(state, server).held == Held::Root);
         let moved = state.moved;
         let before = host(state, request.to);
-        let ensured = match (before.held, request.want) {
-            (Held::Slot, _) => false,
-            (Held::Nothing, Want::Prepare) => lagging || !root_elsewhere,
-            (Held::Nothing | Held::Root, _) => true,
+        let ensured = match request.want {
+            Want::Prepare => {
+                let elsewhere = if lagging {
+                    Vec::new()
+                } else {
+                    known_elsewhere(state, request.to)
+                };
+                ployz_core::admit_plain_mount(held_copy(before.held).as_ref(), &elsewhere).is_ok()
+            }
+            Want::Create => before.held != Held::Slot,
         };
         if ensured {
             state.registered_moved |= moved && before.held == Held::Root && !before.registered;
@@ -729,6 +732,49 @@ impl Model for FirstPlacement {
             }),
         ]
     }
+}
+
+/// The copy a Server's plugin inspect answers with for `held`.
+fn held_copy(held: Held) -> Option<ployz_core::VolumeCopy> {
+    match held {
+        Held::Nothing => None,
+        Held::Root => Some(ployz_core::VolumeCopy::Root {
+            readonly: false,
+            newest: None,
+            epoch: ployz_core::WriterEpoch::default(),
+            seed: false,
+            mark: None,
+            origin: None,
+        }),
+        Held::Slot => Some(ployz_core::VolumeCopy::Slot {
+            slot: ployz_core::SlotId::new(1),
+            readonly: true,
+            newest: None,
+            resume_token: None,
+            pull: None,
+            role: None,
+            pull_state: None,
+            origin: None,
+        }),
+    }
+}
+
+/// Every copy on a Server other than `me`, as its replicated view lists them.
+fn known_elsewhere(state: &State, me: u8) -> Vec<ployz_core::KnownCopy> {
+    IDS.into_iter()
+        .filter(|server| *server != me)
+        .filter_map(|server| {
+            let role = match host(state, server).held {
+                Held::Nothing => return None,
+                Held::Root => CopyRole::Writer,
+                Held::Slot => CopyRole::Slot,
+            };
+            Some(ployz_core::KnownCopy {
+                machine: MachineName::parse(name(server)).expect("a Server name"),
+                role,
+            })
+        })
+        .collect()
 }
 
 fn name(server: u8) -> &'static str {

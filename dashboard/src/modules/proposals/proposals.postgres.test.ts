@@ -5,12 +5,14 @@ import { Effect, Option, Schema } from "effect";
 import { expect } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
-import { type AgentCaller, type Asking } from "#/modules/agent/agent-runner.server";
+import { type Asking } from "#/modules/agent/agent-runner.server";
+import type { AgentCaller } from "#/modules/identity/actor";
 import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
-import { member, user } from "#/modules/identity/tables";
+import { user } from "#/modules/identity/tables";
+import { member } from "#/modules/organization/tables";
 import {
   advanceProposal,
   createProposal,
@@ -25,7 +27,7 @@ import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { serviceAct } from "#/modules/service-act/tables";
-import { AuthLive } from "#/server/auth.server";
+import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 

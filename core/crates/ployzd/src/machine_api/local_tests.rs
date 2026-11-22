@@ -1327,7 +1327,7 @@ mod ingress_doors {
             "both Doors keep the ports open beside the connector"
         );
         assert!(both.tunnel.is_some());
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1358,7 +1358,7 @@ mod ingress_doors {
                     .unwrap()
                     .iter()
                     .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
-                    .all(|entry| entry.facts.running())
+                    .all(|entry| entry.facts.runtime.is_running())
             }
         };
         let untouched = service.local.restore_doors().await.unwrap().unwrap();
@@ -1374,7 +1374,7 @@ mod ingress_doors {
             .stop(&connector, None, None)
             .await
             .unwrap();
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         assert!(!running(&runtime).await && !token.exists());
 
         let restored = service.local.restore_doors().await.unwrap().unwrap();
@@ -1386,7 +1386,7 @@ mod ingress_doors {
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         assert!(running(&runtime).await);
 
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1394,7 +1394,7 @@ mod ingress_doors {
     async fn a_reboot_places_a_held_door_only_while_the_cluster_declares_it() {
         use crate::corrosion::{
             AdminClient,
-            store_tests::{corrosion_db, identity_store},
+            fake_cluster::{corrosion_db, identity_store},
         };
         let (data_dir, store, _without_cluster, _fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-declared").await;
@@ -1421,7 +1421,7 @@ mod ingress_doors {
                 .stop(&connector, None, None)
                 .await
                 .unwrap();
-            runtime.remove_tunnel_token().unwrap();
+            runtime.machine_files().remove_tunnel_token().unwrap();
         };
 
         // A declaration without the Tunnel Door leaves the connector at rest and writes no token.
@@ -1441,7 +1441,7 @@ mod ingress_doors {
                 .unwrap()
                 .iter()
                 .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
-                .any(|entry| entry.facts.running())
+                .any(|entry| entry.facts.runtime.is_running())
         };
         assert!(!connector_running().await);
 
@@ -1467,7 +1467,7 @@ mod ingress_doors {
             .stop(&connector, None, None)
             .await
             .unwrap();
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         assert!(!connector_running().await);
         let restored = service.local.restore_doors().await.unwrap().unwrap();
         assert_eq!(restored.failure, None, "{restored:?}");
@@ -1476,7 +1476,7 @@ mod ingress_doors {
         assert!(connector_running().await);
 
         task.abort();
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1524,7 +1524,7 @@ mod ingress_doors {
             panic!("the connector Docker refused to remove stays: {left:?}")
         });
         assert_eq!(stayed.facts.id, connector);
-        assert!(!stayed.facts.running(), "it is stopped");
+        assert!(!stayed.facts.runtime.is_running(), "it is stopped");
         assert!(!token.exists(), "the token goes with the Tunnel Door");
 
         let restored = service.local.restore_doors().await.unwrap().unwrap();
@@ -1536,7 +1536,10 @@ mod ingress_doors {
         let [stayed] = connectors().await.try_into().unwrap_or_else(|left| {
             panic!("the connector still stays while Docker refuses: {left:?}")
         });
-        assert!(!stayed.facts.running(), "a reboot never starts it");
+        assert!(
+            !stayed.facts.runtime.is_running(),
+            "a reboot never starts it"
+        );
         assert!(!token.exists(), "a reboot writes no token for it");
 
         fake.refuse_remove_of.lock().unwrap().remove(&service_name);
@@ -1555,7 +1558,7 @@ mod ingress_doors {
             "opening the Tunnel Door again holds it across a restart"
         );
 
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1611,7 +1614,7 @@ mod ingress_doors {
             doors.iter().any(|(id, at_rest)| *id != old && !at_rest),
             "the previous holder and Caddy run again: {doors:?}"
         );
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1655,7 +1658,7 @@ mod ingress_doors {
             "the reopened connector is held, not retired"
         );
 
-        runtime.remove_tunnel_token().unwrap();
+        runtime.machine_files().remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -2310,7 +2313,7 @@ mod private_access {
             private_access_router(
                 network,
                 &sealed,
-                runtime.keep_private_access_state().unwrap()
+                runtime.machine_files().keep_private_access_state().unwrap()
             )
         );
         assert_eq!(
@@ -2394,7 +2397,7 @@ mod private_access {
         );
 
         runtime.lifecycle().stop(&router, None, None).await.unwrap();
-        runtime.remove_private_access_key().unwrap();
+        runtime.machine_files().remove_private_access_key().unwrap();
         assert!(!running().await && !key_file(&data_dir).exists());
         std::fs::write(node_state(&data_dir).join("tailscaled.state"), b"node").unwrap();
 
@@ -2617,7 +2620,7 @@ mod private_access {
         assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
         assert_eq!(
             ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
-            Some(runtime.keep_private_access_state().unwrap()),
+            Some(runtime.machine_files().keep_private_access_state().unwrap()),
             "the new router mounts the node state on disk now"
         );
         assert_eq!(again.retired, vec![stranded]);
@@ -2657,7 +2660,7 @@ mod private_access {
         assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
         assert_eq!(
             ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
-            Some(runtime.keep_private_access_state().unwrap()),
+            Some(runtime.machine_files().keep_private_access_state().unwrap()),
             "the new router mounts the node state on disk now"
         );
         assert_eq!(restored.retired, vec![stranded]);
@@ -2706,7 +2709,7 @@ mod private_access {
         assert_eq!(after.retired, vec![before.now.container_id]);
         assert_eq!(runtime.routers(&machine).await.unwrap().len(), 1);
         assert_eq!(std::fs::read(key_file(&data_dir)).unwrap(), b"second");
-        runtime.remove_private_access_key().unwrap();
+        runtime.machine_files().remove_private_access_key().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -2793,7 +2796,7 @@ mod private_access {
                 .len(),
             1
         );
-        runtime.remove_private_access_key().unwrap();
+        runtime.machine_files().remove_private_access_key().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
@@ -6399,7 +6402,7 @@ mod read_routes {
     use super::*;
     use crate::corrosion::{
         AdminClient, IngressRouteAck, IngressRouteChange, ReplicatedStore,
-        store_tests::{corrosion_db, identity_store},
+        fake_cluster::{corrosion_db, identity_store},
     };
 
     fn admin_socket(dir: &Path, states: Vec<Value>) -> PathBuf {

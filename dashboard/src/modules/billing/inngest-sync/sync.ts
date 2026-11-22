@@ -1,10 +1,9 @@
 import { Effect, Option, Schema } from "effect";
-import {
-  createOrganizationBillingSyncRequestedEvent,
-  organizationBillingSyncRequestedEventType,
-} from "#/modules/inngest/events";
+import { organizationBillingSyncRequested } from "#/modules/billing/billing.events";
+import { eventData } from "#/modules/inngest/define-event";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { runInngestEffect } from "#/server/run.server";
+import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
+import { ManagedSubscriptionSnapshot } from "#/modules/billing/billing";
 import {
   getActiveManagedSubscriptionSnapshot,
   persistOrganizationBillingStateSnapshot,
@@ -26,21 +25,13 @@ export type BillingSyncStepTools = Pick<
   "run" | "sendEvent"
 >;
 
-export type BillingEffectRunner = <A, E extends Error>(
-  effect: Effect.Effect<A, E, Database | Polar | SecretEncryption>,
-) => Promise<A>;
+export type BillingEffectRunner = EffectRunner<Database | Polar | SecretEncryption>;
 
-const OrganizationId = Schema.Trim.check(Schema.isMinLength(1));
 const OptionalSourceUpdatedAt = Schema.NullOr(Schema.DateFromString);
-const OrganizationBillingSyncEventData = Schema.Struct({
-  organizationId: Schema.optionalKey(Schema.Unknown),
-  sourceUpdatedAt: Schema.optionalKey(Schema.Unknown),
-});
+/** The snapshot as a step returns it: Inngest keeps a step's result as JSON, so the period end travels as a string. */
 const DurableManagedSubscriptionSnapshot = Schema.Struct({
-  activeSubscriptionId: Schema.NullOr(Schema.String),
+  ...ManagedSubscriptionSnapshot.fields,
   currentPeriodEnd: Schema.NullOr(Schema.DateFromString),
-  cancelAtPeriodEnd: Schema.Boolean,
-  hasActiveSubscription: Schema.Boolean,
 });
 
 export async function executeSyncOrganizationBillingState(
@@ -53,33 +44,22 @@ export async function executeSyncOrganizationBillingState(
   },
   runEffect: BillingEffectRunner,
 ) {
-  const decodedEventData = Schema.decodeUnknownOption(
-    OrganizationBillingSyncEventData,
-  )(event.data, { onExcessProperty: "preserve" });
-  const eventData = Option.isSome(decodedEventData)
-    ? decodedEventData.value
-    : {};
-  const organizationId = await step.run("normalize-organization-id", () => {
-    const decoded = Schema.decodeUnknownOption(OrganizationId)(
-      eventData.organizationId,
-    );
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-
-  if (organizationId === null) {
+  const requested = eventData(organizationBillingSyncRequested)(event);
+  if (Option.isNone(requested)) {
     return {
       organizationId: null,
       hasActiveSubscription: false,
       skipped: true,
     };
   }
+  const { organizationId } = requested.value;
 
   const sourceUpdatedAtIso = await step.run(
     "normalize-source-updated-at",
     () =>
       runEffect(
         Schema.decodeUnknownEffect(OptionalSourceUpdatedAt)(
-          eventData.sourceUpdatedAt ?? null,
+          requested.value.sourceUpdatedAt ?? null,
         ).pipe(Effect.map((value) => value?.toISOString() ?? null)),
       ),
   );
@@ -136,7 +116,7 @@ export async function executeScheduleNightlyBillingReconcile(
   await step.sendEvent(
     "request-billing-syncs",
     organizationIds.map((organizationId) =>
-      createOrganizationBillingSyncRequestedEvent({
+      organizationBillingSyncRequested.create({
         organizationId,
         reason: "nightly-reconcile",
       }),
@@ -151,7 +131,7 @@ export const createSyncOrganizationBillingStateFunction = (inngest: PloyzInngest
   {
     id: "sync-organization-billing-state",
     retries: 3,
-    triggers: [{ event: organizationBillingSyncRequestedEventType }],
+    triggers: [{ event: organizationBillingSyncRequested.eventType }],
     singleton: SYNC_ORGANIZATION_BILLING_STATE_SINGLETON,
     concurrency: [{ key: "event.data.organizationId", limit: 1 }],
   },

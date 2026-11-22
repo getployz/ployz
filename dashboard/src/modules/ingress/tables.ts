@@ -12,7 +12,7 @@ import {
   type DoorsStage,
   type DoorsState,
   type DoorsWant,
-} from "#/modules/ingress/doors";
+} from "#/modules/ingress/doors.states";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 

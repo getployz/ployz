@@ -37,7 +37,7 @@ pub(crate) trait Host {
     async fn enroll(
         &self,
         instruction: &EnrollInstruction,
-        progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
+        progress: &dyn Fn(crate::cloud::enroll::EnrollStage),
     ) -> Result<Committed, String>;
     async fn discard_zfs_build(&self) -> Result<(), String>;
     /// The name this Server holds in the cluster it already participates in.
@@ -144,7 +144,7 @@ impl Host for System {
     async fn enroll(
         &self,
         instruction: &EnrollInstruction,
-        progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
+        progress: &dyn Fn(crate::cloud::enroll::EnrollStage),
     ) -> Result<Committed, String> {
         enroll::server_add(self, instruction, progress).await
     }

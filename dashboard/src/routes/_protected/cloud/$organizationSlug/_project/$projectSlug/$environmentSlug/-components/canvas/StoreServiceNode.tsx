@@ -6,12 +6,12 @@ import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { useRemoveStoreService } from "../../_canvas/services/$serviceId/-components/useRemoveStoreService";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
-import { getServiceIcon } from "./service-node-helpers";
+import { serviceIcon } from "./service-icon";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { chipWord, deployChip, deployEffect, issuesLabel, nodeIssues, nodeLabel, notSetLabel, publicDomain, runningDeployment, runtimeLine, stagedChip, stagedSurface, statusWord } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
@@ -51,7 +51,7 @@ export function StoreServiceCard({ service, changeCount, runtimeIdentity, desire
   const unreachable = hydrated ? incident : null;
   const trouble = useContainerTrouble(scope, service.name);
   const surface = stagedSurface(service.change);
-  const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
+  const icon = <Avatar><AvatarFallback>{serviceIcon(service.source)}</AvatarFallback></Avatar>;
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>;
   const subtitle = (
     <ServiceDomains service={service.name}>
@@ -181,7 +181,7 @@ export function StoreServiceNode({ data }: { data: StoreCanvasService & { hang: 
   if (pick) {
     return <>
       <div className="relative z-10">
-        <PickedNode pick={pick} name={data.service.name} nodeId={data.service.id} icon={getServiceIcon({ source: { type: data.service.source } })} />
+        <PickedNode pick={pick} name={data.service.name} nodeId={data.service.id} icon={serviceIcon(data.service.source)} />
       </div>
       {trays}
     </>;

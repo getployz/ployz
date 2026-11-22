@@ -46,7 +46,7 @@ fn refusal(reply: &Value) -> &str {
 
 #[tokio::test]
 async fn a_grow_raises_the_bound_and_answers_what_zfs_holds() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
@@ -67,7 +67,7 @@ async fn a_grow_raises_the_bound_and_answers_what_zfs_holds() {
 
 #[tokio::test]
 async fn a_grow_on_a_mirror_raises_the_slot_once_and_then_its_copy() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = mirror(&test, ROOMY_POOL);
 
     let same = post(&socket, "/Volume.Size.Set", grow(3 * GIB)).await;
@@ -99,7 +99,7 @@ async fn a_grow_on_a_mirror_raises_the_slot_once_and_then_its_copy() {
 /// resend finds the slot at the request and raises the copy with nothing more to commit.
 #[tokio::test]
 async fn a_resend_raises_a_copy_a_grow_left_behind_without_committing_again() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = mirror(&test, USABLE_POOL);
     set_property(&test, SLOT, "refquota", "4294967296");
 
@@ -120,7 +120,7 @@ async fn a_resend_raises_a_copy_a_grow_left_behind_without_committing_again() {
 
 #[tokio::test]
 async fn a_grown_mirror_promoted_to_writer_holds_the_new_bound() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = mirror(&test, ROOMY_POOL);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
 
@@ -153,7 +153,7 @@ async fn a_grown_mirror_promoted_to_writer_holds_the_new_bound() {
 #[tokio::test]
 async fn a_slot_with_a_leftover_mark_accepts_a_grow() {
     for (dataset, mark, value) in [(SLOT_FS, "ployz:cut", "on"), (SLOT, "ployz:pull", "w-1-1")] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = mirror(&test, ROOMY_POOL);
         set_property(&test, dataset, mark, value);
 
@@ -177,7 +177,7 @@ async fn a_slot_with_a_leftover_mark_accepts_a_grow() {
 #[tokio::test]
 async fn a_slot_receiving_is_refused_until_the_receive_lands() {
     let source = Source::start(Some(GIB), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = puller(&test, &["root"], source.port);
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(test.0.join("props/stall-read"), "").unwrap();
@@ -234,7 +234,7 @@ async fn a_slot_receiving_is_refused_until_the_receive_lands() {
 
 #[tokio::test]
 async fn a_bound_already_at_the_request_is_answered_without_a_write() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", grow(GIB)).await;
@@ -246,7 +246,7 @@ async fn a_bound_already_at_the_request_is_answered_without_a_write() {
 
 #[tokio::test]
 async fn a_smaller_bound_is_refused_with_the_bound_held() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", grow(GIB / 2)).await;
@@ -260,7 +260,7 @@ async fn a_smaller_bound_is_refused_with_the_bound_held() {
 
 #[tokio::test]
 async fn a_volume_held_by_a_run_is_refused_until_the_run_finishes() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "readonly-volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
@@ -273,20 +273,20 @@ async fn a_volume_held_by_a_run_is_refused_until_the_run_finishes() {
 
 #[tokio::test]
 async fn an_absent_or_unbounded_volume_is_refused_by_name() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root"]);
     let absent = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
     server.abort();
     assert_eq!(refusal(&absent), "not_found");
     assert_eq!(absent.pointer("/Err/code").unwrap(), "not_found");
 
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, "", &[]);
     let no_pool = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
     server.abort();
     assert_eq!(refusal(&no_pool), "not_found");
 
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "unbounded-volume"]);
     let unbounded = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
     server.abort();
@@ -296,7 +296,7 @@ async fn an_absent_or_unbounded_volume_is_refused_by_name() {
 
 #[tokio::test]
 async fn a_grow_the_pool_cannot_hold_is_refused_before_any_write() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start_pool_with_data(&test).await;
     fs::write(test.0.join("insufficient"), "").unwrap();
 
@@ -325,7 +325,7 @@ async fn a_grow_the_pool_cannot_hold_is_refused_before_any_write() {
 
 #[tokio::test]
 async fn a_grow_a_fixed_pool_cannot_hold_is_refused_before_any_write() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", grow(7 * GIB / 2)).await;
@@ -375,7 +375,7 @@ fn gated_zfs(test: &TestDir, zfs: &Path) -> PathBuf {
 #[tokio::test]
 async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
     let source = Source::start(Some(GIB), "snapshot w-1-1 77\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, ROOMY_POOL);
     let mut storage = VolumeStorage::with_programs(zpool, gated_zfs(&test, &zfs));
@@ -429,7 +429,7 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
 /// room for the sibling to grow until `data` gives some back.
 #[tokio::test]
 async fn a_shrink_lowers_the_bound_and_releases_it_to_the_pool() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
     set_property(&test, ROOT, "refquota", "2147483648");
     set_property(&test, ROOT, "referenced", "0");
@@ -452,7 +452,7 @@ async fn a_shrink_lowers_the_bound_and_releases_it_to_the_pool() {
 
 #[tokio::test]
 async fn a_shrink_below_the_floor_is_refused_with_the_floor_and_the_bound_held() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", shrink(GIB / 2)).await;
@@ -470,7 +470,7 @@ async fn a_shrink_below_the_floor_is_refused_with_the_floor_and_the_bound_held()
 
 #[tokio::test]
 async fn a_shrink_of_a_root_held_by_a_run_is_refused_and_writes_nothing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "readonly-volume"]);
 
     let reply = post(&socket, "/Volume.Size.Set", shrink(GIB / 2)).await;
@@ -484,7 +484,7 @@ async fn a_shrink_of_a_root_held_by_a_run_is_refused_and_writes_nothing() {
 
 #[tokio::test]
 async fn a_shrink_on_a_mirror_lowers_the_copy_then_the_slot_and_a_resend_writes_nothing() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = mirror(&test, USABLE_POOL);
 
     let reply = post(&socket, "/Volume.Size.Set", shrink(2 * GIB)).await;
@@ -512,7 +512,7 @@ async fn a_shrink_on_a_mirror_lowers_the_copy_then_the_slot_and_a_resend_writes_
 
 #[tokio::test]
 async fn a_mirror_shrink_takes_its_floor_from_what_the_copy_references() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = mirror(&test, USABLE_POOL);
     set_property(&test, SLOT_FS, "referenced", "1900000000");
 
@@ -536,7 +536,7 @@ async fn a_mirror_shrink_takes_its_floor_from_what_the_copy_references() {
 
 #[tokio::test]
 async fn a_slot_with_no_copy_shrinks_to_the_floor_of_an_empty_volume() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror"]);
 
     let below = post(&socket, "/Volume.Size.Set", shrink(999_999_999)).await;
@@ -560,7 +560,7 @@ async fn a_slot_with_no_copy_shrinks_to_the_floor_of_an_empty_volume() {
 /// past the floor between the read and the write.
 #[tokio::test]
 async fn a_shrink_zfs_refuses_is_an_error_and_leaves_the_bound_held() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, ROOT, "refquota", "2147483648");
     set_property(&test, ROOT, "referenced", "0");

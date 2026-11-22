@@ -150,7 +150,7 @@ fn parse(command: &Command, args: &[std::ffi::OsString]) -> Result<ArgMatches, c
 /// the next `--help` would be stale, so fetch it now, after the command's own output.
 fn follow_cloud_revision() {
     let setup = crate::published::Setup::from_env();
-    let Some(seen) = crate::cloud_account::revision_seen(&setup.cloud) else {
+    let Some(seen) = crate::cloud::http::revision_seen(&setup.cloud) else {
         return;
     };
     if setup
@@ -357,7 +357,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
-            crate::cloud_origin::CloudOrigin::named_by_env(),
+            crate::cloud::origin::CloudOrigin::named_by_env(),
         );
         if let Some(cached) = setup.cached()
             && let Some(published) = cached.find(&path)
@@ -658,7 +658,7 @@ where
 fn with_reader<F>(
     root: &ArgMatches,
     work: F,
-) -> Result<Option<crate::cloud_account::Credential>, Error>
+) -> Result<Option<crate::cloud::account::Credential>, Error>
 where
     F: for<'a> FnOnce(
         &'a mut crate::connect::Client,
@@ -672,7 +672,7 @@ fn with_lister<F>(
     root: &ArgMatches,
     empty: impl FnOnce() -> Result<(), Error>,
     work: F,
-) -> Result<Option<crate::cloud_account::Credential>, Error>
+) -> Result<Option<crate::cloud::account::Credential>, Error>
 where
     F: for<'a> FnOnce(
         &'a mut crate::connect::Client,

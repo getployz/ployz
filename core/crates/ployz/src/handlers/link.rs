@@ -7,6 +7,7 @@
 //! own Project. Links live beside the Ployz config, never in the directory, so
 //! nothing needs ignoring or uploading.
 
+use crate::cloud;
 use crate::ui::Next;
 use ployz_core::error_chain;
 use std::borrow::Cow;
@@ -33,8 +34,8 @@ use super::store::{
 };
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths, Seen};
-use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::{Account, CredentialStore, Organization};
+use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::login::{Account, CredentialStore, Organization};
 use crate::context::{Config, ConfigError, ContextError, select_connections};
 use crate::env;
 use crate::ui::{Cell, Fields, Tone};
@@ -294,12 +295,13 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
 
 // ponytail: whole-file rewrite; two `link`s racing can lose one. Lock the file if that bites.
 fn save(config: &Path, links: &BTreeMap<String, Link>) -> Result<(), Error> {
-    let path = links_path(config);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let mut file = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer_pretty(&mut file, links)?;
-    file.persist(&path).map_err(|error| error.error)?;
+    let contents = serde_json::to_vec_pretty(links)?;
+    crate::atomic_file::replace(
+        &links_path(config),
+        &contents,
+        crate::atomic_file::OWNER_ONLY,
+    )
+    .map_err(std::io::Error::from)?;
     Ok(())
 }
 
@@ -334,7 +336,7 @@ fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
     }
     // ponytail: an Organization Token's Organization is only known to Cloud, so a link
     // is not checked against it; ask `GET organizations` here if tokens meet links.
-    if crate::cloud_account::env_token().is_some() {
+    if crate::cloud::account::env_token().is_some() {
         return Ok(None);
     }
     Ok(CredentialStore::beside(config).organization()?)
@@ -348,8 +350,8 @@ fn resolved_organization(config: &Path) -> Result<Option<Organization>, Error> {
     }
     let credentials = CredentialStore::beside(config);
     let organization = super::runtime()?.block_on(async {
-        let credential = crate::cloud_account::from_env(&credentials).await?;
-        crate::cloud_account::acting_in(&credential).await
+        let credential = crate::cloud::account::from_env(&credentials).await?;
+        crate::cloud::account::acting_in(&credential).await
     })?;
     Ok(Some(organization))
 }
@@ -553,7 +555,7 @@ pub(super) fn identity(store: &Store) -> Result<Identity, Error> {
             organization: Some(signed_in.organization.clone()),
         },
         Backend::Cloud(runtime, credential @ Credential::Token { cloud, .. }) => {
-            let organizations = runtime.block_on(cloud_account::organizations(credential))?;
+            let organizations = runtime.block_on(cloud::account::organizations(credential))?;
             Identity {
                 credential: "token",
                 cloud: Some(cloud.clone()),
@@ -993,7 +995,7 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let organization = acting_organization(&config)?;
     let credential = if super::store::local_mode() {
         Some("local")
-    } else if crate::cloud_account::env_token().is_some() {
+    } else if crate::cloud::account::env_token().is_some() {
         Some("token")
     } else {
         organization.as_ref().map(|_| "device")
@@ -1201,7 +1203,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
     if let Some(context) = matches.get_one::<String>("context") {
         return Ok(via("context", Some(context.clone())));
     }
-    let token = crate::cloud_account::env_token().is_some();
+    let token = crate::cloud::account::env_token().is_some();
     if token || CredentialStore::beside(config).organization()?.is_some() {
         return Ok(via("cloud", None));
     }

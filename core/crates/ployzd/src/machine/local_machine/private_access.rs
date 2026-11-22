@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use super::ingress_doors::reserved::{self, Retiree, Step, newest, retirees, usable};
 use super::ingress_doors::{Effects, Gate};
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, Scope};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
@@ -162,7 +162,7 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
-    pub(crate) fn admit_operator_private_access(
+    fn admit_operator_private_access(
         &self,
         request: &SetPrivateAccessRequest,
     ) -> Result<(), Error> {
@@ -211,11 +211,13 @@ impl LocalMachine {
         super::published_network(&record, self.replicated()?).await
     }
 
-    /// Place this Machine's Private Access router, or remove it.
+    /// Place this Machine's Private Access router, or remove it. An Operator's turn on
+    /// needs an approval, as [`Self::admit_operator_private_access`] decides.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
+    /// Returns [`Error::PrivateAccessRefused`] for an Operator's turn on without an
+    /// approval, [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
     /// a request to turn on without an auth key this Cluster opens,
     /// [`Error::PrivateAccessRouterStays`] when a router turned off could not be
     /// removed, and the errors of a Docker stage that fails. A router that was placed
@@ -224,20 +226,24 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
+        if let Scope::Operator = self.scope() {
+            self.admit_operator_private_access(&request)?;
+        }
         let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request
                 .sealed_auth_key
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             Some((sealed, key, self.cluster_network().await?))
         } else {
             None
         };
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
@@ -245,6 +251,7 @@ impl LocalMachine {
             let wanted = match opened {
                 Some((sealed, key, network)) => {
                     let state = containers
+                        .machine_files()
                         .keep_private_access_state()
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
@@ -253,13 +260,14 @@ impl LocalMachine {
                         .prepare_pinned_image(&spec.container.image)
                         .await?;
                     containers
+                        .machine_files()
                         .write_private_access_key(&key)
                         .map_err(Error::PrivateAccessKeyFile)?;
                     Some(Wanted { spec, key })
                 }
                 None => None,
             };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
@@ -291,18 +299,18 @@ impl LocalMachine {
     pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
         let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
-        self.finish_installed(move |local, _installation| async move {
+        self.finish_installed(move |local| async move {
             let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
             if routers.is_empty() {
                 return Ok(None);
             }
-            if !containers.private_access_state_kept() {
+            if !containers.machine_files().private_access_state_kept() {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
-                let _turn = local.owner.admission_lock().write_owned().await;
+                let _turn = local.exclusive_turn().await;
                 let plan = plan_router(&routers, None);
                 return local
                     .converge_router(&containers, &plan, None, Watch::Skip)
@@ -321,10 +329,11 @@ impl LocalMachine {
                 return Ok(None);
             };
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             let state = containers
-                .keep_private_access_state()
+                .machine_files().keep_private_access_state()
                 .map_err(Error::PrivateAccessState)?;
             let pinned = private_access_router(local.cluster_network().await?, &sealed, state);
             if spec != pinned {
@@ -337,10 +346,10 @@ impl LocalMachine {
                 .await?;
             let spec = pinned;
             containers
-                .write_private_access_key(&key)
+                .machine_files().write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
-            let _turn = local.owner.admission_lock().write_owned().await;
+            let _turn = local.exclusive_turn().await;
             let plan = plan_router(&routers, Some(&wanted.spec));
             local
                 .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)
@@ -369,6 +378,7 @@ impl LocalMachine {
         let mut effects = Effects::default();
         if wanted.is_none() {
             containers
+                .machine_files()
                 .forget_private_access_state()
                 .map_err(Error::PrivateAccessState)?;
         }
@@ -385,6 +395,7 @@ impl LocalMachine {
         set.router = router;
         if wanted.is_none() {
             containers
+                .machine_files()
                 .remove_private_access_key()
                 .map_err(Error::PrivateAccessKeyFile)?;
         }
@@ -476,7 +487,7 @@ impl LocalMachine {
                 .map(|observed| observed.runtime.clone())
                 .ok()?;
             let output = containers.router_output(&id, since).await;
-            let alive = matches!(runtime, ContainerRuntimeObservation::Running { .. });
+            let alive = runtime.is_running();
             if let Some(problem) = classify(&output) {
                 return Some(PrivateAccessFailure {
                     problem,

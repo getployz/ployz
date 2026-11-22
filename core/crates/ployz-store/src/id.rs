@@ -75,6 +75,17 @@ macro_rules! store_string {
     };
 }
 
+/// `fresh`, for the IDs the Store mints itself: a new UUID, which every one accepts.
+macro_rules! mint_fresh {
+    ($($name:ident),+) => {
+        $(impl $name {
+            pub(crate) fn fresh() -> Self {
+                Self(uuid::Uuid::new_v4().to_string())
+            }
+        })+
+    };
+}
+
 /// Caller-minted IDs are UUIDs, as authored documents require.
 fn is_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok()
@@ -173,6 +184,7 @@ store_string!(
     /// The durable identity of the runner that claims a Deployment and records what it did.
     RunnerId, "a runner ID of 1-64 letters, digits, - or _", is_id
 );
+mint_fresh!(EnvironmentId, SyncId, RemovalId, ProposalId, DeploymentId);
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
     ProjectName, name_sentence!("a Project name"), is_name

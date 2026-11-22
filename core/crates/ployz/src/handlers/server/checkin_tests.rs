@@ -20,7 +20,7 @@ use crate::checkin::{
     self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, LoopControl, Next, Paths,
     Seen, StopReason, System, unit,
 };
-use crate::cloud_reply::Hold;
+use crate::cloud::reply::Hold;
 use ployz_core::probe_document::ProbeDocument;
 
 const PROBE: &str = r#"{"facts":{"os":{"id":"ubuntu","version_id":"24.04"},"kernel":"6.8.0","arch":"x86_64","virt":"BareMetal","cgroup":"V2","cpu_count":4,"memory_total_bytes":8589934592,"disks":[],"docker":"Absent"},"assessment":{"blockers":[],"warnings":[],"zfs":{"Ineligible":{"reason":{"code":"zfs_off","message":"Off."}}}}}"#;
@@ -240,7 +240,7 @@ impl Host for Chosen {
     async fn enroll(
         &self,
         _: &crate::checkin::EnrollInstruction,
-        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+        _: &dyn Fn(crate::cloud::enroll::EnrollStage),
     ) -> Result<crate::checkin::Committed, String> {
         unreachable!("the check-in never enrolls here")
     }

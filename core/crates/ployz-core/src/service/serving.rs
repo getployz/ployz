@@ -197,10 +197,7 @@ impl SlotOccupancy {
         let mut saw_other = false;
         for observation in existing {
             if observation.resolved_spec.serving_shape() == wanted {
-                if matches!(
-                    observation.runtime,
-                    ContainerRuntimeObservation::Running { .. }
-                ) {
+                if observation.runtime.is_running() {
                     return Self::Current(Box::new(observation));
                 }
                 current = Some(observation);

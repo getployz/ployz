@@ -1,18 +1,9 @@
 import { ConfigProvider, Layer } from "effect";
+import { afterAll } from "vitest";
 import { AppConfig } from "#/server/config.server";
+import { TEST_SERVICE_VARIABLES } from "#/test/test-env";
 
-const SERVICE_VARIABLES = [
-  "GITHUB_APP_CLIENT_ID",
-  "GITHUB_APP_CLIENT_SECRET",
-  "GITHUB_APP_ID",
-  "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_APP_SLUG",
-  "GITHUB_APP_WEBHOOK_SECRET",
-  "INNGEST_EVENT_KEY",
-  "INNGEST_SIGNING_KEY",
-] as const;
-
-function serviceVariable(name: (typeof SERVICE_VARIABLES)[number]) {
+function serviceVariable(name: string) {
   const value = process.env[name];
   if (value === undefined) throw new Error(`Missing test variable ${name}`);
   return [name, value] as const;
@@ -29,9 +20,21 @@ export function testConfigEnvironment() {
     APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
     // A closed port, never the real Hosted DNS: a test that reserves a Cluster Domain starts a fake one.
     PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
-    ...Object.fromEntries(SERVICE_VARIABLES.map(serviceVariable)),
+    ...Object.fromEntries(TEST_SERVICE_VARIABLES.map(serviceVariable)),
   };
 }
 
 export const testConfigLayer = (overrides: Readonly<Record<string, string>> = {}) =>
   AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), ...overrides } }))));
+
+const POLAR_VARIABLES = ["POLAR_ACCESS_TOKEN", "POLAR_SERVER", "POLAR_WEBHOOK_SECRET", "POLAR_PRODUCT_ID"] as const;
+
+/** Runs the calling test file as a Self-hosted Cloud, one with no Polar settings, through the app's own runtime.
+ * Call it at module load: the runtime reads the settings when the file's first request builds it. */
+export function runAsSelfHostedCloud() {
+  const saved = POLAR_VARIABLES.map((name) => [name, process.env[name]] as const);
+  for (const name of POLAR_VARIABLES) delete process.env[name];
+  afterAll(() => {
+    for (const [name, value] of saved) if (value !== undefined) process.env[name] = value;
+  });
+}

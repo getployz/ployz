@@ -1,19 +1,16 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
-import type { PloyzStepTools } from "#/modules/inngest/client";
-import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
-import { serverDrainRequestedEventType } from "#/modules/inngest/events";
-import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import type { StepTools } from "#/modules/inngest/client";
+import { DRAIN_SLOT } from "#/modules/machines/drain-slot";
+import { serverDrainRequested } from "#/modules/machines/machines.events";
 import {
   bindDrainRun,
   closeDrainRun,
   closeStaleDrains,
   executeDrainOnce,
 } from "#/modules/machines/server-drain.server";
-import type { runInngestEffect } from "#/server/run.server";
-
-type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
-type EffectRunner = typeof runInngestEffect;
+import type { EffectRunner } from "#/modules/inngest/run.server";
+import { eventData } from "#/modules/inngest/define-event";
 
 /**
  * How long a Drain whose Server doesn't answer waits before it tries again: a Server that answers again is drained
@@ -22,26 +19,18 @@ type EffectRunner = typeof runInngestEffect;
  */
 const SERVER_WAIT = "20s";
 
-const ServerDrainRequestedData = Schema.Struct({
-  attemptId: Schema.String.check(Schema.isUUID()),
-  organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: rustMachineIdSchema,
-});
-
 /**
  * One Drain: bind the run to its row → claim the row, ask the Engine once and record its answer. Only the last step
  * touches the Engine, and a retry of it never asks again (see `executeDrainOnce`). While the Cluster doesn't answer,
  * that step leaves the row pending, and the run waits and tries it again, until the request's pending limit ends it.
  */
 export async function executeDrainServer(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId }: { event: { data: unknown }; step: StepTools<"run" | "sleep">; runId: string },
   runEffect: EffectRunner,
 ) {
-  const request = await step.run("normalize-request", () => {
-    const decoded = Schema.decodeUnknownOption(ServerDrainRequestedData)(event.data, { onExcessProperty: "preserve" });
-    return Option.isSome(decoded) ? decoded.value : null;
-  });
-  if (request === null) return { skipped: "invalid" as const };
+  const decoded = eventData(serverDrainRequested)(event);
+  if (Option.isNone(decoded)) return { skipped: "invalid" as const };
+  const request = decoded.value;
   const bound = await step.run("bind-run", () => runEffect(bindDrainRun(request, runId)));
   if (bound.kind === "settled") return { attemptId: request.attemptId, state: bound.state };
   for (let tried = 0; ; tried += 1) {
@@ -57,7 +46,7 @@ export async function executeDrainServer(
 const lifecycle = attemptLifecycle({
   run: {
     id: "drain-server",
-    triggers: [{ event: serverDrainRequestedEventType }],
+    triggers: [{ event: serverDrainRequested.eventType }],
     concurrency: [DRAIN_SLOT],
     handler: executeDrainServer,
   },

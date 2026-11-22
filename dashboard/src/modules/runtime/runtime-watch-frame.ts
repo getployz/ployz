@@ -124,9 +124,6 @@ export const runtimeConnectionStatusEventSchema = Schema.Struct({
   error: Schema.NullOr(Schema.String),
 });
 
-export type RuntimeConnectionStatusEvent =
-  typeof runtimeConnectionStatusEventSchema.Type;
-
 /**
  * Redact an SDK frame before it crosses the server/browser boundary. Runtime
  * container specs can contain plaintext environment values and configuration;

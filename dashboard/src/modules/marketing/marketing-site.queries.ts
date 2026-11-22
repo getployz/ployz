@@ -1,3 +1,4 @@
+/** @data-source remote: never stale: MARKETING_ORIGIN is fixed for the life of the server */
 import { queryOptions } from "@tanstack/react-query";
 import { hasMarketingSiteServerFn } from "#/modules/marketing/marketing-site.functions";
 

@@ -72,7 +72,7 @@ fn gated(test: &TestDir, zfs: &Path) -> PathBuf {
 #[tokio::test]
 async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_after_it() {
     let (port, stream) = held_source("break\n").await;
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let mut storage = VolumeStorage::with_programs(zpool, gated(&test, &zfs));
@@ -126,7 +126,7 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
 async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_before_or_after_it() {
     let (port, stream) = held_source("break\n").await;
     stream.add_permits(1);
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let mut storage = VolumeStorage::with_programs(zpool, gated(&test, &zfs));
@@ -213,7 +213,7 @@ async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_befor
 async fn an_inspect_answers_a_failure_whose_dropped_child_never_exits_once_the_hold_passes() {
     let (port, stream) = held_source("break\n").await;
     stream.add_permits(1);
-    let test = TestDir::new();
+    let test = test_dir();
     fs::write(test.0.join("root"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let mut storage = VolumeStorage::with_programs(zpool, zfs);

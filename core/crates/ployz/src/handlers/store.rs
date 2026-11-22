@@ -22,8 +22,9 @@ use ployz_store::{
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::approval::{self, Asked};
 use crate::cli::value;
-use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud;
+use crate::cloud::account::{Credential, StoreCallError};
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::env;
 use ployz_core::Hint;
 
@@ -111,9 +112,9 @@ impl Backend {
                 .read_trusted(who, query, seen)
                 .map_err(StoreCallError::Refused),
             Self::Cloud(runtime, credential) => {
-                let view: View = runtime.block_on(cloud_account::config_store(
+                let view: View = runtime.block_on(cloud::account::config_store(
                     credential,
-                    cloud_account::Via::Cli,
+                    cloud::http::Via::Cli,
                     "read",
                     &query.to_query(),
                     None,
@@ -132,9 +133,9 @@ impl Backend {
                     .block_on(async {
                         tokio::time::timeout(
                             limit,
-                            cloud_account::config_store(
+                            cloud::account::config_store(
                                 credential,
-                                cloud_account::Via::Cli,
+                                cloud::http::Via::Cli,
                                 "read",
                                 &query.to_query(),
                                 None,
@@ -160,9 +161,9 @@ impl Backend {
                 .write_trusted(who, command, &trusted)
                 .map_err(StoreCallError::Refused),
             Self::Cloud(runtime, credential) => {
-                let written: Written = runtime.block_on(cloud_account::config_store(
+                let written: Written = runtime.block_on(cloud::account::config_store(
                     credential,
-                    cloud_account::Via::Cli,
+                    cloud::http::Via::Cli,
                     "write",
                     &command.to_command(),
                     approval,
@@ -568,7 +569,7 @@ impl<'m> Store<'m> {
         };
         let archive = listing.archive().map_err(super::deploy::unreadable(dir))?;
         runtime
-            .block_on(cloud_account::upload(
+            .block_on(cloud::account::upload(
                 credential,
                 deployment.as_str(),
                 archive,
@@ -894,7 +895,7 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
     }
     let credentials = CredentialStore::beside(config);
     let runtime = runtime()?;
-    match runtime.block_on(cloud_account::from_env(&credentials)) {
+    match runtime.block_on(cloud::account::from_env(&credentials)) {
         Ok(credential) => Ok(Some(Backend::Cloud(runtime, credential))),
         Err(LoginError::SignedOut) => Ok(None),
         Err(error) => Err(error.into()),

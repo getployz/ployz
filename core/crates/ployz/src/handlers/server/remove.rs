@@ -1,3 +1,4 @@
+use crate::cloud;
 use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
 use ployz_core::error_chain;
@@ -12,8 +13,8 @@ use super::fence::{Forgotten, already_forgotten};
 use super::forget::{cloud_forgot, no_cloud_row};
 use super::{ConnectionOptions, target};
 use crate::approval;
-use crate::cloud_account::{self, Credential, Release, StoreCallError};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud::account::{Credential, Release, StoreCallError};
+use crate::cloud::login::{CredentialStore, LoginError};
 use crate::cluster::{
     CloudHold, DeadConfirmed, HeldCopies, LeftNotForgotten, copies_left_behind, refuse_last_managed,
 };
@@ -564,7 +565,7 @@ fn start(
             shell_words::join(command)
         },
         async |approval| match removal {
-            Removal::Reset => cloud_account::start_removal(
+            Removal::Reset => cloud::account::start_removal(
                 credential,
                 selected,
                 &confirmed.confirmation,
@@ -572,7 +573,7 @@ fn start(
             )
             .await
             .map(Ok),
-            Removal::Forget => match cloud_account::start_forget(credential, selected, approval)
+            Removal::Forget => match cloud::account::start_forget(credential, selected, approval)
                 .await
             {
                 Err(StoreCallError::Refused(refused)) if no_cloud_row(&refused) => Ok(Err(refused)),
@@ -606,7 +607,7 @@ async fn depart(
     // TODO: do not reroute away from the current entry before removal.
     if let (Some(credential), Some(id)) = (&surveyed.cloud, run) {
         let removed =
-            cloud_account::follow_removal(credential, &selected.name, removal.following(), id)
+            cloud::account::follow_removal(credential, &selected.name, removal.following(), id)
                 .await?;
         left.reset_failure = removed.reset_warning;
         left.departed = removed.departed;
@@ -793,7 +794,7 @@ async fn cloud_removal(
         .hint(Hint::Next("ployz server forget".into())));
     }
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
-    match cloud_account::from_env(&store).await {
+    match cloud::account::from_env(&store).await {
         Ok(credential) => Ok(credential),
         Err(LoginError::SignedOut) => Err(Error::coded(
             RpcErrorCode::Conflict,

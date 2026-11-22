@@ -1,10 +1,12 @@
 import "@tanstack/react-start/server-only";
+import { INSTALL_COMMAND } from "#/modules/machines/installer";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentAssignment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNotNull, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Cause, Effect, Option, Schema } from "effect";
+import { Cause, Context, Effect, Option, Schema } from "effect";
+import { sha256Hex } from "#/lib/hash.server";
 import {
   enrollmentAllocation,
   organizationMachine,
@@ -13,53 +15,31 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
+import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import {
-  JoinApprovalRequired,
-  enrollmentExpiry,
-  MANAGEMENT_CAPABILITY_LENGTH,
-  mintedEnrollment,
-  registerRequestFromEnrollmentIdentity,
-  rustMachineIdSchema,
-  setupReportAccepted,
-  setupReportProperties,
-  type SetupReport,
-  waitForFounder,
-  waitForJoinSlot,
-  type EnrollmentIdentity,
-  type EnrollmentCallback,
-  type EnrollmentCallbackSealing,
-  type CliMintMachineEnrollmentInput,
-  type CliResetPendingEnrollmentInput,
-  type MintMachineEnrollmentInput,
-  type ReadMachineEnrollmentInput,
-  type ResetPendingEnrollmentInput,
-} from "#/modules/machines/enrollment";
+import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
-import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
-import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
+import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/sealing/sealing-key.server";
+import { supportsSealingRecovery } from "#/modules/sealing/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import {
-  createClusterDomainSyncRequestedEvent,
-  createSealingKeyEnsureRequestedEvent,
-  createConfigFirstServerJoinedEvent,
-  createObservePushTargetRequestedEvent,
-  createServerEnrollmentCompletedEvent,
-} from "#/modules/inngest/events";
-import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+import { observePushTargetRequested } from "#/modules/observe-ingest/observe.events";
+import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
+import { requestClusterDomainSync } from "#/modules/cluster-domain/sync-request.server";
+import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
+import { createServerEnrollmentCompletedEvent } from "#/modules/machines/waiting/server-enrollment.events";
+import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
-import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
-import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
+import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.server";
 import {
-  decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
-} from "#/modules/machines/connections.server";
+  decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, managementIdentity, SERVER_REACH_TIMEOUT_MS,
+} from "#/modules/runtime/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -87,7 +67,7 @@ const predatesSealingRefusal = (error: PloyzProviderError) => {
   return new Unavailable({
     message: `This Server runs ${release === undefined ? "a Ployz older than 0.3.3" : `Ployz ${release}`}, which can't finish joining `
       + "a cluster that has a Sealing Key. Update ployz where you run ployz server add: "
-      + "curl -fsSL https://ployz.sh | sh (with sudo on the Server). Then rerun ployz server add while a server "
+      + `${INSTALL_COMMAND} (with sudo on the Server). Then rerun ployz server add while a server `
       + "that holds your cluster's key is online.",
     userFacing: true,
     cause: error,
@@ -104,7 +84,7 @@ const unlessAnswered = (error: PloyzProviderError | Cause.TimeoutError) =>
     : error;
 
 export function hashEnrollmentToken(token: string) {
-  return crypto.createHash("sha256").update(token).digest("hex");
+  return sha256Hex(token);
 }
 
 function randomSecret(prefix: string) {
@@ -154,7 +134,7 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, named: OrganizationRef, source: "dashboard" | "cli") {
+  function* (actor: Actor, named: OrganizationRef) {
     const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
@@ -164,29 +144,16 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
       userId: authorization.userId,
       organizationId: authorization.organization.id,
       event: "server_enrollment_started",
-      properties: { source },
+      properties: { source: "cli" },
     });
     return issued;
-  },
-);
-
-export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
-  function* (actor: Actor, input: MintMachineEnrollmentInput) {
-    const config = yield* AppConfig;
-    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input, "dashboard");
-    return mintedEnrollment({
-      origin: config.app.url.origin,
-      token,
-      version: ployzVersion(),
-      expiresAt,
-    });
   },
 );
 
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
   function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, "cli");
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input);
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -341,7 +308,8 @@ const requireUnspentClaim = Effect.fn("MachineEnrollment.requireUnspentClaim")(
 );
 
 /** Joins one Organization runs at once behind its founder; the rest wait in line. */
-export const JOIN_SLOTS = 8;
+const JOIN_SLOTS = 8;
+export const JoinSlots = Context.Reference<number>("ployz/JoinSlots", { defaultValue: () => JOIN_SLOTS });
 /** Inside the 15 minutes a CLI that predates the line keeps asking. */
 const JOIN_SLOT_IDLE_LIMIT = sql`interval '10 minutes'`;
 /** A queued token keeps its place while it asks again within this long; asking stamps `updatedAt`. */
@@ -417,7 +385,7 @@ export const reserveEnrollmentAssignment = Effect.fn(
   snapshot: EnrollmentSnapshot;
 }) {
   const database = yield* Database;
-  const clusterKey = crypto.createHash("sha256").update(input.pairing).digest("hex");
+  const clusterKey = sha256Hex(input.pairing);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const scope = and(
@@ -476,8 +444,9 @@ const countWhere = (condition: SQL | undefined) => sql<number>`count(*) filter (
  * early answer for a line that is clearly full. A token held back takes its place in line.
  */
 const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
-  function* (input: { token: string; organizationId: string; founderMachineId: MachineId; joinSlots: number }) {
+  function* (input: { token: string; organizationId: string; founderMachineId: MachineId }) {
     const { drizzle } = yield* Database;
+    const joinSlots = yield* JoinSlots;
     const tokens = schemaMachineEnrollmentToken;
     const tokenHash = hashEnrollmentToken(input.token);
     const own = (column: SQL) => sql`(select ${column} from ${tokens} where ${tokens.tokenHash} = ${tokenHash})`;
@@ -498,11 +467,11 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
     ));
     if (line?.holding) return null;
     const first = (line?.joining ?? 0) + (line?.waiting ?? 0);
-    if (first < input.joinSlots) return null;
+    if (first < joinSlots) return null;
     yield* drizzle.update(tokens)
       .set({ queuedAt: sql`coalesce(${tokens.queuedAt}, clock_timestamp())`, updatedAt: sql`clock_timestamp()` })
       .where(eq(tokens.tokenHash, tokenHash));
-    return waitForJoinSlot(first - input.joinSlots + 1);
+    return waitForJoinSlot(first - joinSlots + 1);
   },
 );
 
@@ -510,8 +479,9 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
  * Where each attempt waiting in an Organization's join line stands, keyed by attempt: the joins that must finish
  * before it goes, counted the way {@link queueForJoinSlot} answers it, and 0 once a slot is free for its next ask.
  */
-export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(function* (organizationId: string, joinSlots = JOIN_SLOTS) {
+export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
+  const joinSlots = yield* JoinSlots;
   const [pairing] = yield* drizzle.select({ founderMachineId: schemaOrganizationPairing.founderMachineId })
     .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
   const line = new Map<string, number>();
@@ -585,7 +555,7 @@ const recordQueuedCheckIn = Effect.fn("MachineEnrollment.recordQueuedCheckIn")(f
 
 /** The early answer for a joiner that would only be queued, read without the Organization's lock. */
 const queueBeforeLocking = Effect.fn("MachineEnrollment.queueBeforeLocking")(
-  function* (input: { token: string; organizationId: string; machineId: MachineId; joinSlots: number }) {
+  function* (input: { token: string; organizationId: string; machineId: MachineId }) {
     const [pairing] = yield* loadPairingRow(input.organizationId);
     if (!pairing?.founderMachineId || pairing.removalStartedAt !== null || pairing.founderClaimMachineId === input.machineId) {
       return null;
@@ -625,7 +595,6 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     machineId: MachineId;
     name: MachineName;
     role: EnrollmentRole | null;
-    joinSlots: number;
     recoverySupport: 1 | undefined;
   }) {
     const database = yield* Database;
@@ -713,7 +682,7 @@ export const observeClusterEnrollment = Effect.fn("MachineEnrollment.observeClus
 withClusterBudget(SERVER_REACH_TIMEOUT_MS));
 
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
-  function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
+  function* (input: { token: string; identity: EnrollmentIdentity }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
     const token = yield* loadEnrollmentToken(input.token);
     if (token.joinedMachineId !== null || (token.claimedMachineId !== null
@@ -727,7 +696,6 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       machineId: input.identity.machineId,
       name: input.identity.name,
       role: token.enrollmentRole,
-      joinSlots: input.joinSlots ?? JOIN_SLOTS,
       recoverySupport: input.identity.recoverySupport,
     };
     const early = yield* queueBeforeLocking(claim);
@@ -740,7 +708,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         pairing: state.pairing,
         storage: request.storage,
         recovery: state.recovery,
-      };
+      } satisfies EnrollResponse;
     }
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
     if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
@@ -817,7 +785,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
               ? new JoinApprovalRequired({ message })
               : error);
         }));
-      return { kind: "join" as const, pairing, storage: request.storage, registration };
+      return { kind: "join" as const, pairing, storage: request.storage, registration } satisfies EnrollResponse;
     }));
   },
 );
@@ -997,7 +965,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const token = yield* requireUnspentClaim(input.token, input.machineId);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
-    const managementIdentity = managementIdentityOf(input.capability);
+    const identity = managementIdentity(input.capability);
     /**
      * `verified` once the Machine answered on this capability: the saved capability it replaces, if any, and the founder
      * publication turn it verified in.
@@ -1054,7 +1022,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         const previous = yield* decryptPairingSecret(saved.encryptedCapability);
         if (credentialsMatch(previous, input.capability)) return null;
         // A Machine keeps its management key across rotations; a new key would hand Cloud's credential to another endpoint.
-        if (managementIdentityOf(previous) !== managementIdentity) {
+        if (managementIdentity(previous) !== identity) {
           return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
         if (verified === undefined) return yield* verification(saved.encryptedCapability.iv);
@@ -1063,7 +1031,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           return yield* new Conflict({ message: "The Machine connection changed during credential verification. Retry enrollment." });
         }
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
           machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
@@ -1071,11 +1039,11 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (verified === undefined) return yield* verification(undefined);
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
           machineName: token.claimedName, isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
           set: {
-            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
             machineName: sql`coalesce(excluded.machine_name, ${organizationMachine.machineName})`,
             isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
           },
@@ -1140,7 +1108,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     }), (verify) => verify?.turn === undefined ? Effect.void
       : endPublicationTurn(token.organizationId, verify.turn).pipe(Effect.ignoreCause({ log: true, message: "Founder publication turn not ended" })));
     if (refused) return yield* notFresh();
-    yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
+    yield* sendInngestEvent(observePushTargetRequested.create({})).pipe(
       Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
     );
     return { machineId: input.machineId };
@@ -1238,12 +1206,10 @@ export const completeMachineEnrollment = Effect.fn(
     }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
-    yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
-      Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
-    );
+    yield* requestClusterDomainSync(token.organizationId);
     yield* recordJoined(input.token, machineId, { founder: true });
     // Its published Environments deploy to it, durably: a retried completion sends this again, and Inngest runs it once.
-    yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
+    yield* sendInngestEvent(configFirstServerJoined.create({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
     yield* reportAttemptCompleted(token.serverEnrollmentId);
@@ -1262,7 +1228,7 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
   const annotations = { organizationId, machineId };
   if (sealing.kind === "needs_access") {
     yield* Effect.logWarning("A Server joined without its Cluster's Sealing Key.").pipe(Effect.annotateLogs(annotations));
-    return yield* sendInngestEvent(createSealingKeyEnsureRequestedEvent({ organizationId })).pipe(
+    return yield* sendInngestEvent(sealingKeyEnsureRequested.create({ organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Sealing Key backfill request failed; enrollment continues.", error)),
     );
   }

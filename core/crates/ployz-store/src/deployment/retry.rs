@@ -1,6 +1,7 @@
 //! Retrying an ended Deployment and rolling back to one: queueing again what it froze.
 
 use super::*;
+use crate::storage::json_text;
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
 /// targets, Namespace, registry credentials, upload and pinned commits, whatever
@@ -273,19 +274,22 @@ pub(crate) fn retry(
     });
     let ran = super::versions::replaying(source)?;
     let admitted_at = now();
-    queue(tx, &stored.summary.environment_id, false, |tx, number| {
-        let listed = next_listed(tx, &stored.summary.environment_id)?;
+    let environment = &stored.summary.environment_id;
+    queue(tx, environment, (id, false), |tx, number| {
+        let listed = next_listed(tx, environment)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state, and runs the images its source ran.
         tx.execute(
-            "INSERT INTO config_deployment \
+            &format!(
+                "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
               message, listed, service_uploads, ran) \
-             SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+             SELECT ?1, organization_id, environment_id, ?2, '{QUEUED}', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
               ?10, ?11 \
-             FROM config_deployment WHERE id = ?4",
+             FROM config_deployment WHERE id = ?4"
+            ),
             &[
                 id.as_str().into(),
                 i64::try_from(number)
@@ -493,7 +497,7 @@ fn retried(
     for row in &tx.query(
         &format!(
             "SELECT nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND status = 'queued' AND {named}",
+             WHERE environment_id = ?1 AND status = '{QUEUED}' AND {named}",
             named = scope_sql::NAMED
         ),
         &[environment.as_str().into()],

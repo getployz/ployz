@@ -8,40 +8,38 @@ import {
 } from "#/modules/billing/billing.server";
 import { trimmedString } from "#/lib/schema";
 import {
-  actorMiddleware,
-  publicErrorMiddleware,
+  authenticated,
   runActor,
   strictValidator,
 } from "#/server/tanstack";
 
-const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 const BillingStateRequest = Schema.Struct({
   organizationSlug: trimmedString({ minLength: 1 }),
 });
 
 export const getBillingStateServerFn = createServerFn({ method: "GET" })
-  .middleware(middleware)
+  .middleware(authenticated)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, getBillingState(context.actor, data)),
   );
 
 export const createEmbeddedCheckoutServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
+  .middleware(authenticated)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, createEmbeddedCheckout(context.actor, data)),
   );
 
 export const createCustomerPortalServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
+  .middleware(authenticated)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, createCustomerPortal(context.actor, data)),
   );
 
 export const syncBillingAfterCheckoutServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
+  .middleware(authenticated)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, syncBillingAfterCheckout(context.actor, data)),

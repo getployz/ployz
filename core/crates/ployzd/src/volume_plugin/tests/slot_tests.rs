@@ -3,11 +3,11 @@
 use super::super::storage::committed_bytes;
 use super::inspect_tests::start;
 use super::*;
-use ployzd::dataset_layout::DatasetLayout;
+use crate::dataset_layout::DatasetLayout;
 
 #[tokio::test]
 async fn docker_never_sees_a_slot() {
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "slot"]);
 
     let listed = post(&socket, "/VolumeDriver.List", json!({})).await;
@@ -44,7 +44,7 @@ async fn docker_never_sees_a_slot() {
 #[tokio::test]
 async fn mirror_admission_uses_ensure_capacity() {
     for route in ["/VolumeDriver.Create", "/Storage.Prepare"] {
-        let test = TestDir::new();
+        let test = test_dir();
         let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
         let request = match route {
             "/VolumeDriver.Create" => json!({"Name": "data", "Opts": {"size": "1g"}}),
@@ -70,7 +70,7 @@ async fn mirror_admission_uses_ensure_capacity() {
         server.abort();
     }
 
-    let test = TestDir::new();
+    let test = test_dir();
     let (socket, server) = start(&test, USABLE_POOL, &["root"]);
     assert_eq!(
         post(

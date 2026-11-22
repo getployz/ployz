@@ -12,8 +12,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
+use crate::volume_copy::{DOCKER_NOT_ANSWERING, HELD_FOR_OTHER_DATA};
 use ployz_core::{DockerVolumeName, MountOrigins, VolumeOrigin, labels};
-use ployzd::volume_copy::{DOCKER_NOT_ANSWERING, HELD_FOR_OTHER_DATA};
 
 use super::{VolumeStorage, origin::Origin};
 

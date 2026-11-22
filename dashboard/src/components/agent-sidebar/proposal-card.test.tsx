@@ -5,7 +5,7 @@ import type { MachineId } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as functions from "#/modules/proposals/proposals.functions";
 import { ProposalCard } from "./proposal-card";
-import type { ProposalView } from "./proposals.queries";
+import type { ProposalView } from "#/modules/proposals/proposals.queries";
 
 const decide = vi.spyOn(functions, "decideProposalServerFn");
 afterEach(() => { cleanup(); decide.mockReset(); });

@@ -9,7 +9,7 @@ use ployz_core::{
     },
 };
 
-use super::{Caller, Error, LocalMachine};
+use super::{Caller, Error, FullCaller, LocalMachine};
 use crate::machine::LocalMachineRecord;
 
 impl LocalMachine {
@@ -37,7 +37,7 @@ impl LocalMachine {
         if DeviceCode::reserves(label) {
             return Err(Error::DeviceSlot);
         }
-        let caller = self.caller;
+        let caller = self.call.caller();
         self.finish_mutation(move |local| async move {
             local
                 .owner
@@ -78,21 +78,21 @@ impl LocalMachine {
     /// identity, so the target trusts the entry Machine's check.
     ///
     /// # Errors
-    /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
-    /// [`Error::DeviceIsPasskey`] when a trusted passkey has the Device's key,
+    /// Returns [`Error::NeedsFullScope`] for an Operator or a caller that holds no Device
+    /// slot, [`Error::DeviceIsPasskey`] when a trusted passkey has the Device's key,
     /// [`Error::NotParticipating`] when this Machine is not participating, admission
     /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
     /// [`Error::Store`] for a removed key, the last key, or a record that cannot be written.
     ///
     /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
+        let full = self.full_caller()?;
         self.finish_mutation(move |local| async move {
-            let caller = local.clone();
             local
                 .owner
                 .mutate(move |store| {
                     store.record().require_participating()?;
-                    let by = caller.full_caller(store.record())?;
+                    let by = full.approver(store.record())?;
                     match request {
                         SetDeviceRequest::Approve { key } => {
                             trust(store, NewKey::Device { key }, by, Timestamp::now())
@@ -119,13 +119,13 @@ impl LocalMachine {
     /// # Errors
     /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
+        let full = self.full_caller()?;
         self.finish_mutation(move |local| async move {
-            let caller = local.clone();
             local
                 .owner
                 .mutate(move |store| {
                     store.record().require_participating()?;
-                    let by = caller.full_caller(store.record())?;
+                    let by = full.approver(store.record())?;
                     trust(store, request.key.into(), by, Timestamp::now())
                 })
                 .await?
@@ -187,11 +187,13 @@ impl LocalMachine {
         })
         .await
     }
+}
 
+impl FullCaller {
     /// This Machine's own view of a Full caller: the Device whose connection asked, a
     /// caller on this Server's local socket, or a call routed here over the mesh.
-    fn full_caller(&self, record: &LocalMachineRecord) -> Result<PasskeyApprover, Error> {
-        match self.caller {
+    fn approver(self, record: &LocalMachineRecord) -> Result<PasskeyApprover, Error> {
+        match self.caller() {
             Caller::Management(remote) => record
                 .devices()
                 .find(|device| ClientKey::from(*device) == remote)
@@ -203,7 +205,9 @@ impl LocalMachine {
             Caller::Routed => Ok(PasskeyApprover::Routed),
         }
     }
+}
 
+impl LocalMachine {
     /// Activate a staged management key for an authenticated operational RPC.
     ///
     /// # Errors
@@ -403,7 +407,7 @@ mod tests {
         );
         local.activate_management_client(key).await.unwrap();
         let remote = local.clone().with_management_client(key);
-        let lock = local.owner.admission_lock().write_owned().await;
+        let lock = local.exclusive_turn().await;
         let clear = local.set_management_client(clear());
         let queued = remote.set_management_client(set());
         tokio::pin!(clear, queued);
@@ -716,7 +720,7 @@ mod tests {
                 .unwrap();
         }
         let caller = local.clone().with_management_client(first.into());
-        let lock = local.owner.admission_lock().write_owned().await;
+        let lock = local.exclusive_turn().await;
         let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
         let queued = caller.set_device(SetDeviceRequest::Approve { key: second });
         tokio::pin!(remove, queued);

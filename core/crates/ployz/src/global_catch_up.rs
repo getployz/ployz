@@ -148,9 +148,7 @@ impl SlotIo for Client {
             ListContainersRequest {
                 environment: EnvironmentValues::Included,
             },
-            Call::read()
-                .to(&MachineTarget::from(machine_id))
-                .budget(crate::connect::target_read_timeout()),
+            Call::target_read(&MachineTarget::from(machine_id)),
         )
         .await
         .map(|list| list.containers)
@@ -161,20 +159,9 @@ impl SlotIo for Client {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
-        let details = self
-            .call::<op::Inspect>(
-                ployz_core::InspectRequest {
-                    telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
-                    ..Default::default()
-                },
-                Call::read()
-                    .to(&MachineTarget::from(machine_id))
-                    .budget(crate::connect::target_read_timeout()),
-            )
+        Client::bridge_capacity(self, machine_id)
             .await
-            .map_err(crate::connect::rpc_error)
-            .map_err(Failure::from)?;
-        Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
+            .map_err(Failure::from)
     }
 
     async fn retire_if_ineligible(
@@ -586,13 +573,6 @@ struct Started {
     spec: ResolvedServiceSpec,
 }
 
-fn is_running(observed: &ContainerObservation) -> bool {
-    matches!(
-        observed.runtime,
-        ContainerRuntimeObservation::Running { .. }
-    )
-}
-
 /// How long catch-up waits for the copies it started to run before it calls one not
 /// running.
 const STARTING_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -600,14 +580,14 @@ const STARTING_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Whether `target`, this Machine's Containers, shows `started` running, and a
 /// running copy of its Service in its serving shape.
 fn runs_here(target: &[ContainerObservation], started: &Started, machine: &MachineId) -> bool {
-    let runs = target
-        .iter()
-        .any(|observed| observed.container_id == started.copy.container_id && is_running(observed));
+    let runs = target.iter().any(|observed| {
+        observed.container_id == started.copy.container_id && observed.runtime.is_running()
+    });
     let shape_runs = target.iter().any(|observed| {
         observed.identity() == started.identity
             && observed.machine_id == *machine
             && observed.resolved_spec.serving_shape() == started.spec.serving_shape()
-            && is_running(observed)
+            && observed.runtime.is_running()
     });
     runs && shape_runs
 }

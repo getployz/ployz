@@ -7,7 +7,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/c
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { DEFAULT_REGION, regionNameProblem } from "#/modules/machines/server-regions";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreRefused } from "#/lib/refusal";
 import { useNameRegion } from "#/modules/machines/server-regions.hooks";
 import type { RoleGate } from "#/modules/organization/members.queries";
 

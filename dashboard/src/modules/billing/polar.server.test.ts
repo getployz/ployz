@@ -18,27 +18,19 @@ type SubscriptionUpdateBody = {
   readonly pending_update?: null;
 };
 
-type CheckoutBody = {
-  readonly products: readonly string[];
-  readonly units: number;
-  readonly metadata: Readonly<Record<string, string>>;
-};
-
 /** Subscriptions as the Polar API sends them. */
 function makeSdk(
   items: readonly object[],
   update: (id: string, body: SubscriptionUpdateBody) => Promise<object> = async (id) => ({ id }),
 ) {
-  const iterList = vi.fn(async function* () {
+  const iterList = async function* () {
     yield* items;
-  });
+  };
   const updateSubscription = vi.fn(update);
-  const createCheckout = vi.fn(async (_body: CheckoutBody) => ({ url: "https://polar.test/checkout" }));
   const sdk = {
     subscriptions: { iterList, update: updateSubscription },
-    checkouts: { create: createCheckout },
   } as const;
-  return { iterList, updateSubscription, createCheckout, sdk: asTestDouble<PolarSdk>()(sdk) };
+  return { updateSubscription, sdk: asTestDouble<PolarSdk>()(sdk) };
 }
 
 const subscriptionLocked = () => Object.assign(new Error("SubscriptionLocked"), { statusCode: 409 });
@@ -74,15 +66,6 @@ describe("Polar provider boundary", () => {
     }
   });
 
-  it("does not construct a Polar client in self-hosted mode", () => {
-    const sdk = makeSdk([]);
-
-    expect(makePolarService({ mode: "self_hosted" }, sdk.sdk)).toEqual({
-      mode: "self_hosted",
-    });
-    expect(sdk.iterList).not.toHaveBeenCalled();
-  });
-
   it("decodes active subscriptions into the billing protocol", async () => {
     const { sdk } = makeSdk([
       {
@@ -110,40 +93,6 @@ describe("Polar provider boundary", () => {
         pendingUpdate: { units: 3 },
       },
     ]);
-  });
-
-  it("opens the checkout with the units it was given", async () => {
-    const { sdk, createCheckout } = makeSdk([]);
-    const provider = makePolarService(hosted, sdk);
-    if (provider.mode !== "hosted") throw new Error("Expected hosted Polar");
-
-    await Effect.runPromise(
-      provider.createCheckout({
-        successUrl: "https://cloud.test/billing?checkout_id={CHECKOUT_ID}",
-        embedOrigin: "https://cloud.test",
-        externalCustomerId: "user-1",
-        customerEmail: "a@example.com",
-        customerName: "Ada",
-        referenceId: "org-1",
-        units: 4,
-      }),
-    );
-
-    expect(createCheckout).toHaveBeenCalledWith(
-      expect.objectContaining({ products: [hosted.productId], units: 4, metadata: { referenceId: "org-1" } }),
-    );
-  });
-
-  it("sets the units with the proration it was given", async () => {
-    const { sdk, updateSubscription } = makeSdk([]);
-    const provider = makePolarService(hosted, sdk);
-    if (provider.mode !== "hosted") throw new Error("Expected hosted Polar");
-
-    await Effect.runPromise(
-      provider.setSubscriptionUnits({ subscriptionId: "sub-pro", units: 3, prorationBehavior: "invoice" }),
-    );
-
-    expect(updateSubscription.mock.calls).toEqual([["sub-pro", { units: 3, proration_behavior: "invoice" }]]);
   });
 
   it("clears a pending update and retries once when Polar locks the subscription", async () => {

@@ -1,5 +1,5 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-import { requireStoreProjects } from "#/collections/route-data";
+import { requireStoreProjects } from "#/modules/config-store/store.route-data";
 import { renamedProject, renamedProjectHref } from "#/modules/config-store/renamed-projects";
 
 export const Route = createFileRoute(
