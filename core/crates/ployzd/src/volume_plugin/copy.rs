@@ -622,9 +622,7 @@ impl VolumeStorage {
             if self.marks(&parent).role().await? != SlotRole::Mirror {
                 self.marks(&parent).set_role(SlotRole::Mirror).await?;
             }
-            self.finish_copy(&fs, bound)
-                .await
-                .map_err(RpcError::internal)?;
+            self.finish_copy(&fs, bound).await?;
             let snapshots = self.snapshots(&fs).await?;
             self.destroy_snapshots(&fs, snapshots.get(1..).unwrap_or_default())
                 .await?;
@@ -718,7 +716,9 @@ impl VolumeStorage {
             .await
         {
             Ok(()) => return Ok(()),
-            Err(ReceiveFailure::Failed(error)) => return Err(error),
+            Err(failure @ (ReceiveFailure::Failed(_) | ReceiveFailure::Storage(_))) => {
+                return Err(failure.to_string());
+            }
             Err(ReceiveFailure::NoStream(_)) => {}
         }
         let (target, resumed) = match &stream.source {
