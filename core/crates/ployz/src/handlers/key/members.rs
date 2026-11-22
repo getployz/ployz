@@ -9,9 +9,9 @@ use ployz_core::authority::{
     StepDigest, StepKind, Timestamp, TrustedGrant, TrustedKeys,
 };
 use ployz_core::{
-    DeviceCode, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY, KeyStepRequest, MachineId,
-    MachineTarget, Namespace, OperationId, PARENT_VERSIONS_CAPABILITY, RpcError,
-    SCOPED_KEYS_CAPABILITY, SealingPublicKey, op,
+    DeviceCode, DeviceSet, InspectRequest, KEY_PRIOR_CAPABILITY, KEY_STEP_CAPABILITY,
+    KeyStepRequest, MachineDetails, MachineId, MachineTarget, Namespace, OperationId,
+    PARENT_VERSIONS_CAPABILITY, RpcError, SCOPED_KEYS_CAPABILITY, Sealing, SealingPublicKey, op,
 };
 
 use super::super::Error;
@@ -21,10 +21,11 @@ use crate::connect::Client;
 use crate::ui::Gaps;
 
 /// What every Member must speak before a key change goes out.
-const NEEDED: [&str; 3] = [
+const NEEDED: [&str; 4] = [
     KEY_STEP_CAPABILITY,
     SCOPED_KEYS_CAPABILITY,
     PARENT_VERSIONS_CAPABILITY,
+    KEY_PRIOR_CAPABILITY,
 ];
 
 /// How long a bundle's trust may be applied after it is signed.
@@ -45,6 +46,20 @@ impl Member {
             .grants()
             .find(|held| held.grant.key.code() == code)
     }
+
+    /// This Member as its own Inspect reports it. The Cluster key is the live `sealing`
+    /// field: the record in `machine` is the local one, which never carries it.
+    pub(super) fn of(details: MachineDetails) -> Self {
+        Self {
+            key: KeyMember {
+                id: details.id,
+                public_key: details.public_key,
+            },
+            name: String::new(),
+            cluster: details.sealing.and_then(Sealing::held_key),
+            trusted: TrustedKeys::new(details.devices, details.passkeys, details.grants),
+        }
+    }
 }
 
 /// The Members that answered, and the ones that didn't.
@@ -55,13 +70,14 @@ pub(super) struct Roster {
 }
 
 impl Roster {
-    /// Every Member over `client`'s Full connection.
+    /// Every Member over `client`'s Full connection. A Member it has no Full route to is
+    /// among the gaps.
     ///
     /// # Errors
     /// Refuses naming the Members too old for scoped keys, and when the Members name no
     /// Cluster key or two.
     pub(super) async fn read(client: &mut Client) -> Result<Self, Error> {
-        let reach = Reach::full(client).await?;
+        let reach = Reach::every_member(client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| inspect(client.clone(), machine_id))
             .await;
@@ -107,7 +123,7 @@ impl Roster {
             .map(|machine_id| self.reach.name(machine_id))
             .collect();
         Err(Error::unavailable(format!(
-            "{} didn't answer. A key change needs every server. Nothing changed.",
+            "{} didn't answer over your own connection. A key change needs every server, so connect to each one. Nothing changed.",
             missing.join(", ")
         )))
     }
@@ -172,18 +188,7 @@ async fn inspect(client: Client, machine_id: MachineId) -> Result<Option<Seen>, 
         .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
         .await
         .map_err(crate::connect::rpc_error)?;
-    Ok(Some(Seen::Member(Box::new(Member {
-        key: KeyMember {
-            id: details.id,
-            public_key: details.public_key,
-        },
-        name: String::new(),
-        cluster: details
-            .machine
-            .as_ref()
-            .and_then(ployz_core::Machine::held_sealing_key),
-        trusted: TrustedKeys::new(details.devices, details.passkeys, details.grants),
-    }))))
+    Ok(Some(Seen::Member(Box::new(Member::of(details)))))
 }
 
 /// The steps of one bundle this computer's Device signed.
@@ -287,3 +292,7 @@ impl Bundle {
         (answers, gaps)
     }
 }
+
+#[cfg(test)]
+#[path = "members_tests.rs"]
+mod tests;

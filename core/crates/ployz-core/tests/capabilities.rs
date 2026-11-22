@@ -204,6 +204,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.rule.passkey.v1",
             "ployz.authority.scoped-keys.v1",
             "ployz.authority.parent-versions.v1",
+            "ployz.authority.key-prior.v1",
         ]
     );
     assert_eq!(
@@ -408,6 +409,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.authority.parent-versions.v1",
         "fails closed: an older daemon refuses a signed version naming a parent for its unknown field, so a client that signs one checks for it on every Server first",
+    ),
+    (
+        "ployz.authority.key-prior.v1",
+        "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, so `ployz key` checks for it on every Server first",
     ),
     (
         "ployz.metrics.live.v1",

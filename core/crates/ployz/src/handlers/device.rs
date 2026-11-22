@@ -912,7 +912,7 @@ pub(super) struct Reach {
 }
 
 impl Reach {
-    pub(super) async fn full(client: &mut Client) -> Result<Self, Error> {
+    async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
         if client.full_routes().single() {
@@ -928,6 +928,27 @@ impl Reach {
             );
             reach.asked.retain(|machine| direct.contains(machine));
         }
+        Ok(reach)
+    }
+
+    /// Like [`Self::full`], but a Member this CLI has no Full route to stays in the
+    /// result as omitted, so a change it misses is never reported complete.
+    pub(super) async fn every_member(client: &mut Client) -> Result<Self, Error> {
+        let mut reach = Self::of(client).await?;
+        let direct = client.full_machines();
+        let single = client.full_routes().single();
+        let entry = reach.entry;
+        let (asked, unrouted): (Vec<_>, Vec<_>) =
+            reach
+                .asked
+                .iter()
+                .copied()
+                .partition(|machine| match single {
+                    true => Some(*machine) == entry,
+                    false => direct.is_empty() || direct.contains(machine),
+                });
+        reach.asked = asked;
+        reach.silent.extend(unrouted);
         Ok(reach)
     }
 
