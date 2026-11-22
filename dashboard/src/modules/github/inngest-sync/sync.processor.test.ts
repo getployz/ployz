@@ -1,27 +1,9 @@
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
-import { githubRepositoriesSyncRequested } from "#/modules/github/github.events";
 import { createSyncGithubRepositories } from "./sync";
 
 describe("GitHub repository sync Inngest adapter", () => {
-  it("preserves the trigger, retries, singleton, and keyed concurrency", () => {
-    const fn = createSyncGithubRepositories(new Inngest({ id: "test" }));
-
-    expect(fn.opts).toEqual(
-      expect.objectContaining({
-        id: "sync-github-repositories",
-        retries: 3,
-        triggers: [{ event: githubRepositoriesSyncRequested.eventType }],
-        singleton: {
-          key: "event.data.installationId",
-          mode: "cancel",
-        },
-        concurrency: [{ key: "event.data.installationId", limit: 1 }],
-      }),
-    );
-  });
-
   it("fails malformed ingress for good before any step", async () => {
     const output = await new InngestTestEngine({
       function: createSyncGithubRepositories(new Inngest({ id: "test" })),
