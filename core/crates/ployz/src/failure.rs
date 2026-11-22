@@ -180,7 +180,6 @@ impl Failure {
         self.connect_error().is_some_and(|error| !error.unreached())
     }
 
-    /// The connection failure this failure carries, if any.
     pub(crate) fn connect_error(&self) -> Option<&ConnectError> {
         let Inner::Command { error, .. } = &self.inner else {
             return None;

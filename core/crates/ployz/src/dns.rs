@@ -91,7 +91,6 @@ fn is_generated(hostname: &IngressHost, cluster_domain: &IngressHost) -> bool {
         .is_some_and(|label| !label.is_empty() && !label.contains('.'))
 }
 
-/// Collect Deploy warnings for Ingress Hostnames that do not reach this Cluster.
 #[cfg(test)]
 pub fn ingress_dns_warnings<'a>(
     specs: impl IntoIterator<Item = &'a ployz_core::RequestedServiceSpec>,
