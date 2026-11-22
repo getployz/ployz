@@ -285,7 +285,7 @@ impl Move {
             Guard::Sync(asked) if asked != version => {
                 return Err(error::conflict(
                     "Changed since you reviewed: review the sync again",
-                    json!({ "version": version }),
+                    at_version(&version),
                 ));
             }
             Guard::Diff(asked) => review::check(&review::review(tx, into)?, Some(asked))?,
@@ -327,7 +327,7 @@ impl Checked<'_> {
         if picks.is_empty() {
             return Err(error::conflict(
                 of.nothing.clone(),
-                json!({ "version": self.version }),
+                at_version(&self.version),
             ));
         }
         crate::domain::refuse_long_subdomains(&self.plan, picks)?;
@@ -377,6 +377,21 @@ impl Checked<'_> {
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
     }
+}
+
+const VERSION: &str = "version";
+
+/// The details of a refusal to land what changed since its review, or nothing: the
+/// version of the plan as it is now.
+fn at_version(version: &str) -> Value {
+    json!({ VERSION: version })
+}
+
+/// Whether a refusal's `details` carry the version of the plan as it is now, as a
+/// stale or empty sync's do.
+#[must_use]
+pub fn carries_plan_version(details: &Value) -> bool {
+    details.get(VERSION).is_some()
 }
 
 /// `plan` landing in Environment `environment`, so a value the browser sealed for

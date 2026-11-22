@@ -7,10 +7,10 @@ use std::path::Path;
 use ployz_core::authority::{Signed, Signer, Statement};
 
 use super::key::{self, KeyError};
-use crate::handlers::Error;
+use crate::failure::Failure as Error;
 
 /// A key this CLI signs with, ready to sign.
-pub(in crate::handlers) struct DeviceSigning {
+pub(crate) struct DeviceSigning {
     signer: Signer,
 }
 
@@ -20,21 +20,21 @@ impl DeviceSigning {
     /// # Errors
     /// Returns the key file's error when it can't be read, is readable by other users,
     /// or isn't a key.
-    pub(in crate::handlers) fn load(path: &Path) -> Result<Option<Self>, KeyError> {
+    pub(crate) fn load(path: &Path) -> Result<Option<Self>, KeyError> {
         Ok(key::load(path)?.map(|secret| Self {
             signer: Signer::from_seed(&secret),
         }))
     }
 
     /// The key whose 32-byte seed is `seed`.
-    pub(in crate::handlers) fn from_seed(seed: &[u8; 32]) -> Self {
+    pub(crate) fn from_seed(seed: &[u8; 32]) -> Self {
         Self {
             signer: Signer::from_seed(seed),
         }
     }
 
     /// The key a body names as its signer.
-    pub(in crate::handlers) fn device_key(&self) -> ployz_core::DeviceKey {
+    pub(crate) fn device_key(&self) -> ployz_core::DeviceKey {
         self.signer.public().into()
     }
 
@@ -42,7 +42,7 @@ impl DeviceSigning {
     ///
     /// # Errors
     /// Returns a command error when the body has no canonical form.
-    pub(in crate::handlers) fn sign<T: Statement>(&self, body: &T) -> Result<Signed<T>, Error> {
+    pub(crate) fn sign<T: Statement>(&self, body: &T) -> Result<Signed<T>, Error> {
         Signed::sign(body, &self.signer).map_err(Error::command)
     }
 }

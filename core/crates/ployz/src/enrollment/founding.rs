@@ -17,7 +17,7 @@ pub(crate) async fn name_cluster(
     let name = name?;
     let next = rerun(&["cluster", "name", name.as_str()]);
     Some(
-        crate::handlers::cluster::set(ready, name)
+        crate::cluster::name::set(ready, name)
             .await
             .map_err(|error| {
                 error

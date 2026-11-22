@@ -16,6 +16,7 @@ mod config_dir;
 pub mod connect;
 pub mod context;
 pub mod deploy;
+mod device;
 pub(crate) mod dns;
 pub mod drain;
 pub mod enrollment;

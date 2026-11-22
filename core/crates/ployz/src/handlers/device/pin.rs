@@ -155,7 +155,7 @@ pub(in crate::handlers) async fn join_seal_to(
 /// # Errors
 ///
 /// Refuses under an Organization Token, and fails as [`organization_pin`] does.
-pub(in crate::handlers) async fn join_pin(config: &Path) -> Result<Option<Pin>, Error> {
+pub(crate) async fn join_pin(config: &Path) -> Result<Option<Pin>, Error> {
     let credential = cloud::account::from_env(&CredentialStore::beside(config)).await?;
     if matches!(credential, Credential::Token { .. }) {
         return Err(Error::coded(

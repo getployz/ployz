@@ -1,4 +1,3 @@
-use ployz_core::Hint;
 use std::{future::Future, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
@@ -7,7 +6,6 @@ use clap_complete::Shell;
 use clap_complete::env::Shells;
 
 use crate::failure::Failure;
-use ployz_core::MachineId;
 
 pub(crate) mod account;
 pub(crate) mod build;
@@ -507,61 +505,6 @@ async fn reconnect_client(
     .map_err(Into::into)
 }
 
-/// The headline for a committed step whose Ingress Proxy deploy failed. A failed deploy's
-/// own sentence names what its Container did, so it stays on the headline; the one
-/// `cause:` line is then the Container's last line.
-pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
-    match error.diagnostic() {
-        Some(_) => format!("{stem}: {error}"),
-        None => format!("{stem}."),
-    }
-}
-
-/// Direct ingress diagnostics acquire their command scope before committed output is serialized.
-/// Each Server is selected by Machine ID, since a Machine Name may be ambiguous.
-pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -> Error {
-    let retry = error
-        .diagnostic()
-        .and_then(|diagnostic| diagnostic.failed_machine)
-        .map(|machine| {
-            Hint::Retry(command(&[
-                "server",
-                "set",
-                &machine.to_string(),
-                "--accepts-ingress=true",
-            ]))
-        });
-    ingress_log_hints(error, command, ToString::to_string).hint(retry)
-}
-
-/// [`ingress_hints`] without the retry, for a failure that has the reader do something else
-/// first. `server` selects each Server in the hints.
-pub(crate) fn ingress_log_hints(
-    mut error: Error,
-    command: impl Fn(&[&str]) -> String,
-    server: impl Fn(&MachineId) -> String,
-) -> Error {
-    let Some(diagnostic) = error.diagnostic() else {
-        return error;
-    };
-    let hints = diagnostic
-        .logs
-        .iter()
-        .map(|tail| {
-            Hint::Inspect(command(&[
-                "logs",
-                &tail.service.to_string(),
-                "--machine",
-                &server(&tail.machine),
-            ]))
-        })
-        .collect::<Vec<_>>();
-    for hint in hints {
-        error = error.hint(hint);
-    }
-    error
-}
-
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
 where
     F: for<'a> FnOnce(
@@ -929,8 +872,10 @@ mod tests {
                 ..Default::default()
             })
             .interrupted();
-        let error = ingress_hints(error, |args| rerun(leaf_matches(&matches), args))
-            .context("Server updated; the Ingress Proxy did not follow.");
+        let error = crate::enrollment::output::ingress_hints(error, |args| {
+            rerun(leaf_matches(&matches), args)
+        })
+        .context("Server updated; the Ingress Proxy did not follow.");
         assert!(error.is_interrupted());
         let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {

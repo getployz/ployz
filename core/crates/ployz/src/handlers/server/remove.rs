@@ -749,7 +749,7 @@ fn report(
 
     // The removal is committed: print it before local cleanup can fail.
     crate::ui::emit(&json!({
-        "server": super::server_json(selected),
+        "server": crate::enrollment::output::server_json(selected),
         "reset_warning": reset_failure,
         "departed": departed,
         "data_loss": observed.data_loss,

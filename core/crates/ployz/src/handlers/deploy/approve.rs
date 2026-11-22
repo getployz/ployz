@@ -18,11 +18,11 @@ use ployz_core::{
 use ployz_store::{EnvironmentRef, PlanQuery, PlanView, PostedVersion, TagPin};
 use serde_json::json;
 
-use super::super::device::DeviceSigning;
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::silent::{self, ImageEdit};
 use crate::connect::Client;
+use crate::device::DeviceSigning;
 use crate::image::{PinError, pin_public};
 
 /// A signed version of each Service with the image it pinned, the plan version it
@@ -107,7 +107,7 @@ pub(in crate::handlers) fn sign(
         }
         Ok(None)
     };
-    let key = super::super::device::key::path(&super::super::config_path(matches)?);
+    let key = crate::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(signing)) = DeviceSigning::load(&key) else {
         return Ok(None);
     };

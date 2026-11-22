@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 
 use super::wire::Ran;
 use super::{ArgKind, PublishError, PublishedCommand, Render, Setup, Typed, UNKNOWN_COMMAND};
+use crate::cli::leaf_matches;
 use crate::cloud;
 use crate::cloud::account::StoreCallError;
 use crate::failure::Failure;
@@ -27,7 +28,7 @@ pub(crate) fn run(
     command: &PublishedCommand,
     setup: &Setup,
 ) -> Result<(), Failure> {
-    let leaf = leaf(root);
+    let leaf = leaf_matches(root);
     let mut input = input(leaf, command);
     scope(&mut input, command, &setup.config)?;
     let approval = leaf
@@ -159,7 +160,7 @@ fn refused(
 /// value that starts with `-` still reads as a value: a flag's joins it with `=`,
 /// and positionals move behind `--`.
 fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
-    let leaf = leaf(root);
+    let leaf = leaf_matches(root);
     let typed = |id: &str| root.value_source(id) == Some(ValueSource::CommandLine);
     let mut words = vec!["ployz".to_owned()];
     words.extend(
@@ -200,13 +201,6 @@ fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
         words.extend(named);
     }
     shell_words::join(words)
-}
-
-fn leaf(mut matches: &ArgMatches) -> &ArgMatches {
-    while let Some((_, child)) = matches.subcommand() {
-        matches = child;
-    }
-    matches
 }
 
 /// The entry's input from what was typed, as its schema shapes it. An argument left
@@ -576,12 +570,12 @@ mod tests {
             let words: Vec<&str> = words.iter().map(String::as_str).collect();
             let again = parsed(&published, &words);
             assert_eq!(
-                input(leaf(&again), command),
-                input(leaf(&root), command),
+                input(leaf_matches(&again), command),
+                input(leaf_matches(&root), command),
                 "{path}"
             );
             assert_eq!(
-                leaf(&again)
+                leaf_matches(&again)
                     .get_one::<String>("approval")
                     .map(String::as_str),
                 Some("a7e572f3")

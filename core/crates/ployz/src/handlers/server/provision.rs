@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use ployz_core::{Hint, MachineRelease, StoragePreparation};
 
 use crate::failure::Failure;
-use crate::provisioning::{self, ProvisionError, RemoteTarget};
+use crate::provisioning::{self, ProvisionError};
 use crate::ui;
 
 /// Resolve Machine storage preparation once before provisioning or enrollment.
@@ -41,15 +41,6 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StoragePreparation
     Ok(storage)
 }
 
-/// Where `server add` or `server init` installs and how it reaches it.
-pub(crate) fn remote_target(matches: &ArgMatches) -> RemoteTarget {
-    RemoteTarget::new(
-        matches.get_one::<String>("destination").cloned(),
-        matches.get_one::<String>("ssh-key").cloned(),
-        crate::cli::ssh_timeout(matches),
-    )
-}
-
 /// Prepare the remote Machine the command line names, at the release it names.
 pub(super) async fn provision(
     matches: &ArgMatches,
@@ -59,7 +50,12 @@ pub(super) async fn provision(
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
         .to_string();
-    provisioning::provision_target(&remote_target(matches), &version, storage).await
+    provisioning::provision_target(
+        &crate::enrollment::plan::remote_target(matches),
+        &version,
+        storage,
+    )
+    .await
 }
 
 #[cfg(test)]

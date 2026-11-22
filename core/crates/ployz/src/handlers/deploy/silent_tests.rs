@@ -13,7 +13,7 @@ use ployz_store::{Parent, TagPin};
 use serde_json::{Value, json};
 
 use super::{ImageEdit, Refused, children, moves, pending, posted, refuse_forget};
-use crate::handlers::device::DeviceSigning;
+use crate::device::DeviceSigning;
 
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const P2: &str = "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222";
