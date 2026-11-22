@@ -1,15 +1,13 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { uptimeBackfillRequested } from "#/modules/uptime/uptime.events";
 import { pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
-import { PRUNE_BATCH_ROWS, RETAINED } from "#/modules/uptime/retention";
+import { pruneInBatches } from "#/modules/inngest/prune";
+import { RETAINED } from "#/modules/uptime/retention";
 import { backfillUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import type { Database } from "#/server/database.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 type UptimeEffectRunner = EffectRunner<Database>;
-
-/** 4 kinds at most 200 batches each stays under Inngest's 1,000 steps per run. The rest waits for the next hour. */
-const MAX_PRUNE_BATCHES = 200;
 
 /**
  * Hourly at :05, recompute the two closed hours of uptime_result_hourly from raw. The hours follow the run's
@@ -38,10 +36,7 @@ const createPruneUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner)
     },
     async ({ step }) => {
       for (const kind of RETAINED) {
-        for (let batch = 0; batch < MAX_PRUNE_BATCHES; batch += 1) {
-          const deleted = await step.run(`prune-${kind}`, () => runEffect(pruneUptimeBatch(kind, new Date())));
-          if (deleted < PRUNE_BATCH_ROWS) break;
-        }
+        await pruneInBatches(step, `prune-${kind}`, () => runEffect(pruneUptimeBatch(kind, new Date())));
       }
     },
   );

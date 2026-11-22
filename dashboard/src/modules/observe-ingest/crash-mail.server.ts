@@ -3,12 +3,12 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { crashMail, type CrashPlace } from "#/modules/observe-ingest/crash-mail";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
+import { PRUNE_BATCH_ROWS } from "#/modules/inngest/prune";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
 const MAIL_GAP_MS = 3_600_000;
 const RETAIN = "30 days";
-export const PRUNE_BATCH_ROWS = 5_000;
 
 export type CrashClaim =
   | { readonly kind: "none" }
