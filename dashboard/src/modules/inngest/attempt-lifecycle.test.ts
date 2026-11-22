@@ -6,42 +6,32 @@ import { asTestDouble } from "#/lib/test-double";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
-import { createCancelRetireOld, createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
-import { createCancelNamespaceCleanup, createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
-import { createCancelServerDrain, createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
-import { createCancelServerUpgrade, createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
-import { createCancelVolumeRun, createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
+
+const probe = attemptLifecycle({
+  run: { id: "probe", triggers: [{ event: "probe/requested" }], handler: async () => null },
+  cancelId: "cancel-probe",
+  closeRun: () => Effect.succeed(1),
+  sweep: { id: "probe-sweep", closeStale: () => Effect.succeed({}) },
+});
 
 describe("attemptLifecycle", () => {
-  it.each([
-    ["drain-server", createServerDrainFunctions],
-    ["clean-namespace", createNamespaceCleanupFunctions],
-    ["roll-out-server-upgrade", createServerUpgradeFunctions],
-    ["run-volume", createVolumeRunFunctions],
-    ["retire-old", createRetireOldFunctions],
-  ])("registers %s with its failure handler, a handler for Inngest's cancellation and a scheduled sweep", (_id, create) => {
-    const [run, cancel, sweep] = create(new Inngest({ id: "test" }));
+  it("registers the run with its failure handler, a handler for Inngest's cancellation and a scheduled sweep", () => {
+    const [run, cancel, sweep] = probe.createFunctions(new Inngest({ id: "test" }));
 
     expect(run.opts.onFailure).toEqual(expect.any(Function));
     expect(cancel.opts).toMatchObject({ triggers: [{ event: { name: "inngest/function.cancelled" } }] });
     expect(sweep.opts).toMatchObject({ triggers: [{ cron: expect.any(String) }] });
   });
 
-  it.each([
-    ["ployz-cloud-drain-server", createCancelServerDrain, "ployz-cloud-roll-out-server-upgrade"],
-    ["ployz-cloud-clean-namespace", createCancelNamespaceCleanup, "ployz-cloud-drain-server"],
-    ["ployz-cloud-roll-out-server-upgrade", createCancelServerUpgrade, "ployz-cloud-run-volume"],
-    ["ployz-cloud-run-volume", createCancelVolumeRun, "ployz-cloud-drain-server"],
-    ["ployz-cloud-retire-old", createCancelRetireOld, "ployz-cloud-run-volume"],
-  ])("closes the run when Inngest cancels %s, and skips another function's cancellation", async (functionId, createCancel, otherFunctionId) => {
+  it("closes the run when Inngest cancels it, and skips another function's cancellation", async () => {
     const cancel = (cancelled: string) => new InngestTestEngine({
-      function: createCancel(new Inngest({ id: "ployz-cloud" })),
+      function: probe.createCancel(new Inngest({ id: "ployz-cloud" })),
       events: [{ name: "inngest/function.cancelled", data: { function_id: cancelled, run_id: "run-1" } }],
       steps: [{ id: "close-run", handler: () => 1 }],
     }).execute();
 
-    expect((await cancel(functionId)).result).toEqual({ closed: 1 });
-    expect((await cancel(otherFunctionId)).result).toEqual({ skipped: true });
+    expect((await cancel("ployz-cloud-probe")).result).toEqual({ closed: 1 });
+    expect((await cancel("ployz-cloud-other")).result).toEqual({ skipped: true });
   });
 
   it("gives the run its own retry count while the cancel and sweep functions keep 3", () => {
@@ -76,8 +66,8 @@ describe("attemptLifecycle", () => {
 
   it("names the cancelled function under the client's app id", async () => {
     const cancel = await new InngestTestEngine({
-      function: createCancelServerDrain(new Inngest({ id: "self-hosted" })),
-      events: [{ name: "inngest/function.cancelled", data: { function_id: "self-hosted-drain-server", run_id: "run-1" } }],
+      function: probe.createCancel(new Inngest({ id: "self-hosted" })),
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "self-hosted-probe", run_id: "run-1" } }],
       steps: [{ id: "close-run", handler: () => 1 }],
     }).execute();
 
