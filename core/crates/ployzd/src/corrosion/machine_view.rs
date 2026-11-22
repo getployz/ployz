@@ -20,6 +20,7 @@ use super::{
     ChangeWatch, Debounce, REFRESH_INTERVAL, ReplicatedObservations, ReplicatedStore, Retry, Wake,
     WatchPolicy,
 };
+use crate::machine::RecordOwner;
 
 /// Wait before reopening a failed subscription.
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -41,8 +42,27 @@ impl MachineView {
     /// Start the view task. It stops when `shutdown` is cancelled.
     #[must_use]
     pub fn start(replicated: ReplicatedStore, shutdown: CancellationToken) -> Self {
+        Self::spawn(replicated, None, shutdown)
+    }
+
+    /// [`Self::start`], recording into `owner`'s record what each read shows of
+    /// the Members, as [`RecordOwner::record_machines`] does.
+    #[must_use]
+    pub(crate) fn recording(
+        replicated: ReplicatedStore,
+        owner: RecordOwner,
+        shutdown: CancellationToken,
+    ) -> Self {
+        Self::spawn(replicated, Some(owner), shutdown)
+    }
+
+    fn spawn(
+        replicated: ReplicatedStore,
+        owner: Option<RecordOwner>,
+        shutdown: CancellationToken,
+    ) -> Self {
         let (publish, latest) = watch::channel(None);
-        tokio::spawn(run(replicated, publish, shutdown));
+        tokio::spawn(run(replicated, owner, publish, shutdown));
         Self { latest }
     }
 
@@ -68,16 +88,17 @@ impl MachineView {
 
 async fn run(
     replicated: ReplicatedStore,
+    owner: Option<RecordOwner>,
     publish: watch::Sender<MachinesSnapshot>,
     shutdown: CancellationToken,
 ) {
-    let (replicated, publish) = (&replicated, &publish);
+    let (replicated, owner, publish) = (&replicated, owner.as_ref(), &publish);
     let mut changes = ChangeWatch::new(
         "Machine view",
         // Read before subscribing: queries can work while subscriptions cannot, and
         // a fresh subscription may follow missed changes.
         move || async move {
-            refresh(replicated, publish).await;
+            refresh(replicated, owner, publish).await;
             Ok(vec![replicated.subscribe_machine_changes().await?])
         },
         WatchPolicy {
@@ -95,12 +116,20 @@ async fn run(
     // above and Corrosion registering the subscription, which is in the drained initial
     // snapshot and not a change.
     while let Ok(Wake::Changed | Wake::Tick) = changes.next().await {
-        refresh(replicated, publish).await;
+        refresh(replicated, owner, publish).await;
     }
 }
 
-async fn refresh(replicated: &ReplicatedStore, publish: &watch::Sender<MachinesSnapshot>) {
-    match replicated.machines().await {
+async fn refresh(
+    replicated: &ReplicatedStore,
+    owner: Option<&RecordOwner>,
+    publish: &watch::Sender<MachinesSnapshot>,
+) {
+    let read = match owner {
+        Some(owner) => owner.record_machines(replicated).await,
+        None => replicated.machines().await.map_err(Into::into),
+    };
+    match read {
         Ok(snapshot) => {
             publish.send_if_modified(|current| {
                 if current.as_deref() == Some(&snapshot) {

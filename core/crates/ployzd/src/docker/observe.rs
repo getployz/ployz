@@ -319,12 +319,7 @@ impl ContainerRuntime {
         let Some(door) = Door::of(&observation.identity()) else {
             return Ok(None);
         };
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(observation.container_id.as_str(), None)
-            .await
-            .map_err(|error| super::docker_error(&observation.container_id, error))?;
+        let inspected = self.docker.inspect(&observation.container_id).await?;
         Ok(Some(door_facts(observation, door, &inspected)))
     }
 

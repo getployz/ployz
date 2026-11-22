@@ -6,12 +6,11 @@
 //! A grant allows the OCI Distribution calls one `docker push` makes into its one
 //! repository, and ends after one tagged manifest lands (or the ingest confirms it
 //! already holds that tag at its digest), after [`GRANT_LIFETIME`], or when the daemon
-//! stops. The Machine RPC handlers only forward to [`mint_for`] and
+//! stops. The Machine RPC handlers only forward to [`mint`] and
 //! [`BuildGrants::inspect`].
 //!
-//! A grant records the scope of the caller that minted it. An Operator's grant is refused
-//! at admission and on every request, and one with no recorded scope counts as an
-//! Operator's.
+//! Only a [`Minter`] mints: a Full caller, or a rule build every `rule_grant` check
+//! passed. An Operator is neither.
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
@@ -24,7 +23,6 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     net::SocketAddr,
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -50,7 +48,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::machine::{FullCaller, local_machine::rule_grant::AdmittedRule};
-use crate::sealed_env::Unseal as _;
+use crate::sealed_env::SealingKeyStore;
 
 /// How long a grant lives. Ployz Cloud mints it at
 /// check-in and gives the run 2h from there (`GITHUB_RUN_BUDGET_MS` in the dashboard's
@@ -89,13 +87,13 @@ enum Release {
     /// Opened, to the holder over the grant connection.
     Plain {
         record: SealedRecord,
-        key_dir: PathBuf,
+        sealing: SealingKeyStore,
     },
     /// Opened, then sealed from the attest key to a rule build's recipient. `None` holds
     /// no values and still seals the empty set.
     Attested {
         record: Option<SealedRecord>,
-        key_dir: PathBuf,
+        sealing: SealingKeyStore,
         recipient: RecipientKey,
         audience: String,
     },
@@ -138,17 +136,17 @@ enum Key {
 
 impl Mint {
     /// Check a Full caller's `request` before anything is opened for it, and that its
-    /// Sealed values open with the Sealing Key in `key_dir`.
+    /// Sealed values open with `sealing`, which is `None` while Docker is unavailable.
     ///
     /// # Errors
     /// `InvalidArgument` when the holder is not a public key or Sealed values have no
     /// holder; `Conflict` when this Machine has no Sealing Key or they don't open here.
     pub fn check(
         request: MintBuildGrantRequest,
-        key_dir: Option<&Path>,
+        sealing: Option<&SealingKeyStore>,
         full: FullCaller,
     ) -> Result<Mint, RpcError> {
-        Self::check_admitted(request, key_dir, Minter::Full(full))
+        Self::check_admitted(request, sealing, Minter::Full(full))
     }
 
     /// [`Self::check`] for the request of `minter`, a rule build's after the caller ran
@@ -158,7 +156,7 @@ impl Mint {
     /// As [`Self::check`].
     pub(crate) fn check_admitted(
         request: MintBuildGrantRequest,
-        key_dir: Option<&Path>,
+        sealing: Option<&SealingKeyStore>,
         minter: Minter,
     ) -> Result<Mint, RpcError> {
         let key = match request.holder {
@@ -184,8 +182,8 @@ impl Mint {
                 "a Build Grant carrying Sealed values needs a holder",
             ));
         }
-        let key_dir = || {
-            key_dir.ok_or_else(|| {
+        let sealing = || {
+            sealing.ok_or_else(|| {
                 RpcError::new(
                     RpcErrorCode::Conflict,
                     "this Machine has no Sealing Key to open the Build's Sealed values",
@@ -193,19 +191,19 @@ impl Mint {
             })
         };
         if let Some(record) = &request.sealed {
-            record
-                .open_for_build(Some(key_dir()?))
+            sealing()?
+                .open_for_build(record)
                 .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
         let release = match (minter, request.sealed) {
             (Minter::Full(_), None) => None,
             (Minter::Full(_), Some(record)) => Some(Release::Plain {
                 record,
-                key_dir: key_dir()?.to_owned(),
+                sealing: sealing()?.clone(),
             }),
             (Minter::Rule(admitted), record) => Some(Release::Attested {
                 record,
-                key_dir: key_dir()?.to_owned(),
+                sealing: sealing()?.clone(),
                 recipient: admitted.recipient,
                 audience: admitted.audience,
             }),
@@ -300,14 +298,27 @@ impl BuildGrants {
     }
 }
 
-/// Mint for a Machine RPC request, opening image ingest first so its failure
-/// reaches the minting caller rather than the pusher.
-pub(crate) async fn mint_for(
+/// Mint a grant for `request`, made by `minter`. Its Sealed values must open with this
+/// Machine's Sealing Key before image ingest opens, and ingest opens before the grant
+/// is held, so its failure reaches the minting caller rather than the pusher.
+///
+/// # Errors
+/// The refusal [`Mint::check`] answers or [`BuildGrants::mint`] answers, in the inner
+/// result; the [`crate::machine::LocalMachineError`] of an ingest that didn't open.
+pub(crate) async fn mint(
     grants: &BuildGrants,
     local: &crate::machine::LocalMachine,
     ingest: Arc<crate::docker::ImageIngest>,
-    mint: Mint,
+    request: MintBuildGrantRequest,
+    minter: Minter,
 ) -> Result<Result<BuildGrantMinted, RpcError>, crate::machine::LocalMachineError> {
+    let sealing = local
+        .containers()
+        .map(crate::docker::ContainerRuntime::sealing);
+    let mint = match Mint::check_admitted(request, sealing, minter) {
+        Ok(mint) => mint,
+        Err(refused) => return Ok(Err(refused)),
+    };
     let opened = local.ensure_image_ingest(ingest).await?.destination;
     Ok(grants.mint(
         local.record().management_secret().public_key(),
@@ -566,9 +577,9 @@ fn sealed(grant: &Grant) -> Response<Body> {
 /// The body a grant serves its holder, and its content type.
 fn release(release: Release) -> Result<(Vec<u8>, &'static str), String> {
     match release {
-        Release::Plain { record, key_dir } => {
-            let opened = record
-                .open_for_build(Some(&key_dir))
+        Release::Plain { record, sealing } => {
+            let opened = sealing
+                .open_for_build(&record)
                 .map_err(|error| error.to_string())?;
             Ok((
                 serde_json::to_vec(&opened).expect("opened values encode"),
@@ -577,18 +588,17 @@ fn release(release: Release) -> Result<(Vec<u8>, &'static str), String> {
         }
         Release::Attested {
             record,
-            key_dir,
+            sealing,
             recipient,
             audience,
         } => {
             let opened = match record {
-                Some(record) => record
-                    .open_for_build(Some(&key_dir))
+                Some(record) => sealing
+                    .open_for_build(&record)
                     .map_err(|error| error.to_string())?,
                 None => OpenedSealed::new(Default::default(), Vec::new()),
             };
-            let attest =
-                crate::sealed_env::attest_key(Some(&key_dir)).map_err(|error| error.to_string())?;
+            let attest = sealing.attest().map_err(|error| error.to_string())?;
             let sealed = opened
                 .seal_for_build(&attest, &recipient, &audience)
                 .map_err(|error| error.to_string())?;
@@ -716,7 +726,7 @@ mod tests {
         let grants = BuildGrants::default();
         let mint = Mint::check(
             sealed_request(cluster),
-            Some(&cluster.dir.0),
+            Some(&cluster.store()),
             FullCaller::for_test(),
         )
         .unwrap();
@@ -761,7 +771,7 @@ mod tests {
             push: Mutex::new(Push::Open),
             sealed: Mutex::new(Sealing::Ready(Release::Plain {
                 record: sealed_request(&cluster).sealed.unwrap(),
-                key_dir: cluster.dir.0.clone(),
+                sealing: cluster.store(),
             })),
         };
         for grant in [&*pushing, &*pushed, &expired] {
@@ -776,7 +786,7 @@ mod tests {
         let grants = BuildGrants::default();
         let mint = Mint::check(
             sealed_request(cluster),
-            Some(&cluster.dir.0),
+            Some(&cluster.store()),
             FullCaller::for_test(),
         )
         .unwrap();
@@ -829,7 +839,7 @@ mod tests {
         let grant = sealed_grant(&cluster);
         *grant.sealed.lock().unwrap() = Sealing::Ready(Release::Plain {
             record: sealed_request(&cluster).sealed.unwrap(),
-            key_dir: elsewhere.dir.0.clone(),
+            sealing: elsewhere.store(),
         });
         assert_eq!(
             read(sealed(&grant)).await.0,
@@ -870,17 +880,19 @@ mod tests {
             holder: None,
             ..sealed_request(&cluster)
         };
-        let Err(refused) = Mint::check(holderless, Some(&cluster.dir.0), FullCaller::for_test())
+        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), FullCaller::for_test())
         else {
             panic!("a holderless grant would return its key to Cloud");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
 
         let elsewhere = Cluster::new();
-        for key_dir in [Some(elsewhere.dir.0.as_path()), None] {
-            let Err(refused) =
-                Mint::check(sealed_request(&cluster), key_dir, FullCaller::for_test())
-            else {
+        for sealing in [Some(elsewhere.store()), None] {
+            let Err(refused) = Mint::check(
+                sealed_request(&cluster),
+                sealing.as_ref(),
+                FullCaller::for_test(),
+            ) else {
                 panic!("another Cluster's key opens nothing");
             };
             assert_eq!(refused.code, RpcErrorCode::Conflict);
@@ -1080,8 +1092,9 @@ mod tests {
                 sealed: record,
                 ..request(Some(&hex::encode(holder().as_bytes())))
             };
-            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Minter::Rule(admitted))
-                .unwrap();
+            let mint =
+                Mint::check_admitted(request, Some(&cluster.store()), Minter::Rule(admitted))
+                    .unwrap();
             let grants = BuildGrants::default();
             grants
                 .mint(
@@ -1108,9 +1121,7 @@ mod tests {
         }
 
         fn attest(cluster: &Cluster) -> ployz_core::authority::AttestKey {
-            crate::sealed_env::attest_key(Some(&cluster.dir.0))
-                .unwrap()
-                .attest()
+            cluster.store().attest().unwrap().attest()
         }
 
         #[tokio::test]

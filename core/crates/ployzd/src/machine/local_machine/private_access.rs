@@ -235,7 +235,8 @@ impl LocalMachine {
                 .sealed_auth_key
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             Some((sealed, key, self.cluster_network().await?))
         } else {
@@ -250,6 +251,7 @@ impl LocalMachine {
             let wanted = match opened {
                 Some((sealed, key, network)) => {
                     let state = containers
+                        .machine_files()
                         .keep_private_access_state()
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
@@ -258,6 +260,7 @@ impl LocalMachine {
                         .prepare_pinned_image(&spec.container.image)
                         .await?;
                     containers
+                        .machine_files()
                         .write_private_access_key(&key)
                         .map_err(Error::PrivateAccessKeyFile)?;
                     Some(Wanted { spec, key })
@@ -303,7 +306,7 @@ impl LocalMachine {
             if routers.is_empty() {
                 return Ok(None);
             }
-            if !containers.private_access_state_kept() {
+            if !containers.machine_files().private_access_state_kept() {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
@@ -326,10 +329,11 @@ impl LocalMachine {
                 return Ok(None);
             };
             let key = containers
-                .open_private_access_key(&sealed)
+                .sealing()
+                .open_platform(ployz_core::PlatformPurpose::PrivateAccess, &sealed)
                 .map_err(Error::PrivateAccessKey)?;
             let state = containers
-                .keep_private_access_state()
+                .machine_files().keep_private_access_state()
                 .map_err(Error::PrivateAccessState)?;
             let pinned = private_access_router(local.cluster_network().await?, &sealed, state);
             if spec != pinned {
@@ -342,7 +346,7 @@ impl LocalMachine {
                 .await?;
             let spec = pinned;
             containers
-                .write_private_access_key(&key)
+                .machine_files().write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
             let _turn = local.exclusive_turn().await;
@@ -374,6 +378,7 @@ impl LocalMachine {
         let mut effects = Effects::default();
         if wanted.is_none() {
             containers
+                .machine_files()
                 .forget_private_access_state()
                 .map_err(Error::PrivateAccessState)?;
         }
@@ -390,6 +395,7 @@ impl LocalMachine {
         set.router = router;
         if wanted.is_none() {
             containers
+                .machine_files()
                 .remove_private_access_key()
                 .map_err(Error::PrivateAccessKeyFile)?;
         }
