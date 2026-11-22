@@ -11,7 +11,7 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, BuildClaim, BuildStage, ClaimRule, CommitAuthority, CommitSha,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
         GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
     },
 };
@@ -29,7 +29,7 @@ pub(crate) trait Github: Sync {
     /// check out, and its lifetime at `now`.
     fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
@@ -73,7 +73,7 @@ impl GithubOnline {
 impl Github for GithubOnline {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -117,7 +117,7 @@ impl FixedGithub {
 impl Github for FixedGithub {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {

@@ -452,18 +452,10 @@ impl RuleSource {
     }
 }
 
-/// A signed rule a GitHub token's claims are checked against, and what a Machine's record
-/// keeps of it.
-pub trait ClaimRule: Sync {
-    fn identity(&self) -> RuleIdentity<'_>;
-
-    /// # Errors
-    /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
-    fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal>;
-}
-
-impl ClaimRule for AutoDeployRule {
-    fn identity(&self) -> RuleIdentity<'_> {
+impl AutoDeployRule {
+    /// What a Machine's record keeps of this rule.
+    #[must_use]
+    pub fn identity(&self) -> RuleIdentity<'_> {
         RuleIdentity {
             rule: self.rule,
             generation: self.generation,
@@ -471,10 +463,6 @@ impl ClaimRule for AutoDeployRule {
             branch: &self.source.branch,
             namespace: &self.namespace,
         }
-    }
-
-    fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
-        Self::verify_claims(self, claims)
     }
 }
 

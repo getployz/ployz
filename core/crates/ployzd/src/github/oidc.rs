@@ -13,7 +13,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::authority::{
-    AuthorityRefusal, ClaimRule, GithubClaims, Timestamp,
+    AuthorityRefusal, AutoDeployRule, GithubClaims, Timestamp,
     validity::{self, CLOCK_SKEW_MILLIS},
 };
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
@@ -290,7 +290,7 @@ impl IssuerKeys {
     /// [`ProofRefusal::Claim`] naming the first claim `rule` does not match.
     pub async fn check(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {

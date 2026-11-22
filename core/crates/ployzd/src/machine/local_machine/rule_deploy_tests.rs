@@ -599,7 +599,7 @@ impl Slow {
 impl Github for Slow {
     async fn claims(
         &self,
-        rule: &impl ployz_core::authority::ClaimRule,
+        rule: &ployz_core::authority::AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<ployz_core::authority::GithubClaims, crate::github::oidc::ProofRefusal> {

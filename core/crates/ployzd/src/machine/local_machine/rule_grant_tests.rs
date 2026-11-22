@@ -327,7 +327,7 @@ struct ForgetDuringWait<'a> {
 impl Github for ForgetDuringWait<'_> {
     async fn claims(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {

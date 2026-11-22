@@ -230,7 +230,7 @@ fn a_passkey_never_signs_an_envelope_even_when_its_key_is_ed25519() {
     )
     .unwrap();
     assert_eq!(
-        enrollment.verified_signers(trusted.signing_keys()),
+        enrollment.approvers(&trusted),
         Err(AuthorityRefusal::UnknownKey {
             key: signer.public()
         })
