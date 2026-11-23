@@ -10,7 +10,7 @@ import { answerForSupport } from "#/modules/support-access/support-view";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
 import { passkeyRequest } from "#/modules/passkeys/tables";
 import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
-import { countOrganizationMachines } from "#/modules/runtime/connections.server";
+import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -86,7 +86,8 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organi
 }) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
   // With no Server paired nothing enforces; the first one deploys what is saved.
-  if ((yield* countOrganizationMachines(organizationId)) === 0) return { kind: "off" } satisfies DeployTap;
+  const paired = yield* listOrganizationServers(organizationId);
+  if (paired.length === 0) return { kind: "off" } satisfies DeployTap;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   // A Server the frame couldn't read may enforce: its answer is unknown, not off.
   if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
@@ -113,9 +114,11 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organi
   if (trusted === null || trusted === undefined) return refused(UNREACHED);
   const passkeys = own.filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
   if (passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
-  // Every Server the frame, the trust read or the listing knew of, by name, that didn't list its own Containers.
+  // Every paired Server, and any the frame, the trust read or the listing knew of, by name, that didn't list its own
+  // Containers. A later source's name wins; a paired Server no source named reads as its ID.
   const answered = new Set(listed?.answered);
   const roster = new Map([
+    ...paired.map(({ id, name }) => [id, name ?? id] as const),
     ...(listed?.unanswered ?? []).map(({ machine, name }) => [machine, name] as const),
     ...answers.flatMap(({ id, server }) => id === null ? [] : [[id, server] as const]),
     ...frame.machines.map(({ machine }) => [machine.id, machine.name] as const),
