@@ -28,18 +28,23 @@ You get a service named after the database. Its connection variables are exporte
 other services to reference. They use Railway's names, like `PGHOST` and `PGPASSWORD`, so an
 app moving from Railway can keep reading them.
 
-The password is a [generated value](variables.md#generate-a-value), `${{ secret(32, "a-zA-Z") }}`:
-32 random letters, plain, not sealed, so anyone who can see the service's variables, its
-environment's History or a sync's changes can read it. Each environment makes its own. A
-[branch](../environments/environments.md) or a
-[pull request's preview](../environments/preview-environments.md) that copies the database gets a
-new password, which its new, empty volume sets up with, and its connection variables reference it.
-A branch that shares production's database reads production's password. To keep a database's
-password sealed, seal it from its menu in **Variables**, and set it in each new branch yourself.
-The seal also follows into branches that copied the database before it: unless a branch changed
-the password itself, its copy's password turns **Not set** once you deploy the seal. Set it in
-the branch's **Variables** before the branch deploys. A PostgreSQL or MySQL copy that hasn't set
-up its volume yet can't start without it.
+The password is 32 random letters, made in your browser and
+[sealed](variables.md#seal-a-secret) there, so Ployz Cloud never sees it. Only your servers
+open it. That's why **Database** waits for a server: until one is added, the menu says
+**Add a server first**, and after a lost key it says **Run ployz recover on a server first**.
+
+Each environment gets its own password. A [branch](../environments/environments.md) or a
+[pull request's preview](../environments/preview-environments.md) that copies the database
+starts with the password **Not set**. Its first **Deploy** from the dashboard makes a new one in
+your browser, seals it and deploys, all in the same click, so its new, empty volume sets up with
+a password of its own. A `ployz deploy` of that copy before then is refused with
+`POSTGRES_PASSWORD has no value yet. Deploy from the dashboard to make it.`, and so is a preview's
+automatic deploy. A pull request merge keeps the password the database already has.
+
+A branch that shares production's database doesn't get production's password, so variables
+that read it, such as your app's `DATABASE_URL`, are left out of its deploys. The **New branch**
+panel names them on the database's row. Make the database separate in the branch to give it its
+own.
 
 | | Version | Service | URL variable | Port | User |
 | --- | --- | --- | --- | --- | --- |
@@ -124,9 +129,9 @@ IPs.
 - **A database added before Ployz 0.3.6 keeps its password as it is.** Its branches and previews
   copy a plain password rather than making a new one. To give each branch its own, set the
   password to `${{ secret(32, "a-zA-Z") }}` in the branch before its copy first deploys.
-- **A database added while Ployz sealed its password keeps it sealed.** Ployz can't read a sealed
-  value, so it never unseals one. Its branches and previews show the password **Not set**, and
-  their copy of the database can't start until you set it in the branch's **Variables**.
+- **A database added before sealed passwords keeps its password as it is.** A plain generated
+  password stays plain, and each copy makes its own plain one. A password you sealed by hand
+  starts **Not set** in each copy until you set it in the branch's **Variables**.
 - **Redis can lose its last minute of writes** if it crashes.
 - **Deleting a database deletes its data.** Deleting its service in the dashboard also deletes
   its volume, unless another service mounts it. The deploy asks you to confirm first.

@@ -26,12 +26,18 @@ export function ServicesSection({ picking, nameOf, target, who }: {
   const chosen = plan.nodes.find((node) => node.name === choosing);
   const toggled = chosen && toggledNode(chosen);
 
+  /** What a Live Service leaves out of the copies that read its sealed values, which stay in its owner. */
+  const leavesOut = (node: PlannedNode) => node.role === "live" && node.left_out?.length
+    ? `Leaves out ${node.left_out.join(", ")}. Sealed values stay in ${ownerName(picking, node)}.` : null;
+
   const choice = (node: PlannedNode) => {
     const name = nameOf(node.name);
     const owner = ownerName(picking, node);
     if (node.role === "live") {
       const data = nodePick(picking, node).ownsData;
-      return { title: `${owner}'s ${name}`, line: data ? `Real data. ${who} can change it.` : `Shared with ${owner}.`, data };
+      const lost = leavesOut(node);
+      const line = data ? `Real data. ${who} can change it.` : `Shared with ${owner}.`;
+      return { title: `${owner}'s ${name}`, line: lost ? `${line} ${lost}` : line, data: data || lost !== null };
     }
     if (node.role === "left_out") return { title: "Leave it out", line: "Anything that uses it breaks.", data: false };
     if (picking.fromPr.has(node.name)) return { title: "Run the PR's code", line: "What you're testing.", data: false };
@@ -67,13 +73,14 @@ export function ServicesSection({ picking, nameOf, target, who }: {
           const why = node.role !== "own" || picking.fromPr.has(node.name) ? null
             : node.because === "used" ? "a copy uses it" : node.because === "parent_not_deployed" ? `${parent.name} never deployed it` : null;
           const Arrow = node.role === "own" ? ArrowRightIcon : node.role === "live" ? ArrowLeftIcon : null;
+          const lost = leavesOut(node);
           return (
             <div key={node.name} className="grid grid-cols-[minmax(0,1fr)_1.5rem_minmax(0,1.4fr)] items-center gap-1">
               <Item variant="muted" size="sm" className="h-full">
                 <ItemContent className="min-w-0"><ItemTitle className="truncate">{name}</ItemTitle></ItemContent>
               </Item>
               {Arrow ? <Arrow aria-hidden="true" className={cn("mx-auto size-4", pick.ownsData ? "text-warning" : "text-muted-foreground")} /> : <span />}
-              <Item variant="outline" size="sm" state={pick.ownsData ? "warning" : undefined}
+              <Item variant="outline" size="sm" state={pick.ownsData || lost ? "warning" : undefined}
                 render={<button type="button" disabled={pick.fixed} onClick={() => setChoosing(node.name)}
                   aria-label={`${name}: ${pick.label}${pick.ownsData ? ", real data" : ""}. Change`} />}
                 className={cn("h-full text-left", node.role !== "own" && "border-dashed", node.role === "left_out" && "opacity-50",
@@ -84,6 +91,9 @@ export function ServicesSection({ picking, nameOf, target, who }: {
                     {pick.ownsData && <TriangleAlertIcon aria-hidden="true" className="mr-1 inline size-3" />}
                     {pick.label}{why && ` · ${why}`}
                   </ItemDescription>
+                  {lost && <ItemDescription className="text-warning">
+                    <TriangleAlertIcon aria-hidden="true" className="mr-1 inline size-3" />{lost}
+                  </ItemDescription>}
                 </ItemContent>
                 {!pick.fixed && <ChevronRightIcon aria-hidden="true" className="size-4 text-muted-foreground" />}
               </Item>

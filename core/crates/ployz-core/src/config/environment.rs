@@ -738,10 +738,17 @@ pub enum VariableValue {
     Arriving { generator: Generator },
     /// A secret. Its ciphertext is absent in the browser-readable authored document:
     /// Cloud keeps it privately and captures it into each immutable publication.
+    /// `generator` is how the browser made it, such as a Database Preset's password,
+    /// so each copy makes its own.
     Sealed {
         ciphertext: Option<SecretCiphertext>,
         fingerprint: ValueFingerprint,
+        generator: Option<Generator>,
     },
+    /// A made sealed value a copy, Sync or merge brought without its value. A
+    /// person's browser makes and seals this Environment's own at their next
+    /// dashboard Deploy; until then a Deploy that needs it is refused.
+    Pending { generator: Generator },
     /// A secret that arrived without its value: Sync never carries one up or across.
     /// A Deployment leaves it out until a value is set.
     NotSet,
@@ -778,7 +785,13 @@ impl VariableValue {
     #[must_use]
     pub const fn generator(&self) -> Option<&Generator> {
         match self {
-            Self::Generated { generator, .. } | Self::Arriving { generator } => Some(generator),
+            Self::Generated { generator, .. }
+            | Self::Arriving { generator }
+            | Self::Pending { generator }
+            | Self::Sealed {
+                generator: Some(generator),
+                ..
+            } => Some(generator),
             Self::Plain { .. } | Self::Sealed { .. } | Self::NotSet => None,
         }
     }
@@ -790,7 +803,7 @@ impl VariableValue {
         match self {
             Self::Arriving { .. } => true,
             Self::Generated { value, .. } => value.is_empty(),
-            Self::Plain { .. } | Self::Sealed { .. } | Self::NotSet => false,
+            Self::Plain { .. } | Self::Sealed { .. } | Self::Pending { .. } | Self::NotSet => false,
         }
     }
 
@@ -801,7 +814,7 @@ impl VariableValue {
             Self::Plain { fingerprint, .. }
             | Self::Generated { fingerprint, .. }
             | Self::Sealed { fingerprint, .. } => Some(fingerprint),
-            Self::Arriving { .. } | Self::NotSet => None,
+            Self::Arriving { .. } | Self::Pending { .. } | Self::NotSet => None,
         }
     }
 
@@ -821,6 +834,7 @@ impl VariableValue {
                 ..
             }
             | Self::Sealed { .. }
+            | Self::Pending { .. }
             | Self::NotSet => None,
         }
     }
@@ -828,7 +842,10 @@ impl VariableValue {
     /// Whether this is a secret, with its value or without.
     #[must_use]
     pub const fn is_secret(&self) -> bool {
-        matches!(self, Self::Sealed { .. } | Self::NotSet)
+        matches!(
+            self,
+            Self::Sealed { .. } | Self::Pending { .. } | Self::NotSet
+        )
     }
 
     /// The template parts of this value; none unless it is a template.
@@ -846,6 +863,7 @@ impl VariableValue {
             | Self::Generated { .. }
             | Self::Arriving { .. }
             | Self::Sealed { .. }
+            | Self::Pending { .. }
             | Self::NotSet => &[],
         }
     }
@@ -885,9 +903,11 @@ impl VariableValue {
     pub fn stored_fingerprint(&self) -> &str {
         match self {
             Self::Arriving { .. } => AWAITING_FINGERPRINT,
-            Self::Plain { .. } | Self::Generated { .. } | Self::Sealed { .. } | Self::NotSet => {
-                self.fingerprint().map_or("", ValueFingerprint::as_str)
-            }
+            Self::Plain { .. }
+            | Self::Generated { .. }
+            | Self::Sealed { .. }
+            | Self::Pending { .. }
+            | Self::NotSet => self.fingerprint().map_or("", ValueFingerprint::as_str),
         }
     }
 
@@ -905,7 +925,7 @@ impl VariableValue {
             Self::Sealed { ciphertext, .. } => StoredValue::Secret {
                 encrypted_value: ciphertext.as_ref(),
             },
-            Self::NotSet => StoredValue::SecretWithoutValue,
+            Self::Pending { .. } | Self::NotSet => StoredValue::SecretWithoutValue,
         }
     }
 }
@@ -970,10 +990,10 @@ pub(crate) struct StoredVariable {
     /// Empty exactly for a secret without a value.
     value_fingerprint: String,
     value: SavedVariableValue,
-    /// How the Store makes this variable's value, which each Environment holds its own
-    /// of. It counts only on a literal: it reads and is dropped beside any other value,
-    /// so a document that sealed the value and kept the marker still reads. Written only
-    /// when set, so other documents keep their bytes and fingerprints.
+    /// How this variable's value is made, which each Environment holds its own of: by
+    /// the Store beside a literal, by a person's browser beside a secret. It is dropped
+    /// beside a template. Written only when set, so other documents keep their bytes and
+    /// fingerprints.
     #[serde(default)]
     #[ts(optional)]
     generated: Option<Generator>,
@@ -996,11 +1016,15 @@ impl TryFrom<StoredVariable> for SavedVariableIntent {
                 text: PlainText::Template(parts),
                 fingerprint: ValueFingerprint::parse(fingerprint)?,
             },
-            (SavedVariableValue::Secret { encrypted_value }, _) => VariableValue::Sealed {
+            (SavedVariableValue::Secret { encrypted_value }, generator) => VariableValue::Sealed {
                 ciphertext: encrypted_value,
                 fingerprint: ValueFingerprint::parse(fingerprint)?,
+                generator,
             },
-            (SavedVariableValue::SecretWithoutValue, _) if fingerprint.is_empty() => {
+            (SavedVariableValue::SecretWithoutValue, Some(generator)) if fingerprint.is_empty() => {
+                VariableValue::Pending { generator }
+            }
+            (SavedVariableValue::SecretWithoutValue, None) if fingerprint.is_empty() => {
                 VariableValue::NotSet
             }
             (SavedVariableValue::SecretWithoutValue, _) => return Err(VariableError::Fingerprint),

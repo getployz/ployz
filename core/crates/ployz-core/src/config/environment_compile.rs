@@ -183,14 +183,15 @@ fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -
         VariableValue::Sealed {
             ciphertext,
             fingerprint,
+            ..
         } => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
             encrypted_value: ciphertext.clone(),
             fingerprint: fingerprint.to_string(),
             interpolated: None,
         },
-        // A review shows it as a secret; a Deployment leaves it out.
-        VariableValue::NotSet => ServiceEnvValue::Secret {
+        // A review shows it as a secret; a Deployment leaves it out, or waits for it.
+        VariableValue::Pending { .. } | VariableValue::NotSet => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
             encrypted_value: None,
             fingerprint: String::new(),

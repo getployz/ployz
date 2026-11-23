@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigCommand } from "@ployz/sdk";
-import { DATABASE_PRESETS, GENERATED_PASSWORD, databaseCommand, type DatabasePreset } from "./database-presets";
+import { DATABASE_PRESETS, GENERATED_PASSWORD, databaseCommand, passwordKey, type DatabasePreset } from "./database-presets";
 
 const environment = { project: "shop", environment: "production" };
 const ids = { service: "00000000-0000-4000-8000-000000000003", volume: "00000000-0000-4000-8000-000000000004",
   volumeName: "postgres-2-data" };
+const sealed = { sealedFor: "env", value: { sealed: "AAAA", scope: { service: ids.service }, key: "PASSWORD" }, generated: GENERATED_PASSWORD };
 
 function preset(id: DatabasePreset["id"]) {
   const found = DATABASE_PRESETS.find((candidate) => candidate.id === id);
@@ -24,14 +25,14 @@ function parts(command: ConfigCommand) {
 describe("databaseCommand", () => {
   it("creates the Service, its mounted Volume and its exported variables in one Batch", () => {
     const { service, volume, patch } = parts(databaseCommand(preset("postgres"),
-      { ...ids, environment, name: "postgres-2" }));
+      { ...ids, environment, name: "postgres-2" }, sealed));
     expect(service).toMatchObject({ command: "create_service", id: ids.service, name: "postgres-2",
       image: "ghcr.io/railwayapp-templates/postgres-ssl:18" });
     expect(volume).toMatchObject({ command: "create_volume", id: ids.volume, name: "postgres-2-data",
       mounts: [{ service: "postgres-2", path: "/var/lib/postgresql/data" }] });
     expect(patch.path).toBe("postgres-2");
     expect(patch.value).toMatchObject({ env: {
-      POSTGRES_PASSWORD: { value: '${{ secret(32, "a-zA-Z") }}', exported: true },
+      POSTGRES_PASSWORD: { value: { secret: sealed }, exported: true },
       PGHOST: { value: "${{ PLOYZ_PRIVATE_DOMAIN }}", exported: true },
       DATABASE_URL: {
         value: "postgresql://${{ PGUSER }}:${{ POSTGRES_PASSWORD }}@${{ PLOYZ_PRIVATE_DOMAIN }}:5432/${{ PGDATABASE }}",
@@ -42,20 +43,20 @@ describe("databaseCommand", () => {
   });
 
   it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("checks %s's health with a command, at the default timeout", (_, preset) => {
-    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id }));
+    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id }, sealed));
     expect(patch.value).toHaveProperty("healthcheck", { command: preset.healthcheck });
   });
 
-  // A sealed password would be Not set in a Branch copy or PR Environment, and a carried one would be shared with
-  // production. The Store generates one per Environment, so each New, empty Volume initializes with its own.
-  it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("asks the Store to generate %s's password", (_, preset) => {
-    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id }));
-    const password = Object.entries(preset.env).find(([, value]) => value === GENERATED_PASSWORD)?.[0] ?? "no generated password";
-    expect(patch.value).toHaveProperty(["env", password], { value: GENERATED_PASSWORD, exported: true });
+  // Cloud never sees the password: the only value it gets is the one sealed in the browser.
+  it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("sends only %s's sealed password", (_, preset) => {
+    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id }, sealed));
+    expect(patch.value).toHaveProperty(["env", passwordKey(preset)], { value: { secret: sealed }, exported: true });
+    expect(Object.values((patch.value as { env: Record<string, { value: unknown }> }).env).map(({ value }) => value))
+      .not.toContain(GENERATED_PASSWORD);
   });
 
   it("starts Redis with its password", () => {
-    const { patch } = parts(databaseCommand(preset("redis"), { ...ids, environment, name: "redis" }));
+    const { patch } = parts(databaseCommand(preset("redis"), { ...ids, environment, name: "redis" }, sealed));
     expect(patch.value).toMatchObject({ startCommand: expect.stringContaining("--requirepass \"$REDIS_PASSWORD\"") });
   });
 });

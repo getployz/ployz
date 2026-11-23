@@ -435,6 +435,7 @@ pub(super) fn sealed_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCel
             VariableValue::Plain { .. }
             | VariableValue::Generated { .. }
             | VariableValue::Arriving { .. }
+            | VariableValue::Pending { .. }
             | VariableValue::NotSet => None,
         });
     match value {
@@ -521,7 +522,7 @@ fn variable_cell(variable: &SavedVariableIntent) -> Cell {
         VariableValue::Sealed { fingerprint, .. } => Cell::Secret {
             fingerprint: fingerprint.to_string(),
         },
-        VariableValue::NotSet => Cell::SecretWithoutValue,
+        VariableValue::Pending { .. } | VariableValue::NotSet => Cell::SecretWithoutValue,
     }
 }
 

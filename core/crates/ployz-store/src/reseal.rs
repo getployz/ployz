@@ -322,6 +322,7 @@ impl Resealing<'_> {
             variable.value = VariableValue::Sealed {
                 ciphertext: Some(sealed.value),
                 fingerprint: crate::variables::made_fingerprint(sealed.fingerprint),
+                generator: None,
             };
             self.tally.resealed += 1;
             changed = true;
@@ -421,6 +422,7 @@ mod tests {
             value: VariableValue::Sealed {
                 ciphertext: Some(value),
                 fingerprint: ValueFingerprint::parse("s1:old").unwrap(),
+                generator: None,
             },
         }
     }

@@ -79,7 +79,7 @@ impl VersionedValue {
                 names
             )),
             VariableValue::Sealed { .. } => json!({ "secret": true }),
-            VariableValue::NotSet => json!({ "secret": false }),
+            VariableValue::Pending { .. } | VariableValue::NotSet => json!({ "secret": false }),
         }
     }
 }

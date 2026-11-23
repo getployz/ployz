@@ -102,6 +102,10 @@ pub(crate) fn branch_plan(
                 owner: owner_of(&chain, lineage)
                     .map(|ancestor| ancestor.environment.summary.name.clone()),
                 data: holds_data(working, lineage),
+                left_out: match node.role {
+                    BranchNodeRole::Live => reads_sealed(working, lineage, &owned),
+                    BranchNodeRole::Own { .. } | BranchNodeRole::LeftOut => Vec::new(),
+                },
             })
         })
         .collect::<Result<_, RpcError>>()?;

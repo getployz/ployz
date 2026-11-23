@@ -978,17 +978,81 @@ pub(super) fn lower(
             .map_or("", |service| service.slug.as_str());
         return Err(awaiting_reseal(owner, &read.key));
     }
-    let warnings = warnings
+    let warnings: Vec<DeploymentWarning> = warnings
         .into_iter()
         .filter(|(services, _)| !narrowed || services.iter().any(|name| shipped.contains(*name)))
         .map(|(_, warning)| warning)
         .collect();
+    refuse_pending(environment, saved, &warnings)?;
     Ok(Lowered {
         input: input(with(false, false)),
         shipped,
         intent,
         warnings,
     })
+}
+
+/// Refuse a Deploy that would leave out a Pending value: a sealed value made in a
+/// person's browser, which a copy brought without its value. The details list each of
+/// `saved`'s, with what the dashboard needs to make and seal them all before it plans
+/// again. `invalid_argument`, so a claim fails the Deployment rather than queue it.
+fn refuse_pending(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    warnings: &[DeploymentWarning],
+) -> Result<(), RpcError> {
+    let mut pending = Vec::new();
+    for service in &saved.services {
+        for variable in &service.variables {
+            if let ployz_core::config::VariableValue::Pending { generator } = &variable.value {
+                pending.push((
+                    format!("{}.{}", service.slug, variable.key),
+                    service,
+                    variable,
+                    generator,
+                ));
+            }
+        }
+    }
+    let left_out = |warning: &DeploymentWarning| match warning {
+        DeploymentWarning::NotSet {
+            service,
+            variable,
+            reads,
+            ..
+        } => Some(
+            reads
+                .clone()
+                .unwrap_or_else(|| format!("{service}.{variable}")),
+        ),
+        DeploymentWarning::NotSetInFile { secret, .. } => Some(secret.clone()),
+        DeploymentWarning::Fragile { .. }
+        | DeploymentWarning::IngressNotServing { .. }
+        | DeploymentWarning::IngressUnchecked { .. }
+        | DeploymentWarning::Deploy { .. } => None,
+    };
+    let Some(needed) = warnings
+        .iter()
+        .filter_map(left_out)
+        .find(|name| pending.iter().any(|(pending, ..)| pending == name))
+    else {
+        return Ok(());
+    };
+    let pending: Vec<Value> = pending
+        .into_iter()
+        .map(|(_, service, variable, generator)| {
+            json!({
+                "service": service.slug,
+                "id": service.id,
+                "key": variable.key,
+                "generated": generator.to_string(),
+            })
+        })
+        .collect();
+    Err(error::invalid(
+        format!("{needed} has no value yet. Deploy from the dashboard to make it."),
+        json!({ "variable": needed, "environment": environment.as_str(), "pending": pending }),
+    ))
 }
 
 /// A Legacy secret, which no Machine opens. `invalid_argument`, so a claim fails the

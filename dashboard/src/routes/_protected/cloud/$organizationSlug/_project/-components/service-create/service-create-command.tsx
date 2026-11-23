@@ -3,6 +3,8 @@ import { useStillHere } from "#/hooks/use-still-here";
 import { preloadGithubRepos } from "#/modules/github/github.collection";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
+import { useQuery } from "@tanstack/react-query";
+import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { ChevronRightIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -145,13 +147,25 @@ function RootPanel({ mode, organizationSlug, onSelectItem, isPending }: RootPane
   );
 }
 
-function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void }) {
+/** Why a database can't be added yet: its password is sealed to the Cluster's key, which a Server holds. */
+function useSealingBlock(organizationSlug: string) {
+  const { data, isError } = useQuery(sealingQueryOptions(organizationSlug));
+  if (isError) return "Couldn't check your servers. Try again.";
+  if (data === undefined) return "Checking your servers…";
+  if (data.sealing.state === "ready") return null;
+  return "awaitsRecovery" in data.sealing ? "Run ployz recover on a server first." : "Add a server first. It seals the password.";
+}
+
+function DatabasePanel({ organizationSlug, disabled, onSelectPreset }: {
+  organizationSlug: string; disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void;
+}) {
+  const blocked = useSealingBlock(organizationSlug);
   return (
-    <CommandGroup>
+    <CommandGroup heading={blocked ?? undefined}>
       {DATABASE_PRESETS.map((preset) => {
         const Logo = DATABASE_LOGOS[preset.id];
         return (
-          <CommandItem key={preset.id} value={preset.label} disabled={disabled} onSelect={() => onSelectPreset(preset)}>
+          <CommandItem key={preset.id} value={preset.label} disabled={disabled || blocked !== null} onSelect={() => onSelectPreset(preset)}>
             <Logo />
             <span>{preset.label}</span>
           </CommandItem>
@@ -426,7 +440,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
             />
           ) : null}
           {panel.kind === "database" ? (
-            <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
+            <DatabasePanel organizationSlug={props.organizationSlug} disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
           ) : null}
         </CommandList>
         {panel.kind === "git" ? (

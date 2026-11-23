@@ -100,6 +100,7 @@ fn empty_variable(value: &mut VariableValue) -> bool {
         | VariableValue::Generated { .. }
         | VariableValue::Arriving { .. }
         | VariableValue::Sealed { .. }
+        | VariableValue::Pending { .. }
         | VariableValue::NotSet => return false,
     }
     true

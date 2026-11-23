@@ -69,9 +69,9 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
-    /// `{"secret": {"sealedFor": ..., "value": ...}}`: a value the browser sealed for
-    /// this Environment, stored as it came.
-    ClientSealed(ClientSealedValue),
+    /// `{"secret": {"sealedFor": ..., "value": ..., "generated"?: ...}}`: a value the
+    /// browser sealed for this Environment, stored as it came, with how it made it.
+    ClientSealed(ClientSealedValue, Option<Generator>),
     /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
     Generate,
     /// `${{ secret(…) }}`: a plain value the Store makes, unless one is stored already.
@@ -198,6 +198,7 @@ pub(crate) fn set(
                 VariableValue::Sealed {
                     ciphertext: Some(sealed.value),
                     fingerprint: made_fingerprint(sealed.fingerprint),
+                    generator: None,
                 },
                 None,
             )
@@ -248,7 +249,15 @@ pub(crate) fn set(
         (Some(Input::Seal(_)), _) => {
             return Err(sealer.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
-        (Some(Input::ClientSealed(value)), _) => {
+        // Two browsers filling one Pending value: the first wins, which a database may
+        // already have started with.
+        (Some(Input::ClientSealed(_, Some(generator))), Some(current))
+            if matches!(current.value, VariableValue::Sealed { .. })
+                && current.generator() == Some(&generator) =>
+        {
+            kept(current)
+        }
+        (Some(Input::ClientSealed(value, generator)), _) => {
             let receiver = client_sealed::Receiver {
                 environment: &environment.summary.id,
                 service: environment.service(service)?,
@@ -259,6 +268,7 @@ pub(crate) fn set(
                 VariableValue::Sealed {
                     ciphertext: Some(sealed.value),
                     fingerprint: made_fingerprint(sealed.fingerprint),
+                    generator,
                 },
                 None,
             )
@@ -818,7 +828,7 @@ pub(crate) fn new_secret(key: &VariableKey, value: &Value) -> Result<Option<NewS
             Some(
                 Input::Text(_)
                 | Input::Keep
-                | Input::ClientSealed(_)
+                | Input::ClientSealed(..)
                 | Input::Generate
                 | Input::Generated(_),
             )
@@ -862,9 +872,20 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
                 Ok(Input::Generate)
             }
             // A fixed message: a serde error would echo the value.
-            Some(sealed @ Value::Object(asked)) if asked.contains_key("sealedFor") => {
-                serde_json::from_value(sealed.clone())
-                    .map(Input::ClientSealed)
+            Some(Value::Object(asked)) if asked.contains_key("sealedFor") => {
+                let mut sealed = asked.clone();
+                let generator = match sealed.remove("generated") {
+                    Some(Value::String(text)) => match Generator::parse(&text) {
+                        Ok(Some(generator)) => Some(generator),
+                        Ok(None) | Err(_) => {
+                            return Err(invalid(key, "generated names how the value was made"));
+                        }
+                    },
+                    Some(_) => return Err(invalid(key, "generated names how the value was made")),
+                    None => None,
+                };
+                serde_json::from_value(Value::Object(sealed))
+                    .map(|value| Input::ClientSealed(value, generator))
                     .map_err(|_| {
                         invalid(key, "expected sealedFor and a value sealed in the browser")
                     })

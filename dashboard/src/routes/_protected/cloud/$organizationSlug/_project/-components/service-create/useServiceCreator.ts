@@ -1,8 +1,10 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useLoaderData, useNavigate, useRouter } from "@tanstack/react-router";
-import type { EnvironmentRef } from "@ployz/sdk";
+import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
-import { databaseCommand, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { GENERATED_PASSWORD, databaseCommand, passwordKey, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { madeSecret } from "#/modules/sealing/made-secret";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
@@ -53,9 +55,13 @@ export function useCreateStoreService(organizationSlug: string) {
   };
 }
 
-/** Creates a Database Preset's Service, as `useCreateStoreService` does, with its Volume placed below it: one Batch. */
+/**
+ * Creates a Database Preset's Service, as `useCreateStoreService` does, with its Volume placed below it: one Batch. Its
+ * password is made and sealed in this browser, once, so a resend carries the same value. A failed seal writes nothing.
+ */
 export function useCreateStoreDatabase(organizationSlug: string) {
   const { writer, place, services, volumeNames } = useStoreCreate(organizationSlug);
+  const sealing = useSealing(organizationSlug);
   return (target: NewServicePlacement, preset: DatabasePreset): CreatedService => {
     const service = crypto.randomUUID();
     const volume = crypto.randomUUID();
@@ -63,9 +69,15 @@ export function useCreateStoreDatabase(organizationSlug: string) {
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: service, x, y });
     place({ environmentId: target.environmentId, resourceType: "volume", resourceId: volume, x, y: y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2 });
     const name = serviceName(preset.id, services(target.store));
-    const command = databaseCommand(preset, { service, volume, environment: target.store, name,
-      volumeName: uniqueName(`${name}-data`, volumeNames(target.store)) });
-    return { service: { id: service }, persisted: writer.commit(command) };
+    const ids = { service, volume, environment: target.store, name, volumeName: uniqueName(`${name}-data`, volumeNames(target.store)) };
+    let sealed: Promise<ConfigCommand> | undefined;
+    const seal = async () => {
+      const key = passwordKey(preset);
+      const value = await (await sealing.sealer())({ key, value: madeSecret(GENERATED_PASSWORD), target: { environment: target.environmentId, service } });
+      return databaseCommand(preset, ids, { ...value, generated: GENERATED_PASSWORD });
+    };
+    const shown = databaseCommand(preset, ids, { sealing: true });
+    return { service: { id: service }, persisted: writer.commit(shown, [], () => sealed ??= seal()) };
   };
 }
 

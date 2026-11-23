@@ -347,31 +347,37 @@ mod tests {
         }
     }
 
-    /// Only a literal is generated: a marker beside any other value, such as one sealed
-    /// since, reads and is gone, so it is never written back.
+    /// A marker beside a secret says how a person's browser made it, so each copy
+    /// makes its own; beside a template it reads and is gone, never written back.
     #[test]
-    fn a_marker_beside_a_value_that_is_not_generated_is_never_written_back() {
+    fn a_marker_is_kept_beside_a_secret_and_dropped_beside_a_template() {
         for (shape, stored, kept) in [
             (
                 "secret",
                 r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":null},"generated":{"length":32,"charset":"a-z"}}"#,
-                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"s1:k","value":{"kind":"secret","encryptedValue":null}}"#,
+                true,
             ),
             (
                 "secret without a value",
                 r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"},"generated":{"length":32,"charset":"a-z"}}"#,
-                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"","value":{"kind":"secret_without_value"}}"#,
+                true,
             ),
             (
                 "template",
                 r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[]},"generated":{"length":32,"charset":"a-z"}}"#,
-                r#"{"id":"v","key":"K","description":null,"exported":false,"valueFingerprint":"p1:t","value":{"kind":"template","parts":[]}}"#,
+                false,
             ),
         ] {
             let variable: crate::config::SavedVariableIntent =
                 serde_json::from_str(stored).unwrap();
-            assert_eq!(variable.generator(), None, "{shape}");
-            assert_eq!(serde_json::to_string(&variable).unwrap(), kept, "{shape}");
+            assert_eq!(variable.generator().is_some(), kept, "{shape}");
+            assert_eq!(
+                serde_json::to_string(&variable)
+                    .unwrap()
+                    .contains("generated"),
+                kept,
+                "{shape}"
+            );
         }
     }
 

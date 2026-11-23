@@ -436,6 +436,76 @@ fn a_branch_names_the_secrets_it_copied_without_a_value() {
     assert!(kept.not_set.is_empty());
 }
 
+/// `db.env.PASSWORD` sealed in the browser for `db` of `environment`, as it makes a
+/// Database Preset's password.
+fn made_password(environment: &str, db: &str, n: u8) -> Value {
+    let mut sealed = backend::client_sealed(environment, db, "PASSWORD", n);
+    sealed["generated"] = json!(GENERATED);
+    json!({ "secret": sealed })
+}
+
+const GENERATED: &str = r#"${{ secret(32, "a-zA-Z") }}"#;
+
+#[test]
+fn a_copy_of_a_made_sealed_password_deploys_only_once_the_browser_makes_its_own() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.PASSWORD", made_password(&uuid(2), &uuid(4), 1))],
+    );
+    let made = store
+        .write(&who, &branch("fix-db", "production", &["db"]))
+        .unwrap();
+    assert!(made.not_set.is_empty(), "{:?}", made.not_set);
+    let db = id_of(&store, &who, "fix-db", "db");
+
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse(uuid(90)).unwrap(),
+                environment: at("fix-db"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                recreate: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        refused.message.starts_with("db.PASSWORD has no value yet"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.details["pending"],
+        json!([{ "service": "db", "id": db, "key": "PASSWORD", "generated": GENERATED }])
+    );
+    let environment = made.branch.environment.id.to_string();
+    assert_eq!(refused.details["environment"], environment);
+
+    // Two browsers fill it: the first one's stays, which the database may already use.
+    for n in [2, 3] {
+        set(
+            &store,
+            &who,
+            "fix-db",
+            &[("db.env.PASSWORD", made_password(&environment, &db, n))],
+        );
+    }
+    let input = deploy(&store, &who, "fix-db", 1, true);
+    let password = snapshot(&input, &db)["resolvedEnv"]["PASSWORD"].to_string();
+    assert!(password.contains(&backend::ciphertext(2)), "{password}");
+}
+
 #[test]
 fn a_branch_is_refused_before_anything_is_written() {
     let (store, who) = shop();
