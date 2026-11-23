@@ -98,11 +98,20 @@ CLI at once can leave it either running or stopped.
 
 ## Approve or deny a deploy
 
-Every deploy the agent starts waits for you. Its card, like **Deploy shop/production**, is marked
-**Deploys** when it destroys nothing, and lists what changes. A redeploy of a deployment that
-failed waits too. Its card, like **Redeploy shop/production**, is marked **Redeploys** and lists no
-changes, because it ships exactly what that deployment did. A redeploy that undoes later
-deployments is titled **Roll back shop/production** and marked **Rolls back**.
+Every deploy the agent starts waits for you, as a card like **Deploy shop/production** with
+**Review and approve**. A coding agent you connected gives you the same page as a link. The page
+shows what the deploy destroys and, when your servers need a signature, the lines your passkey
+signs. Click **Approve with passkey** and tap once, or **Approve and deploy** when nothing needs
+signing, and the deploy starts as whoever asked. Anyone who can deploy to the environment can
+approve it. If the environment changed since the agent asked, the page says **This deploy changed
+since it was asked for. Ask again.** and denies it. A deploy that can't ask anyone, like one whose
+servers don't answer, is refused with the reason instead. In a Protected environment, a deploy from
+someone who can't protect it waits on an approval card for an owner or admin.
+
+A redeploy of a deployment that failed waits on an approval card. Its card, like **Redeploy
+shop/production**, is marked **Redeploys** and lists no changes, because it ships exactly what that
+deployment did. A redeploy that undoes later deployments is titled **Roll back shop/production**
+and marked **Rolls back**.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
