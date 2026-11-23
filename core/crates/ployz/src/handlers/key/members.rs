@@ -33,11 +33,11 @@ const NEEDED: [&str; 4] = [
 const WINDOW_MILLIS: u64 = 10 * 60 * 1000;
 
 /// One Member as it answered: who it is, and the keys it trusts.
-pub(super) struct Member {
+pub(in crate::handlers) struct Member {
     pub(super) key: KeyMember,
     pub(super) name: String,
-    pub(super) cluster: Option<SealingPublicKey>,
-    pub(super) trusted: TrustedKeys,
+    pub(in crate::handlers) cluster: Option<SealingPublicKey>,
+    pub(in crate::handlers) trusted: TrustedKeys,
 }
 
 impl Member {
@@ -50,7 +50,7 @@ impl Member {
 
     /// This Member as its own Inspect reports it. The Cluster key is the live `sealing`
     /// field: the record in `machine` is the local one, which never carries it.
-    pub(super) fn of(details: MachineDetails) -> Self {
+    pub(in crate::handlers) fn of(details: MachineDetails) -> Self {
         Self {
             key: KeyMember {
                 id: details.id,

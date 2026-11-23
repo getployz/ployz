@@ -190,9 +190,43 @@ The deploy that first mounts a volume makes it new and empty, and every later de
 data: the name it had then and when it began, with its name now in brackets when it changed. A
 volume from before this version is named as your servers name it, with Ployz Cloud's name in
 brackets.
-Renaming a service or a volume keeps the data. If a volume you expect to be new reads "data made
-…", Ployz Cloud is offering data you already have. Answer no and nothing starts. A
+Renaming a service or a volume keeps the data. A
 [branch](../environments/environments.md) makes each of its volumes new on its first deploy.
+
+Before it signs, `ployz deploy` checks each mount against two things: the last version of the
+service you approved, checked against your servers' keys, and what your servers run now. When
+both agree and nothing else about the mount changed, the mounts fold into one line:
+
+```text
+  2 volumes keep the data you approved (signed 3 Nov 14:02 UTC)
+```
+
+Anything else prints in full and needs your yes, before the usual question:
+
+```text
+Needs your yes:
+  files: mounts managed volume thumbs at /srv/files, read-write: different data than the version you approved: was previews, 3 Nov 14:02 UTC, now thumbs, 9 Oct 08:15 UTC
+Use the data marked above? [y/N]
+```
+
+That covers data that differs from your approved version, data your approved version mounted but
+your servers no longer run, a move to another driver, the first time a service mounts data that
+already exists, and a new volume that takes a path where other data was. The line says which
+service uses the data now, or that no server lists a container using it. A server that doesn't
+answer is named, since it may hold other data. Try again when it answers, or remove it with
+`ployz server rm`. Answer no and nothing is signed. With no terminal, the deploy stops before it
+signs.
+
+A volume from before this version passes only when the version you approved mounts it, or a
+server lists a container that uses it. Otherwise the deploy stops and names the service and
+volume. If a server didn't answer, try again when it does, or remove it with `ployz server rm`. If
+the service's old container is gone, start it once from its last deploy, or restore the data into
+a new volume.
+
+`ployz deploy` reads your servers' keys and containers over a route whose server answers for
+itself: `--connect`, a context, or the local daemon. Through Ployz Cloud alone it can't, so it
+warns, every mount prints in full and asks, and a volume from before this version is refused.
+Retry with `--connect ssh://<server>`.
 
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a

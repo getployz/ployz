@@ -17,7 +17,7 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    birth::Mounts,
+    birth::{BirthError, Mounts},
     canonical::{self, CanonicalError, drop_nulls},
     rule_draft::settings,
     shown::Shown,
@@ -231,6 +231,21 @@ pub struct ApprovedChange {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub settings: Vec<String>,
+    /// The mount lines among `settings` the person must say yes to: data that differs
+    /// from the approved version or from what the Servers run now, a first attach, and a
+    /// new volume that may hide data.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub confirm: Vec<String>,
+}
+
+/// Why [`ApprovedChange::of`] can't show a plan.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangeError {
+    #[error(transparent)]
+    Digest(#[from] CanonicalError),
+    #[error(transparent)]
+    Mounts(#[from] BirthError),
 }
 
 impl ApprovedChange {
@@ -239,13 +254,14 @@ impl ApprovedChange {
     /// names the data each managed Volume mount holds.
     ///
     /// # Errors
-    /// Returns a [`CanonicalError`] when a spec has no [`PayloadDigest`] in `namespace`.
+    /// Returns [`ChangeError::Digest`] when a spec has no [`PayloadDigest`] in `namespace`,
+    /// and [`ChangeError::Mounts`] when [`Mounts::lines`] refuses a mount.
     pub fn of(
         target: &[RequestedServiceSpec],
         namespace: &Namespace,
         pins: &BTreeMap<ServiceName, String>,
         mounts: &Mounts<'_>,
-    ) -> Result<Vec<Self>, CanonicalError> {
+    ) -> Result<Vec<Self>, ChangeError> {
         let mut changes = target
             .iter()
             .map(|spec| {
@@ -253,19 +269,22 @@ impl ApprovedChange {
                 let tag = pins
                     .get(&spec.name)
                     .map(|pin| std::mem::replace(&mut pinned.container.image, pin.clone()));
+                let mounted = mounts.lines(spec)?;
+                let confirm = mounted.confirm.iter().map(ToString::to_string).collect();
                 Ok(Self {
                     service: spec.name.clone(),
                     digest: PayloadDigest::of(&pinned, namespace)?,
                     image: pinned.container.image,
                     tag,
                     host: host_sensitive(spec).into_iter().map(String::from).collect(),
-                    settings: settings(spec, mounts)
+                    settings: settings(spec, mounted)
                         .into_iter()
                         .map(String::from)
                         .collect(),
+                    confirm,
                 })
             })
-            .collect::<Result<Vec<_>, CanonicalError>>()?;
+            .collect::<Result<Vec<_>, ChangeError>>()?;
         changes.sort_by(|left, right| left.service.cmp(&right.service));
         changes.dedup_by(|left, right| left.service == right.service);
         Ok(changes)

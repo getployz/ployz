@@ -11,7 +11,10 @@ use crate::authority::keys::Signer;
 use crate::authority::rule::{BUILDER_SHA, CommitSha};
 
 fn settings_of(spec: &RequestedServiceSpec) -> Vec<Shown> {
-    settings(spec, &Mounts::unnamed(Timestamp::from_millis(0).unwrap()))
+    settings(
+        spec,
+        Mounts::unnamed(Timestamp::from_millis(0).unwrap()).shown(spec),
+    )
 }
 
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";

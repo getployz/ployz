@@ -5,8 +5,8 @@
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    Cap, CapSet, GrantKind, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope, PayloadDigest,
-    PlaceService, TrustedKeys, version,
+    Approved, Cap, CapSet, GrantKind, GrantVolume, KeyName, KeyPlace, KeyPlaces, KeyScope,
+    PlaceService, TrustedKeys,
 };
 use ployz_core::{
     DockerVolumeName, Namespace, SealingPublicKey, ServiceName, ServiceVolumeReference,
@@ -269,13 +269,14 @@ fn root_volume(
             "The version of {service} Ployz Cloud returned doesn't check against your servers' keys. Nothing changed."
         ))
     };
-    let version = version::open_root(statement, trusted, cluster).map_err(|_| forged())?;
-    if version.service != runtime
-        || &version.namespace != namespace
-        || PayloadDigest::of(spec, namespace).ok() != Some(version.digest)
-    {
-        return Err(forged());
-    }
+    let approved = Approved::verify(
+        statement,
+        (**spec).clone(),
+        (trusted, cluster),
+        (namespace, &runtime),
+    )
+    .ok_or_else(forged)?;
+    let spec = approved.spec();
     if let Some(entry) = mounted(spec, namespace, reference) {
         return Ok(entry);
     }

@@ -29,7 +29,10 @@ pub mod version;
 pub mod version_draft;
 
 pub use admission::{DataReach, needs_signature, reach};
-pub use birth::{BirthError, Births, Mounts, PlannedVolume, PlannedVolumes};
+pub use birth::{
+    Against, Approved, Before, BirthError, Births, Held, MountLines, Mounts, PlannedVolume,
+    PlannedVolumes, Unknown,
+};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member, PasskeyJoinDraft};
