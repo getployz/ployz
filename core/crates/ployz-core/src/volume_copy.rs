@@ -14,7 +14,7 @@ use ts_rs::TS;
 use crate::{
     CodedRefusal, ContainerId, DeploymentLogId, DockerVolumeName, Evidence, Gen, ManagementAddress,
     Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
-    SnapshotGuid, SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeGen, WriterEpoch, authority::Signed,
 };
 
 /// The idempotency key a driver gives a new Container.
@@ -217,12 +217,33 @@ pub enum Start {
     },
     /// A Move's destination copy, created at the source copy's `gen`. With `In`, the
     /// owner routes it once healthy, as an In want does.
+    ///
+    /// An Operator's Create needs `versions` or `rule` to admit the spec, as
+    /// `EnsureContainer` does, and a spec that mounts the request's Volume. Sent only to a
+    /// daemon advertising [`crate::VOLUME_START_CAPABILITY`]; an older daemon ignores
+    /// them and refuses an Operator's Create.
     Create {
         namespace: Namespace,
         resolved_spec: ResolvedServiceSpec,
         creation_key: CreationKey,
         r#gen: Gen,
         rotation: RunRotation,
+        /// At most [`crate::authority::version::MAX_PRESENTED`].
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            deserialize_with = "crate::authority::version::at_most_presented"
+        )]
+        #[ts(optional, as = "Option<Vec<Signed<crate::authority::ServiceVersion>>>")]
+        versions: Vec<Signed<crate::authority::ServiceVersion>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        rule: Option<Box<crate::authority::RuleProof>>,
+        /// Answer only whether this Machine would admit the start, its placement
+        /// included, and change nothing: no floor, mark, copy or Container.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        check: bool,
     },
 }
 

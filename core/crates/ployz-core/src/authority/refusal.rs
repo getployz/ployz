@@ -142,6 +142,8 @@ pub enum MismatchField {
     KeptAdmission,
     Admission,
     VolumeStart,
+    /// A Volume start whose spec doesn't mount the Volume it names.
+    StartedVolume,
     UnusedSubnet,
     JoinConfirmation,
     VerifiedBuild,
@@ -226,6 +228,7 @@ impl MismatchField {
             Self::KeptAdmission => "a kept admission",
             Self::Admission => "an admission",
             Self::VolumeStart => "a Volume start",
+            Self::StartedVolume => "the Volume to start on",
             Self::UnusedSubnet => "an unused subnet",
             Self::JoinConfirmation => "a join confirmation",
             Self::VerifiedBuild => "a verified build",
@@ -257,6 +260,9 @@ impl MismatchField {
             Self::HookRun => "This deploy already ran its pre-deploy command here.",
             Self::VolumeStart => {
                 "This server starts a service on a moved or restored Volume only from a deploy an approved device signed."
+            }
+            Self::StartedVolume => {
+                "The approved settings of this service don't mount the volume this start names."
             }
             Self::SourceServer => {
                 "This server copies a volume's data only from another server of its cluster."
@@ -430,6 +436,7 @@ impl MismatchField {
             | Self::KeptAdmission
             | Self::Admission
             | Self::VolumeStart
+            | Self::StartedVolume
             | Self::UnusedSubnet
             | Self::JoinConfirmation
             | Self::GitHubClient

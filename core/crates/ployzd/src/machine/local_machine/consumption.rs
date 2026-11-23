@@ -26,7 +26,7 @@ use crate::sealing_key::Floors;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::Error;
+use super::{Admit, Error};
 
 const FILE_NAME: &str = "restart-approvals.json";
 
@@ -256,8 +256,9 @@ impl ConsumptionLog {
     }
 
     /// Admit `signatures` for a new Container of `service` in `cluster` at `now`, as
-    /// [`service_floor::admit`] decides, and keep the floor a forget among them raised. The
-    /// floor is read and raised in one transaction, so no forget lands between them.
+    /// [`service_floor::admit`] decides, and keep the floor a forget among them raised,
+    /// unless `admit` only checks. The floor is read and raised in one transaction, so no
+    /// forget lands between them.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -267,6 +268,7 @@ impl ConsumptionLog {
         service: &QualifiedService,
         signatures: &[Signature<K>],
         now: Timestamp,
+        admit: Admit,
     ) -> Result<Result<Vec<(K, Timestamp)>, Refused>, Error> {
         self.transact(Error::ApprovalRecord, |log| {
             let key = floor_key(cluster, service);
@@ -274,7 +276,7 @@ impl ConsumptionLog {
             Ok(
                 match service_floor::admit(signatures, floor, log.floored(now)) {
                     Ok(admitted) => match admitted.floor {
-                        Some(raised) if admitted.floor != floor => {
+                        Some(raised) if admitted.floor != floor && admit == Admit::Record => {
                             log.floors.insert(key, raised);
                             Edit::Write(Ok(admitted.keys))
                         }
@@ -551,19 +553,22 @@ impl ConsumptionLog {
     /// Record that a validly signed `rule` exists, ended or not, before anything else
     /// decides on it: no generation below it is admitted again. Refuses, through
     /// `refused`, a generation lower than the mark, or one that moves the rule to another
-    /// repository, branch or Namespace. Writes only when the mark rises.
+    /// repository, branch or Namespace. Writes only when the mark rises and `admit`
+    /// records.
     pub(crate) fn mark_rule(
         &self,
         rule: &AutoDeployRule,
+        admit: Admit,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let rule = rule.identity();
         self.transact(Error::ApprovalRecord, |log| {
             log.check_mark(rule).map_err(refused)?;
-            if log
-                .rules
-                .get(&rule.rule)
-                .is_some_and(|mark| mark.generation >= rule.generation)
+            if admit == Admit::Check
+                || log
+                    .rules
+                    .get(&rule.rule)
+                    .is_some_and(|mark| mark.generation >= rule.generation)
             {
                 return Ok(Edit::Keep(()));
             }

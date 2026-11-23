@@ -71,15 +71,20 @@ fn requested(spec: &Value) -> ployz_core::RequestedServiceSpec {
     serde_json::from_value(spec.clone()).unwrap()
 }
 
-fn want(spec: &Value) -> ContainerWant {
+/// `spec` as a Machine is sent it, its Volumes scoped to `namespace`.
+fn resolved(spec: &Value, namespace: &Namespace) -> ResolvedServiceSpec {
     let mut scoped = requested(spec);
-    scoped.mount_graph = scoped.mount_graph.scope_to_namespace(&app()).unwrap();
-    let resolved = scoped
+    scoped.mount_graph = scoped.mount_graph.scope_to_namespace(namespace).unwrap();
+    scoped
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
             ployz_core::ResolvedUpdateConfig::default(),
         )
-        .unwrap();
+        .unwrap()
+}
+
+fn want(spec: &Value) -> ContainerWant {
+    let resolved = resolved(spec, &app());
     serde_json::from_value(
         json!({"state":"running", "rotation":"pending", "container":{"new":{
         "slot":{"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"1"},
@@ -156,18 +161,29 @@ fn root(
     at: Timestamp,
     forget_older: bool,
 ) -> Signed<ServiceVersion> {
+    version(fixture, &approved(spec), &fixture.signer, at, forget_older)
+}
+
+/// A version of `spec` in Namespace `app` the Device `signer` signed at `at`.
+fn version(
+    fixture: &Fixture,
+    spec: &Value,
+    signer: &ployz_core::authority::Signer,
+    at: Timestamp,
+    forget_older: bool,
+) -> Signed<ServiceVersion> {
     let body = ServiceVersion {
         cluster: fixture.cluster,
         namespace: app(),
         service: ServiceName::parse("api").unwrap(),
-        digest: PayloadDigest::of(&requested(&approved(spec)), &app()).unwrap(),
+        digest: PayloadDigest::of(&requested(spec), &app()).unwrap(),
         signed_at: at,
-        signer: SignerKey::Device(fixture.signer.public().into()),
+        signer: SignerKey::Device(signer.public().into()),
         proposal: None,
         forget_older,
         parent: None,
     };
-    Signed::sign(&body, &fixture.signer).unwrap()
+    Signed::sign(&body, signer).unwrap()
 }
 
 /// Admit `spec` under the CI key's edit of `root`, signed at `at`, as an Operator's
@@ -194,7 +210,7 @@ async fn admit_ci(
         .machine
         .clone()
         .at_operator_scope()
-        .admit_spec(&want(spec), None, &versions)
+        .admit_spec(&want(spec), None, &versions, Admit::Record)
         .await?;
     Ok(admitted.expect("a creation").by().clone())
 }
@@ -352,7 +368,12 @@ async fn a_ci_edit_is_forgotten_with_the_version_it_edits_even_when_signed_after
         .machine
         .clone()
         .at_operator_scope()
-        .admit_spec(&want(&approved(&spec)), None, std::slice::from_ref(&forget))
+        .admit_spec(
+            &want(&approved(&spec)),
+            None,
+            std::slice::from_ref(&forget),
+            Admit::Record,
+        )
         .await
         .unwrap();
 
@@ -370,4 +391,254 @@ async fn a_ci_edit_is_forgotten_with_the_version_it_edits_even_when_signed_after
         panic!("kept under keys");
     };
     assert_eq!(keys, vec![(KeptKey::Device(ci().public()), at(30_000))]);
+}
+
+/// A Move's Create in Namespace `app` of `resolved_spec`, carrying `versions`.
+fn create(resolved_spec: &ResolvedServiceSpec, versions: &[Signed<ServiceVersion>]) -> Start {
+    serde_json::from_value(json!({"kind": "create", "namespace": "app",
+        "resolved_spec": resolved_spec, "creation_key": "move-1", "gen": 2,
+        "rotation": "pending", "versions": versions}))
+    .unwrap()
+}
+
+/// `start` asked only as a check.
+fn checking(mut start: Start) -> Start {
+    if let Start::Create { check, .. } = &mut start {
+        *check = true;
+    }
+    start
+}
+
+/// What an Operator's start of `start` on Volume `volume` is admitted under.
+async fn start_on(
+    machine: &LocalMachine,
+    volume: &str,
+    start: &Start,
+) -> Result<AdmittedBy, AuthorityRefusal> {
+    match machine
+        .clone()
+        .at_operator_scope()
+        .admit_volume_start(&volume.parse().unwrap(), start)
+        .await
+    {
+        Ok(admitted) => Ok(admitted.expect("a Create's admission").by().clone()),
+        Err(Error::DeployRefused(refusal)) => Err(refusal),
+        Err(error) => panic!("not a refusal: {error:?}"),
+    }
+}
+
+fn mismatch(field: MismatchField) -> Result<AdmittedBy, AuthorityRefusal> {
+    Err(AuthorityRefusal::Mismatch { field })
+}
+
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+async fn a_moved_volume_starts_only_the_signed_spec_that_mounts_it() {
+    let fixture = fixture().await;
+    let spec = mounting_data();
+    let signed = [version(
+        &fixture,
+        &spec,
+        &fixture.signer,
+        Timestamp::now(),
+        false,
+    )];
+    let start = create(&resolved(&spec, &app()), &signed);
+
+    assert!(matches!(
+        start_on(&fixture.machine, "app_data", &start).await,
+        Ok(AdmittedBy::Keys { .. })
+    ));
+    assert_eq!(
+        start_on(&fixture.machine, "app_logs", &start).await,
+        mismatch(MismatchField::StartedVolume),
+        "a signature of a spec opens no other Volume"
+    );
+    assert_eq!(
+        start_on(
+            &fixture.machine,
+            "app_data",
+            &create(&resolved(&approved(&spec), &app()), &signed)
+        )
+        .await,
+        mismatch(MismatchField::Payload),
+        "a changed field"
+    );
+    assert_eq!(
+        start_on(
+            &fixture.machine,
+            "app_data",
+            &create(&resolved(&spec, &app()), &[])
+        )
+        .await,
+        mismatch(MismatchField::VolumeStart),
+        "no versions"
+    );
+
+    let mut declared = spec.clone();
+    declared["mounts"] = json!([]);
+    let signed = [version(
+        &fixture,
+        &declared,
+        &fixture.signer,
+        Timestamp::now(),
+        false,
+    )];
+    assert_eq!(
+        start_on(
+            &fixture.machine,
+            "app_data",
+            &create(&resolved(&declared, &app()), &signed)
+        )
+        .await,
+        mismatch(MismatchField::StartedVolume),
+        "a Volume the spec declares and doesn't mount"
+    );
+}
+
+/// Environments share a Volume's name and differ by Namespace. A Legacy Volume has no birth
+/// to tell them apart, only its physical name.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+async fn a_signature_in_one_environment_opens_no_volume_of_the_same_name_in_another() {
+    let fixture = fixture().await;
+    let other = Namespace::parse("shop").unwrap();
+    let mut legacy = mounting_data();
+    legacy["volumes"][0]["source"]
+        .as_object_mut()
+        .unwrap()
+        .remove("birth");
+    for spec in [mounting_data(), legacy] {
+        let signed = [version(
+            &fixture,
+            &spec,
+            &fixture.signer,
+            Timestamp::now(),
+            false,
+        )];
+        assert_eq!(
+            start_on(
+                &fixture.machine,
+                "shop_data",
+                &create(&resolved(&spec, &app()), &signed)
+            )
+            .await,
+            mismatch(MismatchField::StartedVolume)
+        );
+        assert_eq!(
+            start_on(
+                &fixture.machine,
+                "shop_data",
+                &create(&resolved(&spec, &other), &signed)
+            )
+            .await,
+            mismatch(MismatchField::Payload),
+            "the spec scoped to the other Environment's Volume is not the one signed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_moved_volume_starts_no_more_once_its_signer_is_removed() {
+    let fixture = fixture().await;
+    let laptop = ployz_core::authority::Signer::from_seed(&[9; 32]);
+    let key = laptop.public();
+    fixture
+        .machine
+        .owner
+        .mutate(move |store| store.approve_device(key.into()).unwrap())
+        .await
+        .unwrap();
+    let spec = mounting_data();
+    let start = create(
+        &resolved(&spec, &app()),
+        &[version(&fixture, &spec, &laptop, Timestamp::now(), false)],
+    );
+    assert!(start_on(&fixture.machine, "app_data", &start).await.is_ok());
+
+    fixture
+        .machine
+        .owner
+        .mutate(move |store| {
+            store
+                .remove_key(ployz_core::authority::KeyRef::Signing { key: key.into() })
+                .unwrap()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        start_on(&fixture.machine, "app_data", &start).await,
+        Err(AuthorityRefusal::UnknownKey { key })
+    );
+}
+
+/// Cloud asks before it cuts whether the destination would start the Move. The answer
+/// must not raise a floor a forget carries, or the asking alone would stop older kept
+/// Containers of the Service.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+async fn a_checked_start_answers_as_a_start_and_keeps_nothing() {
+    let fixture = fixture().await;
+    let machine = fixture.machine.clone().with_zpool("true");
+    let spec = mounting_data();
+    let start = create(
+        &resolved(&spec, &app()),
+        &[version(
+            &fixture,
+            &spec,
+            &fixture.signer,
+            Timestamp::now(),
+            true,
+        )],
+    );
+    let floor = || {
+        fixture
+            .machine
+            .approvals
+            .floor(
+                fixture.cluster,
+                &api(),
+                Timestamp::now(),
+                Error::ApprovalRecord,
+            )
+            .unwrap()
+            .0
+    };
+
+    assert!(
+        start_on(&machine, "app_data", &checking(start.clone()))
+            .await
+            .is_ok()
+    );
+    assert_eq!(floor(), None);
+
+    let mut placed = spec.clone();
+    placed["placement"] = json!({"constraints": ["node.labels.region==eu"]});
+    let elsewhere = checking(create(
+        &resolved(&placed, &app()),
+        &[version(
+            &fixture,
+            &placed,
+            &fixture.signer,
+            Timestamp::now(),
+            false,
+        )],
+    ));
+    let refused = machine
+        .clone()
+        .at_operator_scope()
+        .admit_volume_start(&"app_data".parse().unwrap(), &elsewhere)
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Docker(
+                crate::docker::Error::ServicePlacementMismatch
+            ))
+        ),
+        "{refused:?}"
+    );
+
+    assert!(start_on(&machine, "app_data", &start).await.is_ok());
+    assert!(floor().is_some(), "the start itself keeps the forget");
 }

@@ -1058,7 +1058,7 @@ async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_the
         .local
         .clone()
         .at_operator_scope()
-        .admit_spec(&want, None, &[older])
+        .admit_spec(&want, None, &[older], crate::machine::Admit::Record)
         .await;
 
     assert!(

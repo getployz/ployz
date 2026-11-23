@@ -3576,6 +3576,41 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// Cloud asks the destination before the cut whether it would start the Move. The
+    /// answer promotes no copy and makes no Container.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_checked_start_answers_the_copy_and_changes_nothing() {
+        let (data_dir, _store, mut service, fake) = fake_docker_service("ployzd-copy-check").await;
+        service.local = service.local.with_zpool("true");
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let check = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1", "gen":1, "rotation":"pending", "check":true}}});
+
+        let answered = reply(&set_copy(&service, check).await);
+
+        assert_eq!(
+            serde_json::to_value(answered.copy).unwrap(),
+            slot(Some(snapshot("f-1", 7)))["Ok"]
+        );
+        assert_eq!(effects(&plugin), Vec::<String>::new());
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| path.ends_with("/containers/create"))
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Create that reaches a Server late, while the Writer still runs there, makes no
     /// second Container on the root, and a kept holder doesn't start beside it either.
     /// Once the Writer stops, the kept holder starts.

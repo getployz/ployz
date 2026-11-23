@@ -135,6 +135,8 @@ macro_rules! rpc_catalog {
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// The Machine opens a Volume's data only for a Container whose spec expects the origin it carries, and its pulls take born data.
                 VOLUME_ORIGIN_CAPABILITY: ("ployz.volume.origin.v1", Container),
+                /// `SetVolumeCopy` creates an Operator's Writer from the signed versions or rule proof its `Create` carries, for a spec that mounts the Volume, and answers a `check` without changing anything.
+                VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.

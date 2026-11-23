@@ -17,7 +17,7 @@ use ployz_core::{
     },
 };
 
-use super::{Error, LocalMachine};
+use super::{Admit, Error, LocalMachine};
 use crate::github::{
     head::{GithubApi, HeadError},
     oidc::{IssuerKeys, ProofRefusal},
@@ -186,7 +186,8 @@ impl LocalMachine {
             return Err(refused(MismatchField::Machine));
         }
         // An ended generation still supersedes every one below it.
-        self.approvals.mark_rule(&rule, Error::RuleGrantRefused)?;
+        self.approvals
+            .mark_rule(&rule, Admit::Record, Error::RuleGrantRefused)?;
         if rule.ended {
             return Err(refused(MismatchField::EndedRule));
         }

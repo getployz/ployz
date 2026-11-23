@@ -8,9 +8,9 @@
 use std::{io, sync::Arc};
 
 use ployz_core::{
-    ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant,
-    DeviceCode, Namespace, NewContainer, QualifiedService, ResolvedServiceSpec, RunTarget, Sealing,
-    Start,
+    AnswerWhen, ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+    ContainerWant, DeviceCode, DockerVolumeName, Namespace, NewContainer, QualifiedService,
+    ResolvedServiceSpec, RunTarget, Sealing, SlotKey, Start,
     authority::{
         Approver, AuthorityRefusal, Budget, MismatchField, Reach, RuleId, RuleProof,
         ServiceVersion, Signed, SigningPublicKey, Timestamp, TrustedKeys, ValueReach,
@@ -55,6 +55,14 @@ pub(crate) enum AdmittedBy {
     },
     /// A spec that reaches no data.
     Free,
+}
+
+/// Whether an admission keeps what it decided: a floor a forget raised, a rule's newer
+/// generation and a hook's place. A check answers the same and keeps none of them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Admit {
+    Record,
+    Check,
 }
 
 /// A key that admitted a Container.
@@ -356,8 +364,9 @@ impl AdmittedSpec {
 
 impl LocalMachine {
     /// Decide whether `want` may make its Container, under the `versions` and the
-    /// Operator's `rule` the caller brought. `None` is the answer for a want that makes
-    /// none. A hook that already exists is never started again for an Operator.
+    /// Operator's `rule` the caller brought, keeping what `admit` says. `None` is the
+    /// answer for a want that makes none. A hook that already exists is never started
+    /// again for an Operator.
     ///
     /// A version that admits the spec records its signers, so removing them stops a later
     /// start. Short of one, a Full caller's creation is kept under who asked, and `rule`
@@ -373,6 +382,7 @@ impl LocalMachine {
         want: &ContainerWant,
         rule: Option<&RuleProof>,
         versions: &[Signed<ServiceVersion>],
+        admit: Admit,
     ) -> Result<Option<AdmittedSpec>, Error> {
         let ContainerWant::Running { container, .. } = want else {
             return Ok(None);
@@ -411,7 +421,7 @@ impl LocalMachine {
         let service =
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
-            match self.approved_versions(new, &service, versions, &mut budget)? {
+            match self.approved_versions(new, &service, versions, &mut budget, admit)? {
                 Ok(by) => return admitted(by, None),
                 // A creation at Full access would hide that the forget failed.
                 Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
@@ -430,7 +440,7 @@ impl LocalMachine {
         }
         if let Some(rule) = rule {
             let admitted_rule = self
-                .admit_rule_deploy_online(want, rule, &mut budget)
+                .admit_rule_deploy_online(want, rule, &mut budget, admit)
                 .await?;
             return admitted(admitted_rule.by, admitted_rule.verified);
         }
@@ -459,6 +469,7 @@ impl LocalMachine {
         service: &QualifiedService,
         versions: &[Signed<ServiceVersion>],
         budget: &mut Budget,
+        admit: Admit,
     ) -> Result<Result<AdmittedBy, AuthorityRefusal>, Error> {
         let record = self.record();
         let cluster = self.cluster_key(record.phase());
@@ -488,14 +499,16 @@ impl LocalMachine {
                 forget: approved.forget_older,
             })
             .collect();
-        let keys =
-            match self
-                .approvals
-                .admit_versions(cluster, service, &signatures, Timestamp::now())?
-            {
-                Ok(keys) => keys,
-                Err(refused) => return Ok(Err(floor_refusal(refused))),
-            };
+        let keys = match self.approvals.admit_versions(
+            cluster,
+            service,
+            &signatures,
+            Timestamp::now(),
+            admit,
+        )? {
+            Ok(keys) => keys,
+            Err(refused) => return Ok(Err(floor_refusal(refused))),
+        };
         tracing::info!(
             kind = %new.slot.kind,
             "{} admitted by signed version from {:?} digest={}",
@@ -591,58 +604,102 @@ impl LocalMachine {
     }
 
     /// Let a Writer's start through. Starting a Container the Machine already holds is
-    /// served, unless it is a hook an Operator names. Creating one is served at Full
-    /// access only: an Operator's `SetVolumeCopy` carries no signature of the spec.
+    /// served, unless it is a hook an Operator names. A Create is admitted as
+    /// [`Self::admit_spec`] admits its spec. An Operator's needs a signature from the
+    /// versions or rule proof it carries, and a spec that mounts `volume`, so no
+    /// signature of a spec opens another Volume. A `check` keeps nothing, and refuses a
+    /// spec this Machine's placement doesn't take.
     ///
     /// # Errors
-    /// Returns [`Error::DeployRefused`] for an Operator's creation and for a hook, and
+    /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] for a refused start
+    /// and a hook, the placement's error for a check this Machine doesn't take, and
     /// [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be read.
     pub(crate) async fn admit_volume_start(
         &self,
+        volume: &DockerVolumeName,
         start: &Start,
     ) -> Result<Option<AdmittedSpec>, Error> {
-        match (start, self.scope()) {
-            (Start::Kept { container_id }, scope) => {
-                if let Scope::Operator = scope {
-                    self.refuse_hook_start(&ContainerLocator::Id(*container_id))
-                        .await?;
+        let operator = matches!(self.scope(), Scope::Operator);
+        let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, check) =
+            match start {
+                Start::Kept { container_id } => {
+                    if operator {
+                        self.refuse_hook_start(&ContainerLocator::Id(*container_id))
+                            .await?;
+                    }
+                    return Ok(None);
                 }
-                Ok(None)
-            }
-            (Start::Create { resolved_spec, .. }, Scope::Operator) => {
-                tracing::warn!(
-                    "Volume start refused for {}: it creates a Container nothing signed",
-                    resolved_spec.name,
-                );
-                Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
-                    field: MismatchField::VolumeStart,
-                }))
-            }
-            (
                 Start::Create {
                     namespace,
                     resolved_spec,
-                    ..
-                },
-                Scope::Full(full),
-            ) => {
-                let spec =
-                    AdmittedSpec::hash(namespace, resolved_spec).map_err(Error::DeployRefused)?;
-                let service = QualifiedService::new(namespace.clone(), resolved_spec.name.clone());
-                let reach =
-                    Reach::of(ContainerKind::ServiceContainer, resolved_spec).map_err(|_| {
-                        Error::DeployRefused(AuthorityRefusal::Mismatch {
-                            field: MismatchField::Payload,
-                        })
-                    })?;
-                Ok(Some(AdmittedSpec {
-                    spec,
-                    by: self.full_access(full, service, reach)?,
-                    standing: Some(self.standing()),
-                    verified: None,
-                }))
-            }
+                    creation_key,
+                    r#gen,
+                    rotation,
+                    versions,
+                    rule,
+                    check,
+                } => (
+                    namespace,
+                    resolved_spec,
+                    creation_key,
+                    r#gen,
+                    rotation,
+                    versions,
+                    rule,
+                    *check,
+                ),
+            };
+        let refused = |field| {
+            tracing::warn!("Volume start refused for {}: {field}", resolved_spec.name);
+            Error::DeployRefused(AuthorityRefusal::Mismatch { field })
+        };
+        if operator && versions.is_empty() && rule.is_none() {
+            return Err(refused(MismatchField::VolumeStart));
         }
+        if operator
+            && !resolved_spec
+                .volume_graph()
+                .mounted_provisioned_volumes()
+                .any(|mounted| mounted.source.docker_volume_name() == Some(volume))
+        {
+            return Err(refused(MismatchField::StartedVolume));
+        }
+        let want = ContainerWant::Running {
+            container: RunTarget::New(NewContainer {
+                slot: SlotKey {
+                    namespace: namespace.clone(),
+                    service: resolved_spec.name.clone(),
+                    kind: ContainerKind::ServiceContainer,
+                    creation_key: creation_key.clone(),
+                },
+                resolved_spec: resolved_spec.clone(),
+                r#gen: *r#gen,
+                deployment_id: None,
+                registry_auth: None,
+                image_prepared: false,
+                answer: AnswerWhen::default(),
+                image_id: None,
+            }),
+            rotation: rotation.clone(),
+        };
+        let admit = if check { Admit::Check } else { Admit::Record };
+        let admitted = self
+            .admit_spec(&want, rule.as_deref(), versions, admit)
+            .await?;
+        if operator && !admitted.as_ref().is_some_and(AdmittedSpec::signed) {
+            return Err(refused(MismatchField::VolumeStart));
+        }
+        if check {
+            let record = self.record();
+            let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+            let storage = self.observe_storage().await;
+            crate::docker::require_eligible(resolved_spec.placement_eligibility_in_namespace(
+                namespace,
+                machine,
+                storage.as_ref(),
+            ))?;
+        }
+        Ok(admitted)
     }
 
     /// A hook runs once, when it is created: no Operator starts one again.
@@ -671,7 +728,7 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
-        let admitted = self.admit_spec(&want, None, &[]).await?;
+        let admitted = self.admit_spec(&want, None, &[], Admit::Record).await?;
         self.ensure_container(want, admitted).await
     }
 }
