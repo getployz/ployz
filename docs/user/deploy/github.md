@@ -118,7 +118,7 @@ From the CLI, approve it for the services that build from one branch:
 ployz github rule approve web worker
 ```
 
-It prints what you approve, asks about any volume that holds data, then signs it with your device key:
+It prints what you approve, asks about any mount that holds data, then signs it with your device key:
 
 ```text
 Approving automatic deploys for production:
@@ -137,8 +137,9 @@ Approved. Every push to main now deploys web, worker with these settings.
 A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts managed volume uploads at /app/uploads, read-write: a new, empty volume`. A volume only services outside the rule mount stays as it was.
 
 A rule has no approved version to compare a volume with, so each volume that already holds data
-needs your yes, every time you approve. That includes data from before this version of Ployz.
-The CLI lists those lines and asks before it signs:
+needs your yes, every time you approve. That includes data from before this version of Ployz,
+an external Docker volume such as `mounts external Docker volume customer-db at /archive, read-write: data from outside Ployz`,
+and a host path. A tmpfs mount asks nothing. The CLI lists those lines and asks before it signs:
 
 ```text
 Needs your yes:

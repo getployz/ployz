@@ -166,8 +166,9 @@ pub struct RuleServiceSummary {
     /// The settings it pins: variables (Sealed ones by name only) and what reaches the
     /// host.
     pub settings: Vec<String>,
-    /// The mount lines among `settings` the person must say yes to: each one that holds
-    /// existing data, since a rule has no verified version to compare with.
+    /// The mounts the person must say yes to: each one that holds existing data, since a
+    /// rule has no verified version to compare with, and each external Docker volume or
+    /// host path, which `settings` also lists among the spec's volumes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub confirm: Vec<String>,

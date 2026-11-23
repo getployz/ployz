@@ -340,6 +340,7 @@ fn show(environment: &str, summary: &RuleSummary) {
 
 /// The person's yes to each mount of existing data the rule pins, asked once after its
 /// lines show. Every push deploys with those mounts, so a run that can't ask signs nothing.
+/// The lines show above the refusal and go in its detail, not its message.
 fn consent(summary: &RuleSummary) -> Result<(), Error> {
     let marked: Vec<String> = summary
         .services
@@ -354,11 +355,8 @@ fn consent(summary: &RuleSummary) -> Result<(), Error> {
         .collect();
     let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
-        format!(
-            "This rule uses data that needs your yes, and there's no terminal to ask in. Run \
-             ployz github rule approve at a terminal to say yes to:\n  {}\nNothing signed.",
-            marked.join("\n  ")
-        ),
+        "This rule uses data that needs your yes, and there's no terminal to ask in. Run ployz \
+         github rule approve at a terminal. Nothing signed.",
         json!({ "confirm": marked }),
     );
     approve::ask_data(

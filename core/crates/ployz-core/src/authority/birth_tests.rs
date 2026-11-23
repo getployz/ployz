@@ -396,6 +396,39 @@ fn a_rule_asks_about_each_mount_of_existing_data() {
     assert!(web.settings.contains(asked), "{:#?}", web.settings);
 }
 
+/// Data outside Ployz, an external Docker volume or a host path, also asks for a yes
+/// before a rule signs. A tmpfs holds no data and asks nothing.
+#[test]
+fn a_rule_asks_about_each_mount_of_data_outside_ployz() {
+    let mut view: Value = view_json();
+    view["target"][0]["volumes"] = json!([
+        {"reference": "archive", "source": {"kind": "external", "name": "customer-db"}},
+        {"reference": "host", "source": {"kind": "bind", "machine_path": "/var/exports"}},
+        {"reference": "scratch", "source": {"kind": "tmpfs"}},
+    ]);
+    view["target"][0]["mounts"] = json!([
+        {"volume": "archive", "target": "/archive"},
+        {"volume": "host", "target": "/exports", "read_only": true},
+        {"volume": "scratch", "target": "/tmp/scratch"},
+    ]);
+    let mut basis: RuleBasis = serde_json::from_value(view).unwrap();
+    let terms: RuleTerms = serde_json::from_value(terms_json()).unwrap();
+    let names = basis.branch_services();
+    let rule = AutoDeployRule::draft(&mut basis, &names, terms).unwrap();
+    let web = &rule.drafted(&basis).unwrap().summary.services[0];
+    let [external, bind] = web.confirm.as_slice() else {
+        panic!("{:#?}", web.confirm);
+    };
+    assert!(
+        external.contains("customer-db") && external.contains(" at /archive, read-write"),
+        "{external}"
+    );
+    assert!(
+        bind.contains("/var/exports") && bind.contains(" at /exports, read-only"),
+        "{bind}"
+    );
+}
+
 fn thumbs(nonce: u8) -> VolumeBirth {
     VolumeBirth {
         nonce: BirthNonce::from_bytes([nonce; 16]),
