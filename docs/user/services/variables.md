@@ -139,7 +139,10 @@ service still gets the real value when it deploys.
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
   History brings back comes back **Not set**: choose **Set value** to give it one. Until then,
-  deploys leave it out of your service. A sealed variable added after the version you roll back
+  deploys leave it out of your service. A password a database preset made comes back waiting
+  instead: a CLI deploy is refused, and the next dashboard Deploy makes a new one. A database
+  that already started with the old password keeps it, so set the new password inside the
+  database before your app needs it. A sealed variable added after the version you roll back
   to stays, with its value, on a service that stays. A service added after that version goes,
   with its variables. Delete a sealed variable yourself if you don't want it.
 - Sealing a variable a sync replaced changes it, so undoing that sync is refused with

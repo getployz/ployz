@@ -2262,11 +2262,13 @@ fn keep_sealed(
                         | VariableValue::Sealed { .. }
                         | VariableValue::NotSet => VariableValue::NotSet,
                     };
-                    not_set.push(NotSetVariable {
-                        service: ServiceName::parse(&service.slug)
-                            .map_err(|_| error::corrupt("Service name"))?,
-                        key: variable.key.clone(),
-                    });
+                    if matches!(variable.value, VariableValue::NotSet) {
+                        not_set.push(NotSetVariable {
+                            service: ServiceName::parse(&service.slug)
+                                .map_err(|_| error::corrupt("Service name"))?,
+                            key: variable.key.clone(),
+                        });
+                    }
                 }
                 Some(_) | None => {}
             }
