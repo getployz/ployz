@@ -9212,6 +9212,33 @@ fn a_deploy_that_changes_a_signed_setting_runs_the_tag_not_the_last_pin() {
     assert_eq!(web_runs(&store, 2), None);
 }
 
+/// A Volume's Service lists one region, which its signature covers. A Deploy that only
+/// changes that region still runs the image the last one pinned, though its tag moved
+/// since, so a move to the new region finds that Deploy's signature for what runs.
+#[test]
+fn a_region_change_of_a_service_with_a_volume_keeps_its_pin() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
+    apply(&store, 1);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::REGION,
+                    value: json!("fsn"),
+                }],
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P1.to_owned(), 0)));
+}
+
 #[test]
 fn a_service_saved_by_digest_records_the_digest_it_sends() {
     let (store, who) = shop();

@@ -958,7 +958,9 @@ fn proven(
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
-/// that pin has the digest it ran: the same tag, and only run fields changed.
+/// that pin has the digest it ran: the same tag, and only run fields changed. A change of
+/// region alone keeps the pin too, at the new digest, so the Deploy that lets a Volume's
+/// Service run in another region signs the image a move there starts.
 fn reused(
     tx: &mut dyn Tx,
     environment: &str,
@@ -974,7 +976,7 @@ fn reused(
     }) else {
         return Ok(None);
     };
-    let Some(last) = last_applied(tx, environment, node.as_str(), &spec.name)? else {
+    let Some((deployment, last)) = last_applied(tx, environment, node.as_str(), &spec.name)? else {
         return Ok(None);
     };
     let mut pinned = spec.clone();
@@ -984,8 +986,23 @@ fn reused(
         }
         pinned.container.image.clone_from(&pin.image);
     }
-    let same = PayloadDigest::of(&pinned, namespace).ok() == Some(last.digest);
-    Ok(same.then_some(last))
+    let Ok(digest) = PayloadDigest::of(&pinned, namespace) else {
+        return Ok(None);
+    };
+    if digest == last.digest {
+        return Ok(Some(last));
+    }
+    let unplaced = |spec: &RequestedServiceSpec| {
+        let mut spec = spec.clone();
+        ployz_core::Region::keep(None, &mut spec.placement, &mut spec.regions);
+        PayloadDigest::of(&spec, namespace).ok()
+    };
+    let moved = ran_spec(tx, &deployment, &spec.name, &last)
+        .is_some_and(|ran| unplaced(&ran).is_some() && unplaced(&ran) == unplaced(&pinned));
+    Ok(moved.then_some(RanService {
+        digest,
+        pin: last.pin,
+    }))
 }
 
 /// What `source` ran for each of `pending`'s Services: its record, else what the
@@ -1019,27 +1036,29 @@ fn replayed(
     Ok(found)
 }
 
-/// What `service` ran in the Deployment that last applied Service node `node`.
+/// The Deployment that last applied Service node `node`, and what `service` ran in it.
 fn last_applied(
     tx: &mut dyn Tx,
     environment: &str,
     node: &str,
     service: &ServiceName,
-) -> Result<Option<RanService>, RpcError> {
+) -> Result<Option<(DeploymentId, RanService)>, RpcError> {
     let rows = tx.query(
-        "SELECT d.ran FROM config_applied a JOIN config_deployment d ON d.id = a.deployment_id \
+        "SELECT d.id, d.ran FROM config_applied a JOIN config_deployment d ON d.id = a.deployment_id \
          WHERE a.environment_id = ?1 AND a.node_id = ?2",
         &[environment.into(), node.into()],
     )?;
-    let Some(text) = rows
-        .first()
-        .map(|row| row.optional_text(0))
-        .transpose()?
-        .flatten()
-    else {
+    let Some(row) = rows.first() else {
         return Ok(None);
     };
-    Ok(parse(text)?.services.remove(service))
+    let Some(text) = row.optional_text(1)? else {
+        return Ok(None);
+    };
+    let deployment = row.parse::<DeploymentId>(0, "Deployment")?;
+    Ok(parse(text)?
+        .services
+        .remove(service)
+        .map(|ran| (deployment, ran)))
 }
 
 fn record_of(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Record, RpcError> {

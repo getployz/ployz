@@ -55,10 +55,20 @@ impl LocalMachine {
             | WantedCopy::Floor => None,
         };
         if let WantedCopy::Writer {
-            start: Some(Start::Create { check: true, .. }),
+            start:
+                Some(Start::Create {
+                    check: true,
+                    resolved_spec,
+                    ..
+                }),
             ..
         } = &request.want
         {
+            // What the Create after the promote refuses, a check refuses before the cut.
+            self.docker()?
+                .lifecycle()
+                .check_start_volumes(resolved_spec, self.plugin())
+                .await?;
             return self.inspect_copy(&request.name).await;
         }
         if request.want == WantedCopy::Floor {

@@ -601,7 +601,7 @@ fn external_driver<'a>(
     }
 }
 
-fn other_data(name: &DockerVolumeName) -> Error {
+pub(super) fn other_data(name: &DockerVolumeName) -> Error {
     Error::ForeignVolume {
         name: name.clone(),
         found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),
