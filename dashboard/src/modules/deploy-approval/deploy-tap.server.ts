@@ -65,7 +65,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
     const shown = answerForSupport({ operation: "read", query: { query: "plan", environment: input.environment, services: [...input.services], target: true } }, read, access.shows);
     if (!shown.ok) return { kind: "refused", message: shown.refusal.message } satisfies DeployPlan;
-    return { kind: "plan", plan: { ...shown.value, target: [] }, tap } satisfies DeployPlan;
+    return { kind: "plan", plan: shown.value, tap } satisfies DeployPlan;
   }
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
