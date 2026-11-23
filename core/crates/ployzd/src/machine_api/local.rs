@@ -957,7 +957,12 @@ impl MachineService {
         request: ployz_core::EnsureContainerRequest,
     ) -> Answer {
         let admitted = match local
-            .admit_spec(&request.want, request.rule.as_deref(), &request.versions)
+            .admit_spec(
+                &request.want,
+                request.rule.as_deref(),
+                &request.versions,
+                crate::machine::Admit::Record,
+            )
             .await
         {
             Ok(admitted) => admitted,

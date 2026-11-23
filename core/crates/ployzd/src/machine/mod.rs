@@ -33,7 +33,7 @@ pub use store::{LocalMachineStore, StoreError};
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    AdmittedBy, AdmittedSpec, Call, Caller, RecoveryError, RuntimeWatchTelemetry, Scope,
+    Admit, AdmittedBy, AdmittedSpec, Call, Caller, RecoveryError, RuntimeWatchTelemetry, Scope,
     SealingError,
 };
 #[cfg(test)]

@@ -81,7 +81,7 @@ mod ingress_doors;
 mod private_access;
 mod register;
 mod reserved;
-pub(crate) use admission::{AdmittedBy, AdmittedSpec};
+pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Scope};
 pub(crate) use consumption::ConsumptionLog;

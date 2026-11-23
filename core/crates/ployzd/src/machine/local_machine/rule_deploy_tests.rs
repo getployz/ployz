@@ -115,6 +115,7 @@ impl Fixture {
                 &github(commit()),
                 now(),
                 &mut Budget::default(),
+                Admit::Record,
             )
             .await
             .unwrap()
@@ -130,7 +131,14 @@ impl Fixture {
         at: Timestamp,
     ) -> Result<(), Error> {
         self.machine
-            .admit_rule_deploy(&want, proof, &github(head), at, &mut Budget::default())
+            .admit_rule_deploy(
+                &want,
+                proof,
+                &github(head),
+                at,
+                &mut Budget::default(),
+                Admit::Record,
+            )
             .await
             .map(drop)
     }
@@ -532,6 +540,7 @@ async fn what_a_rule_admitted_stops_standing_once_a_newer_generation_arrives() {
             &github(commit()),
             now(),
             &mut Budget::default(),
+            Admit::Record,
         )
         .await
         .unwrap()
@@ -633,7 +642,7 @@ async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one()
     let (in_flight, ()) = tokio::join!(
         fixture
             .machine
-            .admit_rule_deploy(&first, &stale, &slow, now(), &mut budget),
+            .admit_rule_deploy(&first, &stale, &slow, now(), &mut budget, Admit::Record),
         async {
             slow.reached.notified().await;
             fixture
@@ -718,6 +727,7 @@ async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
             &github(commit()),
             now(),
             &mut one_left,
+            Admit::Record,
         )
         .await;
     assert!(
@@ -738,7 +748,126 @@ async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
             &github(commit()),
             now(),
             &mut two_left,
+            Admit::Record,
         )
+        .await
+        .unwrap();
+}
+
+/// `web` from the rule's image, mounting the Provisioned Volume `data` born in `app`.
+fn mounting_data() -> Value {
+    json!({
+        "name": "web",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": format!("ployz-build/web@sha256:{IMAGE}"), "pull_policy": "missing"},
+        "volumes": [{"reference": "data", "source": {"kind": "provisioned", "name": "data",
+            "maximum_bytes": 1_073_741_824_u64, "birth": {"namespace": "app", "name": "data",
+            "made_at": 1_762_178_640_000_u64, "nonce": "00112233445566778899aabbccddeeff"}}}],
+        "mounts": [{"volume": "data", "target": "/data"}],
+    })
+}
+
+/// A Move's Create of [`mounting_data`] under `proof`, as a check when `check`.
+fn moved_start(proof: &RuleProof, check: bool) -> ployz_core::Start {
+    let app = Namespace::parse("app").unwrap();
+    let mut scoped = requested(&mounting_data());
+    scoped.mount_graph = scoped.mount_graph.scope_to_namespace(&app).unwrap();
+    let resolved = scoped
+        .to_resolved(
+            ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    serde_json::from_value(json!({"kind": "create", "namespace": "app",
+        "resolved_spec": resolved, "creation_key": "move-1", "gen": 2, "rotation": "pending",
+        "rule": proof, "check": check}))
+    .unwrap()
+}
+
+impl Fixture {
+    /// An Operator's start of `start` on `app_data`, and the rule it was admitted under.
+    async fn start_moved(&self, start: &ployz_core::Start) -> Result<(), Error> {
+        let admitted = self
+            .machine
+            .clone()
+            .with_zpool("true")
+            .at_operator_scope()
+            .admit_volume_start(&"app_data".parse().unwrap(), start)
+            .await?
+            .expect("a Create's admission");
+        assert!(matches!(admitted.by(), AdmittedBy::Rule { .. }));
+        Ok(())
+    }
+}
+
+/// A Move carries the verified build Cloud kept from the holder's deploy; this Machine
+/// takes it only for the build it verified and only when the rule names this Machine.
+#[tokio::test]
+async fn a_moved_volume_starts_under_a_verified_rule_only_where_the_rule_places_it() {
+    let fixture = fixture().await;
+    let app = Namespace::parse("app").unwrap();
+    let mut rule = fixture.deploy_rule(3);
+    rule.services[0].template =
+        ployz_core::authority::rule::template(&requested(&mounting_data()), &app).unwrap();
+    let claim = fixture.built(&rule, fixture.attest());
+    let online = fixture.proof(&rule, &claim, token_for(&claim, "moved"));
+    let holder = moved_start(&online, false);
+    let ployz_core::Start::Create { resolved_spec, .. } = &holder else {
+        unreachable!("a Create");
+    };
+    let mut issuing = want("service_container", "k1", &spec());
+    if let ContainerWant::Running {
+        container: RunTarget::New(new),
+        ..
+    } = &mut issuing
+    {
+        new.resolved_spec = resolved_spec.clone();
+    }
+    let verified = fixture.issued(issuing, &online).await;
+    let proof = Fixture::offline(&online, verified);
+    fixture
+        .start_moved(&moved_start(&proof, false))
+        .await
+        .unwrap();
+
+    let forged = Fixture::offline(&online, VerifiedBuild::from_bytes([0x5a; 32]));
+    assert_eq!(
+        refused(fixture.start_moved(&moved_start(&forged, false)).await),
+        "a verified build"
+    );
+
+    let mut elsewhere = rule.clone();
+    elsewhere.machines = vec![ployz_core::MachineId::parse("1".repeat(32)).unwrap()];
+    let off_list = RuleProof {
+        rule: Signed::sign(&elsewhere, &fixture.signer).unwrap(),
+        ..proof.clone()
+    };
+    assert_eq!(
+        refused(fixture.start_moved(&moved_start(&off_list, false)).await),
+        "a Machine"
+    );
+
+    // A check carrying a newer generation marks nothing, so the holder's rule still stands.
+    let mut next = rule.clone();
+    next.generation = 4;
+    let swapped = RuleProof {
+        rule: Signed::sign(&next, &fixture.signer).unwrap(),
+        ..proof.clone()
+    };
+    assert_eq!(
+        refused(fixture.start_moved(&moved_start(&swapped, true)).await),
+        "a generation"
+    );
+    assert_eq!(
+        fixture
+            .machine
+            .approvals
+            .rule_generation(rule.rule, Error::ApprovalRecord)
+            .unwrap(),
+        Some(3)
+    );
+    fixture
+        .start_moved(&moved_start(&proof, true))
         .await
         .unwrap();
 }

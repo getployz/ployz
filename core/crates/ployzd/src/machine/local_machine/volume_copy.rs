@@ -47,13 +47,20 @@ impl LocalMachine {
         let admitted = match &request.want {
             WantedCopy::Writer {
                 start: Some(start), ..
-            } => self.admit_volume_start(start).await?,
+            } => self.admit_volume_start(&request.name, start).await?,
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
             | WantedCopy::Forget
             | WantedCopy::Floor => None,
         };
+        if let WantedCopy::Writer {
+            start: Some(Start::Create { check: true, .. }),
+            ..
+        } = &request.want
+        {
+            return self.inspect_copy(&request.name).await;
+        }
         if request.want == WantedCopy::Floor {
             return self.floor_copy(&request.name, request.r#gen).await;
         }

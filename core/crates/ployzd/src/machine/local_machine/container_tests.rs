@@ -1385,7 +1385,7 @@ mod settled {
         let admitted = local
             .clone()
             .at_operator_scope()
-            .admit_spec(&want, None, &[])
+            .admit_spec(&want, None, &[], crate::machine::Admit::Record)
             .await
             .unwrap();
         assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
@@ -1448,7 +1448,7 @@ mod settled {
             let admitted = local
                 .clone()
                 .at_operator_scope()
-                .admit_spec(&want, None, &[])
+                .admit_spec(&want, None, &[], crate::machine::Admit::Record)
                 .await
                 .unwrap();
             assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));

@@ -24,7 +24,7 @@ use ployz_core::{
     },
 };
 
-use super::{AdmittedBy, Error, LocalMachine, rule_grant::Github};
+use super::{Admit, AdmittedBy, Error, LocalMachine, rule_grant::Github};
 use crate::sealing_key::SealingKey;
 
 /// Why a Machine refused a deploy under a rule.
@@ -106,7 +106,8 @@ pub(crate) struct RuleAdmitted {
 impl LocalMachine {
     /// Admit an Operator's new Container on `proof`, at `now`, with the rule's signature
     /// charged to `budget`, and name the rule, its generation and its signer. A build
-    /// checked online gets its verified build; a hook takes its place once per push.
+    /// checked online gets its verified build; a hook takes its place once per push. A
+    /// check marks no generation and takes no hook place.
     ///
     /// # Errors
     /// Returns [`Error::RuleDeployRefused`] naming what does not hold, and
@@ -118,6 +119,7 @@ impl LocalMachine {
         github: &impl Github,
         now: Timestamp,
         budget: &mut Budget,
+        admit: Admit,
     ) -> Result<RuleAdmitted, Error> {
         let ContainerWant::Running {
             container: RunTarget::New(new),
@@ -154,7 +156,7 @@ impl LocalMachine {
             refused(refusal)
         };
         // An ended generation still supersedes every one below it.
-        self.approvals.mark_rule(&rule, superseded)?;
+        self.approvals.mark_rule(&rule, admit, superseded)?;
         let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
         self.rule_floor(cluster, &service, &rule, now)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
@@ -216,7 +218,7 @@ impl LocalMachine {
             }
             RuleEvidence::Online(_) => {
                 // Checked again: a newer generation may have landed while GitHub answered.
-                self.approvals.mark_rule(&rule, superseded)?;
+                self.approvals.mark_rule(&rule, admit, superseded)?;
                 issue(
                     &CheckedOnline {
                         rule: &proof.rule,
@@ -226,7 +228,7 @@ impl LocalMachine {
                 )
             }
         };
-        if new.slot.kind == ContainerKind::PreDeployHook {
+        if new.slot.kind == ContainerKind::PreDeployHook && admit == Admit::Record {
             self.approvals
                 .consume_rule_hook(rule.rule, claim, &new.slot.creation_key, refused)?;
         }
@@ -286,13 +288,14 @@ impl LocalMachine {
         want: &ContainerWant,
         proof: &RuleProof,
         budget: &mut Budget,
+        admit: Admit,
     ) -> Result<RuleAdmitted, Error> {
         let github = super::rule_grant::GithubOnline::shared().ok_or(Error::RuleDeployRefused(
             RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
                 field: MismatchField::GitHubClient,
             }),
         ))?;
-        self.admit_rule_deploy(want, proof, github, Timestamp::now(), budget)
+        self.admit_rule_deploy(want, proof, github, Timestamp::now(), budget, admit)
             .await
     }
 }
