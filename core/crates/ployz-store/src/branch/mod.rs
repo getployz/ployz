@@ -429,6 +429,12 @@ pub struct PlannedNode {
     pub owner: Option<EnvironmentName>,
     /// It holds data: a Volume, or a Service mounting one.
     pub data: bool,
+    /// Used live, each variable of the Branch's own Services that reads its sealed
+    /// values, such as `web.DATABASE_URL`. The Branch never gets them, so a Deploy
+    /// leaves each out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub left_out: Vec<String>,
 }
 
 /// What a node becomes in a planned Branch.
@@ -681,6 +687,64 @@ fn holds_data(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
             .services
             .iter()
             .any(|service| service.lineage_id == lineage && !service.volume_attachments.is_empty())
+}
+
+/// The variables of the `own` Services in `intent` that read a sealed value of the
+/// Service of `lineage`, directly or through other variables, as `service.KEY`.
+fn reads_sealed(
+    intent: &SavedEnvironmentIntent,
+    lineage: &str,
+    own: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut tainted: BTreeSet<(&str, &str)> = intent
+        .services
+        .iter()
+        .filter(|service| service.lineage_id == lineage)
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| variable.value.is_secret())
+                .map(|variable| (service.lineage_id.as_str(), variable.key.as_str()))
+        })
+        .collect();
+    loop {
+        let before = tainted.len();
+        for service in &intent.services {
+            for variable in &service.variables {
+                let reads = variable.value.parts().iter().any(|part| match part {
+                    ValuePart::Ref { owner, key } => {
+                        let owner = match owner {
+                            ValuePartOwner::Service { lineage_id } => lineage_id.as_str(),
+                            ValuePartOwner::Self_ => service.lineage_id.as_str(),
+                        };
+                        tainted.contains(&(owner, key.as_str()))
+                    }
+                    ValuePart::Text { .. } => false,
+                });
+                if reads {
+                    tainted.insert((service.lineage_id.as_str(), variable.key.as_str()));
+                }
+            }
+        }
+        if tainted.len() == before {
+            break;
+        }
+    }
+    intent
+        .services
+        .iter()
+        .filter(|service| own.contains(&service.lineage_id))
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| {
+                    tainted.contains(&(service.lineage_id.as_str(), variable.key.as_str()))
+                })
+                .map(|variable| format!("{}.{}", service.slug, variable.key))
+        })
+        .collect()
 }
 
 fn holds(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {

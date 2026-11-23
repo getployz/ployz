@@ -79,7 +79,7 @@ impl VersionedValue {
                 names
             )),
             VariableValue::Sealed { .. } => json!({ "secret": true }),
-            VariableValue::NotSet => json!({ "secret": false }),
+            VariableValue::Pending { .. } | VariableValue::NotSet => json!({ "secret": false }),
         }
     }
 }
@@ -2246,12 +2246,29 @@ fn keep_sealed(
                     ));
                 }
                 None if sealed(&variable.value) || ledger.holds(&service.id, variable) => {
-                    variable.value = VariableValue::NotSet;
-                    not_set.push(NotSetVariable {
-                        service: ServiceName::parse(&service.slug)
-                            .map_err(|_| error::corrupt("Service name"))?,
-                        key: variable.key.clone(),
-                    });
+                    // A made one stays made: its next dashboard Deploy makes a new
+                    // value, and until then a Deploy that needs it is refused.
+                    variable.value = match &variable.value {
+                        VariableValue::Sealed {
+                            generator: Some(generator),
+                            ..
+                        }
+                        | VariableValue::Pending { generator } => VariableValue::Pending {
+                            generator: generator.clone(),
+                        },
+                        VariableValue::Plain { .. }
+                        | VariableValue::Generated { .. }
+                        | VariableValue::Arriving { .. }
+                        | VariableValue::Sealed { .. }
+                        | VariableValue::NotSet => VariableValue::NotSet,
+                    };
+                    if matches!(variable.value, VariableValue::NotSet) {
+                        not_set.push(NotSetVariable {
+                            service: ServiceName::parse(&service.slug)
+                                .map_err(|_| error::corrupt("Service name"))?,
+                            key: variable.key.clone(),
+                        });
+                    }
                 }
                 Some(_) | None => {}
             }

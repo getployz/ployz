@@ -9,6 +9,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as github from "#/modules/github/github.collection";
 import * as regionHooks from "#/modules/machines/server-regions.hooks";
 import { databaseCommand } from "#/modules/config-store/database-presets";
+import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import * as functions from "#/modules/config-store/store.functions";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -35,6 +36,8 @@ function setup({ project, database, servers = { settled: true, region: null } }:
   servers?: ReturnType<typeof regionHooks.useNewEnvironmentRegion>;
 }) {
   const queryClient = new QueryClient();
+  // A Server holds the Cluster's key, so a database's password can be sealed.
+  queryClient.setQueryData(sealingQueryOptions("acme").queryKey, { organizationId: "org", sealing: { state: "ready", publicKey: "key" } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(github, "preloadGithubRepos").mockImplementation(() => {});
   vi.spyOn(regionHooks, "useNewEnvironmentRegion").mockReturnValue(servers);
@@ -51,7 +54,7 @@ function setup({ project, database, servers = { settled: true, region: null } }:
     return (target, preset) => ({
       service: { id: "0-0-0-0-db" },
       persisted: writer.commit(databaseCommand(preset, { service: "0-0-0-0-db", volume: "0-0-0-0-vol", environment: target.store,
-        name: "postgres", volumeName: "postgres-data" })),
+        name: "postgres", volumeName: "postgres-data" }, { sealing: true })),
     });
   });
   const toastError = vi.spyOn(toast, "error");

@@ -7,7 +7,7 @@ use ployz_core::authority::{
     AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
     RuleTerms, SignerKey, Timestamp, version_draft::VersionsAsked,
 };
-use ployz_core::config::{ConfigError, parse_env_file, parse_service_setting};
+use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
 use ployz_core::{JoinedServer, MachineSubnet, Region, ServiceName};
 use wasm_bindgen::prelude::*;
@@ -20,6 +20,7 @@ enum ConfigRequest {
     ParseRegion { value: String },
     ParseRegionName { value: String },
     FirstServerRegion { servers: Vec<ServerRegion> },
+    ParseGenerator { value: String },
 }
 
 /// A Server's Machine Subnet, when its join was approved and its `region` label value, as a
@@ -81,6 +82,14 @@ fn answer(input: serde_json::Value) -> Result<serde_json::Value, ConfigError> {
             })),
         )
         .expect("a region is JSON")),
+        ConfigRequest::ParseGenerator { value } => match Generator::parse(&value) {
+            Ok(Some(generator)) => Ok(serde_json::json!({
+                "length": generator.length(),
+                "alphabet": String::from_utf8_lossy(&generator.alphabet()),
+            })),
+            Ok(None) => Err(refused("generated", "Expected a secret(…) call.")),
+            Err(error) => Err(refused("generated", &error.to_string())),
+        },
     }
 }
 

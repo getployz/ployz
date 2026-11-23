@@ -10,7 +10,9 @@ import { environmentKey } from "#/modules/config-store/environment-ref";
 import { invalidateViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
+import { fillPending } from "./fill-pending";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type Ask, type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
 
@@ -39,8 +41,18 @@ export function useDeployTap(organizationSlug: string) {
   // The answer the caller's pending Volume-loss confirm holds, used once by its retry.
   const pending = useRef<{ plan: string; place: string; versions: PostedVersion[] } | null>(null);
 
-  const prepare = (command: AdmitDeploy) => prepareDeploy(command, ({ environment, services }) =>
-    prepareDeployTapServerFn({ data: { organizationSlug, environment, services: [...services ?? []] } }));
+  const sealing = useSealing(organizationSlug);
+  const read = ({ environment, services }: AdmitDeploy) =>
+    prepareDeployTapServerFn({ data: { organizationSlug, environment, services: [...services ?? []] } });
+  /** The plan, once this browser fills each Pending value the Store names. */
+  const prepare = async (command: AdmitDeploy) => {
+    const planned = await read(command);
+    const filled = await fillPending(command, planned, sealing.sealer, async (changes) => {
+      const written = await writer.edit({ environment: command.environment, changes });
+      return written.written === "edited" ? written.environment.revision : null;
+    });
+    return filled === null ? prepareDeploy(command, async () => planned) : prepareDeploy(filled, read);
+  };
 
   async function stale(command: AdmitDeploy) {
     toast.error("Your changes moved since you looked. Check them, then deploy again.");

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, Parent, PlanView } from "@ployz/sdk";
+import type { EnvironmentRef, JsonValue, Parent, PlanView } from "@ployz/sdk";
 import type { Against } from "@ployz/sdk/authority";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -39,7 +39,7 @@ export type DeployTap =
 /** The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. */
 export type DeployPlan =
   | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap }
-  | { readonly kind: "refused"; readonly message: string };
+  | { readonly kind: "refused"; readonly message: string; readonly details?: JsonValue };
 
 /**
  * The plan of a Deploy of `services` in `environment` with its targets, read here so Cloud looks up only the tags of
@@ -55,7 +55,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     operation: "read",
     query: { query: "plan", environment: input.environment, services: [...input.services], target: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
-  if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies DeployPlan;
+  if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
   const unsigned = plan.unsigned ?? [];
   const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));

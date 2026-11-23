@@ -55,6 +55,27 @@ pub(super) fn put_sealed(
     Ok(())
 }
 
+/// Make Pending the secret `env` holds Not set at `row` when `from`'s secret there
+/// was made with a generator: the receiver makes its own value, never Not set.
+pub(super) fn pend(env: &mut Intent, from: &Intent, row: &RowId) {
+    let At::Variable(key) = &row.at else {
+        return;
+    };
+    let generator = service(from, &row.lineage)
+        .and_then(|service| service.variables.iter().find(|v| v.key == *key))
+        .filter(|variable| variable.value.is_secret())
+        .and_then(SavedVariableIntent::generator);
+    if let Some(generator) = generator
+        && let Some(variable) = service_mut(env, &row.lineage)
+            .and_then(|service| service.variables.iter_mut().find(|v| v.key == *key))
+        && variable.value == VariableValue::NotSet
+    {
+        variable.value = VariableValue::Pending {
+            generator: generator.clone(),
+        };
+    }
+}
+
 /// Mount (or unmount, on `Absent`) the Volume or Config of lineage `resource` on the
 /// Service at `row`. A kind differs only in what it can be mounted at and what it says
 /// when it cannot be.
@@ -207,6 +228,7 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                     ciphertext: None,
                     fingerprint: ValueFingerprint::parse(fingerprint.as_str())
                         .map_err(|_| invalid("Not a variable's value"))?,
+                    generator: None,
                 },
                 (Cell::SecretWithoutValue, _) => VariableValue::NotSet,
             };

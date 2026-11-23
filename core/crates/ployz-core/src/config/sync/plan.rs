@@ -674,6 +674,9 @@ impl Plan {
                 self.introduce(&mut next, base.as_mut(), &id.lineage)?;
             } else {
                 put_sealed(&mut next, id, &value)?;
+                if value == SealedCell::Cell(Cell::SecretWithoutValue) {
+                    pend(&mut next, &self.from, id);
+                }
                 if let (At::Variable(key), SealedCell::Cell(Cell::Absent)) = (&id.at, &was) {
                     self.describe(&mut next, &id.lineage, key);
                 }

@@ -125,6 +125,7 @@ impl<'env> SealedSince<'env> {
                 Ok(fingerprint) => VariableValue::Sealed {
                     ciphertext: None,
                     fingerprint,
+                    generator: None,
                 },
                 Err(_) => VariableValue::NotSet,
             };

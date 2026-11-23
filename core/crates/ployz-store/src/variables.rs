@@ -69,9 +69,9 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
-    /// `{"secret": {"sealedFor": ..., "value": ...}}`: a value the browser sealed for
-    /// this Environment, stored as it came.
-    ClientSealed(ClientSealedValue),
+    /// `{"secret": {"sealedFor": ..., "value": ..., "generated"?: ...}}`: a value the
+    /// browser sealed for this Environment, stored as it came, with how it made it.
+    ClientSealed(ClientSealedValue, Option<Generator>),
     /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
     Generate,
     /// `${{ secret(…) }}`: a plain value the Store makes, unless one is stored already.
@@ -181,6 +181,16 @@ pub(crate) fn set(
         (None, Some(current)) => kept(current),
         (Some(Input::Keep), Some(current)) if secret(current) => kept(current),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
+        // Only a person's browser makes a Pending value, so Cloud never sees it.
+        (Some(Input::Generate), Some(current))
+            if matches!(current.value, VariableValue::Pending { .. }) =>
+        {
+            let variable = format!("{service}.{key}");
+            return Err(error::invalid(
+                awaiting_dashboard(&variable),
+                json!({ "variable": variable }),
+            ));
+        }
         // A retried edit must not rotate a secret its referrers and a database already use.
         (Some(Input::Generate), Some(current))
             if matches!(current.value, VariableValue::Sealed { .. }) =>
@@ -198,6 +208,7 @@ pub(crate) fn set(
                 VariableValue::Sealed {
                     ciphertext: Some(sealed.value),
                     fingerprint: made_fingerprint(sealed.fingerprint),
+                    generator: None,
                 },
                 None,
             )
@@ -248,7 +259,14 @@ pub(crate) fn set(
         (Some(Input::Seal(_)), _) => {
             return Err(sealer.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
-        (Some(Input::ClientSealed(value)), _) => {
+        // A made value fills only a new or Pending one: two browsers filling it, or a
+        // stale fill over a value set since, keeps what a database may already use.
+        (Some(Input::ClientSealed(_, Some(_))), Some(current))
+            if !matches!(current.value, VariableValue::Pending { .. }) =>
+        {
+            kept(current)
+        }
+        (Some(Input::ClientSealed(value, generator)), _) => {
             let receiver = client_sealed::Receiver {
                 environment: &environment.summary.id,
                 service: environment.service(service)?,
@@ -259,6 +277,7 @@ pub(crate) fn set(
                 VariableValue::Sealed {
                     ciphertext: Some(sealed.value),
                     fingerprint: made_fingerprint(sealed.fingerprint),
+                    generator,
                 },
                 None,
             )
@@ -818,7 +837,7 @@ pub(crate) fn new_secret(key: &VariableKey, value: &Value) -> Result<Option<NewS
             Some(
                 Input::Text(_)
                 | Input::Keep
-                | Input::ClientSealed(_)
+                | Input::ClientSealed(..)
                 | Input::Generate
                 | Input::Generated(_),
             )
@@ -862,9 +881,24 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
                 Ok(Input::Generate)
             }
             // A fixed message: a serde error would echo the value.
-            Some(sealed @ Value::Object(asked)) if asked.contains_key("sealedFor") => {
-                serde_json::from_value(sealed.clone())
-                    .map(Input::ClientSealed)
+            Some(Value::Object(asked)) if asked.contains_key("sealedFor") => {
+                let mut sealed = asked.clone();
+                let generator = sealed
+                    .remove("generated")
+                    .map(|generated| {
+                        generated
+                            .as_str()
+                            .and_then(|text| Generator::parse(text).ok().flatten())
+                            .ok_or_else(|| {
+                                invalid(
+                                    key,
+                                    "generated takes a secret(…) call, such as ${{ secret(32) }}",
+                                )
+                            })
+                    })
+                    .transpose()?;
+                serde_json::from_value(Value::Object(sealed))
+                    .map(|value| Input::ClientSealed(value, generator))
                     .map_err(|_| {
                         invalid(key, "expected sealedFor and a value sealed in the browser")
                     })
@@ -1007,6 +1041,12 @@ fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
             Err(invalid(key, "exported is true or false"))
         }
     }
+}
+
+/// Why what needs `variable`'s Pending value, such as `db.PASSWORD`, is refused:
+/// only a person's browser makes it, at their next dashboard Deploy.
+pub(crate) fn awaiting_dashboard(variable: &str) -> String {
+    format!("{variable} has no value yet. Deploy from the dashboard to make it.")
 }
 
 /// A refused variable value: never echoed.

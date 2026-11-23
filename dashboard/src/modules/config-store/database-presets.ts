@@ -1,4 +1,4 @@
-import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
+import type { ConfigCommand, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { DEFAULT_VOLUME_GB } from "./store-volumes";
 
 /**
@@ -8,7 +8,7 @@ import { DEFAULT_VOLUME_GB } from "./store-volumes";
  * are exported so other Services can reference them.
  */
 // ponytail: the password is only read when the database first initializes its Volume; changing it later needs the
-// database's own tooling too. No rotation: the Store keeps a generated value until it is set by hand.
+// database's own tooling too. No rotation: a sealed value stays until it is set by hand.
 export type DatabasePreset = {
   id: "postgres" | "redis" | "mongodb" | "mysql";
   label: string;
@@ -23,10 +23,15 @@ export type DatabasePreset = {
 const HOST = "${{ PLOYZ_PRIVATE_DOMAIN }}";
 
 /**
- * 32 random letters, as Railway's `secret(32, "a-zA-Z")`. The Store makes the value, plain, and a Branch copy or PR
- * Environment makes its own, so each New, empty Volume initializes with a password of its own.
+ * 32 random letters, as Railway's `secret(32, "a-zA-Z")`. The browser makes the value and seals it, so Cloud never
+ * sees it. A Branch copy or PR Environment gets its own at its first dashboard Deploy, so each New, empty Volume
+ * initializes with a password of its own.
  */
 export const GENERATED_PASSWORD = '${{ secret(32, "a-zA-Z") }}';
+
+/** The preset's password variable: the one it generates. */
+export const passwordKey = (preset: DatabasePreset) =>
+  Object.keys(preset.env).find((key) => preset.env[key] === GENERATED_PASSWORD) ?? "";
 
 export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
@@ -82,14 +87,14 @@ export const templateLabel = ({ id }: { id: string }) => DATABASE_PRESETS.find((
 /**
  * One Batch that creates the preset's Service and its Volume (managed, at the default limit, like any new Volume)
  * mounted at its data path, then sets its start command, healthcheck (at the default timeout) and variables. All of it
- * saves, or none.
+ * saves, or none. `password` is what the password variable's `secret` holds: the value sealed in the browser.
  */
 export function databaseCommand(preset: DatabasePreset, target: {
   service: string; volume: string; environment: EnvironmentRef; name: string; volumeName: string;
-}): ConfigCommand {
+}, password: JsonValue): ConfigCommand {
   const { service, volume, environment, name, volumeName } = target;
   const env = Object.fromEntries(Object.entries(preset.env)
-    .map(([key, value]) => [key, { value, exported: true }]));
+    .map(([key, value]) => [key, { value: value === GENERATED_PASSWORD ? { secret: password } : value, exported: true }]));
   const settings = { healthcheck: { command: preset.healthcheck }, env };
   return {
     command: "batch",

@@ -14,3 +14,6 @@ export function firstServerRegion(servers: ReadonlyArray<{ subnet: string | null
 
 /** The one rule for a region's display name: 1 to 40 characters on one line. Returns it trimmed; throws an Error whose message says the rule. */
 export function parseRegionName(value: string): string;
+
+/** What `${{ secret(…) }}` asks for, as the Store reads it: the length and the distinct characters, in ASCII order, to draw it from. Throws an Error whose message says the rule. */
+export function parseGenerator(value: string): { length: number; alphabet: string };
