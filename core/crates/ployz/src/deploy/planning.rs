@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ployz_core::{
     BlockedKind, BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss,
-    DependencyCondition, HookContainer, IngressHost, MachineId, MachineObservation,
-    MembershipObservation, Namespace, ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal,
-    QualifiedService, Region, RequestedServiceSpec, RpcError, ServiceContainer, ServiceId,
-    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, UpdateOrder,
-    VolumeToCreate, WaitingReplicas, explicit_ingress_hosts, hostname_owners,
-    same_service_mode_kind,
+    DependencyCondition, DockerVolumeName, HookContainer, IngressHost, MachineId,
+    MachineObservation, MembershipObservation, Namespace, ObservedDataLoss, PlanMode,
+    PreservedVolume, PruneRefusal, QualifiedService, Region, RequestedServiceSpec, RpcError,
+    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation,
+    ServicePlacementEligibility, UpdateOrder, VolumeToCreate, WaitingReplicas,
+    explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
 };
 
 use super::{
@@ -48,6 +48,7 @@ struct BoundIntent {
     target: Vec<RequestedServiceSpec>,
     requested: Vec<RequestedServiceSpec>,
     handovers: Vec<HostnameHandover>,
+    volume_handovers: Vec<VolumeHandover>,
     retiring: Vec<QualifiedService>,
 }
 
@@ -56,6 +57,16 @@ struct BoundIntent {
 /// and routed, so the hostname moves once its new owner can answer.
 struct HostnameHandover {
     hostname: IngressHost,
+    from: ServiceName,
+    to: ServiceName,
+}
+
+/// A Provisioned Volume this Deploy moves between two Services it applies: `from` runs on
+/// it today and its new spec drops it, `to` mounts it. A Machine starts no second Service
+/// Container on the Volume, so `to` waits until `from` is published and its old copies are
+/// gone.
+#[derive(Eq, PartialEq)]
+struct VolumeHandover {
     from: ServiceName,
     to: ServiceName,
 }
@@ -802,7 +813,13 @@ fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent,
     check_removals(intent)?;
     let retiring = retiring_services(intent, snapshot);
     let handovers = hostname_handovers(intent, snapshot, &retiring)?;
-    let specs = order_included(intent, &intent.applied_names(), &handovers)?;
+    let volume_handovers = volume_handovers(intent, snapshot, &retiring);
+    let specs = order_included(
+        intent,
+        &intent.applied_names(),
+        &handovers,
+        &volume_handovers,
+    )?;
     let target: Vec<_> = intent
         .target
         .iter()
@@ -823,6 +840,7 @@ fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent,
         target,
         requested,
         handovers,
+        volume_handovers,
         retiring,
     })
 }
@@ -925,6 +943,63 @@ fn hostname_handovers(
         }
     }
     Ok(handovers)
+}
+
+/// The Provisioned Volumes this Deploy moves from one applied Service to another.
+fn volume_handovers(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+    retiring: &[QualifiedService],
+) -> Vec<VolumeHandover> {
+    let applied = intent.applied_names();
+    let mounted = |spec: &RequestedServiceSpec| -> BTreeSet<DockerVolumeName> {
+        spec.volume_graph()
+            .mounted_provisioned_volumes()
+            .filter_map(|volume| {
+                let mut source = volume.source.clone();
+                source.scope_to_namespace(&intent.namespace);
+                source.managed_docker_volume_name().cloned()
+            })
+            .collect()
+    };
+    let mut handovers = Vec::new();
+    for container in snapshot.containers.iter().filter(|container| {
+        container.namespace == intent.namespace
+            && container.kind == ployz_core::ContainerKind::ServiceContainer
+            && applied.contains(container.service_name())
+            && !retiring.contains(&container.identity())
+    }) {
+        let Some(from) = intent
+            .target
+            .iter()
+            .find(|spec| spec.name == *container.service_name())
+        else {
+            continue;
+        };
+        let kept = mounted(from);
+        for held in container
+            .resolved_spec
+            .volume_graph()
+            .mounted_provisioned_volumes()
+            .filter_map(|volume| volume.source.managed_docker_volume_name())
+            .filter(|held| !kept.contains(*held))
+        {
+            for to in intent.target.iter().filter(|spec| {
+                spec.name != from.name
+                    && applied.contains(&spec.name)
+                    && mounted(spec).contains(held)
+            }) {
+                let handover = VolumeHandover {
+                    from: from.name.clone(),
+                    to: to.name.clone(),
+                };
+                if !handovers.contains(&handover) {
+                    handovers.push(handover);
+                }
+            }
+        }
+    }
+    handovers
 }
 
 /// Why `service` waits for `other` before it starts, if it does: a declared dependency or
@@ -1061,6 +1136,7 @@ fn assemble_plan(
         target,
         requested,
         handovers,
+        volume_handovers,
         retiring,
     } = bound;
     let services = snapshot.services_in(&intent.namespace);
@@ -1295,6 +1371,13 @@ fn assemble_plan(
                 dependencies.push(handover.to.clone());
             }
         }
+        // A Service taking up a Volume another drops starts once the dropper's old copies
+        // are gone, since a Machine refuses a second Container running on the Volume.
+        for handover in &volume_handovers {
+            if handover.to == name && !dependencies.contains(&handover.from) {
+                dependencies.push(handover.from.clone());
+            }
+        }
         groups.extend(service_group(&operations, name, dependencies, range));
     }
     if !tail.is_empty() {
@@ -1494,6 +1577,7 @@ fn order_included<'intent>(
     intent: &'intent DeployIntent,
     included: &BTreeSet<&'intent ServiceName>,
     handovers: &[HostnameHandover],
+    volume_handovers: &[VolumeHandover],
 ) -> Result<Vec<&'intent RequestedServiceSpec>, PlanError> {
     let mut by_name = BTreeMap::new();
     for spec in &intent.target {
@@ -1507,6 +1591,7 @@ fn order_included<'intent>(
         intent,
         included,
         handovers,
+        volume_handovers,
         by_name,
         visiting: BTreeSet::new(),
         visited: BTreeSet::new(),
@@ -1525,6 +1610,7 @@ struct DependencyWalk<'walk, 'intent> {
     intent: &'intent DeployIntent,
     included: &'walk BTreeSet<&'intent ServiceName>,
     handovers: &'walk [HostnameHandover],
+    volume_handovers: &'walk [VolumeHandover],
     by_name: BTreeMap<&'intent ServiceName, &'intent RequestedServiceSpec>,
     visiting: BTreeSet<&'intent ServiceName>,
     visited: BTreeSet<&'intent ServiceName>,
@@ -1552,8 +1638,8 @@ impl<'intent> DependencyWalk<'_, 'intent> {
         Ok(())
     }
 
-    /// The applied Services `name` waits for: its declared dependencies, then the
-    /// Service taking over a hostname it drops.
+    /// The applied Services `name` waits for: its declared dependencies, the Service
+    /// taking over a hostname it drops, and the Service dropping a Volume it takes up.
     fn before(&self, name: &ServiceName) -> Vec<&'intent ServiceName> {
         let declared = self
             .intent
@@ -1568,8 +1654,14 @@ impl<'intent> DependencyWalk<'_, 'intent> {
             .iter()
             .filter(|handover| handover.from == *name)
             .map(|handover| &handover.to);
+        let droppers = self
+            .volume_handovers
+            .iter()
+            .filter(|handover| handover.to == *name)
+            .map(|handover| &handover.from);
         declared
             .chain(gainers)
+            .chain(droppers)
             .filter_map(|service| self.by_name.get_key_value(service).map(|(name, _)| *name))
             .collect()
     }
