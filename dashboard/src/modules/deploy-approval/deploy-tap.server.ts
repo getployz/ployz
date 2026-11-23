@@ -91,6 +91,10 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organi
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   // A Server the frame couldn't read may enforce: its answer is unknown, not off.
   if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
+  // A paired Server the frame doesn't list may enforce: name it rather than read its silence as off.
+  const seen = new Set(frame.machines.map(({ machine }) => machine.id));
+  const unseen = paired.find(({ id }) => !seen.has(id));
+  if (unseen !== undefined) return refused(`Couldn't reach ${unseen.name ?? unseen.id}. Try again.`);
   const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
   if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
   const older = enforcing.find(({ runtime: { capabilities = [] } }) => SIGNS.some((needed) => !capabilities.includes(needed)));
