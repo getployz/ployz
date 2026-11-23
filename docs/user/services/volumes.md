@@ -131,8 +131,10 @@ A redeploy, rollback or Git deploy of a version saved with shared writes on is r
 after you turn them off: that version can't change. Turn them off, then deploy again.
 
 A server also won't start a container on a managed volume while another container still runs on
-it there. The deploy fails and names the service still running. Deploy again, or stop that
-service first. A [pre-deploy command](settings.md#pre-deploy-command) runs beside the serving copy
+it there. The deploy fails and names the service still running and where it mounts the volume.
+Deploy again, or stop that service first. A deploy that unmounts the volume from one service and
+mounts it on another starts the new one after the old one's container is gone, so it doesn't fail
+this way. A [pre-deploy command](settings.md#pre-deploy-command) runs beside the serving copy
 as before.
 
 ## When its server goes down
