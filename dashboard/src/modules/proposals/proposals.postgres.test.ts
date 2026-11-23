@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { type Asking } from "#/modules/agent/agent-runner.server";
@@ -11,7 +11,7 @@ import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
-import { user } from "#/modules/identity/tables";
+import { session, user } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";
 import {
   advanceProposal,
@@ -23,18 +23,21 @@ import {
   stageStep,
   sweepProposals,
 } from "#/modules/proposals/proposals.server";
+import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
+import type { ConfigCommand, MachineId } from "@ployz/sdk";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { AuthLive } from "#/modules/identity/auth.server";
 import { Database } from "#/server/database.server";
-import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b301";
 const PROJECT = "00000000-0000-4000-8000-00000000b303";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000b304";
 const SERVICE = "00000000-0000-4000-8000-00000000b305";
+const BROWSER = "00000000-0000-4000-8000-00000000b3a0";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000b306";
 const CONTAINER = "c".repeat(64);
 const MACHINE = "b".repeat(32);
@@ -63,13 +66,14 @@ const shop = Effect.fn(function* () {
   })));
   const found = (yield* provided(findService(ORGANIZATION, ENVIRONMENT, "web"))) ?? expect.fail("no web");
   const protect = Effect.promise(() => store.write(ORGANIZATION, { command: "set_environment_protected", environment: { project: null, environment: null }, protected: true }));
-  const agent: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "owner-browser" }, role: "owner", support: null, via: "agent" };
+  const agent: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: BROWSER }, role: "owner", support: null, via: "agent" };
   const owner: Caller = { ...agent, via: "dashboard" };
   const capabilities: string[] = [];
   let readable = true;
+  let enforcing = true;
   const frame = () => asTestDouble<RuntimeWatchView>()({
     services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: CONTAINER, machine_id: MACHINE }], hook_containers: [] }],
-    machines: [{ machine: { id: MACHINE, name: "machine-2", runtime: { device_enforcement: true, capabilities } } }],
+    machines: [{ machine: { id: MACHINE, name: "machine-2", runtime: { device_enforcement: enforcing, capabilities } } }],
     containers: [],
   });
   const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
@@ -98,7 +102,18 @@ const shop = Effect.fn(function* () {
     return id;
   });
   const approve = { approve: {} };
-  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approve, protect };
+  /** Servers that don't enforce device approval: what a Deploy needs is only the agent gate's person. */
+  const enforce = (on: boolean) => { enforcing = on; };
+  /** How many Deployments the Store holds with the id the proposal's Deploy admits. */
+  const admitted = (proposal: string) => provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.select({ steps: operationProposals.steps }).from(operationProposals).where(eq(operationProposals.id, proposal));
+    const [step] = row?.steps ?? [];
+    const id = step !== undefined && "deploy" in step ? step.deploy.command.id : expect.fail("not a deploy");
+    return (yield* drizzle.execute(sql`select id from config_deployment where id = ${id}`, "objects")).length;
+  }));
+  const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
+  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approve, protect, enforce, write, admitted, store };
 });
 
 it.live("an agent stages steps without running any, presents them, and the person sees them in order", () =>
@@ -281,4 +296,72 @@ it.live("a denial with a blank reason is a denial with none", () =>
     const id = yield* staged;
     yield* call("proposal_present", { proposal: id });
     expect(yield* cluster(decideProposal(owner, id, { reject: { reason: "  " } }))).toMatchObject({ ok: true, proposal: { status: "denied", reason: null } });
+  }));
+
+/** The tab the agent's session stands for, signed in, and a Server the Store can deploy to. */
+const deployable = Effect.fn(function* () {
+  const shopped = yield* shop();
+  shopped.enforce(false);
+  yield* shopped.provided(enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE as MachineId }));
+  yield* shopped.provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.insert(session).values({
+    id: BROWSER, userId: shopped.agent.userId, token: "owner-browser-token", expiresAt: new Date(Date.now() + 86_400_000),
+  })));
+  return shopped;
+});
+
+const Linked = Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String, status: Schema.Literal("presented"), url: Schema.String }) });
+
+/** The agent's `deploy`, answered with the one link a person opens. */
+const linkOf = (answer: { readonly asking: Asking } | ToolOutcome) =>
+  Schema.decodeUnknownOption(Linked)(answer).pipe(Option.map(({ value }) => value), Option.getOrElse(() => expect.fail(`no link: ${JSON.stringify(answer)}`)));
+
+it.live("an agent's Deploy becomes one proposal with one link, and one person's approval admits it once", () =>
+  Effect.gen(function* () {
+    const { call, cluster, provided, owner, agent, approve, admitted } = yield* deployable();
+    const { proposal_id: id, url } = linkOf(yield* call("deploy", {}));
+    expect(url).toBe(`http://localhost:3000/cloud/shop/approve/${id}`);
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented", steps: [{ verb: "deploy" }] }]);
+    expect(yield* admitted(id)).toBe(0);
+    // The agent that asked, and anyone not at the dashboard, can't answer for the person.
+    expect(yield* cluster(decideProposal(agent, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("approval page") });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+    // A second answer, and the sweep that runs the step again, admit nothing more.
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("already decided") });
+    yield* cluster(sweepProposals(new Date()));
+    expect(yield* admitted(id)).toBe(1);
+    // The proposal reads as its Deployment: not done until it lands.
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: expect.stringMatching(/^(accepted|running)$/) }] } });
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.execute(sql`update config_deployment set status = 'applied' where organization_id = ${ORGANIZATION} and id <> ${DEPLOYMENT}`)));
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "done" }] } });
+  }));
+
+it.live("an Environment edited after the link was made is denied at the tap and admits nothing", () =>
+  Effect.gen(function* () {
+    const { call, cluster, provided, owner, approve, write, admitted } = yield* deployable();
+    const { proposal_id: id } = linkOf(yield* call("deploy", {}));
+    yield* write({ command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }] });
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied" } });
+    expect(yield* admitted(id)).toBe(0);
+  }));
+
+it.live("a session that signed out before the tap leaves the Deploy unrun, though its owner is still a member", () =>
+  Effect.gen(function* () {
+    const { call, cluster, provided, owner, approve, admitted } = yield* deployable();
+    const { proposal_id: id } = linkOf(yield* call("deploy", {}));
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.delete(session).where(eq(session.id, BROWSER))));
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("is gone") });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied" } });
+  }));
+
+it.live("a Deploy asked with no_prune is admitted with no_prune, not as a Deploy that removes what else runs", () =>
+  Effect.gen(function* () {
+    const { call, cluster, owner, approve, store } = yield* deployable();
+    const { proposal_id: id } = linkOf(yield* call("deploy", { no_prune: true }));
+    const writes = vi.spyOn(store, "write");
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
+    expect(writes.mock.calls.map(([, command]) => command)).toMatchObject([{ command: "admit", admit: "deploy", no_prune: true }]);
   }));

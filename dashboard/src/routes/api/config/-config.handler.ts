@@ -2,7 +2,9 @@ import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
 import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval } from "#/modules/approvals/approvals.server";
+import { linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { callStore } from "#/modules/config-store/config-store.server";
+import { refusal } from "#/lib/refusal";
 import { cliRefusalResponse } from "#/server/public-error";
 import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -66,6 +68,13 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (sealing !== undefined && sealing.state !== "ready") return Response.json(sealing, { headers: { "cache-control": "no-store" } });
   // An approval the write names must be this Caller's, for this command, even where nobody is asked.
   const named = request.headers.get("x-ployz-approval");
+  // A Deploy this caller can't sign waits on one person's passkey at a link. A CLI that predates links reads the link in the refusal.
+  if (named === null && call.operation === "write" && call.command.command === "admit" && call.command.admit === "deploy") {
+    const link = yield* linkDeploy(caller, call.command);
+    if (link !== null) {
+      return cliRefusalResponse("refused" in link ? link.refused : refusal("conflict", link.linked.message, { proposal_id: link.linked.proposal_id, url: link.linked.url }));
+    }
+  }
   const asks = call.operation === "write" && asksApproval(caller.via, call.command);
   // Any write that carries one redeems it, even one that would ask no one or is already done.
   const trusted = call.operation === "write" && (asks || named !== null)

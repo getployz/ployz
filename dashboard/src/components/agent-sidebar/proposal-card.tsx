@@ -1,15 +1,20 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
-import { type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
+import { isDeploy, type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
 import { denial, DenyReason, DenyWithReasonButton, DestroyedItem, DestroysList, ServerLine } from "./decision-parts";
 import { decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "#/modules/proposals/proposals.queries";
 
 const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
+
+/** A card's title: `Deploy shop/production` for a Deploy, else `2 steps in shop/production`. */
+const titleOf = (proposal: ProposalView, place: string) =>
+  proposal.steps.some(isDeploy) ? `Deploy ${place}` : `${stepsWord(proposal.steps.length)} in ${place}`;
 
 /**
  * One proposal: waiting on a person, with every step an agent staged in the order they run, approved at once; or decided, with where each step got. Drawn from its Cloud row and reread while it waits or runs.
@@ -41,10 +46,10 @@ function DecidedProposal({ proposal, onDismiss }: { proposal: ProposalView; onDi
   const place = `${proposal.project}/${proposal.environment}`;
   const approved = proposal.status === "approved";
   return (
-    <Card size="sm" aria-label={`${stepsWord(proposal.steps.length)} in ${place} ${approved ? "approved" : "denied"}`}>
+    <Card size="sm" aria-label={`${titleOf(proposal, place)} ${approved ? "approved" : "denied"}`}>
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
+          <CardTitle>{titleOf(proposal, place)}</CardTitle>
           <CardDescription className="truncate">
             {proposal.asker && <>Asked by {proposal.asker} · </>}<RelativeTime date={new Date(proposal.created_at)} />
           </CardDescription>
@@ -109,10 +114,10 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
   const deny = () => begin() && decide(denial(reason));
 
   return (
-    <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${stepsWord(proposal.steps.length)} in ${place} need approval`}>
+    <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${titleOf(proposal, place)} need approval`}>
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
+          <CardTitle>{titleOf(proposal, place)}</CardTitle>
           <CardDescription className="truncate">
             {proposal.asker && <>Asked by {proposal.asker} · </>}<RelativeTime date={new Date(proposal.created_at)} />
           </CardDescription>
@@ -126,7 +131,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
               <span className="w-4 shrink-0 text-right tabular-nums text-muted-foreground">{index + 1}.</span>
               <span className="flex min-w-0 flex-col">
                 <span>{stepTitle(step)}</span>
-                <ServerLine namespace={step.namespace} runtime={step.runtime} />
+                {!isDeploy(step) && <ServerLine namespace={step.namespace} runtime={step.runtime} />}
               </span>
             </li>
           ))}
@@ -142,9 +147,15 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
         {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
       </CardContent>
       <CardFooter className="gap-1.5">
-        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending} onClick={() => void approve()}>
-          Approve all
-        </Button>
+        {proposal.steps.some(isDeploy) ? (
+          <Button size="sm" disabled={sending} render={<Link to="/cloud/$organizationSlug/approve/$proposalId" params={{ organizationSlug, proposalId: proposal.id }} />}>
+            Review and approve
+          </Button>
+        ) : (
+          <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending} onClick={() => void approve()}>
+            Approve all
+          </Button>
+        )}
         <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
           Deny
         </Button>

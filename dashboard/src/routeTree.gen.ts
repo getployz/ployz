@@ -73,6 +73,7 @@ import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/se
 import { Route as ApiMachinesMachineAnalyticsSaltsRouteImport } from './routes/api/machines/$machine/analytics-salts'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
+import { Route as ProtectedCloudOrganizationSlugApproveProposalIdRouteImport } from './routes/_protected/cloud/$organizationSlug/approve.$proposalId'
 import { Route as ApiMachinesOtlpV1LogsRouteImport } from './routes/api/machines/otlp/v1/logs'
 import { Route as ApiMachinesOtlpV1MetricsRouteImport } from './routes/api/machines/otlp/v1/metrics'
 import { Route as ApiMachinesOtlpV1TracesRouteImport } from './routes/api/machines/otlp/v1/traces'
@@ -434,6 +435,12 @@ const ProtectedCloudOrganizationSlugProjectNewRoute =
     path: '/new',
     getParentRoute: () => ProtectedCloudOrganizationSlugProjectRouteRoute,
   } as any)
+const ProtectedCloudOrganizationSlugApproveProposalIdRoute =
+  ProtectedCloudOrganizationSlugApproveProposalIdRouteImport.update({
+    id: '/approve/$proposalId',
+    path: '/approve/$proposalId',
+    getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
+  } as any)
 const ApiMachinesOtlpV1LogsRoute = ApiMachinesOtlpV1LogsRouteImport.update({
   id: '/api/machines/otlp/v1/logs',
   path: '/api/machines/otlp/v1/logs',
@@ -710,6 +717,7 @@ export interface FileRoutesByFullPath {
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/cloud/$organizationSlug/approve/$proposalId': typeof ProtectedCloudOrganizationSlugApproveProposalIdRoute
   '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
   '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
   '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
@@ -796,6 +804,7 @@ export interface FileRoutesByTo {
   '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/cloud/$organizationSlug/approve/$proposalId': typeof ProtectedCloudOrganizationSlugApproveProposalIdRoute
   '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
   '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
   '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
@@ -888,6 +897,7 @@ export interface FileRoutesById {
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/_protected/cloud/$organizationSlug/approve/$proposalId': typeof ProtectedCloudOrganizationSlugApproveProposalIdRoute
   '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
   '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
   '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
@@ -980,6 +990,7 @@ export interface FileRouteTypes {
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
+    | '/cloud/$organizationSlug/approve/$proposalId'
     | '/api/machines/otlp/v1/logs'
     | '/api/machines/otlp/v1/metrics'
     | '/api/machines/otlp/v1/traces'
@@ -1066,6 +1077,7 @@ export interface FileRouteTypes {
     | '/api/machines/$machine/analytics-salts'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
+    | '/cloud/$organizationSlug/approve/$proposalId'
     | '/api/machines/otlp/v1/logs'
     | '/api/machines/otlp/v1/metrics'
     | '/api/machines/otlp/v1/traces'
@@ -1157,6 +1169,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
+    | '/_protected/cloud/$organizationSlug/approve/$proposalId'
     | '/api/machines/otlp/v1/logs'
     | '/api/machines/otlp/v1/metrics'
     | '/api/machines/otlp/v1/traces'
@@ -1696,6 +1709,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectNewRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRoute
     }
+    '/_protected/cloud/$organizationSlug/approve/$proposalId': {
+      id: '/_protected/cloud/$organizationSlug/approve/$proposalId'
+      path: '/approve/$proposalId'
+      fullPath: '/cloud/$organizationSlug/approve/$proposalId'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugApproveProposalIdRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
+    }
     '/api/machines/otlp/v1/logs': {
       id: '/api/machines/otlp/v1/logs'
       path: '/api/machines/otlp/v1/logs'
@@ -2052,6 +2072,7 @@ interface ProtectedCloudOrganizationSlugRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgRouteRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   ProtectedCloudOrganizationSlugProjectRouteRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
   ProtectedCloudOrganizationSlugIndexRoute: typeof ProtectedCloudOrganizationSlugIndexRoute
+  ProtectedCloudOrganizationSlugApproveProposalIdRoute: typeof ProtectedCloudOrganizationSlugApproveProposalIdRoute
 }
 
 const ProtectedCloudOrganizationSlugRouteRouteChildren: ProtectedCloudOrganizationSlugRouteRouteChildren =
@@ -2062,6 +2083,8 @@ const ProtectedCloudOrganizationSlugRouteRouteChildren: ProtectedCloudOrganizati
       ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren,
     ProtectedCloudOrganizationSlugIndexRoute:
       ProtectedCloudOrganizationSlugIndexRoute,
+    ProtectedCloudOrganizationSlugApproveProposalIdRoute:
+      ProtectedCloudOrganizationSlugApproveProposalIdRoute,
   }
 
 const ProtectedCloudOrganizationSlugRouteRouteWithChildren =
@@ -2176,13 +2199,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

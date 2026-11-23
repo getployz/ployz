@@ -137,6 +137,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
+  "modules/deploy-approval/approve-deploy.tsx": "an approval page plans the Deploy again and waits on the passkey prompt before it decides; what shows next is the Store's and the Servers' answer, which can't be guessed",
   "modules/deploy-approval/deploy-sheet.tsx": "a Deploy its Servers run only signed waits for its own passkey prompt before it is sent; the sheet stays open to show a refusal and sign again, and a caller opens the Deployment only once the Store has it",
   "modules/machines/server-regions.hooks.ts": "the Store refuses an unknown region or another region's name, and the rename dialog stays open to show it; the cached names change only once the Store has taken one",
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",

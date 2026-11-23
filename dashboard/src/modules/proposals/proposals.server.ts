@@ -1,26 +1,38 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, ServerRef, ServiceVerb } from "@ployz/sdk";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import type { Change, DeploymentStatus, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import type { AgentCaller } from "#/modules/identity/actor";
+import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
+import { type AgentCaller, type Actor, type Caller, type Credential, callerEnvironments } from "#/modules/identity/actor";
 import { askerCaller } from "#/modules/approvals/apply.server";
-import { readStore } from "#/modules/config-store/config-store.server";
-import { protectorOnly } from "#/modules/config-store/protected.server";
+import { callStore, readStore, writeStoreAsMember } from "#/modules/config-store/config-store.server";
+import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
+import { isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { refused, type StoreRefusal } from "#/lib/refusal";
-import { type Actor, callerEnvironments } from "#/modules/identity/actor";
+import { oauthCaller } from "#/modules/identity/caller.server";
+import { oauthConsent } from "#/modules/identity/oauth-tables";
+import { organizationToken, session } from "#/modules/identity/tables";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { actService, unheld } from "#/modules/operations/operations.server";
 import { beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
+import { member } from "#/modules/organization/tables";
 import {
+  DEPLOY_MOVED,
+  type DeployStep,
+  isDeploy,
   PROPOSAL_STEP_LIMIT,
   type ProposalHalt,
   type ProposalStep,
+  type ServiceStep,
   type StepProgress,
+  stepService,
 } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
+import { tokenRuns } from "#/modules/sandbox/claim-required.server";
 import type { ServiceActLeg, ServiceActState } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
@@ -177,6 +189,40 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   };
 });
 
+/**
+ * A Deploy an agent or a caller without a key asked for, presented to people at once with its whole command as the
+ * Store will admit it. A retry of the same Deployment id from the same asker finds the proposal still waiting or running.
+ */
+export const presentDeployProposal = Effect.fn("Proposals.presentDeploy")(function* (
+  caller: Caller,
+  place: { readonly id: string; readonly project: string; readonly name: string; readonly namespace: string },
+  command: AdmitDeploy,
+) {
+  const { drizzle } = yield* Database;
+  const [again] = yield* drizzle.select({ id: operationProposals.id }).from(operationProposals).where(and(
+    eq(operationProposals.organizationId, caller.organization.id),
+    eq(operationProposals.requestedByUserId, caller.userId),
+    inArray(operationProposals.status, ["presented", "approved"]),
+    sql`${operationProposals.steps}->0->'deploy'->'command'->>'id' = ${command.id}`,
+  )).limit(1);
+  if (again !== undefined) return again;
+  const step: DeployStep = { verb: "deploy", deploy: { command } };
+  const [row] = yield* drizzle.insert(operationProposals).values({
+    organizationId: caller.organization.id,
+    environmentId: place.id,
+    project: place.project,
+    environment: place.name,
+    namespace: place.namespace,
+    requestedByUserId: caller.userId,
+    credentialKind: caller.credential.kind,
+    credentialId: caller.credential.id,
+    callerEnvironments: callerEnvironments(caller) ?? null,
+    steps: [step],
+    status: "presented",
+  }).returning({ id: operationProposals.id });
+  return row ?? (yield* Effect.die("an insert returned no row"));
+});
+
 /** Where each step stands: its run's state, waiting for an earlier step, or never run because an earlier one failed. */
 const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
   const runs = latestRuns(acts);
@@ -187,7 +233,7 @@ const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
     const state: StepProgress = run !== undefined ? run.state : halt !== null ? "failed" : halted || row.status !== "approved" ? "not_run" : "waiting";
     const reason = run === undefined ? halt?.reason ?? null : run.reason;
     if (state === "failed" || state === "unknown") halted = true;
-    return { index: index + 1, verb: step.verb, service: step.service, state, reason };
+    return { index: index + 1, verb: step.verb, service: stepService(step), state, reason };
   });
 };
 
@@ -195,10 +241,31 @@ const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
 const latestRuns = (acts: readonly StepAct[]) =>
   new Map([...acts].sort((left, right) => left.requestedAt.getTime() - right.requestedAt.getTime()).map((act) => [act.proposalStep, act]));
 
+const DEPLOYMENT_STATES = {
+  waiting_for_ci: "accepted", queued: "accepted", running: "running", cancelling: "running", applied: "done",
+  failed: "failed", cancelled: "failed", superseded: "failed", unknown: "unknown",
+} as const satisfies Record<DeploymentStatus, ServiceActState>;
+
+const ENDED = { cancelled: "Someone cancelled it.", superseded: "A newer deploy replaced it." } as const;
+
+/** A Deploy step's run is the Deployment its command names, once the Store admitted it; none before. */
+const deployActs = Effect.fn("Proposals.deployActs")(function* (row: ProposalRow) {
+  const acts: StepAct[] = [];
+  for (const [index, step] of row.steps.entries()) {
+    if (!isDeploy(step) || row.status !== "approved") continue;
+    const deployment = yield* readStore(row.organizationId, { query: "deployment", id: step.deploy.command.id }).pipe(
+      Effect.catchTag("StoreRefused", () => Effect.succeed(null)),
+    );
+    if (deployment !== null) acts.push({ proposalStep: index, state: DEPLOYMENT_STATES[deployment.status], reason: deployment.status === "cancelled" || deployment.status === "superseded" ? ENDED[deployment.status] : null, legs: [], requestedAt: row.decidedAt ?? row.updatedAt });
+  }
+  return acts;
+});
+
 const actsOf = Effect.fn("Proposals.acts")(function* (row: ProposalRow) {
   const { drizzle } = yield* Database;
-  return yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason, legs: serviceAct.legs, requestedAt: serviceAct.requestedAt })
+  const acts = yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason, legs: serviceAct.legs, requestedAt: serviceAct.requestedAt })
     .from(serviceAct).where(and(eq(serviceAct.organizationId, row.organizationId), eq(serviceAct.proposalId, row.id)));
+  return [...acts, ...yield* deployActs(row)];
 });
 
 /** A proposal and where each of its steps stands, for whoever asks in the Organization. */
@@ -233,8 +300,59 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
+/** A Deploy that can't go is denied, and the passkey's signed versions are dropped with it: nothing is left to admit later. */
+const deniedDeploy = Effect.fn("Proposals.deniedDeploy")(function* (row: ProposalRow, index: number, reason: string) {
+  const { drizzle } = yield* Database;
+  const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { command: { ...step.deploy.command, versions: [] } } } : step);
+  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), steps: cleared, halt: null, updatedAt: new Date() })
+    .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
+  return { index, reason } satisfies ProposalHalt;
+});
+
+/** The credential that asked, if it still stands: a token its maker still holds, a grant still usable, a session still signed in. */
+const liveCredential = Effect.fn("Proposals.liveCredential")(function* (row: ProposalRow, asker: string) {
+  const { drizzle } = yield* Database;
+  if (row.credentialKind === "token") {
+    const [token] = yield* drizzle.select({ permissions: organizationToken.permissions, environments: organizationToken.environments })
+      .from(organizationToken)
+      .innerJoin(member, and(eq(member.organizationId, organizationToken.organizationId), eq(member.userId, organizationToken.userId)))
+      .where(and(eq(organizationToken.id, row.credentialId), eq(organizationToken.organizationId, row.organizationId), eq(organizationToken.userId, asker), tokenRuns))
+      .limit(1);
+    return token === undefined ? null : { kind: "token", id: row.credentialId, grant: { permissions: token.permissions, environments: token.environments } } satisfies Credential;
+  }
+  if (row.credentialKind === "oauth") {
+    const [consent] = yield* drizzle.select({ clientId: oauthConsent.clientId }).from(oauthConsent)
+      .where(and(eq(oauthConsent.id, row.credentialId), eq(oauthConsent.userId, asker))).limit(1);
+    if (consent === undefined) return null;
+    const live = yield* oauthCaller({ sub: asker, org: row.organizationId, grant: row.credentialId, azp: consent.clientId }).pipe(
+      Effect.catchTag("Unauthorized", () => Effect.succeed(null)),
+    );
+    return live?.credential ?? null;
+  }
+  const [live] = yield* drizzle.select({ id: session.id }).from(session)
+    .where(and(eq(session.id, row.credentialId), eq(session.userId, asker), gt(session.expiresAt, new Date()))).limit(1);
+  return live === undefined ? null : { kind: "session", id: live.id } satisfies Credential;
+});
+
+/**
+ * Admit a Deploy step's stored command as the asker, with what they hold now, through the credential they asked with.
+ * A second run sends the same command, which the Store replays by its Deployment id.
+ */
+const runDeploy = Effect.fn("Proposals.runDeploy")(function* (row: ProposalRow, step: DeployStep, asker: string) {
+  const credential = yield* liveCredential(row, asker);
+  if (credential === null) return { refusal: "The sign-in or token that asked for it is gone." };
+  const access = yield* requireAccessById({ userId: asker, credential }, row.organizationId, "changes:deploy");
+  const environments = credential.kind === "token" && credential.grant.environments !== null ? [...credential.grant.environments] : undefined;
+  const beyond = beyondEnvironments(environments, { environment: row.environment });
+  if (beyond !== null) return { refusal: beyond };
+  const result = yield* callStore(row.organizationId, asker, { operation: "write", command: step.deploy.command }, {
+    approval: "not_required", permissions: access.permissions, environments: access.environments, protector: protector(askerCaller(access, row.credentialId)),
+  });
+  return result.ok ? started : { refusal: result.refusal.message };
+});
+
 /** The Service step `index` acts on, or why it can't go to the Servers now, checked before anything is sent. */
-const stepService = Effect.fn("Proposals.stepService")(function* (row: ProposalRow, step: ProposalStep) {
+const checkedService = Effect.fn("Proposals.checkedService")(function* (row: ProposalRow, step: ServiceStep) {
   const beyond = beyondEnvironments(row.callerEnvironments ?? undefined, { environment: row.environment });
   if (beyond !== null) return { refusal: beyond };
   const found = yield* findService(row.organizationId, row.environmentId, step.service);
@@ -256,10 +374,14 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
   const step = row.steps[index];
   if (step === undefined) return started;
   const asker = row.requestedByUserId;
-  if (asker === null) return { halt: yield* halted(row, index, "Whoever asked is no longer in the Organization.") } satisfies StepStart;
-  const halt = (reason: string) => Effect.map(halted(row, index, reason), (halt): StepStart => ({ halt }));
+  const halt = (reason: string) => Effect.map(isDeploy(step) ? deniedDeploy(row, index, reason) : halted(row, index, reason), (halt): StepStart => ({ halt }));
+  if (asker === null) return yield* halt("Whoever asked is no longer in the Organization.");
   return yield* Effect.gen(function* () {
-    const checked = yield* stepService(row, step);
+    if (isDeploy(step)) {
+      const ran = yield* runDeploy(row, step, asker);
+      return "refusal" in ran ? yield* halt(ran.refusal) : ran;
+    }
+    const checked = yield* checkedService(row, step);
     if (checked.found === undefined) return yield* halt(checked.refusal);
     const { found } = checked;
     const access = yield* requireAccessById({ userId: asker }, row.organizationId, OPERATIONS[`service.${step.verb}`].requires);
@@ -316,7 +438,10 @@ export const sweepProposals = Effect.fn("Proposals.sweep")(function* (now: Date)
   return rows.map((row) => row.id);
 });
 
-export type ProposalDecision = { readonly approve: Record<string, never> } | { readonly reject: { readonly reason?: string } };
+/** `versions` are what the decider's passkey signed for a Deploy that Servers run only signed. */
+export type ProposalDecision = { readonly approve: { readonly versions?: readonly PostedVersion[] } } | { readonly reject: { readonly reason?: string } };
+
+type Decider = Actor & { readonly organization: { readonly id: string; readonly slug: string }; readonly via?: Caller["via"] };
 
 type Decided = { readonly ok: true; readonly proposal: ProposalView } | { readonly ok: false; readonly message: string };
 
@@ -324,29 +449,96 @@ const settled = (row: ProposalRow): Decided =>
   ({ ok: false, message: row.status === "draft" ? "The agent hasn't presented this proposal yet." : `This proposal was already decided elsewhere (${row.status}).` });
 
 /**
+ * A Deploy step as `decider` may approve it: the stored command with the versions their passkey signed, or why not. It
+ * re-plans first: a plan that moved denies the proposal, one that needs a passkey answer takes no approval without it,
+ * and a Pending value waits for the approval page to fill it.
+ */
+const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider: Decider, row: ProposalRow, step: DeployStep, versions: readonly PostedVersion[]) {
+  const { command } = step.deploy;
+  const refuse = (message: string) => ({ message }) as const;
+  // A person at the approval page decides. An agent, a token or the asker's own `ployz` session never does.
+  if ((decider.via ?? "dashboard") !== "dashboard" || (decider.credential !== undefined && decider.credential.kind !== "session")) {
+    return refuse("Approve a deploy from its approval page.");
+  }
+  const access = yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy");
+  const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
+  if (isProtected && (access.kind !== "member" || !protector(access))) return refuse("Only an owner or admin can approve a deploy to a Protected Environment.");
+  const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true });
+  if (planned.kind === "refused") return refuse(isPending(planned.details) ? "A password has no value yet. Approve this deploy on its approval page." : planned.message);
+  if (command.version !== null && command.version !== undefined && !namesReview(planned.plan.version, command.version)) return { moved: true } as const;
+  // The asker's own versions still count: the decider signs only the Services those leave open.
+  const signed = new Set(versions.map(versionService));
+  const kept = (command.versions ?? []).filter((version) => !signed.has(versionService(version)));
+  const covered = new Set([...kept, ...versions].map(versionService));
+  const open = (planned.plan.unsigned ?? []).filter(({ service }) => !covered.has(service));
+  if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
+  if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
+  return { command: { ...command, versions: [...kept, ...versions] } satisfies AdmitDeploy };
+});
+
+/**
  * Approve every step, which starts the first, or deny with a reason.
  * Only the decision that approved it starts anything, so approving twice never runs a step twice. When the first step
- * doesn't start, the proposal goes back to waiting and the decider hears why.
+ * doesn't start, the proposal goes back to waiting and the decider hears why; a Deploy is denied instead, with its versions.
  */
-export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: Actor & { readonly organization: { readonly id: string } }, id: string, decision: ProposalDecision) {
+export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: Decider, id: string, decision: ProposalDecision) {
   const row = yield* readRow(decider.organization.id, id);
   if (row === undefined) return yield* new NotFound({ message: "No such proposal." });
   if (row.status !== "presented") return settled(row);
   const { drizzle } = yield* Database;
   const now = new Date();
   const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
+  const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
+    .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   if ("reject" in decision) {
-    const [denied] = yield* drizzle.update(operationProposals).set({ status: "denied", reason: decision.reject.reason?.trim() || null, ...decided })
-      .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
+    const [denied] = yield* deny(decision.reject.reason?.trim() || null);
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
-  const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", ...decided })
+  const [first] = row.steps;
+  let steps = row.steps;
+  if (first !== undefined && isDeploy(first)) {
+    const checked = yield* approvedDeploy(decider, row, first, decision.approve.versions ?? []);
+    if ("moved" in checked) {
+      yield* deny(DEPLOY_MOVED);
+      return { ok: false, message: DEPLOY_MOVED } satisfies Decided;
+    }
+    if ("message" in checked) return { ok: false, message: checked.message } satisfies Decided;
+    steps = [{ ...first, deploy: { command: checked.command } }];
+  }
+  const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", steps, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   if (approved === undefined) return settled((yield* readRow(decider.organization.id, id)) ?? row);
   const start = yield* runStep(approved, 0);
   if (!("halt" in start)) return { ok: true, proposal: proposalView(approved, yield* actsOf(approved)) } satisfies Decided;
+  // A Deploy that can't go is denied, not left waiting: its signed versions would outlive the plan they signed.
+  if (first !== undefined && isDeploy(first)) return { ok: false, message: `It didn't run: ${start.halt.reason}` } satisfies Decided;
   yield* drizzle.update(operationProposals)
     .set({ status: "presented", halt: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { ok: false, message: `It didn't run: ${start.halt.reason} It's still waiting for approval.` } satisfies Decided;
+});
+
+/**
+ * Make a Deploy's Pending values. The approval page sealed each one; they land in one edit at exactly the revision the
+ * proposal is bound to, so no other edit slips in, and the proposal is bound one revision on, so a refresh resumes at
+ * the signing. An edit made since is the plan moving.
+ */
+export const fillDeploy = Effect.fn("Proposals.fillDeploy")(function* (decider: Decider, id: string, changes: readonly Change[]) {
+  const row = yield* readRow(decider.organization.id, id);
+  const [step] = row?.steps ?? [];
+  if (row === undefined || row.status !== "presented" || step === undefined || !isDeploy(step)) return { ok: false, message: "This deploy isn't waiting for approval." } as const;
+  const { command } = step.deploy;
+  const bound = /^(\d+):/u.exec(command.version ?? "")?.[1];
+  if (bound === undefined) return { ok: false, message: DEPLOY_MOVED } as const;
+  const written = yield* writeStoreAsMember(decider, decider.organization.slug, { command: "edit", environment: command.environment, expect: Number(bound), changes: [...changes] });
+  if (!written.ok) return { ok: false, message: written.refusal.code === "conflict" ? DEPLOY_MOVED : written.refusal.message } as const;
+  if (written.value.written !== "edited") return { ok: false, message: DEPLOY_MOVED } as const;
+  const { revision } = written.value.environment;
+  const filled: DeployStep = { ...step, deploy: { command: { ...command, version: moved(command.version, revision) } } };
+  const { drizzle } = yield* Database;
+  const [saved] = yield* drizzle.update(operationProposals).set({ steps: [filled], updatedAt: new Date() }).where(and(
+    eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
+    sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${command.version ?? ""}`,
+  )).returning({ id: operationProposals.id });
+  return saved === undefined ? { ok: false, message: DEPLOY_MOVED } as const : { ok: true, revision } as const;
 });

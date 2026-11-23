@@ -63,15 +63,24 @@ const drain = (stream: AsyncIterable<StreamChunk>) => Effect.promise(async () =>
 
 /**
  * Shop with `web` deployed (its Applied State written as a finished Deployment would), and Ada talking to the stub
- * model in her sidebar. `removeWeb` stages web's removal, so the next Deploy destroys it.
+ * model in her sidebar. `removeWeb` stages web's removal, so the next Deploy destroys it. With `asks`, Bea, a member,
+ * talks instead, in a Protected Environment only Ada can approve for: a Deploy there still asks through an approval
+ * card, where Ada's own Deploy would be linked to a person's tap, and Ada decides it as `decider`.
  */
-const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
+const sidebar = Effect.fn(function* (options: { removeWeb: boolean; asks?: true }) {
   const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
   const services = yield* storeTestCloudWith(Layer.merge(AuthLive, stub));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
-  const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
+  const ownerId = yield* provided(seedStoreOrganization(ORGANIZATION));
+  const userId = options.asks === undefined ? ownerId : yield* provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [person] = yield* drizzle.insert(user).values({ email: "bea@example.test", name: "Bea" }).returning();
+    yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "member" });
+    return person?.id ?? "";
+  }));
   yield* provided(enrollStoreServer(ORGANIZATION));
   const store: ConfigStore = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+  if (options.asks !== undefined) yield* Effect.promise(() => store.write(ORGANIZATION, { command: "set_environment_protected", environment: here, protected: true }));
   const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
   yield* Effect.promise(() => store.write(ORGANIZATION, {
     command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
@@ -84,7 +93,8 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
   }));
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: options.asks === undefined ? "owner" : "member", support: null, via: "dashboard" };
+  const decider: Caller = { ...caller, userId: ownerId, credential: { kind: "session", id: "session-ada" }, role: "owner" };
   let runs = 0;
   const say = (content: string, forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
     provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }, model))
@@ -116,7 +126,7 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`update agent_interrupts set claimed_at = now() - interval '6 minutes' where interrupt_id = ${interruptId}`);
   }));
-  return { provided, write, store, caller, userId, persistence, say, waiting, answer, resume, watchWrites, pending, deployments, rewind, ageClaim };
+  return { provided, write, store, caller, decider, userId, persistence, say, waiting, answer, resume, watchWrites, pending, deployments, rewind, ageClaim };
 });
 
 /** The one approval waiting in Shop, asserted to be what the interrupt names. */
@@ -361,7 +371,7 @@ it.live("a page the client sends malformed is left out, and the turn still answe
 
 it.live("answering an approval adds no page, even from another page", () =>
   Effect.gen(function* () {
-    const { persistence, say, resume } = yield* sidebar({ removeWeb: true });
+    const { persistence, say, resume } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy", { page: architecture });
     yield* resume("resolved", { page: { page: "servers" } });
     expect(memberTexts(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD)))).toEqual([[ARCHITECTURE, "deploy"]]);
@@ -428,14 +438,14 @@ it.live("the sidebar asks before a Drain that destroys something, even when its 
 
 it.live("a Deploy that destroys web waits on a human, and runs exactly once after they approve", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, say, resume, watchWrites, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const writes = watchWrites();
     const asked = yield* say("deploy");
     expect(asked.results).toEqual([]);
     const approval = yield* waitingApproval(asked, pending);
     expect(writes.mock.calls.filter(([, command]) => command.command === "admit")).toHaveLength(1);
 
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     writes.mockClear();
     const resumed = yield* resume("resolved");
     expect(resumed.interrupts).toEqual([]);
@@ -451,9 +461,9 @@ const admits = (writes: ReturnType<Effect.Success<ReturnType<typeof sidebar>>["w
 
 it.live("two tabs resuming one approval reach the Store once, and the later one shows the earlier one's result", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, say, waiting, answer, watchWrites, pending, deployments, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const writes = watchWrites();
 
@@ -469,9 +479,9 @@ it.live("two tabs resuming one approval reach the Store once, and the later one 
 
 it.live("resuming an approval after its turn ended replays that turn instead of deploying again", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, say, waiting, answer, watchWrites, pending, deployments, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     yield* answer(interruptId, "resolved");
     const writes = watchWrites();
@@ -485,9 +495,9 @@ it.live("resuming an approval after its turn ended replays that turn instead of 
 
 it.live("a turn that died after its Deploy committed deploys nothing more when resumed again", () =>
   Effect.gen(function* () {
-    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, deployments, rewind } = yield* sidebar({ removeWeb: true });
+    const { provided, persistence, say, waiting, answer, watchWrites, pending, deployments, rewind, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     yield* answer(interruptId, "resolved");
@@ -503,15 +513,15 @@ it.live("a turn that died after its Deploy committed deploys nothing more when r
 
 it.live("two approved Deploys create two Deployments, and a retry of the second creates none", () =>
   Effect.gen(function* () {
-    const { provided, caller, write, persistence, say, waiting, answer, pending, deployments, rewind } = yield* sidebar({ removeWeb: true });
+    const { provided, write, persistence, say, waiting, answer, pending, deployments, rewind, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const first = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, first.id, { approve: { digest: first.digest } }));
+    yield* provided(decideApproval(decider, first.id, { approve: { digest: first.digest } }));
     expect((yield* answer(yield* waiting, "resolved")).said).toBe("Done.");
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6105", environment: here, name: "cache", image: "redis:7" });
 
     const second = yield* waitingApproval(yield* say("deploy cache"), pending);
     expect(second.id).not.toBe(first.id);
-    yield* provided(decideApproval(caller, second.id, { approve: { digest: second.digest } }));
+    yield* provided(decideApproval(decider, second.id, { approve: { digest: second.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     expect((yield* answer(interruptId, "resolved")).said).toBe("Done.");
@@ -526,9 +536,9 @@ it.live("two approved Deploys create two Deployments, and a retry of the second 
 
 it.live("a resume after the Deploy committed and its process died deploys nothing more", () =>
   Effect.gen(function* () {
-    const { provided, store, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, store, say, waiting, answer, watchWrites, pending, deployments, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const original = store.write.bind(store);
     const writes = watchWrites();
@@ -617,7 +627,7 @@ for (const status of ["completed", "aborted", "failed"] as const) {
 
 it.live("a request repeating the id of a run waiting on approval replays the approval it waits on", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
     const asked = yield* sendAs(harness, "run-asks");
     yield* waitingApproval(asked, harness.pending);
     const writes = harness.watchWrites();
@@ -630,7 +640,7 @@ it.live("a request repeating the id of a run waiting on approval replays the app
 
 it.live("a request repeating the id of a run that waits on a human shows the same approval and asks nothing new", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
     const { pending, watchWrites } = harness;
     const writes = watchWrites();
     const asked = yield* sendAs(harness, "run-asks");
@@ -662,7 +672,7 @@ it.live("a request repeating the id of a run still answering is refused, and onl
 
 it.live("a request naming another conversation's run is refused and runs nothing", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
     const { pending, watchWrites } = harness;
     yield* waitingApproval(yield* sendAs(harness, "run-elsewhere"), pending);
     const writes = watchWrites();
@@ -688,10 +698,10 @@ it.live("a message whose request ends before it streams leaves no run behind, so
 
 it.live("a second request resuming the same run while the first is mid-Deploy waits for it and shows its result", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, caller, say, waiting, pending, deployments } = harness;
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
+    const { provided, caller, say, waiting, pending, deployments, decider } = harness;
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const { writes, ...gate } = blockFirstAdmit(harness);
     const { traced, until } = watchSpans();
@@ -716,10 +726,10 @@ it.live("a second request resuming the same run while the first is mid-Deploy wa
 
 it.live("a request waiting on another's turn keeps its stream alive with chunks the client ignores", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, caller, say, waiting, pending } = harness;
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
+    const { provided, caller, say, waiting, pending, decider } = harness;
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const gate = blockFirstAdmit(harness);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -753,10 +763,10 @@ it.live("a request waiting on another's turn keeps its stream alive with chunks 
 for (const [runs, stalledRun, takeoverRun] of [["one run", "run-retried", "run-retried"], ["its own run", "run-stalled", "run-takeover"]] as const) {
   it.live(`a request that takes over a stalled resume in ${runs} deploys once, and the stalled one shows the result instead of committing`, () =>
     Effect.gen(function* () {
-      const harness = yield* sidebar({ removeWeb: true });
-      const { provided, caller, persistence, say, waiting, pending, deployments, ageClaim } = harness;
+      const harness = yield* sidebar({ removeWeb: true, asks: true });
+      const { provided, caller, persistence, say, waiting, pending, deployments, ageClaim, decider } = harness;
       const approval = yield* waitingApproval(yield* say("deploy"), pending);
-      yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+      yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
       const interruptId = yield* waiting;
       const { writes, ...gate } = blockFirstAdmit(harness);
       const resumeRun = (runId: string) => provided(agentChat(caller, {
@@ -787,7 +797,7 @@ for (const [runs, stalledRun, takeoverRun] of [["one run", "run-retried", "run-r
 
 it.live("a run update the stalled request queued before a takeover cannot overwrite the run the takeover finished", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -835,7 +845,7 @@ it.live("a run update the stalled request queued before a takeover cannot overwr
 
 it.live("a request whose claim another took over can neither answer, raise, nor commit interrupts", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -855,9 +865,9 @@ it.live("a request whose claim another took over can neither answer, raise, nor 
 
 it.live("a takeover settles the run of a request that died holding the interrupts, so a reload rejoins nothing", () =>
   Effect.gen(function* () {
-    const { provided, caller, userId, persistence, say, waiting, pending, answer, deployments, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, persistence, say, waiting, pending, answer, deployments, ageClaim, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
     expect(yield* provided(claimResume(scope, "dead", [interruptId]))).toBe("claimed");
@@ -876,9 +886,9 @@ it.live("a takeover settles the run of a request that died holding the interrupt
 
 it.live("a dead resume hides the waiting approval only until its lease lapses, and its recovery leaves later approvals offered", () =>
   Effect.gen(function* () {
-    const { provided, caller, userId, persistence, say, waiting, pending, answer, deployments, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, persistence, say, waiting, pending, answer, deployments, ageClaim, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
     expect(reoffers(yield* reload(persistence))).toBe(true);
@@ -899,9 +909,9 @@ it.live("a dead resume hides the waiting approval only until its lease lapses, a
 
 it.live("a takeover whose request dies before its first run write leaves the approval offered and recoverable", () =>
   Effect.gen(function* () {
-    const { provided, caller, userId, persistence, say, waiting, pending, answer, deployments, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, persistence, say, waiting, pending, answer, deployments, ageClaim, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
     expect(yield* provided(claimResume(scope, "old", [interruptId]))).toBe("claimed");
@@ -922,7 +932,7 @@ it.live("a takeover whose request dies before its first run write leaves the app
 
 it.live("a request whose claim another took over cannot write its own run, which the takeover settled", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -946,7 +956,7 @@ it.live("a request whose claim another took over cannot write its own run, which
 
 it.live("a takeover that resumes the run it took over runs it from a clean row, whatever the old request wrote late", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -972,7 +982,7 @@ it.live("a takeover that resumes the run it took over runs it from a clean row, 
 
 it.live("a takeover neither reopens nor writes over a run the old request completed while it held the interrupts", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -996,7 +1006,7 @@ it.live("a takeover neither reopens nor writes over a run the old request comple
 for (const status of ["aborted", "failed"] as const) {
   it.live(`a takeover leaves an unrelated ${status} run as it ended, even when asked to resume it`, () =>
     Effect.gen(function* () {
-      const { provided, userId, persistence, say, waiting } = yield* sidebar({ removeWeb: true });
+      const { provided, userId, persistence, say, waiting } = yield* sidebar({ removeWeb: true, asks: true });
       yield* Effect.promise(() => persistence.stores.runs.createOrResume({ runId: "ended", threadId: THREAD, startedAt: Date.now() }));
       yield* Effect.promise(() => persistence.stores.runs.update("ended", { status, finishedAt: Date.now(), error: { message: "it ended" } }));
       const ended = yield* Effect.promise(() => persistence.stores.runs.get("ended"));
@@ -1015,7 +1025,7 @@ for (const status of ["aborted", "failed"] as const) {
 
 it.live("only the takeover that displaced a run may reopen it", () =>
   Effect.gen(function* () {
-    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true, asks: true });
     yield* say("deploy");
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
@@ -1037,10 +1047,10 @@ it.live("only the takeover that displaced a run may reopen it", () =>
 
 it.live("a same-run retry after a takeover shows as running while it works and finishes without the old error", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, caller, userId, persistence, say, waiting, pending, deployments, ageClaim } = harness;
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
+    const { provided, caller, userId, persistence, say, waiting, pending, deployments, ageClaim, decider } = harness;
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const scope = { organizationId: ORGANIZATION, userId };
     expect(yield* provided(claimResume(scope, "old", [interruptId]))).toBe("claimed");
@@ -1070,10 +1080,10 @@ it.live("a same-run retry after a takeover shows as running while it works and f
 
 it.live("a resumed turn that outlasts the lease keeps its claim, so no other request runs it again", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, caller, userId, say, waiting, pending, deployments, ageClaim } = harness;
+    const harness = yield* sidebar({ removeWeb: true, asks: true });
+    const { provided, caller, userId, say, waiting, pending, deployments, ageClaim, decider } = harness;
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const gate = blockFirstAdmit(harness);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -1096,9 +1106,9 @@ it.live("a resumed turn that outlasts the lease keeps its claim, so no other req
 
 it.live("an answered interrupt whose request died before letting go replays at once instead of waiting out the lease", () =>
   Effect.gen(function* () {
-    const { provided, userId, caller, say, waiting, answer, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, userId, say, waiting, answer, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     yield* answer(interruptId, "resolved");
     yield* provided(Effect.gen(function* () {
@@ -1110,10 +1120,10 @@ it.live("an answered interrupt whose request died before letting go replays at o
 
 it.live("an approved Save saves the reviewed version once, and a replay after its turn died reports that Save", () =>
   Effect.gen(function* () {
-    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+    const { provided, persistence, say, waiting, answer, watchWrites, pending, rewind, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("save"), pending);
     if (!("diff" in approval.review)) return expect.fail("a Save is reviewed as a diff");
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     const writes = watchWrites();
@@ -1139,13 +1149,13 @@ for (const { named, replayed } of [
 ]) {
   it.live(`an approved Save sends ${named("V")} as the agent named it, and a replay after it landed reports ${replayed.ok ? "that Save" : "the Store's conflict"}`, () =>
     Effect.gen(function* () {
-      const { provided, caller, store, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+      const { provided, store, persistence, say, waiting, answer, watchWrites, pending, rewind, decider } = yield* sidebar({ removeWeb: true, asks: true });
       const { version } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "diff", environment: here }));
       const sent = named(version);
       const approval = yield* waitingApproval(yield* say(`save --version "${sent}"`), pending);
       if (!("diff" in approval.review)) return expect.fail("a Save is reviewed as a diff");
       expect(approval.review.diff.version).toBe(version);
-      yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+      yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
       const interruptId = yield* waiting;
       const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
       const writes = watchWrites();
@@ -1164,9 +1174,9 @@ for (const { named, replayed } of [
 
 it.live("a replay carrying a version the human never reviewed keeps the Store's conflict, even once the reviewed Save landed", () =>
   Effect.gen(function* () {
-    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+    const { provided, persistence, say, waiting, answer, watchWrites, pending, rewind, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("save"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     expect((yield* answer(interruptId, "resolved")).results).toMatchObject([{ ok: true, value: { saved: { created: true } } }]);
@@ -1183,9 +1193,9 @@ it.live("a replay carrying a version the human never reviewed keeps the Store's 
 
 it.live("an approved Save resumed after someone else saved is reported as a conflict, not as done", () =>
   Effect.gen(function* () {
-    const { provided, caller, write, store, say, resume, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, write, store, say, resume, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("save"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6104", environment: here, name: "cache", image: "redis:7" });
     yield* Effect.promise(() => store.write(ORGANIZATION, { command: "publish", environment: here, version: null }));
 
@@ -1196,7 +1206,7 @@ it.live("an approved Save resumed after someone else saved is reported as a conf
 
 it.live("a Deploy called alongside another tool is refused without reaching the Store or a human", () =>
   Effect.gen(function* () {
-    const { say, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const { say, watchWrites, pending } = yield* sidebar({ removeWeb: true, asks: true });
     const writes = watchWrites();
     const answered = yield* say("list services and deploy");
     expect(answered.interrupts).toEqual([]);
@@ -1228,9 +1238,9 @@ it.live("two steps staged in one turn are both refused, so each lands at its own
 
 it.live("a denied Deploy never reaches the Store, and the agent quotes the reason instead of retrying", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, say, resume, watchWrites, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { reject: { reason: "web still serves traffic" } }));
+    yield* provided(decideApproval(decider, approval.id, { reject: { reason: "web still serves traffic" } }));
 
     const writes = watchWrites();
     const resumed = yield* resume("resolved");
@@ -1244,9 +1254,9 @@ it.live("a denied Deploy never reaches the Store, and the agent quotes the reaso
 for (const command of ["deploy", "save"]) {
   it.live(`a ${command} the human denied writes nothing when its run resumes`, () =>
     Effect.gen(function* () {
-      const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+      const { provided, say, resume, watchWrites, pending, deployments, decider } = yield* sidebar({ removeWeb: true, asks: true });
       const approval = yield* waitingApproval(yield* say(command), pending);
-      yield* provided(decideApproval(caller, approval.id, { reject: { reason: "web still serves traffic" } }));
+      yield* provided(decideApproval(decider, approval.id, { reject: { reason: "web still serves traffic" } }));
       const writes = watchWrites();
       const resumed = yield* resume("resolved");
       expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied" } }]);
@@ -1257,7 +1267,7 @@ for (const command of ["deploy", "save"]) {
 
 it.live("a resume whose approval is still pending asks again under it", () =>
   Effect.gen(function* () {
-    const { say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
     const writes = watchWrites();
     const resumed = yield* resume("resolved");
@@ -1267,24 +1277,26 @@ it.live("a resume whose approval is still pending asks again under it", () =>
     expect(yield* deployments).toEqual([]);
   }), 15_000);
 
-it.live("cancelling an approval denies it for everyone and answers the agent without touching the Store", () =>
+it.live("cancelling an approval answers the agent without touching the Store, and leaves a Protected one for a protector to deny", () =>
   Effect.gen(function* () {
-    const { provided, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, say, resume, watchWrites, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
     const writes = watchWrites();
     const resumed = yield* resume("cancelled");
     expect(writes).not.toHaveBeenCalled();
     expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
     expect(resumed.said).toBe("The approval was cancelled, so nothing was deployed.");
+    expect(yield* provided(getApproval(ORGANIZATION, approval.id))).toMatchObject({ status: "pending" });
+    yield* provided(decideApproval(decider, approval.id, { reject: {} }));
     expect(yield* provided(getApproval(ORGANIZATION, approval.id))).toMatchObject({ status: "denied", reason: null });
     expect(yield* pending).toEqual([]);
   }));
 
 it.live("cancelling an approval someone already approved elsewhere leaves it approved and deploys nothing", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, say, resume, watchWrites, pending, deployments, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const writes = watchWrites();
     const resumed = yield* resume("cancelled");
     expect(resumed.errors).toEqual([]);
@@ -1296,9 +1308,9 @@ it.live("cancelling an approval someone already approved elsewhere leaves it app
 
 it.live("a plan that moved while it waited asks again under a new approval", () =>
   Effect.gen(function* () {
-    const { provided, caller, write, say, resume, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, write, say, resume, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const stale = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, stale.id, { approve: { digest: stale.digest } }));
+    yield* provided(decideApproval(decider, stale.id, { approve: { digest: stale.digest } }));
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6101", environment: here, name: "cache", image: "redis:7" });
 
     const resumed = yield* resume("resolved");
@@ -1310,7 +1322,7 @@ it.live("a plan that moved while it waited asks again under a new approval", () 
 
 it.live("a Deploy that destroys nothing still waits on a human, and reads as the deploy", () =>
   Effect.gen(function* () {
-    const { write, say, pending, deployments } = yield* sidebar({ removeWeb: false });
+    const { write, say, pending, deployments } = yield* sidebar({ removeWeb: false, asks: true });
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6102", environment: here, name: "cache", image: "redis:7" });
     const asked = yield* say("deploy");
     expect(asked.results).toEqual([]);
@@ -1332,14 +1344,14 @@ it.live("a Save that destroys nothing runs without an interrupt", () =>
 
 it.live("shipping a new image stages it without asking, and its Deploy runs once a human approves", () =>
   Effect.gen(function* () {
-    const { provided, caller, write, say, resume, pending, deployments } = yield* sidebar({ removeWeb: false });
+    const { provided, write, say, resume, pending, deployments, decider } = yield* sidebar({ removeWeb: false, asks: true });
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6103", environment: here, name: "api", image: "ghcr.io/acme/api:2.3" });
     const staged = yield* say("set api.image=ghcr.io/acme/api:2.4");
     expect(staged.interrupts).toEqual([]);
     expect(staged.results).toMatchObject([{ ok: true }]);
     expect(yield* pending).toEqual([]);
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const shipped = yield* resume("resolved");
     expect(shipped.interrupts).toEqual([]);
     expect(shipped.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
@@ -1364,12 +1376,12 @@ const githubDeploy = [
 
 it.live("deploying a GitHub repository one call per turn finishes within the step limit", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
+    const { provided, say, resume, pending, decider } = yield* sidebar({ removeWeb: false, asks: true });
     const model = scriptedAgent();
     model.setResponses([...githubDeploy.map((call) => ({ toolCalls: [call] })), { text: "api is deploying." }]);
     const approval = yield* waitingApproval(yield* say("deploy acme/api", {}, model), pending);
     expect(model.state.callCount).toBe(githubDeploy.length - 1);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const answered = yield* resume("resolved", {}, model);
     expect(model.state.callCount).toBe(githubDeploy.length + 1);
     expect(answered.said).toBe("api is deploying.");
@@ -1530,7 +1542,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
 
 it.live("a refused tool call shows in PostHog as an error", () =>
   Effect.gen(function* () {
-    const { say } = yield* sidebar({ removeWeb: true });
+    const { say } = yield* sidebar({ removeWeb: true, asks: true });
     const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
     const sink: PostHogService = {
       capture: (event) => Effect.sync(() => void captured.push(event)),
@@ -1546,9 +1558,9 @@ it.live("a refused tool call shows in PostHog as an error", () =>
 
 it.live("an approved call finished by a resumed run hangs under that run's trace in PostHog", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: true });
+    const { provided, say, resume, pending, decider } = yield* sidebar({ removeWeb: true, asks: true });
     const approval = yield* waitingApproval(yield* say("save"), pending);
-    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    yield* provided(decideApproval(decider, approval.id, { approve: { digest: approval.digest } }));
     const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
     const sink: PostHogService = {
       capture: (event) => Effect.sync(() => void captured.push(event)),

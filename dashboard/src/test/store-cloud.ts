@@ -63,6 +63,8 @@ const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
       ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))
       : Layer.succeed(GithubRepositories, options.repositories),
     Layer.succeed(Polar, options.polar ?? { mode: "self_hosted" }),
+    // Reading what the Servers enforce opens a Ployz session, which needs a paired fleet to reach anything.
+    PloyzLive,
     Layer.succeed(InngestClient, options.inngest ?? sendsNowhere()),
     // The enrolled test Servers can't be asked what runs: by default nothing runs that a prune would remove.
     Layer.succeed(RunningObserver, { observe: async () => ({ services: [], unanswered: [] }) }),

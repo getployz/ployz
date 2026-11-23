@@ -17,6 +17,7 @@ import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store
 import { refused, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
 import { type AgentCaller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { type DeployLinked, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
@@ -254,6 +255,7 @@ const asking = (refusal: StoreRefusal): { asking: Asking } | null => {
 };
 
 type Gated =
+  | { linked: DeployLinked }
   | { asking: Asking }
   | { denied: StoreRefusal }
   | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
@@ -263,6 +265,11 @@ export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCall
   // Before any approval is redeemed or asked for: no human approves a secret through an agent.
   const secret = agentSecretRefusal(asked);
   if (secret !== null) return { result: { ok: false, refusal: secret }, nothingDestroyed: false } satisfies Gated;
+  // A Deploy only a person's passkey can answer becomes one proposal with one link, not a card per call.
+  if (approvalId === null && asked.command === "admit" && asked.admit === "deploy") {
+    const link = yield* linkDeploy(caller, asked);
+    if (link !== null) return "refused" in link ? { result: { ok: false, refusal: link.refused }, nothingDestroyed: false } satisfies Gated : { linked: link.linked } satisfies Gated;
+  }
   const trusted = yield* redeemApproval(caller, approvalId, yield* redeeming(caller.organization.id, asked, approvalId));
   if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : approvalCommand(asked) === "retry" ? "retry" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
@@ -480,6 +487,7 @@ const runTool = Effect.fn("Agent.runTool")(function* (caller: AgentCaller, call:
   if (write.at === "store") {
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;
+    if ("linked" in gated) return done({ ok: true, value: { ...gated.linked, next: `Don't deploy again. Call proposal_status with proposal ${gated.linked.proposal_id} to follow it.` } });
     if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
     // A save and a refusal finish in the tool, so they answer as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
     const outcome = write.write.command === "publish" || !gated.result.ok ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
