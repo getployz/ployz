@@ -430,6 +430,12 @@ your passkey once for the services a server runs only signed. A sheet lists what
 signs for each one, with its image by digest. Ployz Cloud looks up the digest of each tag, so
 check it. **Approve with passkey** signs them all in one prompt, and the deploy starts.
 
+The sheet checks each mount the way [`ployz deploy` does](#deploy-from-an-approved-device), with your
+servers' keys and containers as Ployz Cloud relays them. Mounts that keep the data you approved
+fold into one line. Lines that need your yes show under **Needs your yes**, above the button, and
+approving says yes to them. A volume from before this version that nothing vouches for stops the
+deploy before it asks, with the same words as the CLI.
+
 These need no prompt:
 
 - A service that reaches no data: no sealed value, no volume, no login for its image, and nothing

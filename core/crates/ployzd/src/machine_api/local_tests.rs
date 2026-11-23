@@ -3603,13 +3603,16 @@ mod set_volume_copy {
             );
         };
 
+        // A new Service mounting the Volume elsewhere hears where the holder mounts it.
+        let elsewhere =
+            serde_json::from_str(&spec().to_string().replace("/data/0", "/elsewhere")).unwrap();
         held(
             service
                 .local
                 .create_container(
                     ContainerKind::ServiceContainer,
                     &Namespace::parse("app").unwrap(),
-                    &serde_json::from_value(spec()).unwrap(),
+                    &elsewhere,
                     None,
                     None,
                     None,

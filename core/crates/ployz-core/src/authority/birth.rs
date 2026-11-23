@@ -226,8 +226,11 @@ pub struct Held {
     unanswered: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
-struct HeldContainer {
+/// One Service Container's mount evidence: what [`Held`] reads of it, and all Ployz Cloud
+/// relays of it, never its labels or spec.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct HeldContainer {
     service: ServiceName,
     /// Running, paused or restarting, so it uses its data now.
     running: bool,
@@ -239,16 +242,44 @@ struct HeldContainer {
 
 impl Held {
     /// The Service Containers of `namespace` among `containers`, with the Servers in
-    /// `unanswered` that failed or didn't answer. A Container without the origins label
-    /// expects Legacy data at every mount.
+    /// `unanswered` that failed or didn't answer.
     #[must_use]
     pub fn of(
         namespace: &Namespace,
         containers: &[ContainerObservation],
         unanswered: Vec<String>,
     ) -> Self {
-        let containers = containers
+        Self::relayed(HeldContainer::listed(namespace, containers), unanswered)
+    }
+
+    /// The evidence [`HeldContainer::listed`] made, with the Servers in `unanswered`.
+    #[must_use]
+    pub const fn relayed(containers: Vec<HeldContainer>, unanswered: Vec<String>) -> Self {
+        Self {
+            containers,
+            unanswered,
+        }
+    }
+
+    /// A Container that mounts `mounted`'s data, a running one when any runs.
+    fn holder(&self, mounted: &Mounted<'_>) -> Option<&HeldContainer> {
+        let mut holders = self
+            .containers
             .iter()
+            .filter(|container| (container.mounts.values()).any(|held| mounted.is(held.as_ref())));
+        (holders.clone().find(|container| container.running)).or_else(|| holders.next())
+    }
+}
+
+impl HeldContainer {
+    /// The mount evidence of each Service Container of `namespace` among `containers`. A
+    /// Container without the origins label expects Legacy data at every mount.
+    pub fn listed<'a>(
+        namespace: &Namespace,
+        containers: impl IntoIterator<Item = &'a ContainerObservation>,
+    ) -> Vec<Self> {
+        containers
+            .into_iter()
             .filter(|seen| {
                 seen.namespace == *namespace && seen.kind == ContainerKind::ServiceContainer
             })
@@ -267,7 +298,7 @@ impl Held {
                     });
                     holds_data(source.kind()).then(|| (mount.target.as_str().to_owned(), named))
                 });
-                HeldContainer {
+                Self {
                     service: seen.resolved_spec.name.clone(),
                     running: matches!(
                         seen.runtime,
@@ -278,20 +309,7 @@ impl Held {
                     mounts: mounts.collect(),
                 }
             })
-            .collect();
-        Self {
-            containers,
-            unanswered,
-        }
-    }
-
-    /// A Container that mounts `mounted`'s data, a running one when any runs.
-    fn holder(&self, mounted: &Mounted<'_>) -> Option<&HeldContainer> {
-        let mut holders = self
-            .containers
-            .iter()
-            .filter(|container| (container.mounts.values()).any(|held| mounted.is(held.as_ref())));
-        (holders.clone().find(|container| container.running)).or_else(|| holders.next())
+            .collect()
     }
 }
 

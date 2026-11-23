@@ -131,6 +131,7 @@ pub(crate) struct RawMount {
     pub(super) typ: Option<String>,
     pub(super) name: Option<String>,
     pub(super) driver: Option<String>,
+    pub(super) destination: Option<String>,
 }
 
 impl Inspected {

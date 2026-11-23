@@ -134,6 +134,22 @@ impl Client {
         to_json(&copies)
     }
 
+    /// The mounts of the Containers of `namespace` that each Server lists itself:
+    /// `{ containers, answered, unanswered }`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed name, or the session's error.
+    #[napi(
+        ts_return_type = "Promise<{ containers: HeldContainer[]; answered: string[]; unanswered: ServerRef[] }>"
+    )]
+    pub async fn observe_namespace(&self, namespace: String) -> Result<serde_json::Value> {
+        let namespace = Namespace::parse(&namespace).map_err(invalid_argument)?;
+        let listed = ployz::sdk::agent::observe_namespace(&self.inner, &namespace)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&listed)
+    }
+
     /// Stop Container `container` on `machine`.
     ///
     /// # Errors

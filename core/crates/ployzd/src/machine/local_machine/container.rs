@@ -708,8 +708,8 @@ impl LocalMachine {
             return Ok(());
         }
         let containers = self.docker()?;
-        for (name, called) in crate::docker::holder::provisioned(spec) {
-            containers.volumes().refuse_beside(&name, &called).await?;
+        for name in crate::docker::holder::provisioned(spec) {
+            containers.volumes().refuse_beside(&name).await?;
         }
         Ok(())
     }

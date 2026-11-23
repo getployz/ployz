@@ -43,6 +43,7 @@ fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
                 .iter()
                 .map(|dependency| ServiceName::parse(*dependency).unwrap())
                 .collect(),
+            drained: Vec::new(),
             publish: true,
         },
         steps: Vec::new(),

@@ -30,8 +30,8 @@ pub mod version_draft;
 
 pub use admission::{DataReach, needs_signature, reach};
 pub use birth::{
-    Against, Approved, Before, BirthError, Births, Held, MountLines, Mounts, PlannedVolume,
-    PlannedVolumes, Unknown,
+    Against, Approved, Before, BirthError, Births, Held, HeldContainer, MountLines, Mounts,
+    PlannedVolume, PlannedVolumes, Unknown,
 };
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
