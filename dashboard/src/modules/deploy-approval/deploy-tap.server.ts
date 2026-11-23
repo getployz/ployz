@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { pinImages, type EnvironmentRef, type PlanView } from "@ployz/sdk";
+import type { EnvironmentRef, PlanView } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore } from "#/modules/config-store/config-store.server";
@@ -11,6 +11,7 @@ import { passkeyRequest } from "#/modules/passkeys/tables";
 import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
+import { pinImageDigests } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 
 /** What a Server that enforces device approval needs to check a passkey's versions. */
@@ -96,7 +97,7 @@ const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organization
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, userId)));
   const passkeys = own.filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
   if (passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
-  return yield* Effect.tryPromise(() => pinImages([...new Set(tags)])).pipe(
+  return yield* pinImageDigests([...new Set(tags)]).pipe(
     Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])) })),
     Effect.catch((error) => Effect.succeed(refused(error.cause instanceof Error ? error.cause.message : "Couldn't look up an image's digest. Try again."))),
   );
