@@ -121,7 +121,8 @@ export function useDeployTap(organizationSlug: string) {
    * longer needs a passkey, or the review when it moved. An answer never moves to another plan.
    */
   async function replan(current: Open, refusal: string) {
-    const prepared = await prepare(current.command).catch(() => null);
+    // The reviewed version, so a plan that moved since takes the review path, never a direct admit.
+    const prepared = await prepare(current.ask.command).catch(() => null);
     if (prepared?.kind === "ask") return setOpen({ ...current, ask: prepared.ask, versions: undefined, problem: refusal, again: true });
     if (prepared?.kind === "stale") {
       await stale(current.command);

@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
+import { answerForSupport } from "#/modules/support-access/support-view";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
 import { passkeyRequest } from "#/modules/passkeys/tables";
 import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
@@ -54,12 +55,18 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies DeployPlan;
   const plan = read.value;
   const unsigned = plan.unsigned ?? [];
-  if (unsigned.length === 0) return { kind: "plan", plan, tap: { kind: "off" } } satisfies DeployPlan;
   const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
   // A Service only a rule or a digest can cover refuses before any lookup, unless nothing enforces.
   const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))
     .map((spec) => spec.container.image).filter((image) => !image.includes("@sha256:"));
-  const tap = yield* gate(actor.userId, access.organization.id, tags);
+  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(actor.userId, access.organization.id, tags);
+  // Support never signs, and reads a plan only as its own view of it allows.
+  if (access.kind === "support") {
+    if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
+    const shown = answerForSupport({ operation: "read", query: { query: "plan", environment: input.environment, services: [...input.services], target: true } }, read, access.shows);
+    if (!shown.ok) return { kind: "refused", message: shown.refusal.message } satisfies DeployPlan;
+    return { kind: "plan", plan: { ...shown.value, target: [] }, tap } satisfies DeployPlan;
+  }
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
 
@@ -68,7 +75,8 @@ const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organization
   // With no Server paired nothing enforces; the first one deploys what is saved.
   if ((yield* countOrganizationMachines(organizationId)) === 0) return { kind: "off" } satisfies DeployTap;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  if (frame === null) return refused(UNREACHED);
+  // A Server the frame couldn't read may enforce: its answer is unknown, not off.
+  if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
   const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
   if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
   const older = enforcing.find(({ runtime: { capabilities = [] } }) => SIGNS.some((needed) => !capabilities.includes(needed)));
