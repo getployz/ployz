@@ -792,10 +792,10 @@ fn volume_outside_region(
 ) -> String {
     match beside {
         BesideVolume::RunIn { region: at, .. } => format!(
-            "its Volume {volume} is in {at} and can't move to {region} yet. Run it in {at} instead"
+            "its Volume {volume} is in {at}. Move it with ployz volume move {volume} --to <a server in {region}>, or run it in {at}"
         ),
         BesideVolume::Label => format!(
-            "its Volume {volume} is on {machine}, a Server in no region, and can't move to {region} yet. Give {machine} the region {region} instead"
+            "its Volume {volume} is on {machine}, a Server in no region. Move it with ployz volume move {volume} --to <a server in {region}>, or give {machine} the region {region}"
         ),
     }
 }

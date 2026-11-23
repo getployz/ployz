@@ -15,7 +15,7 @@ import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planne
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
-import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
@@ -527,16 +527,23 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
   const { from } = phase;
   const kept = async (id: string, machines: readonly MachineRef[]) =>
     steps.step.run(id, () => steps.runEffect(findKept(run, steps.runId, machines)));
+  // A refusal leaves the copy as it was. A start that fails is past the promote, so the Server holds the writer and
+  // starts the Service only from a Deploy someone approves again, as when its approval was revoked.
+  // A step's last failure rejects with Inngest's StepError, an Error.
+  const restarting = <A>(machine: MachineRef, restart: Promise<A>) => restart.catch((error: Error) => {
+    if (error instanceof NonRetriableError) throw error;
+    throw new NonRetriableError(`${machine.name} holds ${run.volumeName} again, but its Service didn't start there: ${error.message}. Deploy it again to start it`);
+  });
   const resume = async (id: string, member: AnsweredMember, containerId: ContainerId | null) => {
     const copy = member.view.copy;
     const at = copy?.newest ?? null;
     if (copy?.kind !== "root" || at === null) return;
-    await mustSet(steps, id, member.machine, expectOf(copy), {
+    await restarting(member.machine, mustSet(steps, id, member.machine, expectOf(copy), {
       kind: "writer",
       at: at.guid,
       epoch,
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
-    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`);
+    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`));
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
@@ -589,7 +596,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     for (const { machine, expect } of doomed) {
       await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     }
-    const resumed = await resumeA("05-resume");
+    const resumed = await restarting(A, resumeA("05-resume"));
     if (!resumed.ok) throw new NonRetriableError(resumed.message);
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
@@ -680,7 +687,12 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
-    const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
+    // Before anything stops: B must be able to start what A runs, as the commit will ask again.
+    const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A).pipe(
+      Effect.flatMap((found) => (found.ok ? startRefusal(run, A, B, expectOf(copy)) : Effect.succeed(null)).pipe(
+        Effect.map((refusal) => (refusal === null ? found : { ok: false, refusal: { code: "invalid", message: refusal } } as const)),
+      )),
+    )));
     if (!found.ok) {
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };

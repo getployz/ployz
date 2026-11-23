@@ -112,18 +112,12 @@ const isDestination = (args: VolumeRunArgs["move"], member: Member) => namesServ
 
 const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
-/**
- * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move is
- * refused here, before anything stops: a Server starts no new Container for Ployz Cloud, so the Move would stop the
- * Service and then fail to start it on the other Server.
- */
+/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
   const unchecked = originUnchecked(planned.phase);
-  if (unchecked.length > 0) return refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked));
-  if (planned.phase.kind !== "move" && planned.phase.kind !== "landed") return planned;
-  return refuse("server_lacks", moveOffMessage(input.volumeName, planned.phase.target.machine.name));
+  return unchecked.length > 0 ? refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked)) : planned;
 }
 
 /**
@@ -143,10 +137,6 @@ function originUnchecked(phase: Extract<Planned, { ok: true }>["phase"]): string
  * the Deploy's seed run would fail.
  */
 export const SEED_OFF = "Restoring a point into a new volume is turned off in this version of Ployz.";
-
-/** Why no run moves `name` onto `server`. */
-export const moveOffMessage = (name: string, server: string) =>
-  `Moving a volume to another server is turned off in this version of Ployz, so ${name} can't move to ${server}.`;
 
 /**
  * Which Servers recorded a Mirror removal: each deleted slot's own Server, then the Writer, or why the Writer has not

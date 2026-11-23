@@ -52,9 +52,9 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
-  .validator(strictValidator(Schema.Struct({ ...OrganizationSlugInput.fields, server: Machine, accepting: Schema.Array(Machine), unrouted: Schema.optional(Schema.Array(Machine)) })))
+  .validator(strictValidator(Schema.Struct({ ...OrganizationSlugInput.fields, server: Machine })))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap(({ organization }) => stageOffServer(organization.id, data.server, data.accepting, data.unrouted)),
+    Effect.flatMap(({ organization }) => stageOffServer(organization.id, data.server)),
     refusedPublicly,
   )));
 

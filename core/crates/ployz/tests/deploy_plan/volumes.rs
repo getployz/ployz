@@ -1126,7 +1126,7 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     let rpc = &blocked.error;
     assert_eq!(
         rpc.message,
-        "its Volume data is in syd and can't move to fsn yet. Run it in syd instead"
+        "its Volume data is in syd. Move it with ployz volume move data --to <a server in fsn>, or run it in syd"
     );
     assert_eq!(
         rpc.details.get("reason"),
@@ -1247,7 +1247,7 @@ fn a_volume_only_one_region_mounts_keeps_its_service_waiting_beside_a_shared_one
     assert_eq!(blocked.service, worker.name);
     assert_eq!(
         blocked.error.message,
-        "its Volume scratch is in syd and can't move to fsn yet. Run it in syd instead"
+        "its Volume scratch is in syd. Move it with ployz volume move scratch --to <a server in fsn>, or run it in syd"
     );
     assert_eq!(
         blocked.error.details.get("reason"),
@@ -1613,13 +1613,13 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
             "holder in no region",
             ["syd", "fsn"],
             false,
-            "its Volume data is on second, a Server in no region, and can't move to fsn yet. Give second the region fsn instead",
+            "its Volume data is on second, a Server in no region. Move it with ployz volume move data --to <a server in fsn>, or give second the region fsn",
         ),
         (
             "holder in syd",
             ["fsn", "syd"],
             true,
-            "its Volume data is in syd and can't move to fsn yet. Run it in syd instead",
+            "its Volume data is in syd. Move it with ployz volume move data --to <a server in fsn>, or run it in syd",
         ),
     ] {
         let mut snapshot = shared_data_snapshot();

@@ -220,8 +220,8 @@ the restore until that deploy ends.
 
 ## Move a volume
 
-Moving a volume and the service that mounts it to another server is turned off in this version
-of Ployz. See [Move a volume](move-a-volume.md) for what to do instead.
+`ployz volume move data --to web-2` moves a volume and the service that mounts it to another
+server. See [Move a volume](move-a-volume.md).
 
 ## When a volume has no writer
 

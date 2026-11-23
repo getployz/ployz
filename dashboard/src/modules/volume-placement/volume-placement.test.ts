@@ -7,7 +7,6 @@ import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
   appliedMirrors,
   detachedCopies,
-  drainPlacement,
   editPlacement,
   nextPlacementStep,
   observePlacement,
@@ -587,9 +586,9 @@ describe("placementTargets", () => {
     expect(targets.mirror.map((server) => server.name)).toEqual(["web-1", "web-3"]);
   });
 
-  it("offers no move and no mirror while a committed Move is still owed its finish", () => {
+  it("offers no mirror while a committed Move is still owed its finish", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
-    expect(placementTargets(volume, members, row([]), servers, true)).toEqual({ move: [], mirror: [] });
+    expect(placementTargets(volume, members, row([]), servers, true)).toEqual({ mirror: [] });
   });
 
   it("offers nothing on a Server that does not accept Services", () => {
@@ -622,16 +621,6 @@ describe("storageStep", () => {
   it("ignores runs on Volumes another Deploy, or no Deploy, took", () => {
     expect(storageStep("dep-2", [taken], [run("v1", null)])).toBeNull();
     expect(storageStep("dep-1", [taken], [run("v9", null)])).toBeNull();
-  });
-});
-
-describe("drainPlacement", () => {
-  const drain = (members: Member[], placement: PlacementRow | null, accepting = ["web-1", "web-2", "web-3"]) =>
-    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"), false);
-
-  it("leaves a Volume whose primary is elsewhere, or that nowhere takes", () => {
-    expect(drain([member("web-2", "writer"), member("web-1", "mirror")], row(["web-1"]))).toBeNull();
-    expect(drain([member("web-1", "writer"), pooled("web-2")], row([]), ["web-1"])).toBeNull();
   });
 });
 

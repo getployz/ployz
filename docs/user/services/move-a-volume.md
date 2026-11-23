@@ -3,23 +3,44 @@ title: Move a volume
 description: Move a volume and the service that mounts it to another server.
 ---
 
-A volume lives on one server. Moving it, and the service that mounts it, to another server is
-turned off in this version of Ployz. A server starts a service that mounts a volume only for a
-deploy an approved device signed or a rule approved, and a move has to start the service on the
-new server. Ployz
-Cloud refuses a move before anything stops:
+A volume lives on one server. `ployz volume move` takes it, and the service that mounts it, to
+another server:
 
-```
-Moving a volume to another server is turned off in this version of Ployz, so data can't move to web-2.
+```sh
+ployz volume move data --to web-2
 ```
 
-A volume's mirror offers no **Make primary**, and `ployz volume move` is refused the same way.
-[Drain](../servers/manage-servers.md#change-what-a-server-does) can't move a volume off a server
-either, and says which volume holds it up.
+Ployz Cloud copies the volume to `web-2` while your service keeps running, then stops it on
+`web-1` for a final sync and starts it on `web-2`. The service is down only for that last step.
+The command prints the run's id. Add `--wait` to wait for it to finish.
 
-To put a volume on another server today, [mirror it](mirror-a-volume.md) there, stop the service,
-run `ployz volume sync data`, and [restore the mirror](restore-a-volume.md#restore-a-volume-in-place)
-once it holds the only copy. Then deploy from an approved device.
+## What a move needs
+
+Before anything stops, Ployz Cloud asks `web-2` whether it would start your service, and asks again
+just before the switch. The move is refused, and your service keeps running on `web-1`, when:
+
+- **No approved version runs there.** `web-2` starts the service only from a version an approved
+  device signed, or that a
+  [deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) built. A rule's build
+  runs only on the servers the rule lists. Deploy the service so a version covers `web-2`, then
+  move again.
+- **Other data moves with it.** The volume must be the only data the service mounts. A bind mount,
+  another volume or a Docker volume can't move along, and the refusal names it.
+- **Something else uses the volume.** Only your service's container may run on `web-1` with the
+  volume mounted. The refusal names the others.
+- **`web-2` runs an older Ployz.** Upgrade it first.
+
+A move needs no approval of its own when the service may run in any region, as its last deploy's
+approval showed. When the service is kept in a region, a move to a server in another region needs
+a deploy that puts the service there first. Its approval reads "moves data to syd", and the deploy
+waits for the move with the line that runs it. See
+[When a volume is outside the region](regions.md#when-a-volume-is-outside-the-region).
+
+[Drain](../servers/manage-servers.md#change-what-a-server-does) doesn't move a volume. It names
+each volume it leaves on the server, so you can move them with `ployz volume move`.
+
+If you staged a mirror change before the move, the next deploy refuses it: the change was made for
+the server the volume left. Discard it, edit the volume's mirrors again and deploy.
 
 ## The old copy a move leaves
 
@@ -32,13 +53,13 @@ and never refreshes.
 
 A new mirror deletes old copies on other servers first, and Details says so.
 
-`ployz volume release`, `restore`, `mirror`, `mirror rm` and `sync --full` each start a run
+`ployz volume move`, `release`, `restore`, `mirror`, `mirror rm` and `sync --full` each start a run
 in Ployz Cloud and print its id. Add `--wait` to wait for it to finish. A volume takes one run at a
 time, and none while a deploy runs in its environment. `ployz volume runs data` lists what ran on
 the volume and how it ended. `ployz volume release data` stops a mirror that's still running.
 
 In a [Protected environment](../environments/environments.md#protect-an-environment), a
-restore, release, mirror removal or resize from a member, or from a token or an agent without
+move, restore, release, mirror removal or resize from a member, or from a token or an agent without
 `environments:protect`, waits for an owner or admin to approve it. `ployz` waits for the approval.
 Adding a mirror and syncing don't ask.
 

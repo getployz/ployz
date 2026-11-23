@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyRefusal, DockerVolume, EnvironmentRef, ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, SnapshotGuid, SwitchError, VolumeCopy, VolumeSwitchRequest, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ContainerObservation, CopyRefusal, CopyStart, DockerVolume, EnvironmentRef, ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, SnapshotGuid, SwitchError, VolumeCopy, VolumeSwitchRequest, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, notInArray, or } from "drizzle-orm";
 import { Context, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -8,7 +8,7 @@ import type { OperationVerb } from "#/modules/approvals/approvals";
 import { volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import { alreadyOn, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -20,7 +20,10 @@ import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, isDestination, type Mach
 import { managementAddress } from "#/modules/runtime/naming";
 import { type VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
-import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
+import { listNames } from "#/lib/plural";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
+import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, readRow, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
 
 /**
  * A requested run planned against the copies the Servers hold now, so a refusal reaches the caller before any row
@@ -320,7 +323,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "unanswered"; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: false; readonly reason: CopyRefusal | "unanswered" | "refused"; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -384,34 +387,124 @@ export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 /** Drain::DEFAULT: how long the cut lets requests in flight finish once the Container is out of ingress. */
 export const DRAIN_MS = 3_000;
 
-const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
+/** The Containers that mount this Volume, and each Server's region label, from one frame. */
+const volumeFrame = Effect.fn("VolumeRun.volumeFrame")(function* (organizationId: string, dockerVolume: string) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
-  return frame.containers.filter((container) =>
-    container.kind === "service_container"
-    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+  const containers = frame.containers.filter((container) =>
+    container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+  const regionOf = (machine: MachineId) => frame.machines.find((observed) => observed.machine.id === machine)?.machine.labels[REGION_LABEL] ?? null;
+  return { containers, regionOf };
+}, Effect.scoped);
+
+const serviceContainers = (organizationId: string, dockerVolume: string) =>
+  volumeFrame(organizationId, dockerVolume).pipe(Effect.map(({ containers }) => containers.filter((container) => container.kind === "service_container")));
+
+type Refused = { readonly ok: false; readonly refusal: { readonly code: "invalid"; readonly message: string } };
+
+const refused = (message: string): Refused => ({ ok: false, refusal: { code: "invalid", message } });
+
+/**
+ * The one Container on `machine` that mounts this Volume, whose Service B starts. A running one wins over stopped ones:
+ * a Server that enforces device approval keeps the Container an earlier Move's cut stopped. It must be a Service's, the
+ * only one running on the Volume, and mount no other data, since only this Volume moves with it.
+ */
+const holderOn = (ctx: Pick<RunContext, "volumeName" | "dockerVolume">, containers: readonly ContainerObservation[], machine: MachineRef) => {
+  const on = containers.filter((container) => container.machine_id === machine.id);
+  const running = on.filter((container) => container.runtime.state === "running");
+  // Once the cut stopped it, the newest stopped one is the Service's: older ones are what earlier Moves kept.
+  const [holder] = running.length > 0 ? running : newestFirst(on.filter((container) => container.kind === "service_container"));
+  if (holder === undefined) return refused(`${ctx.volumeName} has no Service on ${machine.name} to move`);
+  if (running.length > 1) {
+    const named = listNames(running.map((container) => container.display_name));
+    return refused(`${named} all use ${ctx.volumeName} on ${machine.name}. A move takes one Service, so stop the others first`);
+  }
+  if (holder.kind !== "service_container") {
+    return refused(`${holder.display_name} uses ${ctx.volumeName} on ${machine.name}, and a move takes only a Service. Stop it first`);
+  }
+  const others = holder.resolved_spec.volumes.filter(({ source }) =>
+    source.kind !== "tmpfs" && !(source.kind === "provisioned" && source.name === ctx.dockerVolume));
+  if (others.length > 0) {
+    const named = listNames(others.map((volume) => volume.reference));
+    return refused(`${holder.resolved_spec.name} also mounts ${named}, which can't move with ${ctx.volumeName}`);
+  }
+  return { ok: true, holder } as const;
+};
+
+/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
+export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const found = holderOn(ctx, (yield* volumeFrame(ctx.organizationId, ctx.dockerVolume)).containers, machine);
+  if (!found.ok) return found;
+  const { holder } = found;
+  const holderOf: Holder = { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec };
+  return { ok: true, holder: holderOf } as const;
+});
+
+type CreateStart = Extract<CopyStart, { kind: "create" }>;
+
+/**
+ * The Create that starts `holder`'s Service on `to`: its spec, in `to`'s region when the Service is kept in one, with the
+ * signed versions or rule build that admit it there. Read from the Store each time, so a step result never holds the spec.
+ */
+const createOn = Effect.fn("VolumeRun.createOn")(function* (
+  ctx: Pick<RunContext, "organizationId" | "volumeId" | "volumeName" | "dockerVolume" | "recordedBytes">,
+  holder: ContainerObservation,
+  to: MachineRef,
+  region: string | null,
+  at: SnapshotGuid,
+) {
+  const session = yield* openSession(ctx.organizationId);
+  const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
+    Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
+  );
+  const store = yield* cloudStore;
+  const query = { namespace: holder.namespace, spec: container.resolved_spec, machine: to.id, ...(region !== null && { region }) };
+  const proof = yield* storeTry(() => store.volumeStartProof(ctx.organizationId, query)).pipe(
+    Effect.mapError((error) => new Error(`looking up ${holder.resolved_spec.name}'s approval: ${error.message}`)),
+  );
+  if (proof.kind !== "admits") {
+    const service = holder.resolved_spec.name;
+    return refused(proof.kind === "off_rule"
+      ? `${to.name} can't start ${service}: the deploy rule that built it doesn't list ${to.name}. Add ${to.name} to the rule or deploy ${service} again, then move ${ctx.volumeName}`
+      : `${to.name} can't start ${service}: no approved version of ${service} runs there. Deploy ${service} so it can, then move ${ctx.volumeName}`);
+  }
+  const start: CreateStart = {
+    kind: "create",
+    namespace: holder.namespace,
+    resolved_spec: startingSpec(ctx, proof.spec),
+    creation_key: creationKey(ctx, at),
+    gen: container.gen ?? 1,
+    rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
+    versions: proof.versions,
+    ...(proof.rule !== undefined && { rule: proof.rule }),
+  };
+  return { ok: true, start } as const;
 }, Effect.scoped);
 
 /**
- * The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. A running one wins
- * over stopped ones: a Server that enforces device approval keeps the Container an earlier Move's cut stopped.
+ * Why `to` can't take the Service `from` runs on this Volume, or null when it can. Asked before the run stops anything
+ * and again just before the commit: `from` runs one Service on the Volume and nothing else, an approval admits its spec
+ * on `to`, and `to` checks that start as its Create would, changing nothing.
  */
-export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const on = (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume)).filter((container) => container.machine_id === machine.id);
-  const running = on.filter((container) => container.runtime.state === "running");
-  const holders = running.length > 0 ? running : on;
-  const [holder] = holders;
-  if (holder === undefined || holders.length > 1) {
-    const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
-    return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${machine.name}; a move needs exactly one` } } as const;
-  }
-  const holderOf: Holder = {
-    containerId: holder.container_id,
-    namespace: holder.namespace,
-    redactedSpec: holder.resolved_spec,
-  };
-  return { ok: true, holder: holderOf } as const;
+export const startRefusal = Effect.fn("VolumeRun.startRefusal")(function* (
+  ctx: CopyAsker & Pick<RunContext, "volumeId" | "recordedBytes">,
+  from: MachineRef,
+  to: MachineRef,
+  expect: ExpectedCopy,
+) {
+  const { containers, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
+  const found = holderOn(ctx, containers, from);
+  if (!found.ok) return found.refusal.message;
+  // A check changes nothing, so the snapshot and epoch it names are never used.
+  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), "check");
+  if (!created.ok) return created.refusal.message;
+  const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "check", epoch: 0, start: { ...created.start, check: true } }).pipe(
+    Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) => Effect.succeed<CopyAnswer>({
+      ok: false, reason: "refused", copy: null, message: error.message,
+    })),
+  );
+  return checked.ok ? null : checked.message;
 });
 
 export type Kept = { readonly machine: MachineRef; readonly containerId: ContainerId };
@@ -486,14 +579,21 @@ type WriterStart = {
 /**
  * The point of no return: the commit, then B becomes the writer at G and creates the Service from A's stopped
  * Container. One step, so B is never told to start by a run that does not own the commit, and the spec never
- * lands in a step result. A B that already runs the Service is left alone.
+ * lands in a step result. A B that already runs the Service is left alone. A Move asks B once more just before it
+ * commits, since an approval may have changed since the rounds; a refusal there leaves the Move uncommitted, so its
+ * release starts the Service on A again. A replay reads whether the commit landed from the row.
  */
 export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   ctx: RunContext,
   inngestRunId: string,
   start: WriterStart,
 ) {
-  const { to } = start;
+  const { to, from } = start;
+  const row = yield* readRow(ctx.id);
+  if (from !== null && row?.phase !== "committed") {
+    const refusal = yield* startRefusal(ctx, from, to, start.expect);
+    if (refusal !== null) return { ok: false, reason: "refused", copy: null, message: refusal } satisfies CopyAnswer;
+  }
   if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
@@ -503,15 +603,15 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 
 /**
  * B becomes the writer at G and creates the Service from the source's stopped Container, at its gen and routed once
- * healthy when the source was routed; a B already running it is left alone, unless the source is routed and B is not,
- * when B is asked again and fails while its copy stays unrouted. With no stopped Container to start from, a B that
- * holds its own Service becomes the writer and stays stopped: an earlier start moved the Service there, or a Deploy's
- * placement removed the source's Container. `ownedBy` is the Inngest run that must still own the row when B is
- * told, or null for a Deploy following another run's committed lane, which owns no row.
+ * healthy when the source was routed, carrying the approval that admits it on B; a B already running it is left alone,
+ * unless the source is routed and B is not, when B is asked again and fails while its copy stays unrouted. With no
+ * stopped Container to start from, a B that holds its own Service becomes the writer and stays stopped: an earlier
+ * start moved the Service there, or a Deploy's placement removed the source's Container.
  */
-export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
+export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string, start: WriterStart) {
   const { to, from } = start;
-  const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
+  const { containers: all, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
+  const containers = all.filter((container) => container.kind === "service_container");
   const stopped = containers.filter((container) =>
     container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
   const routed = stopped.some((container) => container.rotation === "in");
@@ -522,7 +622,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   }
   const [holder] = from === null ? stopped : newestFirst(stopped);
   if (holder === undefined && containers.some((container) => container.machine_id === to.id)) {
-    if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
+    yield* requireOwner(ctx.id, ownedBy);
     return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
   }
   if (holder === undefined) {
@@ -533,25 +633,11 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
-  const session = yield* openSession(ctx.organizationId);
-  const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
-    Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
-  );
-  if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
-  return yield* askCopy(ctx, to, start.expect, {
-    kind: "writer",
-    at: start.at,
-    epoch: start.epoch,
-    start: {
-      kind: "create",
-      namespace: holder.namespace,
-      resolved_spec: startingSpec(ctx, container.resolved_spec),
-      creation_key: creationKey(ctx, start.at),
-      gen: container.gen ?? 1,
-      rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
-    },
-  });
-}, Effect.scoped);
+  const created = yield* createOn(ctx, holder, to, regionOf(to.id), start.at);
+  if (!created.ok) return yield* Effect.fail(new NonRetriableError(created.refusal.message));
+  yield* requireOwner(ctx.id, ownedBy);
+  return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: created.start });
+});
 
 /**
  * The stopped Container's spec as B starts it, from the image already copied there. The spec was resolved at the
@@ -652,8 +738,9 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
     const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
-    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, movedRouting) === false) {
-      return lacks(movedRouting.capability, run.kind);
+    // A destination starts the moved Service from the proof its Service's approval left.
+    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, requirements.volumeStart) === false) {
+      return lacks(requirements.volumeStart.capability, run.kind);
     }
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,

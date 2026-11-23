@@ -10,18 +10,17 @@ import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { placementRefusal, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.gates.server";
-import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, view, writePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, view } from "#/modules/volume-placement/volume-placement.server";
 import {
-  appliedMirrors, changeKey, type DeleteCopyInput, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
+  appliedMirrors, changeKey, type DeleteCopyInput, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
-import { commitment, getVolumeRun, readOrigins, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { getVolumeRun, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { type CopyObserver, observeOrganizationCopies } from "#/modules/volume-run/volume-run.orphans.server";
-import { Conflict } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
@@ -261,7 +260,15 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const runsOn = row.staged?.seed?.sourceVolumeId ?? row.volumeId;
     const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
-    const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
+    const changes = placementChanges(volume, members, placement);
+    // Only a Volume Move takes a primary elsewhere, with its Service. A staged edit that would is from before one moved
+    // the Volume, so the edit is made again on where the Volume is now.
+    if (changes.some((change) => change.kind === "move" && change.how !== "restore")) {
+      yield* release(organizationId, deploymentId, true);
+      const message = `${volume.name} moved to another server after its mirrors were edited. Discard that change, edit its mirrors again and deploy`;
+      return { kind: "failed", message } satisfies PlacementAdvance;
+    }
+    const step = nextPlacementStep(changes, appliedMirrors(observePlacement(members), placement));
     if (step === null) {
       if (row.volumeId === replanning?.waited.volumeId) replanning = null;
       // Nothing left to run, so the Servers hold what was staged.
@@ -314,57 +321,20 @@ export const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* 
 });
 
 /**
- * A Drain of `server`: stage each primary on it off to its mirror, else to the first Server in `accepting` the planner
- * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes, and in `blocked`
- * each of them with the Server in `unrouted` that would take it, if any: its Ployz can't finish a Move, so upgrading
- * it lets the Volume move there. `stuck` stays for tabs that read only it.
+ * The Volumes whose primary is on `server`, by name. A Drain leaves them there: only a Volume Move takes a Volume to
+ * another Server, with the Service that mounts it, so the Drain names them for the user to move.
  */
 export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
-  organizationId: string, server: MachineId, accepting: readonly MachineId[], unrouted: readonly MachineId[] = [],
-  observe: CopyObserver = observeOrganizationCopies,
+  organizationId: string, server: MachineId, observe: CopyObserver = observeOrganizationCopies,
 ) {
-  const refusal = yield* placementRefusal(organizationId);
-  if (refusal !== null) return yield* new Conflict({ userFacing: true, message: refusal.message });
-  const { inspect } = yield* VolumeCluster;
   const copies = yield* observe(organizationId);
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
-  const stuck: string[] = [];
-  const blocked: { volume: string; upgrade: string | null }[] = [];
   const volumes: EnvironmentVolume[] = [];
-  // A Drain fails while any Environment is unreadable: one skipped could leave its Volumes on the Server being removed.
+  // A Drain fails while any Environment is unreadable: one skipped would hide a Volume left on the Server.
   for (const owned of yield* allOwners(organizationId)) {
     volumes.push(...yield* ownedVolumes(organizationId, owned).pipe(Effect.catchIf(unreadable, () => Effect.fail(unreadableEnvironment(owned)))));
   }
-  for (const volume of volumes) {
-    if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
-    const found = rows.find((entry) => entry.volumeId === volume.volumeId);
-    if (found?.deploymentId != null) continue;
-    const row = found === undefined ? null : view(found);
-    const members = yield* inspect(organizationId, volume.environment, volume.volumeId);
-    const { owed } = yield* commitment(volume.volumeId);
-    const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server, owed !== null);
-    if (staged === null) {
-      stuck.push(volume.name);
-      const upgraded = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, unrouted, server, owed !== null);
-      const to = members.find((member) => member.machine.id === upgraded?.primary);
-      blocked.push({ volume: volume.name, upgrade: to?.machine.name ?? null });
-      continue;
-    }
-    // A born Volume moves only between Servers that check where its data began, the one it leaves included.
-    const origins = volume.born ? yield* readOrigins(organizationId, volume.dockerVolume, [server, staged.primary, ...staged.mirrors]) : null;
-    if (origins !== null && (origins.kind !== "read" || origins.blockers.length > 0)) {
-      stuck.push(volume.name);
-      blocked.push({ volume: volume.name, upgrade: origins.kind === "read" ? origins.blockers[0] ?? null : null });
-      continue;
-    }
-    const written = yield* writePlacement(organizationId, {
-      environment: volume.environment, volumeId: volume.volumeId, staged, mirrors: appliedMirrors(observePlacement(members), row),
-    });
-    if (!written.ok) {
-      stuck.push(volume.name);
-      blocked.push({ volume: volume.name, upgrade: null });
-    }
-  }
-  return { stuck, blocked };
+  const stuck = volumes
+    .filter((volume) => copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer"))
+    .map((volume) => volume.name);
+  return { stuck };
 });

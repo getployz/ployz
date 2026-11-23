@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting volumes
-description: Fix volume moves that stop partway, busy volumes, volumes holding other data, and moves cut short by a lost server.
+description: Fix volume moves that stop partway or are refused, busy volumes, volumes holding other data, and moves cut short by a lost server.
 ---
 
 Fixes for [moving](../services/move-a-volume.md), [mirroring](../services/mirror-a-volume.md) and
@@ -15,10 +15,16 @@ server or Ployz Cloud goes away during it. What happens next depends on how far 
 - **Before your service stopped on `web-1`**, it keeps running there with all its data. Run the
   move again when you're ready.
 - **After it stopped, and before `web-2` was told to start it**, Ployz deletes the copy on
-  `web-2`, then starts your service again on `web-1`.
+  `web-2`, then starts your service again on `web-1`. This is also what happens when `web-2`
+  refuses your service at its last check before the switch. The run says why; see
+  [A move says the other server can't start the service](#a-move-says-the-other-server-cant-start-the-service).
 - **Once `web-2` was told to start your service**, the volume belongs to `web-2`. Ployz finishes
   the move there, and `ployz volume runs data` shows the release that finished it. If that release
-  fails too, your next deploy starts your service on `web-2` and finishes the move.
+  fails too, or `web-2` won't start your service, your next deploy starts it on `web-2` and
+  finishes the move.
+
+If the release put the volume back on `web-1` and your service didn't start there, the run says
+"web-1 holds data again, but its Service didn't start there". Deploy, and the deploy starts it.
 
 To finish the cleanup now, or to stop a move or a mirror that's still running, release the volume:
 
@@ -247,8 +253,34 @@ next: ployz volume mirror rm data-web-1 --if-old-copy
 ```
 
 A volume holds one other copy, and `ployz volume move` won't delete it for you. Run the `next:`
-line, then move again. If that copy is a mirror, the line has no `--if-old-copy`. In Ployz Cloud,
-**Make primary** deletes old copies on other servers for you.
+line, then move again. If that copy is a mirror, the line has no `--if-old-copy`.
+
+## A move says the other server can't start the service
+
+```
+web-2 can't start web: no approved version of web runs there. Deploy web so it can, then move data
+```
+
+Before a move stops anything, `web-2` checks it would start your service. Nothing stopped, and
+your service keeps running on `web-1`. What to do depends on the reason:
+
+- **No approved version runs there.** Deploy the service, then move again.
+- **The deploy rule that built it doesn't list `web-2`.** Add `web-2` to the
+  [rule](../deploy/github.md#approve-a-rule-for-deploys-on-push), or deploy the service again, then move again.
+- **Another container uses the volume**, as in "web and worker all use data on web-1". Stop the
+  others, then move again.
+- **The service mounts other data**, as in "web also mounts uploads, which can't move with data".
+  Remove that mount from the service, deploy, then move again.
+- **`web-2` runs an older Ployz.** Upgrade it, then move again.
+
+## A deploy refuses a mirror change after a move
+
+```
+data moved to another server after its mirrors were edited. Discard that change, edit its mirrors again and deploy
+```
+
+You edited the volume's mirrors, then moved it before deploying. Discard the change in Ployz
+Cloud, edit the mirrors again and deploy.
 
 ## Deleting an old copy says it is no longer an old copy
 

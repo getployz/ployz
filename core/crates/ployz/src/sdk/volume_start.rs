@@ -19,7 +19,7 @@ pub struct VolumeStartQuery {
     /// The spec the source Server's Container runs.
     pub spec: ResolvedServiceSpec,
     pub machine: MachineId,
-    /// `machine`'s region, for a Service kept in one: the spec starts there.
+    /// `machine`'s region label. A Service kept in a region starts in this one.
     #[serde(default)]
     #[ts(optional)]
     pub region: Option<Region>,
@@ -58,7 +58,10 @@ pub async fn volume_start_proof(
         machine,
         region,
     } = query;
-    if let Some(region) = &region {
+    // A Service kept in a region starts in `machine`'s; one that runs anywhere keeps its spec.
+    if let Some(region) = &region
+        && Region::kept_in(&spec.placement, &spec.regions).is_some()
+    {
         Region::keep(Some(region), &mut spec.placement, &mut spec.regions);
     }
     let read = crate::deploy::kept_query(&namespace, &spec).ok_or_else(|| {

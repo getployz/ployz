@@ -79,7 +79,7 @@ it.live("finds a Service while another Environment is unreadable", () => Effect.
 it.live("a Drain refuses naming the Environment it can't read and the way out", () => Effect.gen(function* () {
   const { services, blog } = yield* setup();
   const copies = [{ machine_id: web("web-1"), name: blog, role: "writer" as const }];
-  const refused = yield* stageOffServer(ORGANIZATION, web("web-1"), [web("web-2")], [], () => Effect.succeed(copies))
+  const refused = yield* stageOffServer(ORGANIZATION, web("web-1"), () => Effect.succeed(copies))
     .pipe(answeringRuntime, Effect.provide(services), Effect.flip);
   expect(refused).toMatchObject({
     _tag: "Conflict",
