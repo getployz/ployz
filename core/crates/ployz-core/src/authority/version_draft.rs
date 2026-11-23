@@ -120,8 +120,15 @@ impl VersionsAsked {
             volumes: &self.volumes,
             minted: &minted,
             now: self.issued_at,
+            against: None,
         };
-        let approved = ApprovedChange::of(&self.services, namespace, &pins, &mounts)?;
+        let approved =
+            ApprovedChange::of(&self.services, namespace, &pins, &mounts).map_err(|error| {
+                match error {
+                    super::deploy::ChangeError::Digest(error) => DraftError::Canonical(error),
+                    super::deploy::ChangeError::Mounts(error) => DraftError::Birth(error),
+                }
+            })?;
         let signer = SignerKey::Passkey(super::OwnPrompt::Passkey);
         let mut steps = Vec::new();
         let mut listed = Vec::new();
