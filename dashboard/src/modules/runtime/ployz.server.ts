@@ -169,6 +169,8 @@ export interface PloyzSession {
    */
   readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
+  /** The Containers of `namespace` that each Server lists itself, and the Servers that didn't answer. */
+  readonly observeNamespace: (namespace: string) => Effect.Effect<NamespaceContainers, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
   readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
@@ -197,6 +199,7 @@ export interface PloyzSession {
 }
 
 export type ServiceCopies = Awaited<ReturnType<Client["observeService"]>>;
+export type NamespaceContainers = Awaited<ReturnType<Client["observeNamespace"]>>;
 /** What a connect that expected a Cluster confirmed about it: null when it expected none. */
 export type SessionCluster = ReturnType<Client["cluster"]>;
 
@@ -415,6 +418,7 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
     agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
+    observeNamespace: (namespace) => sdkPromise("observe namespace", () => client.observeNamespace(namespace)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
     removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),

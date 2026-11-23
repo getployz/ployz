@@ -143,14 +143,25 @@ export function useDeployTap(organizationSlug: string) {
 
   const sheet = open === null ? null : (
     <Dialog open onOpenChange={(next) => { if (!next && busy === null) close(open, new DeployNotSent()); }}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Approve {open.ask.services.join(", ")} in {open.ask.namespace}?</DialogTitle>
           <DialogDescription>Check each line. Your passkey signs exactly this.</DialogDescription>
         </DialogHeader>
-        <ul aria-label="What your passkey signs" className="flex max-h-80 flex-col gap-1 overflow-auto font-mono text-xs whitespace-pre-wrap break-all">
-          {open.ask.draft.lines.map((line, index) => <li key={index}>{line}</li>)}
-        </ul>
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+          <ul aria-label="What your passkey signs" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+            {open.ask.draft.lines.map((line, index) => <li key={index}>{line}</li>)}
+          </ul>
+          {open.ask.draft.confirm.length === 0 ? null : (
+            <div className="flex flex-col gap-1 text-sm">
+              <p className="font-medium">Needs your yes</p>
+              <ul aria-label="Data your passkey says yes to" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+                {open.ask.draft.confirm.map((line, index) => <li key={index}>{line}</li>)}
+              </ul>
+              <p className="text-muted-foreground">Approving says yes to this data.</p>
+            </div>
+          )}
+        </div>
         {open.problem === null ? null : <p role="alert" className="text-sm text-destructive">{open.problem}</p>}
         <DialogFooter>
           <DialogClose render={<Button variant="outline" disabled={busy !== null} />}>Cancel</DialogClose>

@@ -75,7 +75,7 @@ export async function prepareDeploy(
     draft = versionSteps({
       cluster: gate.cluster, namespace: plan.namespace, volumes: plan.volumes, services: specs, pins: gate.pins,
       operation: crypto.randomUUID().replaceAll("-", ""), issued_at: now, expires_at: now + WINDOW_MS,
-      seed: [...crypto.getRandomValues(new Uint8Array(16))],
+      seed: [...crypto.getRandomValues(new Uint8Array(16))], against: gate.against,
     });
   } catch (error) {
     return { kind: "refused", message: error instanceof Error ? error.message : "This browser couldn't draft the deploy." };
