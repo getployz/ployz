@@ -271,6 +271,7 @@ impl ApprovedChange {
                     .map(|pin| std::mem::replace(&mut pinned.container.image, pin.clone()));
                 let mounted = mounts.lines(spec)?;
                 let confirm = mounted.confirm.iter().map(ToString::to_string).collect();
+                let region = mounts.region(spec);
                 Ok(Self {
                     service: spec.name.clone(),
                     digest: PayloadDigest::of(&pinned, namespace)?,
@@ -279,6 +280,7 @@ impl ApprovedChange {
                     host: host_sensitive(spec).into_iter().map(String::from).collect(),
                     settings: settings(spec, mounted)
                         .into_iter()
+                        .chain(region)
                         .map(String::from)
                         .collect(),
                     confirm,

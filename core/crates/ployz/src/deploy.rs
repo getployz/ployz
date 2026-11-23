@@ -19,7 +19,7 @@ mod approvals;
 pub(crate) mod cleanup;
 mod exec;
 mod machine_calls;
-pub(crate) use approvals::{Approvals, KeptVersions, RuleProofs};
+pub(crate) use approvals::{Approvals, KeptVersions, RuleProofs, kept_query};
 pub(crate) use exec::{MoveEnd, MoveError, health_error, move_container};
 pub(crate) use machine_calls::{
     Answer, Approved, CopyLifecycle, MachineOperations, ProxyPlacement, RestartTolerant, set_each,

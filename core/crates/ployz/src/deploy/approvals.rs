@@ -6,7 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerLocator, ContainerWant, NewContainer, RunTarget, ServiceName,
+    ContainerLocator, ContainerWant, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
+    ServiceName,
     authority::{
         BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
@@ -89,15 +90,8 @@ impl KeptVersions {
     /// and the newest verified build of its image when a rule built it. A Store that
     /// doesn't answer gives none, and a Server that needs one refuses.
     async fn of(&self, new: &NewContainer) -> Carried {
-        let Ok(digest) = PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace)
-        else {
+        let Some(query) = kept_query(&new.slot.namespace, &new.resolved_spec) else {
             return Carried::default();
-        };
-        let query = VersionsQuery {
-            namespace: new.slot.namespace.clone(),
-            service: new.slot.service.clone(),
-            digest,
-            image: BuiltImageDigest::named_by(&new.resolved_spec.container.image),
         };
         let read = match self {
             Self::Local {
@@ -127,6 +121,20 @@ impl KeptVersions {
             }
         }
     }
+}
+
+/// What the Config Store keeps for `spec` is read by: the digest a Server checks, and the
+/// image a rule may have built. None for a spec with no digest.
+pub(crate) fn kept_query(
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+) -> Option<VersionsQuery> {
+    Some(VersionsQuery {
+        namespace: namespace.clone(),
+        service: spec.name.clone(),
+        digest: PayloadDigest::of(&spec.to_requested(), namespace).ok()?,
+        image: BuiltImageDigest::named_by(&spec.container.image),
+    })
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in

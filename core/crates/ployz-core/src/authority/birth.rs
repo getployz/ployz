@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     BirthNonce, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
-    MountOrigins, Namespace, RawVolumeSource, RequestedServiceSpec, SealingPublicKey, ServiceMount,
-    ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
+    MountOrigins, Namespace, RawVolumeSource, Region, RequestedServiceSpec, SealingPublicKey,
+    ServiceMount, ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
 };
 
 /// A Volume a plan's specs mount, as the Config Store names it.
@@ -354,6 +354,36 @@ enum Said {
 }
 
 impl Mounts<'_> {
+    /// Where a Service with a managed volume runs, which decides where its data lives:
+    /// `moves data to fsn` when the approved version kept it in another region, and
+    /// `any region` while it is kept in none, since a move then needs no other approval.
+    #[must_use]
+    pub fn region(&self, spec: &RequestedServiceSpec) -> Option<Shown> {
+        let volume = spec.volume_graph().mounted_provisioned_volumes().next()?;
+        let name = volume.source.docker_volume_name()?;
+        let called = (self.volumes.get(name).map(|planned| planned.name.as_str()))
+            .or_else(|| volume.source.birth().map(|birth| birth.name.as_str()))
+            .unwrap_or(name.as_str());
+        let region = |spec: &RequestedServiceSpec| Region::kept_in(&spec.placement, &spec.regions);
+        let now = region(spec);
+        let was = match self.against?.before.get(&spec.name) {
+            Some(Before::Approved(base)) => Some(region(&base.spec)),
+            _ => None,
+        };
+        let place = now
+            .as_ref()
+            .map_or(Shown::words("any region"), |now| Shown::text(now.as_str()));
+        match was {
+            Some(was) if was != now => Some(
+                Shown::words("moves ")
+                    .and_text(called)
+                    .and_words(" to ")
+                    .and(place),
+            ),
+            _ => now.is_none().then_some(place),
+        }
+    }
+
     /// One line for each mount of `spec` that a managed or Docker volume backs, such as
     /// `mounts managed volume previews at /srv/previews, read-write: a new, empty volume`,
     /// and the targets of those mounts. Each line names the data its Servers check: the

@@ -248,6 +248,18 @@ impl Region {
         PlacementConstraint(format!("node.labels.{}=={}", Self::LABEL, self.0))
     }
 
+    /// The one region a Service with `placement` and per-region `regions` is kept in, as
+    /// [`Self::keep`] writes it; None for any region.
+    #[must_use]
+    pub fn kept_in(
+        placement: &Placement,
+        regions: &std::collections::BTreeMap<Self, std::num::NonZeroU32>,
+    ) -> Option<Self> {
+        (placement.constraints.iter())
+            .find_map(Self::required_by)
+            .or_else(|| regions.keys().next().cloned())
+    }
+
     /// Keep a Service with `placement` and per-region `regions` in `region` alone, or in
     /// any region with `None`, as lowering writes one region: a count there when it had
     /// counts by region, else a constraint. A Volume's Service runs in one region, so this
