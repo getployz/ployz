@@ -259,10 +259,10 @@ pub(crate) fn set(
         (Some(Input::Seal(_)), _) => {
             return Err(sealer.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
-        // A made value fills only a Pending one: two browsers filling it, the first
-        // wins, which a database may already have started with.
+        // A made value fills only a new or Pending one: two browsers filling it, or a
+        // stale fill over a value set since, keeps what a database may already use.
         (Some(Input::ClientSealed(_, Some(_))), Some(current))
-            if matches!(current.value, VariableValue::Sealed { .. }) =>
+            if !matches!(current.value, VariableValue::Pending { .. }) =>
         {
             kept(current)
         }
