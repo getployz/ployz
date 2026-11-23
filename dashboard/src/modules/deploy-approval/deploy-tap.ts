@@ -4,13 +4,12 @@
  * code the Servers check, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the
  * plan, the tag pins and the answer, and each Server checks every step.
  */
-import type { ConfigCommand, Needs, PlanQuery, PlanView, PostedVersion, VersionsDraft } from "@ployz/sdk";
+import type { Needs, PostedVersion, VersionsDraft } from "@ployz/sdk";
 import { versionSteps } from "@ployz/sdk/authority";
+import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type OnlyPasskey, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { LOSS_MARK } from "#/modules/volume-placement/volume-placement.review";
-import type { DeployTap } from "./deploy-tap.server";
-
-export type AdmitDeploy = Extract<ConfigCommand, { command: "admit"; admit: "deploy" }>;
+import type { DeployPlan } from "./deploy-tap.server";
 
 /** How long a bundle stays open after the browser drafts it. */
 const WINDOW_MS = 10 * 60_000;
@@ -19,14 +18,14 @@ const WINDOW_MS = 10 * 60_000;
  * Whether `given`, a caller's version, names the review the Store versions `current`, as the Store reads it: that
  * version, or it followed by `:` and an approval digest, either one bound to a loss with `#loss-`.
  */
-export function namesReview(current: string, given: string) {
+function namesReview(current: string, given: string) {
   const reviewed = given.split(LOSS_MARK)[0] ?? given;
   return reviewed === current || reviewed.startsWith(`${current}:`);
 }
 
 /** Why a Service no passkey can sign keeps the Deploy from asking. */
 const BLOCKED = {
-  rule: (service) => `Approve ${service}'s automatic deploy rule again.`,
+  rule: (service) => `No automatic deploy rule covers ${service}. Approve one, or run ployz deploy.`,
   rebuild: (service) => `Push to ${service}'s branch first. Its rule hasn't built this version yet.`,
   digest: (service) => `${service} pulls a private tag. Write its image by digest (image@sha256:…).`,
 } satisfies Record<Exclude<Needs, "version">, (service: string) => string>;
@@ -39,7 +38,7 @@ export type Ask = {
   readonly passkeys: readonly OnlyPasskey[];
   /** The Deploy, at the caller's version, or at the plan's when the caller named none. */
   readonly command: AdmitDeploy;
-  /** The Store's plan version the draft signs: a retry of this plan reuses the answer. */
+  /** The Store's plan version the draft signs: only a Volume-loss retry of this plan reuses the answer. */
   readonly plan: string;
 };
 
@@ -51,26 +50,26 @@ export type Prepared =
 
 /**
  * What `command` needs before it is admitted: nothing, a passkey's answer to the drafted versions, or a reason it can't
- * ask. Nothing prompts here, and a reason is given before any prompt.
+ * ask. Nothing prompts here, and a reason is given before any prompt. Every exit admits at the caller's version as
+ * given, `#loss-` mark and digest included, or at the plan's when the caller named none.
  */
 export async function prepareDeploy(
   command: AdmitDeploy,
-  read: (query: { query: "plan" } & PlanQuery) => Promise<PlanView>,
-  servers: (tags: string[]) => Promise<DeployTap>,
+  read: (command: AdmitDeploy) => Promise<DeployPlan>,
   now = Date.now(),
 ): Promise<Prepared> {
-  const plan = await read({ query: "plan", environment: command.environment, services: [...command.services ?? []], target: true });
+  const planned = await read(command);
+  if (planned.kind === "refused") return planned;
+  const { plan, tap: gate } = planned;
   if (command.version !== null && command.version !== undefined && !namesReview(plan.version, command.version)) return { kind: "stale" };
-  const unsigned = plan.unsigned ?? [];
-  if (unsigned.length === 0) return { kind: "admit", command };
-  const blocked = unsigned.find((entry) => entry.needs !== "version");
-  const names = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
-  const specs = (plan.target ?? []).filter((spec) => names.has(spec.name));
-  const tags = blocked ? [] : [...new Set(specs.map((spec) => spec.container.image).filter((image) => !image.includes("@sha256:")))];
-  const gate = await servers(tags);
-  if (gate.kind === "off") return { kind: "admit", command };
+  const bound: AdmitDeploy = { ...command, version: command.version ?? plan.version };
+  if (gate.kind === "off") return { kind: "admit", command: bound };
   if (gate.kind === "refused") return gate;
+  const unsigned = plan.unsigned ?? [];
+  const blocked = unsigned.find((entry) => entry.needs !== "version");
   if (blocked && blocked.needs !== "version") return { kind: "refused", message: BLOCKED[blocked.needs](blocked.service) };
+  const names = new Set(unsigned.map((entry) => entry.service));
+  const specs = (plan.target ?? []).filter((spec) => names.has(spec.name));
   let draft: VersionsDraft;
   try {
     draft = versionSteps({
@@ -83,10 +82,7 @@ export async function prepareDeploy(
   }
   return {
     kind: "ask",
-    ask: {
-      namespace: plan.namespace, services: draft.steps.map((step) => step.service), draft, passkeys: gate.passkeys,
-      command: { ...command, version: command.version ?? plan.version }, plan: plan.version,
-    },
+    ask: { namespace: plan.namespace, services: draft.steps.map((step) => step.service), draft, passkeys: gate.passkeys, command: bound, plan: plan.version },
   };
 }
 

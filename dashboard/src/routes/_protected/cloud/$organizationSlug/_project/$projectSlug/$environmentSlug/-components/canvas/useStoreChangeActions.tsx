@@ -151,6 +151,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
           if (open) return;
           setLoss(null);
           settleSave(false);
+          tap.drop();
         }}
         title={loss?.action === "publish" ? "Next deploy deletes data" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}

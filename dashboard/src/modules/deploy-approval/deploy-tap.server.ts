@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { pinImages } from "@ployz/sdk";
+import { pinImages, type EnvironmentRef, type PlanView } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { callStore } from "#/modules/config-store/config-store.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
@@ -13,10 +14,12 @@ import { Database } from "#/server/database.server";
 /** What a Server that enforces device approval needs to check a passkey's versions. */
 const SIGNS = ["ployz.container.signed-version.proposal.v1", "ployz.authority.scoped-keys.v1"];
 
+const UNREACHED = "Couldn't reach your servers. Try again.";
+
 /**
  * What a person's Deploy needs before it asks for their passkey: nothing when no Server enforces device approval, else
- * the Cluster's key, the person's passkeys every enforcing Server trusts, and the digest each of `tags` runs as. Any
- * other answer is why it can't ask, in words the sheet shows.
+ * the Cluster's key, the person's passkeys every enforcing Server trusts, and the digest each tag the plan signs runs
+ * as. Any other answer is why it can't ask, in words the sheet shows.
  */
 export type DeployTap =
   | { readonly kind: "off" }
@@ -28,27 +31,61 @@ export type DeployTap =
     readonly pins: Readonly<Record<string, string>>;
   };
 
-export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: { readonly organizationSlug: string; readonly tags: readonly string[] }) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
-  const frame = yield* firstRuntimeFrame(organization.id).pipe(Effect.orElseSucceed(() => null));
-  const enforcing = (frame?.machines ?? []).map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
-  // As the CLI does, a Cluster Cloud can't read signs nothing; a Server that enforces refuses what nobody signed.
-  if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
+/** The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. */
+export type DeployPlan =
+  | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap }
+  | { readonly kind: "refused"; readonly message: string };
+
+/**
+ * The plan of a Deploy of `services` in `environment` with its targets, read here so Cloud looks up only the tags of
+ * the specs it read itself, never ones the browser names.
+ */
+export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: {
+  readonly organizationSlug: string;
+  readonly environment: EnvironmentRef;
+  readonly services: readonly string[];
+}) {
+  const access = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
+  const read = yield* callStore(access.organization.id, actor.userId, {
+    operation: "read",
+    query: { query: "plan", environment: input.environment, services: [...input.services], target: true },
+  }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
+  if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies DeployPlan;
+  const plan = read.value;
+  const unsigned = plan.unsigned ?? [];
+  if (unsigned.length === 0) return { kind: "plan", plan, tap: { kind: "off" } } satisfies DeployPlan;
+  const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
+  // A Service only a rule or a digest can cover refuses before any lookup, unless nothing enforces.
+  const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))
+    .map((spec) => spec.container.image).filter((image) => !image.includes("@sha256:"));
+  const tap = yield* gate(actor.userId, access.organization.id, tags);
+  return { kind: "plan", plan, tap } satisfies DeployPlan;
+});
+
+const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organizationId: string, tags: readonly string[]) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
-  // A record that lists no capabilities claims none either way; that Server's own check decides.
-  const older = enforcing.find(({ runtime: { capabilities = [] } }) => capabilities.length > 0 && SIGNS.some((needed) => !capabilities.includes(needed)));
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
+  if (frame === null) return refused(UNREACHED);
+  const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
+  if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
+  const older = enforcing.find(({ runtime: { capabilities = [] } }) => SIGNS.some((needed) => !capabilities.includes(needed)));
   if (older !== undefined) return refused(`Upgrade ${older.name} first. Its ployz can't check your passkey.`);
   const cluster = enforcing.flatMap(({ runtime }) => runtime.sealing?.kind === "held" ? [runtime.sealing.public_key] : [])[0];
   if (cluster === undefined) return refused("Your servers didn't report the cluster's key. Try again.");
+  const answers = (yield* trustedPasskeys(organizationId)) ?? [];
+  if (answers.length === 0) return refused(UNREACHED);
+  const lists: (typeof answers)[number]["passkeys"][] = [];
+  for (const server of enforcing) {
+    const held = answers.find(({ id }) => id === server.id)?.passkeys;
+    if (held === null || held === undefined) return refused(`Couldn't reach ${server.name}. Try again.`);
+    lists.push(held);
+  }
   const { drizzle } = yield* Database;
   const own = yield* drizzle.select({ code: passkeyRequest.code, credentialId: passkeyRequest.credentialId }).from(passkeyRequest)
-    .where(and(eq(passkeyRequest.organizationId, organization.id), eq(passkeyRequest.userId, actor.userId)));
-  const ids = new Set<string>(enforcing.map(({ id }) => id));
-  const lists = ((yield* trustedPasskeys(organization.id)) ?? []).filter(({ id }) => id !== null && ids.has(id))
-    .flatMap(({ passkeys }) => passkeys === null ? [] : [passkeys]);
-  const passkeys = own.filter((row) => lists.length > 0 && lists.every((held) => held.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
+    .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, userId)));
+  const passkeys = own.filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
   if (passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
-  return yield* Effect.tryPromise(() => pinImages([...new Set(input.tags)])).pipe(
+  return yield* Effect.tryPromise(() => pinImages([...new Set(tags)])).pipe(
     Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])) })),
     Effect.catch((error) => Effect.succeed(refused(error.cause instanceof Error ? error.cause.message : "Couldn't look up an image's digest. Try again."))),
   );

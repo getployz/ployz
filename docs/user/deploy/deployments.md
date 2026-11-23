@@ -440,17 +440,24 @@ These need no prompt:
 Your servers must trust your passkey. Add it under **Account**, **Passkeys**. Before it asks,
 Deploy stops and says why, and deploys nothing, when:
 
-- a service builds from source and its rule doesn't cover it: `Approve web's automatic deploy rule again.`
+- a service builds from source and no rule covers it: `No automatic deploy rule covers web. Approve one, or run ployz deploy.`
 - its rule covers it but hasn't built it yet: `Push to web's branch first. Its rule hasn't built this version yet.`
 - a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
 - a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`
+- Ployz Cloud can't read your servers: `Couldn't reach your servers. Try again.` A server that
+  doesn't answer is named instead: `Couldn't reach web-1. Try again.`
 - no server trusts your passkey: `Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.`
 
 If your changes moved after you looked, Deploy asks nothing and says
 `Your changes moved since you looked. Check them, then deploy again.` If the Config Store refuses
-the signed deploy, the sheet shows what you would sign now and offers **Sign and deploy again**.
+the signed deploy and your passkey must sign again, the sheet shows what you would sign now and
+offers **Sign and deploy again**. If no passkey is needed now, the deploy starts.
 **Cancel** deploys nothing and keeps your changes staged. A deploy that deletes data asks you to
-confirm that too, and your one prompt covers it.
+confirm that too, and your one prompt covers it. Cancel that and the next deploy asks for your
+passkey again.
+
+If Ployz Cloud doesn't answer after you approve, the sheet says
+`Couldn't reach Ployz Cloud. Try again.` **Try again** doesn't ask for your passkey.
 
 **Create and deploy** on a new branch, **Deploy again** after a sync and **Redeploy** on a log
 card ask the same way.
