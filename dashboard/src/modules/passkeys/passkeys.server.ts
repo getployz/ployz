@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { MachineDetails, Passkey, TrustedPasskey } from "@ployz/sdk";
-import { installKey } from "@ployz/sdk/authority";
+import { type Against, installKey } from "@ployz/sdk/authority";
 import {
   generateRegistrationOptions,
   type RegistrationResponseJSON,
@@ -166,12 +166,9 @@ export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPa
   return { by: by.by === "server" ? "server" : "trusted" };
 };
 
-/** The keys a Server trusts, as its Inspect reports them. */
-export type ServerKeys = Pick<MachineDetails, "devices" | "passkeys" | "grants">;
-
 type ServerPasskeys = {
   readonly id: string | null; readonly server: string;
-  readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null; readonly keys: ServerKeys | null;
+  readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null; readonly keys: Against["trusted"] | null;
 };
 
 /**

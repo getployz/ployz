@@ -74,9 +74,8 @@ export function passkeyJoinStep(join: JoinApproval, operation: string, issuedAt:
  * One version of each of `asked.services` a person's passkey signs in one prompt: the bundle to answer, each step body
  * with the births and image the Store records beside it, and the lines the person reads, each by the ployz-core code the
  * Servers run. `pins` maps each tag image to the `tag@sha256:…` it runs as, which `pinImages` looks up. `seed` is 16
- * random bytes from this browser. `against` is what each mount is compared with: each Service's last approved version
- * (`parents`, as the Store's parent query returns them), the keys one enforcing Server trusts, and the Namespace's
- * Containers with each Server that may hold more. `confirm` lists the mounts the person's answer says yes to. Throws an
+ * random bytes from this browser. `against` is what each mount is compared with, with `parents` as the Store's parent
+ * query returns them. `confirm` lists the mounts the person's answer says yes to. Throws an
  * Error, before any bundle, for a tag with no pin, a pin that isn't the tag itself by digest, a Volume from another
  * environment, or data from before births that nothing vouches for.
  */
@@ -90,13 +89,19 @@ export function versionSteps(asked: {
   issued_at: number;
   expires_at: number;
   seed: readonly number[];
-  against: {
-    parents?: Readonly<Record<string, Parent>>;
-    trusted: Pick<MachineDetails, "devices" | "passkeys" | "grants">;
-    containers: readonly ContainerObservation[];
-    unanswered?: readonly string[];
-  };
+  against: Against;
 }): VersionsDraft;
+
+/**
+ * What each mount is compared with: each Service's last approved version, the keys one enforcing Server trusts, the
+ * Namespace's Containers as the Servers that answered list them, and each Server that didn't answer, by name.
+ */
+export type Against = {
+  parents?: Readonly<Record<string, Parent>>;
+  trusted: Pick<MachineDetails, "devices" | "passkeys" | "grants">;
+  containers: readonly ContainerObservation[];
+  unanswered?: readonly string[];
+};
 
 /**
  * The key an install line carries for `passkey` (`pk1_…`), as the installer and `ployz key add` read it: a fresh Server

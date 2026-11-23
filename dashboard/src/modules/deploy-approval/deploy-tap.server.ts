@@ -1,16 +1,17 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerObservation, EnvironmentRef, Parent, PlanView } from "@ployz/sdk";
+import type { EnvironmentRef, Parent, PlanView } from "@ployz/sdk";
+import type { Against } from "@ployz/sdk/authority";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { answerForSupport } from "#/modules/support-access/support-view";
-import { type ServerKeys, trustedPasskeys } from "#/modules/passkeys/passkeys.server";
+import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
 import { passkeyRequest } from "#/modules/passkeys/tables";
 import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { countOrganizationMachines } from "#/modules/runtime/connections.server";
-import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 
@@ -18,17 +19,6 @@ import { Database } from "#/server/database.server";
 const SIGNS = ["ployz.container.signed-version.proposal.v1", "ployz.authority.scoped-keys.v1"];
 
 const UNREACHED = "Couldn't reach your servers. Try again.";
-
-/**
- * What the browser compares each mount with: each Service's last approved version, the keys the enforcing Server that
- * reported the Cluster's key trusts, and the Namespace's Containers with each Server whose list may be out of date.
- */
-export type Against = {
-  readonly parents: Readonly<Record<string, Parent>>;
-  readonly trusted: ServerKeys;
-  readonly containers: readonly ContainerObservation[];
-  readonly unanswered: readonly string[];
-};
 
 /**
  * What a person's Deploy needs before it asks for their passkey: nothing when no Server enforces device approval, else
@@ -72,13 +62,13 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   // A Service only a rule or a digest can cover refuses before any lookup, unless nothing enforces.
   const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))
     .map((spec) => spec.container.image).filter((image) => !image.includes("@sha256:"));
-  // The Store keeps each Service's last approved version with its Sealed values, so support never reads it.
-  const parents = signs.size === 0 || access.kind === "support" ? null : yield* callStore(access.organization.id, actor.userId, {
+  // The Store keeps each Service's last approved version with its Sealed values, so support never reads it. A Store that
+  // can't say leaves each Service with nothing to compare with, so every mount of existing data asks.
+  const parents = signs.size === 0 || access.kind === "support" ? Effect.succeed({}) : callStore(access.organization.id, actor.userId, {
     operation: "read", query: { query: "parent", environment: input.environment, services: [...signs] },
-  }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
-  // A Store that can't say leaves each Service with nothing to compare with, so every mount of existing data asks.
-  const known = parents?.ok === true ? parents.value.services : {};
-  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents: known });
+  }, { approval: "not_required", permissions: access.permissions, environments: access.environments })
+    .pipe(Effect.map((read): Readonly<Record<string, Parent>> => read.ok ? read.value.services : {}));
+  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
   // Support never signs, and reads a plan only as its own view of it allows.
   if (access.kind === "support") {
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
@@ -89,9 +79,10 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
 
-const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organizationId: string, tags: readonly string[], asked: {
+const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organizationId: string, tags: readonly string[], asked: {
   readonly namespace: string;
-  readonly parents: Against["parents"];
+  /** Read only once the gate would ask. */
+  readonly parents: Effect.Effect<Readonly<Record<string, Parent>>, E, R>;
 }) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
   // With no Server paired nothing enforces; the first one deploys what is saved.
@@ -106,7 +97,8 @@ const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organization
   const keyed = enforcing.flatMap(({ id, runtime }) => runtime.sealing?.kind === "held" ? [{ id, cluster: runtime.sealing.public_key }] : [])[0];
   if (keyed === undefined) return refused("Your servers didn't report the cluster's key. Try again.");
   const { cluster } = keyed;
-  const answers = (yield* trustedPasskeys(organizationId)) ?? [];
+  const [found, listed] = yield* Effect.all([trustedPasskeys(organizationId), listContainers(organizationId, asked.namespace)], { concurrency: 2 });
+  const answers = found ?? [];
   if (answers.length === 0) return refused(UNREACHED);
   const lists: (typeof answers)[number]["passkeys"][] = [];
   for (const server of enforcing) {
@@ -119,20 +111,27 @@ const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organization
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, userId)));
   const trusted = answers.find(({ id }) => id === keyed.id)?.keys;
   if (trusted === null || trusted === undefined) return refused(UNREACHED);
-  const named = new Map(frame.machines.map(({ machine }) => [machine.id, machine.name]));
-  // A Server whose rows the entry only remembers, or a Container row that hasn't fully arrived, may hold more.
-  const unanswered = [
-    ...frame.unanswered.map((id) => named.get(id) ?? id),
-    ...frame.incomplete_ids.containers.length > 0 ? ["a server"] : [],
-  ];
-  const against: Against = {
-    parents: asked.parents, trusted, unanswered,
-    containers: frame.containers.filter((container) => container.namespace === asked.namespace),
-  };
   const passkeys = own.filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
   if (passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
+  // Every Server the frame, the trust read or the listing knew of, by name, that didn't list its own Containers.
+  const answered = new Set(listed?.answered);
+  const roster = new Map([
+    ...(listed?.unanswered ?? []).map(({ machine, name }) => [machine, name] as const),
+    ...answers.flatMap(({ id, server }) => id === null ? [] : [[id, server] as const]),
+    ...frame.machines.map(({ machine }) => [machine.id, machine.name] as const),
+  ]);
+  const against: Against = {
+    parents: yield* asked.parents, trusted, containers: listed?.containers ?? [],
+    unanswered: [...roster].filter(([id]) => !answered.has(id)).map(([, name]) => name),
+  };
   return yield* pinImageDigests([...new Set(tags)]).pipe(
     Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])), against })),
     Effect.catch((error) => Effect.succeed(refused(error.cause instanceof Error ? error.cause.message : "Couldn't look up an image's digest. Try again."))),
   );
 });
+
+/** The Containers of `namespace` that each Server lists itself, or null when Cloud reached none of them. */
+const listContainers = (organizationId: string, namespace: string) => Effect.gen(function* () {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  return session.status === "connected" ? yield* session.connected.observeNamespace(namespace) : null;
+}).pipe(Effect.scoped, Effect.orElseSucceed(() => null));
