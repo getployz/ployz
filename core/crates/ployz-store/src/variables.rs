@@ -878,10 +878,18 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
                     Some(Value::String(text)) => match Generator::parse(&text) {
                         Ok(Some(generator)) => Some(generator),
                         Ok(None) | Err(_) => {
-                            return Err(invalid(key, "generated names how the value was made"));
+                            return Err(invalid(
+                                key,
+                                "generated takes a secret(…) call, such as ${{ secret(32) }}",
+                            ));
                         }
                     },
-                    Some(_) => return Err(invalid(key, "generated names how the value was made")),
+                    Some(_) => {
+                        return Err(invalid(
+                            key,
+                            "generated takes a secret(…) call, such as ${{ secret(32) }}",
+                        ));
+                    }
                     None => None,
                 };
                 serde_json::from_value(Value::Object(sealed))

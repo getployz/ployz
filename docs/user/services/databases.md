@@ -30,7 +30,7 @@ app moving from Railway can keep reading them.
 
 The password is 32 random letters, made in your browser and
 [sealed](variables.md#seal-a-secret) there, so Ployz Cloud never sees it. Only your servers
-open it. That's why **Database** waits for a server: until one is added, the menu says
+can open it, so **Database** waits for a server: until one is added, the menu says
 **Add a server first**, and after a lost key it says **Run ployz recover on a server first**.
 
 Each environment gets its own password. A [branch](../environments/environments.md) or a
@@ -38,7 +38,7 @@ Each environment gets its own password. A [branch](../environments/environments.
 starts with the password **Not set**. Its first **Deploy** from the dashboard makes a new one in
 your browser, seals it and deploys, all in the same click, so its new, empty volume sets up with
 a password of its own. A `ployz deploy` of that copy before then is refused with
-`POSTGRES_PASSWORD has no value yet. Deploy from the dashboard to make it.`, and so is a preview's
+`postgres.POSTGRES_PASSWORD has no value yet. Deploy from the dashboard to make it.`, and so is a preview's
 automatic deploy. A pull request merge keeps the password the database already has.
 
 A branch that shares production's database doesn't get production's password, so variables

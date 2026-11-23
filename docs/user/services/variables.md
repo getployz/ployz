@@ -312,7 +312,8 @@ can't reference it, and it replaces a variable of yours with that name.
   value the parent still runs. A [generated value](#generate-a-value) gets a new value in
   the copy. So does a database's sealed password: the copy's first **Deploy** from the
   dashboard makes and seals a new one in your browser, and a `ployz deploy` before then is
-  refused, naming it (see [Databases](databases.md#add-a-database)). A reference to a service the branch shares with its parent reads the
+  refused, naming it (see [Databases](databases.md#add-a-database)). A reference to a service
+  the branch shares with its parent reads the
   parent's values, except sealed ones: the branch doesn't get those either, so deploys leave
   the referencing variable out and say what it reads, such as
   `Left DB_URL out of web: it reads db.PASSWORD, which depends on a sealed value this branch doesn't get from its parent.`

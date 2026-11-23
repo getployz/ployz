@@ -153,7 +153,7 @@ function useSealingBlock(organizationSlug: string) {
   if (isError) return "Couldn't check your servers. Try again.";
   if (data === undefined) return "Checking your servers…";
   if (data.sealing.state === "ready") return null;
-  return "awaitsRecovery" in data.sealing ? "Run ployz recover on a server first." : "Add a server first. It seals the password.";
+  return "awaitsRecovery" in data.sealing ? "Run ployz recover on a server first." : "Add a server first.";
 }
 
 function DatabasePanel({ organizationSlug, disabled, onSelectPreset }: {
