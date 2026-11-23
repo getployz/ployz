@@ -323,23 +323,17 @@ fn consent(
                 .map(move |line| format!("{service}: {line}"))
         })
         .collect();
-    if !marked.is_empty() {
-        crate::ui::note("Needs your yes:");
-        for line in &marked {
-            crate::ui::note(format_args!("  {line}"));
-        }
-        let refusal = Error::detailed(
-            RpcErrorCode::ConfirmationRequired,
-            "This deploy uses data that needs your yes, and there's no terminal to ask in. Run \
-             it at a terminal. Nothing deployed.",
-            json!({ "services": services, "confirm": marked }),
-        );
-        confirm(
-            "Use the data marked above?",
-            refusal,
-            "Cancelled. Nothing signed or deployed.",
-        )?;
-    }
+    let refusal = Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        "This deploy uses data that needs your yes, and there's no terminal to ask in. Run it \
+         at a terminal. Nothing deployed.",
+        json!({ "services": services, "confirm": marked }),
+    );
+    ask_data(
+        &marked,
+        (refusal, "Cancelled. Nothing signed or deployed."),
+        &mut confirm,
+    )?;
     let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         "Signing this deploy needs your yes, and there's no terminal to ask in. Run it at a \
@@ -357,6 +351,23 @@ fn consent(
         "Cancelled. Nothing signed or deployed.",
     )?;
     Ok(Timestamp::now())
+}
+
+/// Lists `marked`, the mount lines a person must say yes to, each after its Service, and
+/// asks about them all at once. Nothing is asked when none is marked.
+pub(in crate::handlers) fn ask_data(
+    marked: &[String],
+    (refusal, declined): (Error, &'static str),
+    confirm: &mut impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if marked.is_empty() {
+        return Ok(());
+    }
+    crate::ui::note("Needs your yes:");
+    for line in marked {
+        crate::ui::note(format_args!("  {line}"));
+    }
+    confirm("Use the data marked above?", refusal, declined)
 }
 
 /// What this Device read over a Full route whose entry answers for itself: the keys and

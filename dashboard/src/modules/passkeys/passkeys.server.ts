@@ -172,7 +172,7 @@ type ServerPasskeys = { readonly id: string | null; readonly server: string; rea
  * Each Server's own list of trusted passkeys, read from it directly through one entry. A Server that doesn't answer reads
  * `null`; with no entry at all, there is no Server to list. `null` when Cloud reached none of them.
  */
-const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId: string) {
+export const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId: string) {
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready" || loaded.connections.length === 0) return [];
   const ployz = yield* Ployz;

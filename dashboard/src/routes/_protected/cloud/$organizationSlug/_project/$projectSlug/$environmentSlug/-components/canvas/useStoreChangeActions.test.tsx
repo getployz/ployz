@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import * as tapFunctions from "#/modules/deploy-approval/deploy-tap.functions";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -26,7 +27,8 @@ afterEach(() => {
 
 const ref = { project: "shop", environment: "production" };
 const refusal = (code: string, details: JsonValue) => ({ ok: false as const, refusal: { code, message: `refused: ${code}`, details } });
-const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", deletes: [{ machine_id: "m1", name: "ns_vol-v" }] }], accept: ["pg-data"], version: "9:1:0.1" };
+// The Store binds a loss it asks about to the review it planned: that version and the plan's digest.
+const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", deletes: [{ machine_id: "m1", name: "ns_vol-v" }] }], accept: ["pg-data"], version: "2:1:0:a1b2" };
 // SAFETY: the hook reads nothing of an admitted Deployment but that it was.
 const admitted = { ok: true, value: { written: "deployment", id: "d" } } as never;
 
@@ -59,10 +61,17 @@ function setup(placementLoss = NO_LOSS) {
   // SAFETY: after a write the writer refetches views these tests never read.
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn");
+  // Cloud plans the review the user sees, and no Server asks for a passkey.
+  let review = "2:1:0";
+  // SAFETY: with no passkey to ask for, a Deploy reads only its plan's version.
+  vi.spyOn(tapFunctions, "prepareDeployTapServerFn").mockImplementation(async () => ({ kind: "plan", plan: { version: review }, tap: { kind: "off" } }) as never);
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { rerender } = render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
-  const shows = (version: string) => rerender(<Deploy placementLoss={placementLoss} version={version} />);
+  const shows = (version: string) => {
+    review = version;
+    rerender(<Deploy placementLoss={placementLoss} version={version} />);
+  };
   return { write, admits, shows, queryClient };
 }
 
@@ -220,7 +229,7 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
   expect(test.admits()).toMatchObject([
     { accept_volume_loss: [], version: "2:1:0", message: "Ship the api" },
-    { accept_volume_loss: ["pg-data"], version: "9:1:0.1", message: "Ship the api" },
+    { accept_volume_loss: ["pg-data"], version: "2:1:0:a1b2", message: "Ship the api" },
   ]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();

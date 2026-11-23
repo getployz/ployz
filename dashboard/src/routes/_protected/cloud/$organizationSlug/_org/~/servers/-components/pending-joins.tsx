@@ -19,7 +19,7 @@ type Pending = Awaited<ReturnType<typeof pendingPasskeyJoinsServerFn>>[number];
 export async function answerJoin(join: JoinApproval, only?: OnlyPasskey, now = Date.now()): Promise<Signed> {
   const draft = passkeyJoinStep(join, crypto.randomUUID().replaceAll("-", ""), now, Math.min(join.expires_at, now + APPROVAL_WINDOW_MS));
   try {
-    return { body: draft.step, signatures: [], proposal: await signWithPasskey(draft.bundle, "workflow", only) };
+    return { body: draft.step, signatures: [], proposal: await signWithPasskey(draft.bundle, "workflow", only && [only]) };
   } catch (error) {
     if (error instanceof PasskeyDeclined) throw error;
     if (error instanceof Error && error.name === "NotAllowedError") throw new PasskeyDeclined("Your passkey didn't answer. Try again.");
