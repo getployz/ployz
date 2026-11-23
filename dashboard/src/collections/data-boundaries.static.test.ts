@@ -137,11 +137,11 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
+  "modules/deploy-approval/deploy-sheet.tsx": "a Deploy its Servers run only signed waits for its own passkey prompt before it is sent; the sheet stays open to show a refusal and sign again, and a caller opens the Deployment only once the Store has it",
   "modules/machines/server-regions.hooks.ts": "the Store refuses an unknown region or another region's name, and the rename dialog stays open to show it; the cached names change only once the Store has taken one",
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/logs/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
   "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/store-write/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
   "routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",

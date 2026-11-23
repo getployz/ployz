@@ -34,7 +34,7 @@ import type {
   VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
-import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
+import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, pinImages, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
 import { Context, Data, Effect, Fiber, Layer, Option, Redacted, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
@@ -63,6 +63,13 @@ export const observeVolumeCopies = Effect.fn("Ployz.observeVolumeCopies")(functi
   const { observe } = yield* VolumeCopyObserver;
   return yield* sdkPromise("observe copies", () => observe(connections, expect));
 });
+
+/** The digest each of `tags` runs as now, read from its registry. */
+export const pinImageDigests = (tags: readonly string[]) =>
+  Effect.tryPromise({
+    try: () => pinImages([...tags]),
+    catch: (cause) => new PloyzProviderError({ operation: "pin images", cause }),
+  });
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",

@@ -1,6 +1,6 @@
 import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
 
-type AdmitDeploy = Extract<ConfigCommand, { command: "admit"; admit: "deploy" }>;
+export type AdmitDeploy = Extract<ConfigCommand, { command: "admit"; admit: "deploy" }>;
 
 /**
  * The write that admits Deployment `id` of `environment`: every Service unless `services` narrows it, at the Working

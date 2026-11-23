@@ -28,6 +28,7 @@ import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "#/lib/envir
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { useDeployTap } from "#/modules/deploy-approval/deploy-sheet";
 
 /**
  * Sync, at the canvas's top right: it opens the one Sync dialog, which makes a picked place match this one. On a
@@ -108,8 +109,10 @@ function BranchSync({ params, store, branch, environments }: {
   const [kept, holdKept] = useCommitHold(branch.kept);
   const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
+  const tap = useDeployTap(params.organizationSlug);
   function deployAgain() {
-    writer.commit(admitDeploy(store, crypto.randomUUID()));
+    // The writer or the sheet said why one wasn't sent.
+    tap.admit(admitDeploy(store, crypto.randomUUID())).catch(() => {});
   }
 
   return (
@@ -182,6 +185,7 @@ function BranchSync({ params, store, branch, environments }: {
           },
           confirm: async () => { setAsking(false); await closing.start(false); },
         }} />
+    {tap.sheet}
     </>
   );
 }
