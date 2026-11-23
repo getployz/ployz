@@ -151,6 +151,15 @@ export function useDeployTap(organizationSlug: string) {
         <ul aria-label="What your passkey signs" className="flex max-h-80 flex-col gap-1 overflow-auto font-mono text-xs whitespace-pre-wrap break-all">
           {open.ask.draft.lines.map((line, index) => <li key={index}>{line}</li>)}
         </ul>
+        {open.ask.draft.confirm.length === 0 ? null : (
+          <div className="flex flex-col gap-1 text-sm">
+            <p className="font-medium">Needs your yes</p>
+            <ul aria-label="Data your passkey says yes to" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+              {open.ask.draft.confirm.map((line, index) => <li key={index}>{line}</li>)}
+            </ul>
+            <p className="text-muted-foreground">Approving says yes to this data.</p>
+          </div>
+        )}
         {open.problem === null ? null : <p role="alert" className="text-sm text-destructive">{open.problem}</p>}
         <DialogFooter>
           <DialogClose render={<Button variant="outline" disabled={busy !== null} />}>Cancel</DialogClose>

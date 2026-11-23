@@ -35,6 +35,12 @@ fn asked(pins: BTreeMap<String, String>) -> VersionsAsked {
         issued_at: Timestamp::from_millis(100_000).unwrap(),
         expires_at: Timestamp::from_millis(700_000).unwrap(),
         seed: [7; 16],
+        against: Relayed {
+            parents: BTreeMap::new(),
+            trusted: Trust::default(),
+            containers: Vec::new(),
+            unanswered: Vec::new(),
+        },
     }
 }
 
@@ -151,4 +157,24 @@ fn a_service_listed_twice_refuses_before_any_bundle() {
         twice.draft(),
         Err(DraftError::Twice(service)) if service.as_str() == "postgres"
     ));
+}
+
+#[test]
+fn data_from_before_births_that_no_server_lists_in_use_refuses_before_any_bundle() {
+    let mut legacy = asked(pinned(&format!("postgres:17@{DIGEST}")));
+    legacy.services.pop();
+    legacy.services.push(serde_json::from_value(json!({
+        "name": "postgres",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": "postgres:17", "pull_policy": "missing"},
+        "volumes": [{"reference": "data", "source": {"kind": "provisioned", "name": "pg-data", "maximum_bytes": 1024}}],
+        "mounts": [{"volume": "data", "target": "/var/lib/postgresql/data"}]
+    }))
+    .unwrap());
+    legacy.against.unanswered = vec!["web-2".to_owned()];
+    let refused = legacy.draft().unwrap_err().to_string();
+    assert!(
+        refused.contains("no server lists a container using it; no answer from web-2"),
+        "{refused}"
+    );
 }

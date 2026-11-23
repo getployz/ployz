@@ -166,7 +166,13 @@ export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPa
   return { by: by.by === "server" ? "server" : "trusted" };
 };
 
-type ServerPasskeys = { readonly id: string | null; readonly server: string; readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null };
+/** The keys a Server trusts, as its Inspect reports them. */
+export type ServerKeys = Pick<MachineDetails, "devices" | "passkeys" | "grants">;
+
+type ServerPasskeys = {
+  readonly id: string | null; readonly server: string;
+  readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null; readonly keys: ServerKeys | null;
+};
 
 /**
  * Each Server's own list of trusted passkeys, read from it directly through one entry. A Server that doesn't answer reads
@@ -178,18 +184,20 @@ export const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organiza
   const ployz = yield* Ployz;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   const expect = loaded.sealingPublicKey === null ? null : { sealingPublicKey: loaded.sealingPublicKey, allowUnverified: true };
-  const listed = (details: MachineDetails) =>
-    (details.passkeys ?? []).map((trusted) => ({ code: codeOfPasskeyKey(trusted.passkey.public_key), trusted }));
+  const listed = (details: MachineDetails) => ({
+    passkeys: (details.passkeys ?? []).map((trusted) => ({ code: codeOfPasskeyKey(trusted.passkey.public_key), trusted })),
+    keys: { devices: details.devices, passkeys: details.passkeys, grants: details.grants },
+  });
   return yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* ployz.connect({ connections: loaded.connections, timeoutMs: SERVER_REACH_TIMEOUT_MS, expect }, { closeWithin: clusterRead });
     const machines = frame?.machines.map(({ machine }) => ({ id: machine.id, name: machine.name })) ?? [];
     if (machines.length === 0) {
       const details = yield* session.inspect();
-      return [{ id: details.machine?.id ?? null, server: details.machine?.name ?? details.id, passkeys: listed(details) }] satisfies ServerPasskeys[];
+      return [{ id: details.machine?.id ?? null, server: details.machine?.name ?? details.id, ...listed(details) }] satisfies ServerPasskeys[];
     }
     return yield* Effect.forEach(machines, ({ id, name }) => session.inspectMachine(id).pipe(
-      Effect.map((details): ServerPasskeys => ({ id, server: name, passkeys: listed(details) })),
-      Effect.orElseSucceed((): ServerPasskeys => ({ id, server: name, passkeys: null })),
+      Effect.map((details): ServerPasskeys => ({ id, server: name, ...listed(details) })),
+      Effect.orElseSucceed((): ServerPasskeys => ({ id, server: name, passkeys: null, keys: null })),
     ), { concurrency: "unbounded" });
   })).pipe(clusterRead, Effect.orElseSucceed((): ServerPasskeys[] | null => null));
 });

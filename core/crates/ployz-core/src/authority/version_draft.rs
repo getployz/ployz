@@ -7,12 +7,17 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    ApprovedChange, BirthError, Births, Mounts, PlannedVolumes, ServiceVersion, SignerKey, birth,
+    Against, Approved, ApprovedChange, Before, BirthError, Births, Held, Mounts, PlannedVolumes,
+    ServiceVersion, SignerKey, TrustedGrant, TrustedKeys, TrustedPasskey, Unknown, birth,
     canonical::{CanonicalError, Timestamp, to_canonical},
     deploy::content_addressed,
+    keys::Signed,
     proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind},
 };
-use crate::{Namespace, OperationId, RequestedServiceSpec, SealingPublicKey, ServiceName};
+use crate::{
+    ContainerObservation, DeviceKey, Namespace, OperationId, RequestedServiceSpec,
+    SealingPublicKey, ServiceName,
+};
 
 /// What a person is asked to sign: the specs of `services` in `namespace`, each tag image
 /// pinned by `pins`, under `operation`, open from `issued_at` to `expires_at`.
@@ -33,6 +38,81 @@ pub struct VersionsAsked {
     pub expires_at: Timestamp,
     /// The signer's own random bytes, which the births' nonces come from.
     pub seed: [u8; 16],
+    /// What each mount is compared with.
+    pub against: Relayed,
+}
+
+/// What Ployz Cloud relays to compare each mount with: each Service's last approved
+/// version, the keys one enforcing Server trusts, and the Containers its Servers list.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relayed {
+    /// By the name each spec runs under. A Service left out has no version to compare with.
+    #[serde(default)]
+    pub parents: BTreeMap<ServiceName, Parent>,
+    pub trusted: Trust,
+    pub containers: Vec<ContainerObservation>,
+    /// Each Server whose Containers weren't listed, by name.
+    #[serde(default)]
+    pub unanswered: Vec<String>,
+}
+
+/// A Service's newest parentless signed version, as the Config Store keeps it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "parent", rename_all = "snake_case")]
+pub enum Parent {
+    Signed {
+        statement: Signed<ServiceVersion>,
+        spec: Box<RequestedServiceSpec>,
+    },
+    /// No Deployment ran one. `deployed` when the Service runs anyway.
+    Missing { deployed: bool },
+}
+
+/// The keys one Server trusts, as its Inspect reports them.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Trust {
+    #[serde(default)]
+    pub devices: Vec<DeviceKey>,
+    #[serde(default, deserialize_with = "super::trusted_key::readable_passkeys")]
+    pub passkeys: Vec<TrustedPasskey>,
+    #[serde(default, deserialize_with = "super::scope::readable_grants")]
+    pub grants: Vec<TrustedGrant>,
+}
+
+impl Relayed {
+    /// Each Service's version checked against the relayed keys for `cluster`, and the
+    /// Containers of `namespace`.
+    fn evidence(
+        self,
+        cluster: SealingPublicKey,
+        namespace: &Namespace,
+    ) -> (BTreeMap<ServiceName, Before>, Held) {
+        let Trust {
+            devices,
+            passkeys,
+            grants,
+        } = self.trusted;
+        let trusted = TrustedKeys::new(devices, passkeys, grants);
+        let before = (self.parents.into_iter())
+            .map(|(service, parent)| {
+                let before = match parent {
+                    Parent::Missing { deployed: false } => Before::New,
+                    Parent::Missing { deployed: true } => Before::Unknown(Unknown::NoRecord),
+                    Parent::Signed { statement, spec } => Approved::verify(
+                        &statement,
+                        *spec,
+                        (&trusted, cluster),
+                        (namespace, &service),
+                    )
+                    .map_or(Before::Unknown(Unknown::Unchecked), Before::Approved),
+                };
+                (service, before)
+            })
+            .collect();
+        let held = Held::of(namespace, &self.containers, self.unanswered);
+        (before, held)
+    }
 }
 
 /// The bundle a passkey answers, each step body a Server is handed with it, and what the
@@ -42,6 +122,9 @@ pub struct VersionsDraft {
     pub bundle: String,
     pub steps: Vec<VersionStep>,
     pub lines: Vec<String>,
+    /// The lines that use data the person must say yes to, each after its Service. The
+    /// passkey's answer is the yes.
+    pub confirm: Vec<String>,
 }
 
 /// One Service's step, with what the Store records beside it.
@@ -82,7 +165,7 @@ impl VersionsAsked {
     /// Refuses before any bundle: no Service, one listed twice, a tag with no pin, a pin that isn't the tag
     /// itself `@sha256:` and 64 hex digits, a Volume from another Environment, or a body
     /// with no canonical form.
-    pub fn draft(mut self) -> Result<VersionsDraft, DraftError> {
+    pub fn draft(self) -> Result<VersionsDraft, DraftError> {
         if self.services.is_empty() {
             return Err(DraftError::Empty);
         }
@@ -108,27 +191,35 @@ impl VersionsAsked {
             }
             pins.insert(spec.name.clone(), pin.clone());
         }
+        let Self {
+            mut services,
+            against,
+            ..
+        } = self;
         let namespace = &self.namespace;
         let minted = birth::mint(
-            &mut self.services,
+            &mut services,
             (namespace, &self.volumes),
             self.issued_at,
             |name| birth::nonce(&self.seed, name),
         )?;
+        let (before, held) = against.evidence(self.cluster, namespace);
         let mounts = Mounts {
             namespace,
             volumes: &self.volumes,
             minted: &minted,
             now: self.issued_at,
-            against: None,
+            against: Some(Against {
+                before: &before,
+                held: Some(&held),
+            }),
         };
-        let approved =
-            ApprovedChange::of(&self.services, namespace, &pins, &mounts).map_err(|error| {
-                match error {
-                    super::deploy::ChangeError::Digest(error) => DraftError::Canonical(error),
-                    super::deploy::ChangeError::Mounts(error) => DraftError::Birth(error),
-                }
-            })?;
+        let approved = ApprovedChange::of(&services, namespace, &pins, &mounts).map_err(
+            |error| match error {
+                super::deploy::ChangeError::Digest(error) => DraftError::Canonical(error),
+                super::deploy::ChangeError::Mounts(error) => DraftError::Birth(error),
+            },
+        )?;
         let signer = SignerKey::Passkey(super::OwnPrompt::Passkey);
         let mut steps = Vec::new();
         let mut listed = Vec::new();
@@ -152,8 +243,7 @@ impl VersionsAsked {
                 kind: StepKind::Version,
                 digest: StepDigest::of(&body),
             });
-            let births = self
-                .services
+            let births = services
                 .iter()
                 .find(|spec| spec.name == change.service)
                 .map(|spec| birth::carried(spec, &minted))
@@ -175,6 +265,12 @@ impl VersionsAsked {
             expires_at: self.expires_at,
             signer,
         })?;
+        let confirm = (approved.iter())
+            .flat_map(|change| {
+                let service = change.service.as_str();
+                (change.confirm.iter()).map(move |line| format!("{service}: {line}"))
+            })
+            .collect();
         // Cloud chose each pin, so the person reads the whole signed reference, never a
         // short prefix of it.
         let lines = approved
@@ -191,6 +287,7 @@ impl VersionsAsked {
             bundle,
             steps,
             lines,
+            confirm,
         })
     }
 }
