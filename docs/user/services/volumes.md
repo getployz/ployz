@@ -135,7 +135,8 @@ it there. The deploy fails and names the service still running and where it moun
 Deploy again, or stop that service first. A deploy that unmounts the volume from one service and
 mounts it on another starts the new one after the old one's container is gone, so it doesn't fail
 this way. If the old one can't deploy, the new one isn't started either. Two services can't swap
-volumes in one deploy: move one, deploy, then move the other. A
+volumes in one deploy: unmount both and deploy, then mount each on its new service and deploy
+again. A
 [pre-deploy command](settings.md#pre-deploy-command) runs beside the serving copy as before.
 
 ## When its server goes down
