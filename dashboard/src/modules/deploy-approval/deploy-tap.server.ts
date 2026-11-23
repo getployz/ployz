@@ -8,6 +8,7 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
 import { passkeyRequest } from "#/modules/passkeys/tables";
 import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
+import { countOrganizationMachines } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 
@@ -64,6 +65,8 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
 
 const gate = Effect.fn("DeployTap.gate")(function* (userId: string, organizationId: string, tags: readonly string[]) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
+  // With no Server paired nothing enforces; the first one deploys what is saved.
+  if ((yield* countOrganizationMachines(organizationId)) === 0) return { kind: "off" } satisfies DeployTap;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   if (frame === null) return refused(UNREACHED);
   const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
