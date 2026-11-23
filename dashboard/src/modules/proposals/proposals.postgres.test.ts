@@ -15,6 +15,7 @@ import { session, user } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";
 import {
   advanceProposal,
+  fillDeploy,
   createProposal,
   decideProposal,
   pendingProposals,
@@ -25,7 +26,14 @@ import {
 } from "#/modules/proposals/proposals.server";
 import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
-import type { ConfigCommand, MachineId } from "@ployz/sdk";
+import { type Change, type ConfigCommand, type ConfigQuery, type ConfigStore, type ConfigTrusted, type DiffView, type MachineId, RpcError } from "@ployz/sdk";
+import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { readStore } from "#/modules/config-store/config-store.server";
+import { RunningObserver } from "#/modules/config-store/running-evidence.server";
+import { envPath } from "#/modules/config-store/setting-paths";
+import { type DeployLink, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
+import { createOrganizationToken, revokeCredential } from "#/modules/identity/organization-token.server";
+import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { serviceAct } from "#/modules/service-act/tables";
@@ -38,6 +46,9 @@ const PROJECT = "00000000-0000-4000-8000-00000000b303";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000b304";
 const SERVICE = "00000000-0000-4000-8000-00000000b305";
 const BROWSER = "00000000-0000-4000-8000-00000000b3a0";
+const ADA_BROWSER = "00000000-0000-4000-8000-00000000b3a1";
+const ASKED = "00000000-0000-4000-8000-00000000b3b0";
+const ASKED_AGAIN = "00000000-0000-4000-8000-00000000b3b1";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000b306";
 const CONTAINER = "c".repeat(64);
 const MACHINE = "b".repeat(32);
@@ -71,10 +82,12 @@ const shop = Effect.fn(function* () {
   const capabilities: string[] = [];
   let readable = true;
   let enforcing = true;
+  let running: string[] = [];
   const frame = () => asTestDouble<RuntimeWatchView>()({
     services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: CONTAINER, machine_id: MACHINE }], hook_containers: [] }],
     machines: [{ machine: { id: MACHINE, name: "machine-2", runtime: { device_enforcement: enforcing, capabilities } } }],
     containers: [],
+    incomplete_ids: { machines: [] },
   });
   const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
     OrganizationRuntime,
@@ -83,7 +96,7 @@ const shop = Effect.fn(function* () {
         ? Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(frame()) }) })
         : Effect.succeed({ status: "unreachable" as const }),
     }),
-  )));
+  ), Effect.provideService(RunningObserver, { observe: async () => ({ services: running, unanswered: [] }) })));
   const acts = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.select({ id: serviceAct.id, verb: serviceAct.verb, step: serviceAct.proposalStep, proposal: serviceAct.proposalId, key: serviceAct.state })
@@ -104,6 +117,8 @@ const shop = Effect.fn(function* () {
   const approve = { approve: {} };
   /** Servers that don't enforce device approval: what a Deploy needs is only the agent gate's person. */
   const enforce = (on: boolean) => { enforcing = on; };
+  /** The Services the Servers run in shop/production besides what it holds, as a full Deploy's prune sees them. */
+  const runs = (names: readonly string[]) => { running = names.map((name) => `${found.namespace}/${name}`); };
   /** How many Deployments the Store holds with the id the proposal's Deploy admits. */
   const admitted = (proposal: string) => provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -113,7 +128,7 @@ const shop = Effect.fn(function* () {
     return (yield* drizzle.execute(sql`select id from config_deployment where id = ${id}`, "objects")).length;
   }));
   const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
-  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approve, protect, enforce, write, admitted, store };
+  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approve, protect, enforce, runs, write, admitted, store };
 });
 
 it.live("an agent stages steps without running any, presents them, and the person sees them in order", () =>
@@ -317,13 +332,10 @@ const linkOf = (answer: { readonly asking: Asking } | ToolOutcome) =>
 
 it.live("an agent's Deploy becomes one proposal with one link, and one person's approval admits it once", () =>
   Effect.gen(function* () {
-    const { call, cluster, provided, owner, agent, approve, admitted } = yield* deployable();
+    const { call, cluster, provided, owner, approve, admitted } = yield* deployable();
     const { proposal_id: id, url } = linkOf(yield* call("deploy", {}));
     expect(url).toBe(`http://localhost:3000/cloud/shop/approve/${id}`);
     expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented", steps: [{ verb: "deploy" }] }]);
-    expect(yield* admitted(id)).toBe(0);
-    // The agent that asked, and anyone not at the dashboard, can't answer for the person.
-    expect(yield* cluster(decideProposal(agent, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("approval page") });
     expect(yield* admitted(id)).toBe(0);
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
     expect(yield* admitted(id)).toBe(1);
@@ -364,4 +376,191 @@ it.live("a Deploy asked with no_prune is admitted with no_prune, not as a Deploy
     const writes = vi.spyOn(store, "write");
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
     expect(writes.mock.calls.map(([, command]) => command)).toMatchObject([{ command: "admit", admit: "deploy", no_prune: true }]);
+  }));
+
+const linkedId = (link: DeployLink) => link !== null && "linked" in link ? link.linked.proposal_id : expect.fail(`no link: ${JSON.stringify(link)}`);
+
+/** The Deploy step proposal `id` holds now. */
+const deployStep = (id: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ status: operationProposals.status, steps: operationProposals.steps }).from(operationProposals).where(eq(operationProposals.id, id));
+  const [step] = row?.steps ?? [];
+  return step !== undefined && "deploy" in step ? { status: row?.status, ...step.deploy } : expect.fail("not a deploy");
+});
+
+/** `cache`, an image Service with a Volume: a Server that enforces device approval runs it only signed. */
+const withCache = ({ write }: { readonly write: (command: ConfigCommand) => Effect.Effect<unknown> }) => Effect.gen(function* () {
+  const here = { project: null, environment: null };
+  yield* write({ command: "create_service", id: "00000000-0000-4000-8000-00000000b3c0", environment: here, name: "cache", image: "redis:7" });
+  yield* write({ command: "create_volume", id: "00000000-0000-4000-8000-00000000b3c1", environment: here, name: "data", storage: { kind: "docker" }, mounts: [{ service: "cache", path: "/data" }] });
+});
+
+/** A member who can't protect, signed in on their own browser, asking through an agent. */
+const memberAgent = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "ada.member@example.test", name: "Ada" }).returning();
+  const userId = person?.id ?? expect.fail("no user");
+  yield* drizzle.insert(member).values({ userId, organizationId: ORGANIZATION, role: "member" });
+  yield* drizzle.insert(session).values({ id: ADA_BROWSER, userId, token: "ada-browser-token", expiresAt: new Date(Date.now() + 86_400_000) });
+  return { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: ADA_BROWSER }, role: "member", support: null, via: "agent" } satisfies Caller;
+});
+
+const madePassword: Change[] = [{ op: "set", path: envPath("web", "PASSWORD"), value: "made" }];
+
+/**
+ * The Store as it answers a copy whose password has no value yet: it refuses to plan until an edit sets it. With `loss`,
+ * a Deploy then deletes the data in `data`, which it asks to accept by name and a person to approve, and admits once both
+ * are redeemed. Every other answer is the Store's own.
+ */
+const pendingCopy = (store: ConfigStore, diff: DiffView) => {
+  const answers = { pending: true, loss: false };
+  const read = store.read.bind(store);
+  const write = store.write.bind(store);
+  vi.spyOn(store, "read").mockImplementation((organization: string, query: ConfigQuery, trusted?: ConfigTrusted) => {
+    if (!answers.pending || query.query !== "plan") return read(organization, query, trusted);
+    return Promise.reject(new RpcError({ code: "invalid_argument", message: "web.PASSWORD has no value yet.", details: {
+      variable: "web.PASSWORD", environment: ENVIRONMENT, pending: [{ service: "web", id: SERVICE, key: "PASSWORD", generated: "password" }],
+    } }));
+  });
+  vi.spyOn(store, "write").mockImplementation(async (organization, command, trusted, principal) => {
+    if (command.command === "edit") {
+      const written = await write(organization, command, trusted, principal);
+      if (command.changes.some((change) => "path" in change && change.path === madePassword[0]?.path)) answers.pending = false;
+      return written;
+    }
+    if (!answers.loss || command.command !== "admit" || command.admit !== "deploy") return write(organization, command, trusted, principal);
+    const [version = ""] = (command.version ?? "").split("#loss-");
+    const approval = `${version}:loss`;
+    if (!(command.accept_volume_loss ?? []).includes("data")) {
+      throw new RpcError({ code: "confirmation_required", message: "Deploying loses data of data. Accept each by name", details: { accept: ["data"], version: `${version}#loss-0` } });
+    }
+    if (trusted?.approval === "required" || JSON.stringify(trusted?.approval) !== JSON.stringify({ approved: approval })) {
+      throw new RpcError({ code: "approval_required", message: "A human must approve this first: deletes data", details: {
+        approval, effects: [{ kind: "deletes_volume", name: "data", node: "data", path: "data" }], diff: { ...diff, version },
+      } });
+    }
+    return write(organization, { ...command, version: null, accept_volume_loss: [] }, trusted && { ...trusted, approval: "not_required" }, principal);
+  });
+  return answers;
+};
+
+it.live("a keyless CLI Deploy queues as before when Cloud can't read every Server; an agent's is refused", () =>
+  Effect.gen(function* () {
+    const shopped = yield* deployable();
+    const { provided, agent } = shopped;
+    yield* withCache(shopped);
+    // No Server answers Cloud, so nothing says whether one would refuse `cache` unsigned. Each Server still checks it.
+    const command = admitDeploy(production, ASKED);
+    expect(yield* provided(linkDeploy({ ...agent, via: "cli" }, command))).toBeNull();
+    expect(yield* provided(linkDeploy(agent, command))).toMatchObject({ refused: { message: expect.stringContaining("Couldn't reach your servers") } });
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
+  }));
+
+it.live("a full Deploy's prune is on the approval page, and a Service running there since is refused, not pruned", () =>
+  Effect.gen(function* () {
+    const { call, cluster, provided, owner, approve, admitted, runs } = yield* deployable();
+    runs(["old"]);
+    const { proposal_id: id } = linkOf(yield* call("deploy", {}));
+    expect(yield* provided(deployStep(id))).toMatchObject({ review: { review: { effects: [{ kind: "removes_service", name: "old" }] } } });
+    runs(["old", "other"]);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "denied" });
+  }));
+
+it.live("a member's Deploy to a Protected Environment that only the page can finish gets the link, and only someone who can protect it approves", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, approve, admitted, protect, store } = yield* deployable();
+    yield* protect;
+    pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const ada = yield* provided(memberAgent);
+    const id = linkedId(yield* cluster(linkDeploy(ada, admitDeploy(production, ASKED))));
+    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
+    expect(yield* provided(deployStep(id))).toMatchObject({ review: { review: { protected: { environment: "production" } } } });
+    expect(yield* cluster(decideProposal(ada, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("Only an owner or admin") });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+  }));
+
+it.live("the same Deploy asked twice at once is one proposal, and its Deployment id asked with another body is refused", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, agent } = yield* deployable();
+    const command = admitDeploy(production, ASKED);
+    const [first, second] = yield* Effect.all([cluster(linkDeploy(agent, command)), cluster(linkDeploy(agent, command))], { concurrency: 2 });
+    expect(linkedId(second)).toBe(linkedId(first));
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toHaveLength(1);
+    expect(yield* cluster(linkDeploy(agent, { ...command, no_prune: true }))).toMatchObject({ refused: { code: "conflict" } });
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toHaveLength(1);
+  }));
+
+it.live("a copy whose password has no value yet and whose Deploy loses data takes one fill and one tap, the loss bound first", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, agent, approve, admitted, store } = yield* deployable();
+    const answers = pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    answers.loss = true;
+    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
+    expect((yield* provided(deployStep(id))).review).toBeUndefined();
+    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
+    expect(yield* provided(deployStep(id))).toMatchObject({
+      command: { accept_volume_loss: ["data"], version: expect.stringMatching(/#loss-0$/) },
+      review: { review: { effects: [{ kind: "deletes_volume", name: "data" }] } },
+    });
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+  }));
+
+it.live("a fill another edit beat denies the proposal; one another approver's same fill beat goes on", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, agent, store, write } = yield* deployable();
+    const answers = pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const revisionOf = (version: string | null | undefined) => Number(/^(\d+):/u.exec(version ?? "")?.[1]);
+
+    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
+    // Another approver's page made the same value first, and hasn't recorded it on the proposal yet.
+    yield* write({ command: "edit", environment: production, expect: revisionOf((yield* provided(deployStep(id))).command.version), changes: madePassword });
+    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented", review: { digest: expect.any(String) } });
+
+    answers.pending = true;
+    const stale = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED_AGAIN))));
+    yield* write({ command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }] });
+    expect(yield* cluster(fillDeploy(owner, stale, madePassword))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
+    expect(yield* provided(deployStep(stale))).toMatchObject({ status: "denied" });
+  }));
+
+it.live("a CLI that signs with its device key gets no link for a Pending value or a Volume loss", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, agent, store } = yield* deployable();
+    const answers = pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const device: Caller = { ...agent, via: "cli" };
+    const signed = { ...admitDeploy(production, ASKED), versions: [{ statement: { body: JSON.stringify({ service: "web" }), signatures: [] } }] };
+    expect(yield* cluster(linkDeploy(device, signed))).toBeNull();
+    answers.pending = false;
+    answers.loss = true;
+    expect(yield* cluster(linkDeploy(device, signed))).toBeNull();
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
+  }));
+
+it.live("approving with no signature refuses a Deploy whose Servers now need one, and admits nothing", () =>
+  Effect.gen(function* () {
+    const shopped = yield* deployable();
+    const { cluster, provided, owner, agent, approve, admitted, enforce } = shopped;
+    yield* withCache(shopped);
+    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
+    enforce(true);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented" });
+  }));
+
+it.live("an agent token revoked before the tap gets nothing run, though its owner is still a member", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, approve, admitted } = yield* deployable();
+    const minted = yield* provided(createOrganizationToken({ ...owner, via: "agent" }, { name: "agent", expiresInDays: 1 }));
+    const id = linkedId(yield* cluster(linkDeploy({ ...owner, via: "agent", credential: { kind: "token", id: minted.id, grant: FULL_GRANT } }, admitDeploy(production, ASKED))));
+    yield* provided(revokeCredential(owner, minted.id));
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("is gone") });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "denied" });
   }));

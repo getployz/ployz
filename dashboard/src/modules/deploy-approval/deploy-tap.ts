@@ -4,7 +4,7 @@
  * code the Servers check, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the
  * plan, the tag pins and the answer, and each Server checks every step.
  */
-import type { Needs, PostedVersion, VersionsDraft } from "@ployz/sdk";
+import type { Needs, PostedVersion, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
@@ -47,12 +47,17 @@ export function namesReview(current: string, given: string) {
   return reviewed === current || reviewed.startsWith(`${current}:`);
 }
 
-/** Why a Service no passkey can sign keeps the Deploy from asking. */
-export const BLOCKED = {
+const BLOCKED = {
   rule: (service) => `No automatic deploy rule covers ${service}. Approve one, or run ployz deploy.`,
   rebuild: (service) => `Push to ${service}'s branch first. Its rule hasn't built this version yet.`,
   digest: (service) => `${service} pulls a private tag. Write its image by digest (image@sha256:…).`,
 } satisfies Record<Exclude<Needs, "version">, (service: string) => string>;
+
+/** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
+export function blocked(unsigned: readonly Unsigned[]) {
+  for (const { service, needs } of unsigned) if (needs !== "version") return BLOCKED[needs](service);
+  return null;
+}
 
 /** What the sheet asks the person to sign, and the Deploy it admits with their answer. */
 export type Ask = {
@@ -92,8 +97,8 @@ export async function prepareDeploy(
   const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service));
   if (gate.kind === "off" || unsigned.length === 0) return { kind: "admit", command: bound };
   if (gate.kind === "refused") return gate;
-  const blocked = unsigned.find((entry) => entry.needs !== "version");
-  if (blocked && blocked.needs !== "version") return { kind: "refused", message: BLOCKED[blocked.needs](blocked.service) };
+  const refused = blocked(unsigned);
+  if (refused !== null) return { kind: "refused", message: refused };
   const names = new Set(unsigned.map((entry) => entry.service));
   const specs = (plan.target ?? []).filter((spec) => names.has(spec.name));
   let draft: VersionsDraft;

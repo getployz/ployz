@@ -1,5 +1,5 @@
-import type { ServerRef, ServiceVerb } from "@ployz/sdk";
-import { destroyedLine } from "#/modules/approvals/approvals";
+import type { DiffView, ServerRef, ServiceVerb } from "@ployz/sdk";
+import { type ApprovalReview, destroyedLine } from "#/modules/approvals/approvals";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
@@ -18,10 +18,21 @@ export type ServiceStep = {
 };
 
 /**
+ * What the Store asks a person to approve before a Deploy runs: what it destroys, a full Deploy's prune included, and
+ * the digest admission redeems, so a Deploy that would destroy anything else by then is refused, not run.
+ */
+export type DeployReview = { readonly digest: string; readonly review: Extract<ApprovalReview, { diff: DiffView }> };
+
+/**
  * A Deploy a caller that can't sign asked for, held whole as the Store will admit it: its Environment, Services, flags,
  * upload and the review version it is bound to, and once a person approved it, the versions their passkey signed.
+ * `asked` digests the request as it came, so the same Deployment id asked with another body is refused. `review` is
+ * missing only while a Pending value waits for the approval page to make it.
  */
-export type DeployStep = { readonly verb: "deploy"; readonly deploy: { readonly command: AdmitDeploy } };
+export type DeployStep = {
+  readonly verb: "deploy";
+  readonly deploy: { readonly command: AdmitDeploy; readonly asked: string; readonly review?: DeployReview };
+};
 
 export type ProposalStep = ServiceStep | DeployStep;
 

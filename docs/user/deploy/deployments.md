@@ -394,14 +394,15 @@ a person deploys from a terminal again.
 ### Deploy with no key
 
 On servers that enforce device approval, a deploy from a computer with no device key or
-`PLOYZ_KEY` doesn't queue unsigned. `ployz deploy` and `ployz up` stop with a link to an approval
-page, and so does a coding agent's deploy. Open it, check the lines your passkey signs, and tap
-once. The deploy then starts as whoever asked, with the code `ployz up` uploaded. If nobody
-approves it within a day, that upload is released and approving it builds nothing, so run
-`ployz up` again.
+`PLOYZ_KEY` doesn't queue unsigned. When your passkey can sign every service it leaves unsigned,
+`ployz deploy` stops with a link to an approval page, and so does a coding agent's deploy. Open
+it, check what it destroys and the lines your passkey signs, and tap once. The deploy then starts
+as whoever asked.
 
-A deploy that can't ask anyone is refused as before, with what to do: a server that doesn't
-answer, a service with no automatic deploy rule to build it, or a private tag to write by digest.
+Otherwise it's refused with what to do. A service built from source, as `ployz up` builds one,
+needs an automatic deploy rule, and a private tag needs its image written by digest. When Ployz
+Cloud can't reach every server, the deploy queues as before and each server checks it. A coding
+agent's deploy is refused instead.
 
 ### Upgrade servers before you sign
 

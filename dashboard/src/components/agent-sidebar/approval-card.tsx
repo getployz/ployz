@@ -9,7 +9,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/component
 import { TraceLine } from "#/components/ui/trace";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
+import { approvalSubject, type ApprovalDecision, type ApprovalReview, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
 import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
 import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approved-key";
@@ -67,7 +67,6 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { region, asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
-  const now = useMinute() ?? new Date();
 
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
@@ -121,27 +120,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
           {serviceAct !== null && (
             <ServerLine namespace={serviceAct.namespace} runtime={serviceAct.runtime} />
           )}
-          {(effects.length > 0 || prunes(approval.review)) && (
-            <DestroysList label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"}>
-              {effects.map((effect) => {
-                const line = destroyedLine(effect, approval.command, approval.review);
-                return (
-                  <DestroyedItem key={`${effect.kind}:${effect.path}`}>
-                    {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
-                    {effect.lost_after !== undefined && (
-                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
-                    )}
-                  </DestroyedItem>
-                );
-              })}
-              {prunes(approval.review) && (
-                <DestroyedItem>
-                  Also removes any other service running in this environment
-                  {droppedLine(approval.review) !== null && <span className="block">{droppedLine(approval.review)}</span>}
-                </DestroyedItem>
-              )}
-            </DestroysList>
-          )}
+          <ReviewDestroys command={approval.command} review={approval.review} />
           {region.length > 0 && <ChangeLines changes={region} className="text-foreground" />}
           {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
           {others.length > 0 && (
@@ -178,6 +157,33 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
         </CardFooter>}
       </Card>
     </>
+  );
+}
+
+/** What a review destroys, as `ployz org approval show` lists it: each effect, then a pruning Deploy's removal of the rest. */
+export function ReviewDestroys({ command, review }: { command: string; review: ApprovalReview }) {
+  const now = useMinute() ?? new Date();
+  if (review.effects.length === 0 && !prunes(review)) return null;
+  return (
+    <DestroysList label={losesVolumeAccess(review) ? "Effects" : "Destroys"}>
+      {review.effects.map((effect) => {
+        const line = destroyedLine(effect, command, review);
+        return (
+          <DestroyedItem key={`${effect.kind}:${effect.path}`}>
+            {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
+            {effect.lost_after !== undefined && (
+              <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
+            )}
+          </DestroyedItem>
+        );
+      })}
+      {prunes(review) && (
+        <DestroyedItem>
+          Also removes any other service running in this environment
+          {droppedLine(review) !== null && <span className="block">{droppedLine(review)}</span>}
+        </DestroyedItem>
+      )}
+    </DestroysList>
   );
 }
 

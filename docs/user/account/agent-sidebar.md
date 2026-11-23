@@ -105,8 +105,9 @@ signs. Click **Approve with passkey** and tap once, or **Approve and deploy** wh
 signing, and the deploy starts as whoever asked. Anyone who can deploy to the environment can
 approve it. If the environment changed since the agent asked, the page says **This deploy changed
 since it was asked for. Ask again.** and denies it. A deploy that can't ask anyone, like one whose
-servers don't answer, is refused with the reason instead. In a Protected environment, a deploy from
-someone who can't protect it waits on an approval card for an owner or admin.
+servers don't answer, is refused with the reason instead. In a Protected environment, only an
+owner or admin approves a deploy from someone who can't protect it: on an approval card, or on the
+page when it needs a passkey signature or a password made.
 
 A redeploy of a deployment that failed waits on an approval card. Its card, like **Redeploy
 shop/production**, is marked **Redeploys** and lists no changes, because it ships exactly what that

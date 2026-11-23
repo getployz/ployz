@@ -1,17 +1,21 @@
 import "@tanstack/react-start/server-only";
-import type { Change, DeploymentStatus, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
+import { createHash } from "node:crypto";
+import type { Change, ConfigTrusted, DeploymentStatus, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
+import { canonicalJson, projectJsonValue } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type AgentCaller, type Actor, type Caller, type Credential, callerEnvironments } from "#/modules/identity/actor";
 import { askerCaller } from "#/modules/approvals/apply.server";
+import { RefusedReview } from "#/modules/approvals/approvals.server";
 import { callStore, readStore, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
+import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
 import { isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
-import { refused, type StoreRefusal } from "#/lib/refusal";
+import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import { oauthCaller } from "#/modules/identity/caller.server";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
 import { organizationToken, session } from "#/modules/identity/tables";
@@ -22,6 +26,7 @@ import { beyondEnvironments, requireAccessById } from "#/modules/organization/ac
 import { member } from "#/modules/organization/tables";
 import {
   DEPLOY_MOVED,
+  type DeployReview,
   type DeployStep,
   isDeploy,
   PROPOSAL_STEP_LIMIT,
@@ -189,38 +194,81 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   };
 });
 
+/** A digest of a Deploy as it was asked, which tells a retry of it from another Deploy under the same Deployment id. */
+const askedDigest = (command: AdmitDeploy) => createHash("sha256").update(canonicalJson(projectJsonValue(command) ?? null)).digest("hex");
+
 /**
  * A Deploy an agent or a caller without a key asked for, presented to people at once with its whole command as the
- * Store will admit it. A retry of the same Deployment id from the same asker finds the proposal still waiting or running.
+ * Store will admit it and the review it was asked against. The same request asked again by the same person finds the
+ * proposal still waiting or running, under a lock so two retries at once make one. The Deployment id asked with
+ * another body is refused.
  */
 export const presentDeployProposal = Effect.fn("Proposals.presentDeploy")(function* (
   caller: Caller,
   place: { readonly id: string; readonly project: string; readonly name: string; readonly namespace: string },
-  command: AdmitDeploy,
+  deploy: { readonly asked: AdmitDeploy; readonly bound: AdmitDeploy; readonly review: DeployReview | undefined },
 ) {
-  const { drizzle } = yield* Database;
-  const [again] = yield* drizzle.select({ id: operationProposals.id }).from(operationProposals).where(and(
-    eq(operationProposals.organizationId, caller.organization.id),
-    eq(operationProposals.requestedByUserId, caller.userId),
-    inArray(operationProposals.status, ["presented", "approved"]),
-    sql`${operationProposals.steps}->0->'deploy'->'command'->>'id' = ${command.id}`,
-  )).limit(1);
-  if (again !== undefined) return again;
-  const step: DeployStep = { verb: "deploy", deploy: { command } };
-  const [row] = yield* drizzle.insert(operationProposals).values({
-    organizationId: caller.organization.id,
-    environmentId: place.id,
-    project: place.project,
-    environment: place.name,
-    namespace: place.namespace,
-    requestedByUserId: caller.userId,
-    credentialKind: caller.credential.kind,
-    credentialId: caller.credential.id,
-    callerEnvironments: callerEnvironments(caller) ?? null,
-    steps: [step],
-    status: "presented",
-  }).returning({ id: operationProposals.id });
-  return row ?? (yield* Effect.die("an insert returned no row"));
+  const asked = askedDigest(deploy.asked);
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`deploy-proposal:${caller.organization.id}:${deploy.asked.id}`}))`);
+    const [again] = yield* drizzle.select({ id: operationProposals.id, by: operationProposals.requestedByUserId, steps: operationProposals.steps }).from(operationProposals).where(and(
+      eq(operationProposals.organizationId, caller.organization.id),
+      inArray(operationProposals.status, ["presented", "approved"]),
+      sql`${operationProposals.steps}->0->'deploy'->'command'->>'id' = ${deploy.asked.id}`,
+    )).limit(1);
+    if (again !== undefined) {
+      const [step] = again.steps;
+      const same = again.by === caller.userId && step !== undefined && isDeploy(step) && step.deploy.asked === asked;
+      return same ? { id: again.id } : { refused: refusal("conflict", "A different deploy already waits for approval under this ID. Nothing deployed.") };
+    }
+    const step: DeployStep = { verb: "deploy", deploy: deploy.review === undefined ? { command: deploy.bound, asked } : { command: deploy.bound, asked, review: deploy.review } };
+    const [row] = yield* drizzle.insert(operationProposals).values({
+      organizationId: caller.organization.id,
+      environmentId: place.id,
+      project: place.project,
+      environment: place.name,
+      namespace: place.namespace,
+      requestedByUserId: caller.userId,
+      credentialKind: caller.credential.kind,
+      credentialId: caller.credential.id,
+      callerEnvironments: callerEnvironments(caller) ?? null,
+      steps: [step],
+      status: "presented",
+    }).returning({ id: operationProposals.id });
+    return row ?? (yield* Effect.die("an insert returned no row"));
+  }));
+});
+
+/** What the Store weighs about who asks a Deploy: what they hold, and whether they protect its Environment. */
+export type AskerGate = Pick<ConfigTrusted, "permissions" | "environments" | "protector">;
+
+const LossAsked = Schema.Struct({ accept: Schema.Array(Schema.String), version: Schema.String });
+
+/**
+ * What the Store asks a person to approve before it admits `command` from the asker `gate` describes: the command bound
+ * to the Volume loss it names, with the review and the digest admission redeems. Nothing runs: asking at every Deploy,
+ * the Store refuses before it admits. Null only when it admitted anyway.
+ */
+export const reviewDeploy = Effect.fn("Proposals.reviewDeploy")(function* (organizationId: string, userId: string, gate: AskerGate, command: AdmitDeploy) {
+  const probe = (bound: AdmitDeploy) => callStore(organizationId, userId, { operation: "write", command: bound }, { ...gate, approval: "required", asks: "every_deploy" });
+  let bound = command;
+  let asked = yield* probe(bound);
+  const loss = !asked.ok && asked.refusal.code === "confirmation_required" ? Schema.decodeUnknownOption(LossAsked)(asked.refusal.details) : Option.none();
+  if (Option.isSome(loss)) {
+    bound = { ...bound, version: loss.value.version, accept_volume_loss: [...loss.value.accept] };
+    asked = yield* probe(bound);
+  }
+  if (asked.ok) return null;
+  const reviewed = asked.refusal.code === "approval_required" ? Schema.decodeUnknownOption(RefusedReview)(asked.refusal.details) : Option.none();
+  if (Option.isNone(reviewed)) return { refused: asked.refusal };
+  const { approval: digest, effects, diff, prunes, dropped } = reviewed.value;
+  const review: DeployReview["review"] = { effects, diff: withoutSealedBefore(diff) };
+  if (prunes) review.prunes = prunes;
+  if (prunes && dropped !== undefined && dropped.length > 0) review.dropped = dropped;
+  if (reviewed.value.protected) review.protected = { environment: diff.environment.name };
+  return { command: bound, review: { digest, review } satisfies DeployReview };
 });
 
 /** Where each step stands: its run's state, waiting for an earlier step, or never run because an earlier one failed. */
@@ -303,7 +351,7 @@ const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row
 /** A Deploy that can't go is denied, and the passkey's signed versions are dropped with it: nothing is left to admit later. */
 const deniedDeploy = Effect.fn("Proposals.deniedDeploy")(function* (row: ProposalRow, index: number, reason: string) {
   const { drizzle } = yield* Database;
-  const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { command: { ...step.deploy.command, versions: [] } } } : step);
+  const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { ...step.deploy, command: { ...step.deploy.command, versions: [] } } } : step);
   yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), steps: cleared, halt: null, updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { index, reason } satisfies ProposalHalt;
@@ -334,20 +382,27 @@ const liveCredential = Effect.fn("Proposals.liveCredential")(function* (row: Pro
   return live === undefined ? null : { kind: "session", id: live.id } satisfies Credential;
 });
 
-/**
- * Admit a Deploy step's stored command as the asker, with what they hold now, through the credential they asked with.
- * A second run sends the same command, which the Store replays by its Deployment id.
- */
-const runDeploy = Effect.fn("Proposals.runDeploy")(function* (row: ProposalRow, step: DeployStep, asker: string) {
+/** The asker as the Store weighs them now, through the credential they asked with, or why they can't ask any more. */
+const askerNow = Effect.fn("Proposals.askerNow")(function* (row: ProposalRow, asker: string) {
   const credential = yield* liveCredential(row, asker);
   if (credential === null) return { refusal: "The sign-in or token that asked for it is gone." };
   const access = yield* requireAccessById({ userId: asker, credential }, row.organizationId, "changes:deploy");
   const environments = credential.kind === "token" && credential.grant.environments !== null ? [...credential.grant.environments] : undefined;
   const beyond = beyondEnvironments(environments, { environment: row.environment });
   if (beyond !== null) return { refusal: beyond };
-  const result = yield* callStore(row.organizationId, asker, { operation: "write", command: step.deploy.command }, {
-    approval: "not_required", permissions: access.permissions, environments: access.environments, protector: protector(askerCaller(access, row.credentialId)),
-  });
+  return { gate: { permissions: access.permissions, environments: access.environments, protector: protector(askerCaller(access, row.credentialId)) } satisfies AskerGate };
+});
+
+/**
+ * Admit a Deploy step's stored command as the asker, with what they hold now, through the credential they asked with,
+ * redeeming the review the person approved: a Deploy that would destroy anything else by now is refused, not run. A
+ * second run sends the same command, which the Store replays by its Deployment id.
+ */
+const runDeploy = Effect.fn("Proposals.runDeploy")(function* (row: ProposalRow, step: DeployStep, asker: string) {
+  const now = yield* askerNow(row, asker);
+  if (now.refusal !== undefined) return { refusal: now.refusal };
+  const { command, review } = step.deploy;
+  const result = yield* callStore(row.organizationId, asker, { operation: "write", command }, { ...now.gate, approval: review === undefined ? "required" : { approved: review.digest } });
   return result.ok ? started : { refusal: result.refusal.message };
 });
 
@@ -441,7 +496,7 @@ export const sweepProposals = Effect.fn("Proposals.sweep")(function* (now: Date)
 /** `versions` are what the decider's passkey signed for a Deploy that Servers run only signed. */
 export type ProposalDecision = { readonly approve: { readonly versions?: readonly PostedVersion[] } } | { readonly reject: { readonly reason?: string } };
 
-type Decider = Actor & { readonly organization: { readonly id: string; readonly slug: string }; readonly via?: Caller["via"] };
+type Decider = Actor & { readonly organization: { readonly id: string; readonly slug: string } };
 
 type Decided = { readonly ok: true; readonly proposal: ProposalView } | { readonly ok: false; readonly message: string };
 
@@ -456,15 +511,12 @@ const settled = (row: ProposalRow): Decided =>
 const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider: Decider, row: ProposalRow, step: DeployStep, versions: readonly PostedVersion[]) {
   const { command } = step.deploy;
   const refuse = (message: string) => ({ message }) as const;
-  // A person at the approval page decides. An agent, a token or the asker's own `ployz` session never does.
-  if ((decider.via ?? "dashboard") !== "dashboard" || (decider.credential !== undefined && decider.credential.kind !== "session")) {
-    return refuse("Approve a deploy from its approval page.");
-  }
   const access = yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy");
   const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
   if (isProtected && (access.kind !== "member" || !protector(access))) return refuse("Only an owner or admin can approve a deploy to a Protected Environment.");
   const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true });
   if (planned.kind === "refused") return refuse(isPending(planned.details) ? "A password has no value yet. Approve this deploy on its approval page." : planned.message);
+  if (step.deploy.review === undefined) return refuse("Approve this deploy on its approval page.");
   if (command.version !== null && command.version !== undefined && !namesReview(planned.plan.version, command.version)) return { moved: true } as const;
   // The asker's own versions still count: the decider signs only the Services those leave open.
   const signed = new Set(versions.map(versionService));
@@ -473,7 +525,7 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   const open = (planned.plan.unsigned ?? []).filter(({ service }) => !covered.has(service));
   if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
   if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
-  return { command: { ...command, versions: [...kept, ...versions] } satisfies AdmitDeploy };
+  return { step: { ...step, deploy: { ...step.deploy, command: { ...command, versions: [...kept, ...versions] } } } satisfies DeployStep };
 });
 
 /**
@@ -503,7 +555,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
       return { ok: false, message: DEPLOY_MOVED } satisfies Decided;
     }
     if ("message" in checked) return { ok: false, message: checked.message } satisfies Decided;
-    steps = [{ ...first, deploy: { command: checked.command } }];
+    steps = [checked.step];
   }
   const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", steps, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
@@ -518,27 +570,53 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   return { ok: false, message: `It didn't run: ${start.halt.reason} It's still waiting for approval.` } satisfies Decided;
 });
 
+/** Deny a waiting Deploy for `reason`, unless it moved past `version` or was decided meanwhile. */
+const denyWaiting = Effect.fn("Proposals.denyWaiting")(function* (decider: Decider, row: ProposalRow, version: string | null | undefined, reason: string) {
+  const { drizzle } = yield* Database;
+  const now = new Date();
+  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), decidedByUserId: decider.userId, decidedAt: now, updatedAt: now }).where(and(
+    eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
+    sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${version ?? ""}`,
+  ));
+  return { ok: false, message: reason } as const;
+});
+
 /**
  * Make a Deploy's Pending values. The approval page sealed each one; they land in one edit at exactly the revision the
- * proposal is bound to, so no other edit slips in, and the proposal is bound one revision on, so a refresh resumes at
- * the signing. An edit made since is the plan moving.
+ * proposal is bound to, so no other edit slips in. The Store's review is read again as the asker, so a Volume loss the
+ * filled plan names is bound and shown before the tap, and the proposal is bound one revision on, so a refresh resumes
+ * at the signing. An edit made since denies it, unless it was another approver's fill of these same values.
  */
 export const fillDeploy = Effect.fn("Proposals.fillDeploy")(function* (decider: Decider, id: string, changes: readonly Change[]) {
   const row = yield* readRow(decider.organization.id, id);
   const [step] = row?.steps ?? [];
-  if (row === undefined || row.status !== "presented" || step === undefined || !isDeploy(step)) return { ok: false, message: "This deploy isn't waiting for approval." } as const;
+  if (row === undefined || row.status !== "presented" || step === undefined || !isDeploy(step) || row.requestedByUserId === null) return { ok: false, message: "This deploy isn't waiting for approval." } as const;
   const { command } = step.deploy;
   const bound = /^(\d+):/u.exec(command.version ?? "")?.[1];
-  if (bound === undefined) return { ok: false, message: DEPLOY_MOVED } as const;
+  if (bound === undefined) return yield* denyWaiting(decider, row, command.version, DEPLOY_MOVED);
   const written = yield* writeStoreAsMember(decider, decider.organization.slug, { command: "edit", environment: command.environment, expect: Number(bound), changes: [...changes] });
-  if (!written.ok) return { ok: false, message: written.refusal.code === "conflict" ? DEPLOY_MOVED : written.refusal.message } as const;
-  if (written.value.written !== "edited") return { ok: false, message: DEPLOY_MOVED } as const;
-  const { revision } = written.value.environment;
-  const filled: DeployStep = { ...step, deploy: { command: { ...command, version: moved(command.version, revision) } } };
+  if (!written.ok && written.refusal.code !== "conflict") return { ok: false, message: written.refusal.message } as const;
+  const revision = written.ok && written.value.written === "edited" ? written.value.environment.revision : Number(bound) + 1;
+  const filled: AdmitDeploy = { ...command, version: moved(command.version, revision) };
+  if (!written.ok || written.value.written !== "edited") {
+    // Another approver's fill of these values moved the revision by exactly that one edit, and nothing is Pending now.
+    const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true });
+    if (planned.kind !== "plan" || !namesReview(planned.plan.version, filled.version ?? "")) return yield* denyWaiting(decider, row, command.version, DEPLOY_MOVED);
+  }
+  const asker = yield* askerNow(row, row.requestedByUserId).pipe(
+    Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, (error) => Effect.succeed({ refusal: error.message })),
+  );
+  if (asker.refusal !== undefined) return yield* denyWaiting(decider, row, command.version, asker.refusal);
+  const reviewed = yield* reviewDeploy(row.organizationId, row.requestedByUserId, asker.gate, filled);
+  if (reviewed === null || reviewed.refused !== undefined) return yield* denyWaiting(decider, row, command.version, reviewed?.refused?.message ?? DEPLOY_MOVED);
+  const next: DeployStep = { ...step, deploy: { ...step.deploy, command: reviewed.command, review: reviewed.review } };
   const { drizzle } = yield* Database;
-  const [saved] = yield* drizzle.update(operationProposals).set({ steps: [filled], updatedAt: new Date() }).where(and(
+  const [saved] = yield* drizzle.update(operationProposals).set({ steps: [next], updatedAt: new Date() }).where(and(
     eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
     sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${command.version ?? ""}`,
   )).returning({ id: operationProposals.id });
-  return saved === undefined ? { ok: false, message: DEPLOY_MOVED } as const : { ok: true, revision } as const;
+  if (saved !== undefined) return { ok: true, revision } as const;
+  // Another approver saved the same fill first: this page resumes on theirs.
+  const [now] = (yield* readRow(decider.organization.id, id))?.steps ?? [];
+  return now !== undefined && isDeploy(now) && now.deploy.command.version === reviewed.command.version ? { ok: true, revision } as const : { ok: false, message: DEPLOY_MOVED } as const;
 });
