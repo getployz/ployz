@@ -148,6 +148,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
           </DialogDescription>
         </DialogHeader>
         {summary && !ending ? <RuleSummaryList summary={summary} /> : null}
+        {summary && !ending ? <NeedsYes summary={summary} /> : null}
         {problem !== null ? <p role="alert" className="text-sm text-destructive">{problem}</p>
           : failed !== null ? <p role="alert" className="text-sm text-destructive">{failed}</p> : null}
         <DialogFooter>
@@ -159,6 +160,21 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The mounts of existing data the rule pins. The passkey tap is the yes, as the CLI asks before it signs. */
+function NeedsYes({ summary }: { summary: RuleDraft["summary"] }) {
+  const marked = summary.services.flatMap((service) => (service.confirm ?? []).map((line) => `${service.name}: ${line}`));
+  if (marked.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1 text-sm">
+      <p className="font-medium">Needs your yes</p>
+      <ul className="flex flex-col gap-1">
+        {marked.map((line) => <li key={line} className="font-mono text-xs break-all">{line}</li>)}
+      </ul>
+      <p className="text-muted-foreground">Every push deploys with this data. Approving says yes to it.</p>
+    </div>
   );
 }
 

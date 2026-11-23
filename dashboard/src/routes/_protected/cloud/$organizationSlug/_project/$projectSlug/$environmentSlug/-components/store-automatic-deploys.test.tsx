@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { RuleView, Signed } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { draftRule } from "./auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
@@ -136,4 +136,23 @@ it("approves the newer kept rule's next generation after the Store refuses a sta
   await approve();
   await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   expect(signed.map(generation)).toEqual([2, 3]);
+});
+
+it("lists each mount of existing data above the button, which says yes to it", async () => {
+  const first = view(null, "v1");
+  // SAFETY: the Store's rule view with web mounting a Volume that holds data; `autoDeployRuleBody` parses it.
+  const existing = JSON.parse(JSON.stringify({
+    ...first,
+    volumes: { "vol-1": { name: "uploads", unborn: false } },
+    target: first.target.map((spec) => ({
+      ...spec,
+      volumes: [{ reference: "data", source: { kind: "provisioned", name: "vol-1", maximum_bytes: 1024 } }],
+      mounts: [{ volume: "data", target: "/srv/uploads" }],
+    })),
+  })) as RuleView;
+  open(existing, async () => {});
+  const heading = await screen.findByText("Needs your yes");
+  const line = within(heading.parentElement as HTMLElement).getByText(/^web: mounts managed volume .* at \/srv\/uploads, /);
+  const button = screen.getByRole("button", { name: "Approve with passkey" });
+  expect(line.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

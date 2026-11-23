@@ -313,7 +313,7 @@ pub struct Mounts<'a> {
     pub minted: &'a Births,
     pub now: Timestamp,
     /// `None` shows every mount in full and asks nothing: a silent child's mounts are
-    /// pinned to its parent, and a rule compares Services at the template level.
+    /// pinned to its parent. A rule reads its lines from [`Self::asked`].
     pub against: Option<Against<'a>>,
 }
 
@@ -365,6 +365,34 @@ impl Mounts<'_> {
         };
         let Ok(lines) = self.each(spec, told);
         lines
+    }
+
+    /// [`Self::lines`] for a rule, which has no verified version to compare with: every
+    /// mount in full, and each one with data that is not new also asked. A mount of an
+    /// external Docker volume or a host path is asked too. It keeps its place among the
+    /// spec's other settings.
+    #[must_use]
+    pub fn asked(&self, spec: &RequestedServiceSpec) -> MountLines {
+        let said = |mounted: &Mounted<'_>| {
+            let data = self.data(mounted, Shown::default());
+            Ok::<_, std::convert::Infallible>(match self.is_minted(mounted) {
+                true => Said::Told(data),
+                false => Said::Asked(data),
+            })
+        };
+        let Ok(mut lines) = self.each(spec, said);
+        let graph = spec.volume_graph();
+        lines.confirm.extend(
+            (graph.mounts().iter())
+                .filter_map(|mount| outside(mount, graph.volume_for(mount).source.kind())),
+        );
+        lines
+    }
+
+    /// Whether `mounted` is a Volume this approval minted, which holds no data yet.
+    fn is_minted(&self, mounted: &Mounted<'_>) -> bool {
+        mounted.volume.birth.is_some()
+            && self.minted.get(mounted.volume.name) == mounted.volume.birth
     }
 
     /// The lines for `spec`'s mounts, each as `say` says it.
@@ -486,9 +514,7 @@ impl Mounts<'_> {
         let at_target = was
             .iter()
             .find(|was| was.mount.target == mounted.mount.target);
-        if mounted.volume.birth.is_some()
-            && self.minted.get(mounted.volume.name) == mounted.volume.birth
-        {
+        if self.is_minted(mounted) {
             let replaced = base.is_some_and(|base| holds_at(&base.spec, target))
                 || mine
                     .iter()
@@ -750,6 +776,30 @@ fn holds_at(spec: &RequestedServiceSpec, target: &str) -> bool {
     (graph.mounts().iter()).any(|mount| {
         mount.target.as_str() == target && holds_data(graph.volume_for(mount).source.kind())
     })
+}
+
+/// `mounts external Docker volume customer-db at /archive, read-write: data from outside
+/// Ployz`, or the same for a host path, when `mount` uses data Ployz didn't make.
+fn outside(mount: &ServiceMount, source: &RawVolumeSource) -> Option<Shown> {
+    let line = match source {
+        RawVolumeSource::External { name } => {
+            Shown::words("mounts external Docker volume ").and_text(name.as_str())
+        }
+        RawVolumeSource::Bind { machine_path, .. } => {
+            Shown::words("mounts host path ").and_text(machine_path.as_str())
+        }
+        RawVolumeSource::Ordinary { .. }
+        | RawVolumeSource::Provisioned { .. }
+        | RawVolumeSource::Tmpfs { .. } => return None,
+    };
+    let mut line = line.and_words(" at ").and_text(mount.target.as_str());
+    if let Some(subpath) = &mount.subpath {
+        line = line.and_words(", subpath ").and_text(subpath);
+    }
+    Some(line.and_words(match mount.read_only {
+        true => ", read-only: data from outside Ployz",
+        false => ", read-write: data from outside Ployz",
+    }))
 }
 
 /// Whether a mount of `source` holds data a new volume in its place hides: any but a tmpfs.
