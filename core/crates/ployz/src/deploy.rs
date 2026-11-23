@@ -1090,6 +1090,18 @@ pub enum PlanError {
     },
     #[error("dependency cycle at service '{service}'")]
     DependencyCycle { service: String },
+    /// `to` takes up a Volume `from` drops, but `from` already waits for `to`, `because`,
+    /// so neither could start once the other's old copy is gone.
+    #[error(
+        "Volume {volume} can't move from {from} to {to} in the same Deploy: {because}; remove it from {from} and deploy, then add it to {to}"
+    )]
+    VolumeHandoverCycle {
+        /// The Volume, as its owner named it.
+        volume: String,
+        from: ServiceName,
+        to: ServiceName,
+        because: String,
+    },
     #[error("{}", .refusal.message(.hostname, .owner))]
     HostnameConflict {
         hostname: IngressHost,
@@ -1289,6 +1301,8 @@ impl PlanError {
             Self::HostnameConflict { refusal, .. } => {
                 row(Conflict, Invalid, Invalid, refusal.same_again())
             }
+            // Rests on the Service holding the Volume today, which another Deploy can change.
+            Self::VolumeHandoverCycle { .. } => row(Conflict, Invalid, Invalid, false),
             Self::HostPortConflict { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
@@ -1359,6 +1373,7 @@ impl PlanError {
             | Self::RemovalInReservedNamespace { .. }
             | Self::ConflictingDockerVolumeDefinitions { .. }
             | Self::HostnameConflict { .. }
+            | Self::VolumeHandoverCycle { .. }
             | Self::HostPortConflict { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
@@ -1465,6 +1480,7 @@ impl PlanError {
             | Self::RemovalInReservedNamespace { .. }
             | Self::ConflictingDockerVolumeDefinitions { .. }
             | Self::HostnameConflict { .. }
+            | Self::VolumeHandoverCycle { .. }
             | Self::HostPortConflict { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }

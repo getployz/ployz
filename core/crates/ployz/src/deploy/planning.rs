@@ -67,8 +67,16 @@ struct HostnameHandover {
 /// gone.
 #[derive(Eq, PartialEq)]
 struct VolumeHandover {
+    volume: DockerVolumeName,
     from: ServiceName,
     to: ServiceName,
+}
+
+impl VolumeHandover {
+    /// The Volume as its owner named it.
+    fn volume(&self) -> &str {
+        Namespace::declared_volume_name(&self.volume).unwrap_or(self.volume.as_str())
+    }
 }
 
 /// Operations and prune results before pending rows are attached.
@@ -286,7 +294,7 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
                 groups.extend(service_group(
                     operations,
                     service.clone(),
-                    dependencies,
+                    (dependencies, Vec::new()),
                     range,
                 ));
                 previous = Some(service);
@@ -301,7 +309,7 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
 fn service_group(
     operations: &[DeployOperation],
     service: ServiceName,
-    dependencies: Vec<ServiceName>,
+    (dependencies, drained): (Vec<ServiceName>, Vec<ServiceName>),
     range: std::ops::Range<usize>,
 ) -> Vec<ServiceGroup> {
     let publish = operations
@@ -314,6 +322,7 @@ fn service_group(
         role: GroupRole::Service {
             service: service.clone(),
             dependencies,
+            drained,
             publish,
         },
         steps,
@@ -812,8 +821,8 @@ fn left_pending(
 fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent, PlanError> {
     check_removals(intent)?;
     let retiring = retiring_services(intent, snapshot);
-    let handovers = hostname_handovers(intent, snapshot, &retiring)?;
-    let volume_handovers = volume_handovers(intent, snapshot, &retiring);
+    let volume_handovers = volume_handovers(intent, snapshot, &retiring)?;
+    let handovers = hostname_handovers(intent, snapshot, &retiring, &volume_handovers)?;
     let specs = order_included(
         intent,
         &intent.applied_names(),
@@ -891,6 +900,7 @@ fn hostname_handovers(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
     retiring: &[QualifiedService],
+    volume_handovers: &[VolumeHandover],
 ) -> Result<Vec<HostnameHandover>, PlanError> {
     let applied = intent.applied_names();
     let owners = hostname_owners(
@@ -921,7 +931,8 @@ fn hostname_handovers(
             let refusal = if !applied.contains(&owner.name) {
                 Some(HostnameRefusal::OwnerNotIncluded)
             } else {
-                waits_for(intent, &applied, &handovers, &spec.name, &owner.name).map(|because| {
+                let edges = (handovers.as_slice(), volume_handovers);
+                waits_for(intent, &applied, edges, &spec.name, &owner.name).map(|because| {
                     HostnameRefusal::GainerWaitsForOwner {
                         to: spec.name.clone(),
                         because,
@@ -945,12 +956,14 @@ fn hostname_handovers(
     Ok(handovers)
 }
 
-/// The Provisioned Volumes this Deploy moves from one applied Service to another.
+/// The Provisioned Volumes this Deploy moves from one applied Service to another. Each one
+/// orders the Service dropping it before the one taking it up, so a Volume whose dropper
+/// already waits for its taker can't move in this Deploy.
 fn volume_handovers(
     intent: &DeployIntent,
     snapshot: &DeploySnapshot,
     retiring: &[QualifiedService],
-) -> Vec<VolumeHandover> {
+) -> Result<Vec<VolumeHandover>, PlanError> {
     let applied = intent.applied_names();
     let mounted = |spec: &RequestedServiceSpec| -> BTreeSet<DockerVolumeName> {
         spec.volume_graph()
@@ -990,16 +1003,28 @@ fn volume_handovers(
                     && mounted(spec).contains(held)
             }) {
                 let handover = VolumeHandover {
+                    volume: held.clone(),
                     from: from.name.clone(),
                     to: to.name.clone(),
                 };
-                if !handovers.contains(&handover) {
-                    handovers.push(handover);
+                if handovers.contains(&handover) {
+                    continue;
                 }
+                if let Some(because) =
+                    waits_for(intent, &applied, (&[], &handovers), &from.name, &to.name)
+                {
+                    return Err(PlanError::VolumeHandoverCycle {
+                        volume: handover.volume().to_owned(),
+                        from: handover.from,
+                        to: handover.to,
+                        because,
+                    });
+                }
+                handovers.push(handover);
             }
         }
     }
-    handovers
+    Ok(handovers)
 }
 
 /// Why `service` waits for `other` before it starts, if it does: a declared dependency or
@@ -1007,7 +1032,7 @@ fn volume_handovers(
 fn waits_for(
     intent: &DeployIntent,
     applied: &BTreeSet<&ServiceName>,
-    handovers: &[HostnameHandover],
+    (handovers, volume_handovers): (&[HostnameHandover], &[VolumeHandover]),
     service: &ServiceName,
     other: &ServiceName,
 ) -> Option<String> {
@@ -1036,6 +1061,17 @@ fn waits_for(
         for handover in handovers.iter().filter(|handover| handover.from == *name) {
             let step = because(format!("hands {} to {}", handover.hostname, handover.to));
             pending.push_back((&handover.to, Some(step)));
+        }
+        for handover in volume_handovers
+            .iter()
+            .filter(|handover| handover.to == *name)
+        {
+            let step = because(format!(
+                "takes Volume {} from {}",
+                handover.volume(),
+                handover.from
+            ));
+            pending.push_back((&handover.from, Some(step)));
         }
     }
     None
@@ -1187,8 +1223,9 @@ fn assemble_plan(
     let mut service_operations = Vec::new();
     let mut waiting = Vec::new();
     let mut ranges = Vec::new();
-    // `requested` places every dependency before its dependents and a hostname's gainer
-    // before its dropper, so a Service whose dependency or gainer is blocked is seen after it.
+    // `requested` places every dependency before its dependents, a hostname's gainer before
+    // its dropper and a Volume's dropper before its taker, so a Service whose dependency,
+    // gainer or dropper is blocked is seen after it.
     for spec in &requested {
         if blocked.iter().any(|entry| entry.service == spec.name) {
             continue;
@@ -1229,6 +1266,21 @@ fn assemble_plan(
                 &mut budget,
                 &spec.name,
                 (handover_blocked(handover), kind),
+                Reservation::Release,
+            );
+            continue;
+        }
+        if let Some((handover, kind)) = blocked_behind(
+            volume_handovers
+                .iter()
+                .filter(|handover| handover.to == spec.name)
+                .filter_map(|handover| Some((handover, kind_of(&handover.from)?))),
+        ) {
+            block_service(
+                &mut blocked,
+                &mut budget,
+                &spec.name,
+                (volume_handover_blocked(handover), kind),
                 Reservation::Release,
             );
             continue;
@@ -1371,14 +1423,27 @@ fn assemble_plan(
                 dependencies.push(handover.to.clone());
             }
         }
-        // A Service taking up a Volume another drops starts once the dropper's old copies
-        // are gone, since a Machine refuses a second Container running on the Volume.
-        for handover in &volume_handovers {
-            if handover.to == name && !dependencies.contains(&handover.from) {
+        // A Service taking up a Volume another drops starts once the dropper is published
+        // and its rollout removals are done, since a Server refuses a second Container
+        // running on the Volume.
+        let mut drained = Vec::new();
+        for handover in volume_handovers
+            .iter()
+            .filter(|handover| handover.to == name)
+        {
+            if !dependencies.contains(&handover.from) {
                 dependencies.push(handover.from.clone());
             }
+            if !drained.contains(&handover.from) {
+                drained.push(handover.from.clone());
+            }
         }
-        groups.extend(service_group(&operations, name, dependencies, range));
+        groups.extend(service_group(
+            &operations,
+            name,
+            (dependencies, drained),
+            range,
+        ));
     }
     if !tail.is_empty() {
         groups.push(ServiceGroup {
@@ -1425,6 +1490,21 @@ fn handover_blocked(handover: &HostnameHandover) -> RpcError {
         "reason": "dependency_blocked",
         "dependency": handover.to,
         "hostname": handover.hostname,
+    }))
+}
+
+/// Why a Service taking up a Volume from a blocked one is blocked too: the blocked one's
+/// old copy keeps running on the Volume, and a Server refuses a second Container on it.
+fn volume_handover_blocked(handover: &VolumeHandover) -> RpcError {
+    RpcError::conflict(format!(
+        "takes Volume {} from {}, which was not attempted",
+        handover.volume(),
+        handover.from
+    ))
+    .with_details(serde_json::json!({
+        "reason": "dependency_blocked",
+        "dependency": handover.from,
+        "volume": handover.volume(),
     }))
 }
 
