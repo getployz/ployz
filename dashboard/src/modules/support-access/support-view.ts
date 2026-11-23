@@ -132,7 +132,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     history: (view) => ({ ...view, revisions: view.revisions.map(redact.changes) }),
     history_preview: redact.changes,
     // A plan's target carries the lowered specs, values and Config files included.
-    plan: (view) => ({ ...redact.changes(view), target: [] }),
+    plan: (view) => view.target ? { ...redact.changes(view), target: [] } : redact.changes(view),
     // Support reads which rule an Environment holds, never the settings its target carries.
     rule: (view) => ({ ...view, target: [] }),
     deployments: (view) => ({ ...view, deployments: view.deployments.map(redact.summary) }),
