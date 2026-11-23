@@ -3854,3 +3854,224 @@ fn a_first_copy_waits_for_the_server_it_was_placed_on() {
         assert_eq!(blocked, [refusal], "{case}");
     }
 }
+
+/// `db` runs on a Provisioned Volume today, and one Deploy moves the Volume to a new
+/// `worker`. A Server refuses a second Container running on the Volume, so `worker`
+/// starts only after `db` is published, which removes `db`'s old copy.
+#[test]
+fn a_volume_handed_to_another_service_starts_the_taker_after_the_dropper() {
+    let mut held = replicated("db");
+    add_named_volume(&mut held, "data");
+    make_provisioned(&mut held, "data", 1_073_741_824);
+    let db = replicated("db");
+    let mut worker = replicated("worker");
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(&[('1', CopyRole::Writer)], vec![provisioned_row('1')]);
+    snapshot.containers = vec![container('c', '1', &held, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+
+    assert_eq!(
+        plan.dependencies,
+        vec![(db.name, worker.name)],
+        "{:?}",
+        operations(&plan)
+    );
+}
+
+/// `db` hands its Volume to `worker` and moves to another Server in the same Deploy, so
+/// its old copy leaves through the removals that run after `db` is published. `worker`
+/// starts only once those are done, not as soon as `db` publishes.
+#[test]
+fn a_volume_handed_over_by_a_service_moving_away_waits_for_its_old_copys_removal() {
+    use ployz::deploy::GroupRole;
+
+    let mut held = replicated("db");
+    add_named_volume(&mut held, "data");
+    make_provisioned(&mut held, "data", 1_073_741_824);
+    let mut db = replicated("db");
+    db.placement.constraints = [label_constraint("second")].into();
+    let mut worker = replicated("worker");
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(&[('1', CopyRole::Writer)], vec![provisioned_row('1')]);
+    snapshot.containers = vec![container('c', '1', &held, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+
+    assert!(
+        plan.groups()
+            .iter()
+            .any(|group| group.role == GroupRole::Removals(db.name.clone())),
+        "db's old copy leaves through its removals: {:?}",
+        plan.groups()
+    );
+    let drained = plan.groups().iter().find_map(|group| match &group.role {
+        GroupRole::Service {
+            service, drained, ..
+        } if *service == worker.name => Some(drained.clone()),
+        GroupRole::Prelude
+        | GroupRole::Service { .. }
+        | GroupRole::Removals(_)
+        | GroupRole::Tail(_) => None,
+    });
+    assert_eq!(drained, Some(vec![db.name]), "{:?}", plan.groups());
+}
+
+/// `db` hands `data` to `worker` but can't start, since the `logs` it now mounts has no
+/// writer. Its old copy keeps `data`, so `worker` is not attempted either, and is told why.
+#[test]
+fn a_service_taking_a_volume_from_a_blocked_service_is_blocked_too() {
+    let mut held = replicated("db");
+    add_named_volume(&mut held, "data");
+    make_provisioned(&mut held, "data", 1_073_741_824);
+    let mut db = replicated("db");
+    add_named_volume(&mut db, "logs");
+    make_provisioned(&mut db, "logs", 1_073_741_824);
+    let mut worker = replicated("worker");
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(&[('1', CopyRole::Writer)], vec![provisioned_row('1')]);
+    let Some(Ok(capacity)) = snapshot.storage_capacity.get_mut(&machine_id('2')) else {
+        panic!("fixture capacity for 2")
+    };
+    capacity.copies.insert(
+        app_volume("logs"),
+        ployz_core::ProvisionedCopy::new(
+            ployz_core::CopyPlace::of(CopyRole::Slot, None),
+            maximum_bytes(1_073_741_824),
+            0,
+        ),
+    );
+    snapshot.containers = vec![container('c', '1', &held, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data"), app_volume("logs")].into());
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|entry| (entry.service.as_str(), entry.error.message.as_str()))
+        .collect();
+    let [(first, _), taker] = blocked.as_slice() else {
+        panic!("{blocked:?}")
+    };
+    assert_eq!(*first, "db", "{blocked:?}");
+    assert_eq!(
+        *taker,
+        (
+            "worker",
+            "takes Volume data from db, which was not attempted"
+        ),
+        "{blocked:?}"
+    );
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+/// `db` hands both its hostname and its Volume to `worker`. The hostname makes `db` wait
+/// for `worker`, and the Volume makes `worker` wait for `db`, so the refusal names both.
+#[test]
+fn a_hostname_and_a_volume_handed_opposite_ways_are_refused_with_the_reason() {
+    let ingress = PortPublication::Ingress {
+        hostname: IngressHost::parse("api.example.com").unwrap(),
+        load_balancer_port: NonZeroU16::new(80).unwrap(),
+        container_port: NonZeroU16::new(80).unwrap(),
+        http_protocol: HttpProtocol::Http,
+    };
+    let mut held = replicated("db");
+    held.ports = vec![ingress.clone()];
+    add_named_volume(&mut held, "data");
+    make_provisioned(&mut held, "data", 1_073_741_824);
+    let db = replicated("db");
+    let mut worker = replicated("worker");
+    worker.ports = vec![ingress];
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(&[('1', CopyRole::Writer)], vec![provisioned_row('1')]);
+    snapshot.containers = vec![container('c', '1', &held, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "hostname api.example.com is published by app/db and can't move to worker in the same Deploy: worker takes Volume data from db; remove it from db and deploy, then add it to worker"
+    );
+}
+
+/// `db` and `worker` swap their Volumes. Each would start only after the other's old copy
+/// is gone, so the Deploy is refused with the reason rather than as a bare cycle.
+#[test]
+fn two_services_swapping_volumes_are_refused_with_the_reason() {
+    let mut db_today = replicated("db");
+    add_named_volume(&mut db_today, "data");
+    make_provisioned(&mut db_today, "data", 1_073_741_824);
+    let mut worker_today = replicated("worker");
+    add_named_volume(&mut worker_today, "logs");
+    make_provisioned(&mut worker_today, "logs", 1_073_741_824);
+    let mut db = replicated("db");
+    add_named_volume(&mut db, "logs");
+    make_provisioned(&mut db, "logs", 1_073_741_824);
+    let mut worker = replicated("worker");
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(
+        &[('1', CopyRole::Writer)],
+        vec![provisioned_row('1'), provisioned_row_of('1', "logs")],
+    );
+    let Some(Ok(capacity)) = snapshot.storage_capacity.get_mut(&machine_id('1')) else {
+        panic!("fixture capacity for 1")
+    };
+    capacity.copies.insert(
+        app_volume("logs"),
+        ployz_core::ProvisionedCopy::new(
+            ployz_core::CopyPlace::of(CopyRole::Writer, None),
+            maximum_bytes(1_073_741_824),
+            0,
+        ),
+    );
+    snapshot.containers = vec![
+        container('c', '1', &db_today, &service_id('a')),
+        container('d', '1', &worker_today, &service_id('b')),
+    ];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data"), app_volume("logs")].into());
+
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "Volume logs can't move from worker to db in the same Deploy: worker takes Volume data from db; remove it from worker and deploy, then add it to db"
+    );
+}

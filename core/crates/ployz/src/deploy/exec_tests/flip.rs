@@ -636,6 +636,7 @@ fn scale_down_groups() -> Vec<crate::deploy::schedule::ServiceGroup> {
             role: crate::deploy::GroupRole::Service {
                 service: service.clone(),
                 dependencies: Vec::new(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps: Vec::new(),
@@ -832,6 +833,7 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
             role: GroupRole::Service {
                 service: api.clone(),
                 dependencies: Vec::new(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps: vec![Stage::Parallel(vec![0])],
@@ -1294,6 +1296,7 @@ async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
         role: crate::deploy::GroupRole::Service {
             service: ServiceName::parse("api").unwrap(),
             dependencies: Vec::new(),
+            drained: Vec::new(),
             publish: true,
         },
         steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0, 1])],
@@ -1398,6 +1401,7 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
                     .iter()
                     .map(|dependency| ServiceName::parse(*dependency).unwrap())
                     .collect(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps: vec![crate::deploy::schedule::Stage::Parallel(vec![task])],
@@ -1432,6 +1436,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
             role: GroupRole::Service {
                 service: ServiceName::parse("db").unwrap(),
                 dependencies: Vec::new(),
+                drained: Vec::new(),
                 publish: false,
             },
             steps: Vec::new(),
@@ -1440,6 +1445,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
             role: GroupRole::Service {
                 service: ServiceName::parse("api").unwrap(),
                 dependencies: vec![ServiceName::parse("db").unwrap()],
+                drained: Vec::new(),
                 publish: true,
             },
             steps: vec![Stage::Parallel(vec![0])],
@@ -2591,6 +2597,7 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
         role: crate::deploy::GroupRole::Service {
             service: ServiceName::parse(service).unwrap(),
             dependencies: Vec::new(),
+            drained: Vec::new(),
             publish: true,
         },
         steps: vec![crate::deploy::schedule::Stage::Serial(task)],
@@ -3549,6 +3556,7 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
             role: crate::deploy::GroupRole::Service {
                 service: api.clone(),
                 dependencies: Vec::new(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps: vec![crate::deploy::schedule::Stage::Parallel(vec![0])],
@@ -3557,6 +3565,7 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
             role: crate::deploy::GroupRole::Service {
                 service: web.clone(),
                 dependencies: Vec::new(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps: vec![crate::deploy::schedule::Stage::Parallel(vec![1])],

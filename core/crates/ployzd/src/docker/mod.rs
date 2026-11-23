@@ -1348,7 +1348,8 @@ pub enum Error {
     /// Another Container on this Machine runs on a mounted Provisioned Volume's root.
     #[error("{holder} still runs on {volume} on this Server; deploy again, or stop {holder} first")]
     VolumeHeld {
-        /// Where the Volume is mounted, when known, else its Docker name.
+        /// Where the running holder mounts the Volume, when Docker says, else its Docker
+        /// name.
         volume: String,
         /// The running holder's Service, or its Docker name when Ployz didn't make it.
         holder: String,

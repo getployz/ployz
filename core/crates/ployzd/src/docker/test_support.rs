@@ -268,7 +268,22 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 .get("Image")
                 .and_then(serde_json::Value::as_str)
                 .and_then(|image| fake.image(image));
-            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
+            // Docker answers each mount by the Volume's name and where it is mounted.
+            let mounts: Vec<serde_json::Value> = host_config
+                .get("Mounts")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|mount| {
+                    serde_json::json!({
+                        "Type": mount.get("Type"),
+                        "Name": mount.get("Source"),
+                        "Destination": mount.get("Target"),
+                        "Driver": mount.pointer("/VolumeOptions/DriverConfig/Name"),
+                    })
+                })
+                .collect();
+            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "Mounts": mounts, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"Id":id,"Warnings":[]})),

@@ -90,6 +90,9 @@ pub enum GroupRole {
     Service {
         service: ServiceName,
         dependencies: Vec<ServiceName>,
+        /// Dependencies whose rollout removals must be done too: each drops a Volume this
+        /// Service takes up, and a Server refuses a second Container on the Volume.
+        drained: Vec<ServiceName>,
         /// Flip the Service's pointer once its steps complete.
         publish: bool,
     },
@@ -539,7 +542,21 @@ impl Schedule {
                 .iter()
                 .filter(|slot| matches!(slot.group.role, GroupRole::Prelude))
                 .all(|slot| matches!(slot.phase, Phase::Done));
+        let drained: &[ServiceName] = match &group.role {
+            GroupRole::Service { drained, .. } => drained,
+            GroupRole::Prelude | GroupRole::Removals(_) | GroupRole::Tail(_) => &[],
+        };
+        let drained_done = self.slots.iter().all(|slot| match &slot.group.role {
+            GroupRole::Removals(service) if drained.contains(service) => {
+                matches!(slot.phase, Phase::Done)
+            }
+            GroupRole::Removals(_)
+            | GroupRole::Prelude
+            | GroupRole::Service { .. }
+            | GroupRole::Tail(_) => true,
+        });
         preludes_done
+            && drained_done
             && group.dependencies().iter().all(|dependency| {
                 self.slots
                     .iter()
@@ -653,6 +670,7 @@ mod tests {
             role: GroupRole::Service {
                 service: name(service),
                 dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
+                drained: Vec::new(),
                 publish: true,
             },
             steps,
@@ -730,6 +748,46 @@ mod tests {
         schedule.apply(Event::Published(2));
         assert!(schedule.finished());
         assert!(!schedule.failed());
+    }
+
+    /// db drops a Volume that worker takes up, and db's old copy leaves through its
+    /// rollout removals. A Server refuses a second Container on the Volume, so worker
+    /// starts only once that copy is gone, not as soon as db publishes.
+    #[test]
+    fn a_service_taking_a_volume_starts_after_the_droppers_old_copy_is_removed() {
+        let mut worker = group("worker", &["db"], vec![Stage::Parallel(vec![2])]);
+        if let GroupRole::Service { drained, .. } = &mut worker.role {
+            drained.push(name("db"));
+        }
+        let mut schedule = Schedule::new(
+            vec![
+                group("db", &[], vec![Stage::Parallel(vec![0])]),
+                ServiceGroup {
+                    role: GroupRole::Removals(name("db")),
+                    steps: vec![Stage::Serial(1)],
+                },
+                worker,
+            ],
+            vec![
+                start('2'),
+                Task {
+                    machine: machine('1'),
+                    kind: TaskKind::Unroute,
+                },
+                start('1'),
+            ],
+        );
+        assert_eq!(starts(&mut schedule), vec![0]);
+        schedule.apply(Event::Completed(0));
+        schedule.apply(Event::Published(0));
+        schedule.apply(routed("db"));
+        assert_eq!(
+            starts(&mut schedule),
+            vec![1],
+            "worker waits while db's old copy is removed"
+        );
+        schedule.apply(Event::Completed(1));
+        assert_eq!(starts(&mut schedule), vec![2]);
     }
 
     #[test]

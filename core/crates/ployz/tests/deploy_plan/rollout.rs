@@ -676,6 +676,7 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
                 role: GroupRole::Service {
                     service: db.name.clone(),
                     dependencies: Vec::new(),
+                    drained: Vec::new(),
                     publish: true,
                 },
                 steps: vec![Stage::Serial(0), Stage::Parallel(vec![1, 2])],
@@ -684,6 +685,7 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
                 role: GroupRole::Service {
                     service: web.name,
                     dependencies: vec![db.name],
+                    drained: Vec::new(),
                     publish: true,
                 },
                 steps: vec![Stage::Parallel(vec![3])],
