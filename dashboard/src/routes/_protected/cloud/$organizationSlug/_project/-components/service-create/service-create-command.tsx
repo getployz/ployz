@@ -388,7 +388,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
         />
       ) : (
       <SourcePickerLayout title={presentation.title}>
-      <Command key={panel.kind} shouldFilter={panel.kind === "root" || panel.kind === "database"}>
+      <Command key={panel.kind} shouldFilter={panel.kind === "root" || panel.kind === "database"} className="gap-3 p-0">
         <SourcePickerInput
             onBack={
               panel.kind !== "root"
@@ -428,12 +428,12 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           {panel.kind === "database" ? (
             <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
           ) : null}
+          {panel.kind === "git" ? (
+            <Suspense>
+              <GitRepoSelectorFooter organizationSlug={props.organizationSlug} />
+            </Suspense>
+          ) : null}
         </CommandList>
-        {panel.kind === "git" ? (
-          <Suspense>
-            <GitRepoSelectorFooter organizationSlug={props.organizationSlug} />
-          </Suspense>
-        ) : null}
       </Command>
       </SourcePickerLayout>
       )}

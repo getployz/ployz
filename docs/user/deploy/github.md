@@ -29,9 +29,10 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
 
 The service is named after the repository and follows its default Git branch. The GitHub App
 reads your code, pull requests and checks, and can't push code. The repository list groups
-repositories by GitHub account. To give Ployz more repositories later, choose **Add from GitHub**
-below the repository list. GitHub opens in a new window, and the new repositories appear in the
-list when you come back.
+repositories by GitHub account. To give Ployz more repositories later, choose **Install on another
+GitHub account** at the end of the repository list. GitHub opens in a new window, and the new
+repositories appear in the list when you come back. If a repository you just granted is missing,
+choose **Refresh repositories**.
 
 ## Deploy a public repository without the app
 

@@ -5,14 +5,15 @@ import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notic
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "./source-picker-layout";
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
-import { ChevronRightIcon, ExternalLinkIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
+import { ArrowUpRightIcon, ChevronRightIcon, InfoIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { toast } from "sonner";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { type QueryClient, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupButton, InputGroupInput } from "#/components/ui/input-group";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "./image-registry-link";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
@@ -93,7 +94,7 @@ type GitBranchSelectorDialogProps = {
 
 function SelectorEmpty({ children }: { children: ReactNode }) {
   return (
-    <div className="py-6 text-center text-sm text-muted-foreground">
+    <div className="py-4 text-center text-sm text-muted-foreground">
       {children}
     </div>
   );
@@ -249,26 +250,30 @@ function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string
   return null;
 }
 
-/** Pinned below the CommandList so it stays visible while the repositories scroll. */
+/** The GitHub actions ride at the end of the list, so arrow keys and search reach them like any repository. */
 export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
+  const refresh = useMutation({
+    mutationFn: () => requestGithubRepoSyncServerFn({ data: { organizationSlug } }),
+    onError: (error) => toast.error(toErrorMessage(error, "Couldn’t refresh repositories.")),
+  });
   if (!accessState.hasInstallations) return null;
   return (
     <>
-      <CommandSeparator />
-      <Item size="xs">
-        <ItemContent>
-          <ItemDescription>Missing a repo?</ItemDescription>
-        </ItemContent>
-        <ItemActions>
-          <Button variant="outline" size="sm" onClick={() => openGithub(queryClient, organizationSlug)}>
-            <GitHubMarkIcon data-icon="inline-start" />
-            Add from GitHub
-            <ExternalLinkIcon data-icon="inline-end" />
-          </Button>
-        </ItemActions>
-      </Item>
+      <CommandSeparator alwaysRender />
+      <CommandGroup heading="GitHub">
+        <CommandItem value="github:install" onSelect={() => openGithub(queryClient, organizationSlug)}>
+          <GitHubMarkIcon />
+          <span>Install on another GitHub account</span>
+          <CommandShortcut><ArrowUpRightIcon /></CommandShortcut>
+        </CommandItem>
+        <CommandItem value="github:refresh" disabled={refresh.isPending} onSelect={() => refresh.mutate()}>
+          <RefreshCwIcon />
+          <span>Refresh repositories</span>
+          {refresh.isPending ? <CommandShortcut><Spinner /></CommandShortcut> : null}
+        </CommandItem>
+      </CommandGroup>
     </>
   );
 }
@@ -333,7 +338,6 @@ function GitRepoList({
   return (
     <>
       {stale && <GithubRepositoryRefreshNotice />}
-      <CommandSeparator />
 
       {repoCount === 0 ? (
         <SelectorEmpty>No repositories found</SelectorEmpty>
@@ -399,11 +403,14 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
   });
   return (
     <>
-      {publicName ? <CommandGroup heading="Public repository">
-        <CommandItem disabled={props.disabled || connectPublic.isPending} onSelect={() => connectPublic.mutate()}>
-          <GitHubMarkIcon /> {connectPublic.isPending ? "Connecting…" : `Deploy ${publicName}`}
-        </CommandItem>
-      </CommandGroup> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
+      {publicName ? <>
+        <CommandGroup heading="Public repository">
+          <CommandItem disabled={props.disabled || connectPublic.isPending} onSelect={() => connectPublic.mutate()}>
+            <GitHubMarkIcon /> {connectPublic.isPending ? "Connecting…" : `Deploy ${publicName}`}
+          </CommandItem>
+        </CommandGroup>
+        <CommandSeparator alwaysRender />
+      </> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
       {connectPublic.isError ? <Alert variant="destructive"><AlertDescription>Could not read this public repository. Check its address and visibility, then try again.</AlertDescription></Alert> : null}
       <Suspense fallback={<SelectorLoading />}>
         <GitRepoSelectorResults {...props} />
@@ -685,10 +692,10 @@ function OpenGitRepoSelectorDialog({
             disabled={dialog.isPending}
             onSelectRepo={dialog.runSelect}
           />
+          <Suspense>
+            <GitRepoSelectorFooter organizationSlug={organizationSlug} />
+          </Suspense>
         </CommandList>
-        <Suspense>
-          <GitRepoSelectorFooter organizationSlug={organizationSlug} />
-        </Suspense>
       </Command>
       </SourcePickerLayout>
     </SelectorCommandDialog>
