@@ -473,7 +473,7 @@ describe("volume runs", () => {
       }
       const { expect: expected, want } = request.payload;
       // A Server parses a Writer's snapshot as a number before anything else, a check's included.
-      if (want.kind === "writer" && !/^\d+$/.test(want.at)) return fail(new RawFault({ code: "invalid_argument", message: "invalid digit found in string" }));
+      if (want.kind === "writer" && !/^\d+$/.test(want.at)) return fail(new RawFault({ code: "invalid_argument", message: "invalid digit found in string", details: null }));
       if (want.kind === "writer" && want.start?.kind === "create" && want.start.check === true) {
         checks.push(fake.name);
         const refusal = checkRefusals.get(fake.name);
