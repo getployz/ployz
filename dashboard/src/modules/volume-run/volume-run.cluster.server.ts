@@ -496,10 +496,10 @@ export const startRefusal = Effect.fn("VolumeRun.startRefusal")(function* (
   const { containers, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
   const found = holderOn(ctx, containers, from);
   if (!found.ok) return found.refusal.message;
-  // A check changes nothing, so the snapshot and epoch it names are never used.
+  // A check changes nothing, so the snapshot and epoch it names are never used; a Server still parses the snapshot's number.
   const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), "check");
   if (!created.ok) return created.refusal.message;
-  const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "check", epoch: 0, start: { ...created.start, check: true } }).pipe(
+  const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "0", epoch: 0, start: { ...created.start, check: true } }).pipe(
     Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) => Effect.succeed<CopyAnswer>({
       ok: false, reason: "refused", copy: null, message: error.message,
     })),
