@@ -118,7 +118,7 @@ From the CLI, approve it for the services that build from one branch:
 ployz github rule approve web worker
 ```
 
-It prints what you approve, then signs it with your device key:
+It prints what you approve, asks about any volume that holds data, then signs it with your device key:
 
 ```text
 Approving automatic deploys for production:
@@ -135,6 +135,20 @@ Approved. Every push to main now deploys web, worker with these settings.
 ```
 
 A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts managed volume uploads at /app/uploads, read-write: a new, empty volume`. A volume only services outside the rule mount stays as it was.
+
+A rule has no approved version to compare a volume with, so each volume that already holds data
+needs your yes, every time you approve. That includes data from before this version of Ployz.
+The CLI lists those lines and asks before it signs:
+
+```text
+Needs your yes:
+  web: mounts managed volume uploads at /app/uploads, read-write: data made as uploads, 3 Nov 14:02 UTC, 20 days ago
+Use the data marked above? [y/N]
+```
+
+Answer no and nothing is signed. With no terminal, it stops, names the lines and signs nothing.
+Run it at a terminal. In the dashboard the same lines show under **Needs your yes**, above
+**Approve with passkey**. Approving with your passkey says yes to them.
 
 It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 

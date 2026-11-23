@@ -313,7 +313,7 @@ pub struct Mounts<'a> {
     pub minted: &'a Births,
     pub now: Timestamp,
     /// `None` shows every mount in full and asks nothing: a silent child's mounts are
-    /// pinned to its parent, and a rule compares Services at the template level.
+    /// pinned to its parent. A rule reads its lines from [`Self::asked`].
     pub against: Option<Against<'a>>,
 }
 
@@ -365,6 +365,27 @@ impl Mounts<'_> {
         };
         let Ok(lines) = self.each(spec, told);
         lines
+    }
+
+    /// [`Self::lines`] for a rule, which has no verified version to compare with: every
+    /// mount in full, and each one with data that is not new also asked.
+    #[must_use]
+    pub fn asked(&self, spec: &RequestedServiceSpec) -> MountLines {
+        let said = |mounted: &Mounted<'_>| {
+            let data = self.data(mounted, Shown::default());
+            Ok::<_, std::convert::Infallible>(match self.is_minted(mounted) {
+                true => Said::Told(data),
+                false => Said::Asked(data),
+            })
+        };
+        let Ok(lines) = self.each(spec, said);
+        lines
+    }
+
+    /// Whether `mounted` is a Volume this approval minted, which holds no data yet.
+    fn is_minted(&self, mounted: &Mounted<'_>) -> bool {
+        mounted.volume.birth.is_some()
+            && self.minted.get(mounted.volume.name) == mounted.volume.birth
     }
 
     /// The lines for `spec`'s mounts, each as `say` says it.
@@ -486,9 +507,7 @@ impl Mounts<'_> {
         let at_target = was
             .iter()
             .find(|was| was.mount.target == mounted.mount.target);
-        if mounted.volume.birth.is_some()
-            && self.minted.get(mounted.volume.name) == mounted.volume.birth
-        {
+        if self.is_minted(mounted) {
             let replaced = base.is_some_and(|base| holds_at(&base.spec, target))
                 || mine
                     .iter()

@@ -166,6 +166,11 @@ pub struct RuleServiceSummary {
     /// The settings it pins: variables (Sealed ones by name only) and what reaches the
     /// host.
     pub settings: Vec<String>,
+    /// The mount lines among `settings` the person must say yes to: each one that holds
+    /// existing data, since a rule has no verified version to compare with.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub confirm: Vec<String>,
 }
 
 impl RuleBasis {
@@ -421,22 +426,24 @@ impl AutoDeployRule {
             services: self
                 .services
                 .iter()
-                .map(|service| RuleServiceSummary {
-                    name: service.name.clone(),
-                    builds: builds(&service.policy).into(),
-                    changes: match &kept {
-                        Some(kept) => changes(kept.service(&service.name), service),
-                        None => Vec::new(),
-                    },
-                    settings: basis
-                        .target
-                        .iter()
-                        .find(|spec| spec.name == service.name)
-                        .map(|spec| settings(spec, mounts.shown(spec)))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(String::from)
-                        .collect(),
+                .map(|service| {
+                    let spec = basis.target.iter().find(|spec| spec.name == service.name);
+                    let mounted = spec.map(|spec| mounts.asked(spec)).unwrap_or_default();
+                    RuleServiceSummary {
+                        name: service.name.clone(),
+                        builds: builds(&service.policy).into(),
+                        changes: match &kept {
+                            Some(kept) => changes(kept.service(&service.name), service),
+                            None => Vec::new(),
+                        },
+                        confirm: mounted.confirm.iter().map(ToString::to_string).collect(),
+                        settings: spec
+                            .map(|spec| settings(spec, mounted))
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(String::from)
+                            .collect(),
+                    }
                 })
                 .collect(),
         }

@@ -121,7 +121,9 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     rule.source.owner_id = owner(root, &rule.source.repository, rule.source.repository_id)?;
     let repository = rule.source.repository.clone();
     let branch = rule.source.branch.clone();
-    show(view.environment.name.as_str(), &rule.summary(&basis));
+    let summary = rule.summary(&basis);
+    show(view.environment.name.as_str(), &summary);
+    consent(&summary)?;
     keep(&store, environment, (&rule, &basis.minted), &signer)?;
     crate::ui::stream(format_args!(
         "Approved. Every push to {branch} now deploys {} with these settings.",
@@ -334,6 +336,36 @@ fn show(environment: &str, summary: &RuleSummary) {
     if !summary.pinned {
         crate::ui::note("This rule pins a builder other than Ployz's own release.");
     }
+}
+
+/// The person's yes to each mount of existing data the rule pins, asked once after its
+/// lines show. Every push deploys with those mounts, so a run that can't ask signs nothing.
+fn consent(summary: &RuleSummary) -> Result<(), Error> {
+    let marked: Vec<String> = summary
+        .services
+        .iter()
+        .flat_map(|service| {
+            let name = service.name.as_str();
+            service
+                .confirm
+                .iter()
+                .map(move |line| format!("{name}: {line}"))
+        })
+        .collect();
+    let refusal = Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        format!(
+            "This rule uses data that needs your yes, and there's no terminal to ask in. Run \
+             ployz github rule approve at a terminal to say yes to:\n  {}\nNothing signed.",
+            marked.join("\n  ")
+        ),
+        json!({ "confirm": marked }),
+    );
+    approve::ask_data(
+        &marked,
+        (refusal, "Cancelled. Nothing signed."),
+        &mut |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )
 }
 
 pub(super) fn joined(names: &[ServiceName]) -> String {
