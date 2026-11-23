@@ -218,9 +218,11 @@ impl Lifecycle {
         Ok(())
     }
 
-    /// Refuse what a Volume start's Create would refuse once its copy is promoted: each
-    /// mounted Provisioned Volume this Machine forgot and holds no copy of, and each copy,
-    /// root or a slot the start would promote, whose origin isn't the one the spec expects.
+    /// Refuse what a Volume start's Create would refuse once `moving`'s copy is promoted:
+    /// each other mounted Provisioned Volume this Machine forgot and holds no copy of, and
+    /// each copy, root or a slot the start would promote, whose origin isn't the one the
+    /// spec expects. `moving` with no copy here yet is the one the Move pulls before its
+    /// start, even onto a Server that once forgot it.
     ///
     /// # Errors
     /// Returns [`Error::VolumeNotWritable`] or [`Error::ForeignVolume`] for such a Volume,
@@ -229,6 +231,7 @@ impl Lifecycle {
         &self,
         spec: &ResolvedServiceSpec,
         plugin: &crate::storage::Plugin,
+        moving: &ployz_core::DockerVolumeName,
     ) -> Result<(), Error> {
         for volume in spec.volume_graph().mounted_provisioned_volumes() {
             let Some(name) = volume.source.docker_volume_name() else {
@@ -245,7 +248,7 @@ impl Lifecycle {
                     source: Box::new(source),
                 })?;
             let carried = match copy {
-                None if self.forgot_here(volume).await? => {
+                None if name != moving && self.forgot_here(volume).await? => {
                     return Err(Error::VolumeNotWritable(name.clone()));
                 }
                 None => continue,

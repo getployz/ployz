@@ -67,7 +67,7 @@ impl LocalMachine {
             // What the Create after the promote refuses, a check refuses before the cut.
             self.docker()?
                 .lifecycle()
-                .check_start_volumes(resolved_spec, self.plugin())
+                .check_start_volumes(resolved_spec, self.plugin(), &request.name)
                 .await?;
             return self.inspect_copy(&request.name).await;
         }
