@@ -3854,3 +3854,34 @@ fn a_first_copy_waits_for_the_server_it_was_placed_on() {
         assert_eq!(blocked, [refusal], "{case}");
     }
 }
+
+/// `db` runs on a Provisioned Volume today, and one Deploy moves the Volume to a new
+/// `worker`. A Server refuses a second Container running on the Volume, so `worker`
+/// starts only after `db` is published, which removes `db`'s old copy.
+#[test]
+fn a_volume_handed_to_another_service_starts_the_taker_after_the_dropper() {
+    let mut held = replicated("db");
+    add_named_volume(&mut held, "data");
+    make_provisioned(&mut held, "data", 1_073_741_824);
+    let db = replicated("db");
+    let mut worker = replicated("worker");
+    add_named_volume(&mut worker, "data");
+    make_provisioned(&mut worker, "data", 1_073_741_824);
+    let mut snapshot = copies_snapshot(&[('1', CopyRole::Writer)], vec![provisioned_row('1')]);
+    snapshot.containers = vec![container('c', '1', &held, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker, &db],
+        PlanOptions::default(),
+    )
+    .with_deployed_volumes([app_volume("data")].into());
+
+    let plan = preview_deploy(&intent, &snapshot).unwrap();
+
+    assert_eq!(
+        plan.dependencies,
+        vec![(db.name, worker.name)],
+        "{:?}",
+        operations(&plan)
+    );
+}
