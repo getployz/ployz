@@ -24,6 +24,7 @@ import { NameSection } from "./NameSection";
 import { ServicesSection } from "./ServicesSection";
 import { SetupSection } from "./SetupSection";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { useDeployTap } from "#/modules/deploy-approval/deploy-sheet";
 
 type Picks = { copy: string[] } | { preset: BranchPreset };
 /** The picks of one opening of the panel (`session`), and the Services they are for. */
@@ -84,6 +85,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const picking = usePickingView();
   const refusal = use(PlanRefusalContext);
   const writer = useStoreWriter(params.organizationSlug);
+  const tap = useDeployTap(params.organizationSlug);
   const navigate = useNavigate();
   const listing = useStoreView(params.organizationSlug, environmentsQuery(params.projectSlug));
   const taken = new Set(listing.ok ? listing.value.environments.map((environment) => environment.name) : []);
@@ -125,10 +127,9 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         setup: branchSetupCommands(plan, setupCommands).map((setup) => ({ service: setup.lineageId, command: setup.command })),
         fix,
       });
-      // The writer toasts a refused Deploy; the Branch is made either way.
-      if (deployNow) {
-        writer.commit(admitDeploy(branch, crypto.randomUUID()));
-      }
+      // The writer or the sheet says why a Deploy wasn't sent; the Branch is made either way. A Deploy the person signs
+      // waits for the sheet here, which leaves with this panel.
+      if (deployNow) await tap.admit(admitDeploy(branch, crypto.randomUUID())).catch(() => {});
       await navigate(getDashboardDestination({
         kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.environment,
       }, "architecture"));
@@ -178,6 +179,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
           </div>
         )}
       </div>
+      {tap.sheet}
     </form>
   );
 }

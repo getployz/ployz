@@ -16,11 +16,11 @@ import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/containe
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { logHistoryServicesQueryOptions, logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history.queries";
 import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
-import { useStoreWriter } from "#/modules/config-store/store-write";
 import { deploymentDestination } from "#/modules/config-store/deployments/run-search";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { useDeployTap } from "#/modules/deploy-approval/deploy-sheet";
 import { docsUrl } from "#/lib/docs";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
@@ -210,7 +210,7 @@ function LogFilter({ label, value, onChange, options }: { label: string; value: 
 }
 
 function Redeploy({ selection }: { selection: ContainerLogSelection }) {
-  const writer = useStoreWriter(selection.organizationSlug);
+  const tap = useDeployTap(selection.organizationSlug);
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
   const { projectSlug, environmentSlug } = selection;
@@ -219,10 +219,13 @@ function Redeploy({ selection }: { selection: ContainerLogSelection }) {
     if (!projectSlug || !environmentSlug) return;
     const id = crypto.randomUUID();
     setStarting(true);
-    const started = await writer.commit(admitDeploy({ project: projectSlug, environment: environmentSlug }, id))
+    const started = await tap.admit(admitDeploy({ project: projectSlug, environment: environmentSlug }, id))
       .then(() => true, () => false);
     setStarting(false);
     if (started) void navigate(deploymentDestination({ organizationSlug: selection.organizationSlug, projectSlug, environmentSlug }, id));
   }
-  return <Button variant="outline" size="sm" disabled={starting} onClick={() => void start()}>Redeploy</Button>;
+  return <>
+    <Button variant="outline" size="sm" disabled={starting} onClick={() => void start()}>Redeploy</Button>
+    {tap.sheet}
+  </>;
 }

@@ -142,7 +142,8 @@ ployz deploy
 ## Deploy from an approved device
 
 A server runs a service that reaches your data only from a spec an
-[approved device](../servers/manage-servers.md#what-needs-an-approved-device) signed, or under an
+[approved device](../servers/manage-servers.md#what-needs-an-approved-device) or
+[your passkey](#deploy-from-the-dashboard) signed, or under an
 [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push). A service reaches data
 when it opens a sealed value, mounts a volume, pulls its image with a login, or asks for more of
 its server than a plain container gets: a host port, a host path, added privileges or devices.
@@ -390,33 +391,48 @@ Deploy each service once after you upgrade its server, so a restart never needs 
 
 ### Deploy from the dashboard
 
-**Deploy** at the bottom of an environment signs nothing. A server runs it for three kinds of
-service:
+When your servers enforce device approval, **Deploy** at the bottom of an environment asks for
+your passkey once for the services a server runs only signed. A sheet lists what your passkey
+signs for each one, with its image by digest. Ployz Cloud looks up the digest of each tag, so
+check it. **Approve with passkey** signs them all in one prompt, and the deploy starts.
 
-- One that reaches no data: no sealed value, no volume, no login for its image, and nothing of
-  its server beyond a plain container. The server pulls the image itself with no login, so the
-  registry has to be public.
-- A version a device signed, which Ployz Cloud sends with its signature: a rollback or
-  redeploy of a signed deployment, or a change of only replicas, placement or limits while
-  your settings name the tag your last signed deploy ran.
+These need no prompt:
 
-A deploy that changes the tag, or any setting the signature covers, has no signature to send,
-even when nothing else changed. Run `ployz deploy` on an approved device to sign it.
+- A service that reaches no data: no sealed value, no volume, no login for its image, and nothing
+  of its server beyond a plain container.
+- A version someone already signed: a change of only replicas, placement or limits, and a
+  rollback or redeploy of a signed deployment.
 
-A server refuses any other container the deployment would start there, and says what the
-service reaches:
+Your servers must trust your passkey. Add it under **Account**, **Passkeys**. Before it asks,
+Deploy stops and says why, and deploys nothing, when:
+
+- a service builds from source and its rule doesn't cover it: `Approve web's automatic deploy rule again.`
+- its rule covers it but hasn't built it yet: `Push to web's branch first. Its rule hasn't built this version yet.`
+- a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
+- a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`
+- no server trusts your passkey: `Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.`
+
+If your changes moved after you looked, Deploy asks nothing and says
+`Your changes moved since you looked. Check them, then deploy again.` If the Config Store refuses
+the signed deploy, the sheet shows what you would sign now and offers **Sign and deploy again**.
+**Cancel** deploys nothing and keeps your changes staged. A deploy that deletes data asks you to
+confirm that too, and your one prompt covers it.
+
+**Create and deploy** on a new branch, **Deploy again** after a sync and **Redeploy** on a log
+card ask the same way.
+
+A server refuses a container that reaches data from any deploy no person signed, and says what
+the service reaches:
 
 ```
 This service mounts a volume, so this server runs it only from a deploy an approved device signed.
 ```
 
-The deployment page shows why, and what already runs keeps running. Run `ployz deploy` on an
-approved device, or push under an
-[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push).
-
-The same goes for every deploy of a version nobody signed: **Create and deploy** on a new
-branch, an organization token, `ployz up`, a restore, and a redeploy or rollback of a
-deployment nobody signed, from its page or by [the agent](../account/agent-sidebar.md). Running
+The deployment page shows why, and what already runs keeps running. That covers an organization
+token, `ployz up`, a restore, a first deploy to a new server, and a redeploy or rollback of a
+deployment nobody signed, from its page or by [the agent](../account/agent-sidebar.md). Deploy
+from the dashboard, run `ployz deploy` on an approved device, or push under an
+[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push). Running
 `ployz deploy` with a device key in a script approves whatever is saved in Ployz Cloud at that
 moment, without anyone looking.
 

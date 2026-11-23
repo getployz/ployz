@@ -9,6 +9,7 @@ import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.review";
 import { environmentKey } from "#/modules/config-store/environment-ref";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
+import { useDeployTap } from "#/modules/deploy-approval/deploy-sheet";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -41,6 +42,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
+  const tap = useDeployTap(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
@@ -83,7 +85,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      await writer.commit(command, ["confirmation_required"]);
+      if (command.command === "admit" && command.admit === "deploy") await tap.admit(command, ["confirmation_required"]);
+      else await writer.commit(command, ["confirmation_required"]);
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {
@@ -140,7 +143,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     save,
     discard,
     neverSync,
-    dialog: (
+    dialog: (<>
+      {tap.sheet}
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => {
@@ -165,6 +169,6 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
           },
         }}
       />
-    ),
+    </>),
   };
 }
