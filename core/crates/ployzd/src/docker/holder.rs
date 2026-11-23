@@ -25,8 +25,7 @@ pub(crate) async fn start(
 
 /// Start `me` through Docker, unless it is a Service Container and another runs on a
 /// Provisioned Volume root it mounts. Its Volumes come from `spec`, the one this
-/// Machine kept, which names each as the user does; without one, as bridge recovery
-/// starts, from Docker's own mounts.
+/// Machine kept; without one, as bridge recovery starts, from Docker's own mounts.
 ///
 /// # Errors
 /// [`Error::VolumeHeld`] beside a running holder, the error of a read that failed,
@@ -38,7 +37,7 @@ pub(crate) async fn start_inspected(
 ) -> Result<(), Error> {
     let id = me.id.as_deref().unwrap_or_default();
     if serving(me) {
-        let volumes: Vec<(String, String)> = match spec {
+        let volumes: Vec<String> = match spec {
             Some(spec) => provisioned(spec),
             None => me
                 .mounts
@@ -48,11 +47,11 @@ pub(crate) async fn start_inspected(
                     mount.typ.as_deref() == Some("volume")
                         && mount.driver.as_deref() == Some(PROVISIONED_VOLUME_DRIVER)
                 })
-                .filter_map(|mount| Some((mount.name.clone()?, mount.name.clone()?)))
+                .filter_map(|mount| mount.name.clone())
                 .collect(),
         };
-        for (name, called) in &volumes {
-            refuse_beside(client, Some(id), name, called).await?;
+        for name in &volumes {
+            refuse_beside(client, Some(id), name).await?;
         }
     }
     #[expect(
@@ -63,8 +62,8 @@ pub(crate) async fn start_inspected(
     Ok(())
 }
 
-/// Refuse a Service Container on Docker Volume `volume`, which the user calls `called`,
-/// while a Container other than `me` runs on it: running, restarting or paused, each of
+/// Refuse a Service Container on Docker Volume `volume` while a Container other than `me`
+/// runs on it: running, restarting or paused, each of
 /// which can write again without a start. A stopped holder doesn't count, so a
 /// stop-first redeploy and its rollback go on as before. A pre-deploy hook mounts the
 /// root beside the serving copy by design, so it doesn't count, and neither does the
@@ -76,7 +75,6 @@ pub(crate) async fn refuse_beside(
     client: &Docker,
     me: Option<&str>,
     volume: &str,
-    called: &str,
 ) -> Result<(), Error> {
     let filters = std::collections::HashMap::from([("volume", vec![volume])]);
     let listed = client
@@ -114,28 +112,27 @@ pub(crate) async fn refuse_beside(
                 .trim_start_matches('/')
                 .to_owned(),
         };
+        // Where the holder mounts the Volume, which may differ from where `me` would.
+        let at = holder
+            .mounts
+            .iter()
+            .flatten()
+            .find(|mount| mount.name.as_deref() == Some(volume))
+            .and_then(|mount| mount.destination.as_deref());
         return Err(Error::VolumeHeld {
-            volume: called.to_owned(),
+            volume: at.map_or_else(|| volume.to_owned(), |at| format!("the Volume at {at}")),
             holder: held_by,
         });
     }
     Ok(())
 }
 
-/// Each Provisioned Volume `spec` mounts: its Docker name, and how the user knows it.
-/// A Machine never learns the Volume's own name, so that is where it is mounted.
-pub(crate) fn provisioned(spec: &ResolvedServiceSpec) -> Vec<(String, String)> {
-    let graph = spec.volume_graph();
-    graph
-        .mounts()
-        .iter()
-        .filter_map(|mount| {
-            let volume = graph.volume_for(mount);
-            let ployz_core::RawVolumeSource::Provisioned { name, .. } = volume.source.kind() else {
-                return None;
-            };
-            Some((name.to_string(), format!("the Volume at {}", mount.target)))
-        })
+/// The Docker name of each Provisioned Volume `spec` mounts.
+pub(crate) fn provisioned(spec: &ResolvedServiceSpec) -> Vec<String> {
+    spec.volume_graph()
+        .mounted_provisioned_volumes()
+        .filter_map(|volume| volume.source.docker_volume_name())
+        .map(ToString::to_string)
         .collect()
 }
 
