@@ -1944,6 +1944,44 @@ fn a_deploy_leaves_out_a_variable_history_brought_back_not_set() {
     );
 }
 
+/// A database's password made in the browser, deleted, then brought back by History:
+/// left out, the database would start with an empty one.
+#[test]
+fn history_brings_a_made_password_deleted_since_back_for_the_dashboard_to_make() {
+    let (store, who) = shop();
+    let mut made = sealed(3, "PASSWORD", 1);
+    made["secret"]["generated"] = json!(r#"${{ secret(32, "a-zA-Z") }}"#);
+    set(&store, &who, "web.env.PASSWORD", made);
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.env.PASSWORD");
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    let refused = store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000190")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                recreate: Vec::new(),
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.message,
+        "web.PASSWORD has no value yet. Deploy from the dashboard to make it."
+    );
+}
+
 #[test]
 fn undoing_a_service_creation_still_removes_it_with_its_sealed_keys() {
     let (store, who) = shop();

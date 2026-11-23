@@ -569,11 +569,13 @@ pub(super) fn held_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCell 
     let held = service(env, &row.lineage)
         .and_then(|service| service.variables.iter().find(|v| v.key == *key));
     match held.map(|variable| (&variable.value, variable.generator())) {
-        Some((value, Some(generator))) => SealedCell::Cell(Cell::Value(json!({
-            "generated": generator,
-            "value": value.literal(),
-            "fingerprint": value.stored_fingerprint(),
-        }))),
-        Some((_, None)) | None => sealed_cell(env, cells, row),
+        Some((value, Some(generator))) if !value.is_secret() => {
+            SealedCell::Cell(Cell::Value(json!({
+                "generated": generator,
+                "value": value.literal(),
+                "fingerprint": value.stored_fingerprint(),
+            })))
+        }
+        Some(_) | None => sealed_cell(env, cells, row),
     }
 }

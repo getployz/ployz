@@ -7,13 +7,16 @@
 //! Keep and fixing a failed Deployment. None of it needs a Server until
 //! something deploys.
 
-use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
+use ployz_core::{
+    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, RpcErrorCode, ServiceName,
+};
 use ployz_store::{
-    Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
-    CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, Discard, DomainName,
-    DomainsQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode,
-    Mount, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, SealedNamesQuery,
-    ServiceLineageId, ServiceQuery, SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
+    Actor, AddDomain, Admit, Branched, Change, ConfigId, ConfigMountAt, ConfigStore, CopyNode,
+    CreateBranch, CreateConfig, CreateProject, CreateService, CreateVolume, Deploy, DeploymentId,
+    DiffQuery, Discard, DomainName, DomainsQuery, Edit, EnvironmentId, EnvironmentName,
+    EnvironmentRef, KeepBranch, LiveNode, Mount, OrganizationId, ProjectId, ProjectName,
+    PutConfigFile, RunEvidence, RunnerId, SealedNamesQuery, ServiceLineageId, ServiceQuery,
+    SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -491,19 +494,113 @@ fn a_copy_of_a_made_sealed_password_deploys_only_once_the_browser_makes_its_own(
     );
     let environment = made.branch.environment.id.to_string();
     assert_eq!(refused.details["environment"], environment);
-
-    // Two browsers fill it: the first one's stays, which the database may already use.
-    for n in [2, 3] {
-        set(
-            &store,
+    // Only a browser makes it, so Cloud never sees it.
+    let generated = store
+        .write(
             &who,
-            "fix-db",
-            &[("db.env.PASSWORD", made_password(&environment, &db, n))],
-        );
-    }
+            &Edit {
+                environment: at("fix-db"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("db.env.PASSWORD").unwrap(),
+                    value: json!({ "secret": { "generate": true } }),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert!(
+        generated
+            .message
+            .starts_with("db.PASSWORD has no value yet"),
+        "{generated:?}"
+    );
+
+    // Two browsers fill it, from plans made with other generators: the first one's
+    // stays, which the database may already use.
+    set(
+        &store,
+        &who,
+        "fix-db",
+        &[("db.env.PASSWORD", made_password(&environment, &db, 2))],
+    );
+    let mut other = made_password(&environment, &db, 3);
+    other["secret"]["generated"] = json!("${{ secret(16) }}");
+    set(&store, &who, "fix-db", &[("db.env.PASSWORD", other)]);
     let input = deploy(&store, &who, "fix-db", 1, true);
     let password = snapshot(&input, &db)["resolvedEnv"]["PASSWORD"].to_string();
     assert!(password.contains(&backend::ciphertext(2)), "{password}");
+}
+
+/// A Config file that reads a variable reading a copy's Pending password, as
+/// `db.URL` reads `db.PASSWORD`: a Deploy of the Service mounting it is refused too.
+#[test]
+fn a_deploy_reading_a_pending_password_through_a_config_file_is_refused() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("db.env.PASSWORD", made_password(&uuid(2), &uuid(4), 1)),
+            ("db.env.URL", json!("postgres://db:${{ PASSWORD }}@db")),
+            ("web.env.DB_URL", json!("unused")),
+        ],
+    );
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("app").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/app".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("app").unwrap(),
+                file: ConfigFileName::parse("app.env").unwrap(),
+                content: "DATABASE_URL=${{ db.URL }}".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &branch("fix-db", "production", &["web", "db", "configs.app"]),
+        )
+        .unwrap();
+    let refused = store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse(uuid(91)).unwrap(),
+                environment: at("fix-db"),
+                services: vec![ServiceName::parse("web").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                recreate: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(refused.message.contains("has no value yet"), "{refused:?}");
 }
 
 #[test]

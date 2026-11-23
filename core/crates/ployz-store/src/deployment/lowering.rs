@@ -1050,7 +1050,7 @@ fn refuse_pending(
         })
         .collect();
     Err(error::invalid(
-        format!("{needed} has no value yet. Deploy from the dashboard to make it."),
+        crate::variables::awaiting_dashboard(&needed),
         json!({ "variable": needed, "environment": environment.as_str(), "pending": pending }),
     ))
 }

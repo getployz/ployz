@@ -6,3 +6,4 @@ export const parseEnvFile = text => request({ operation: 'parse_env_file', text 
 export const parseRegion = value => request({ operation: 'parse_region', value });
 export const firstServerRegion = servers => request({ operation: 'first_server_region', servers });
 export const parseRegionName = value => request({ operation: 'parse_region_name', value });
+export const parseGenerator = value => request({ operation: 'parse_generator', value });

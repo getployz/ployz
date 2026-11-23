@@ -181,6 +181,16 @@ pub(crate) fn set(
         (None, Some(current)) => kept(current),
         (Some(Input::Keep), Some(current)) if secret(current) => kept(current),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
+        // Only a person's browser makes a Pending value, so Cloud never sees it.
+        (Some(Input::Generate), Some(current))
+            if matches!(current.value, VariableValue::Pending { .. }) =>
+        {
+            let variable = format!("{service}.{key}");
+            return Err(error::invalid(
+                awaiting_dashboard(&variable),
+                json!({ "variable": variable }),
+            ));
+        }
         // A retried edit must not rotate a secret its referrers and a database already use.
         (Some(Input::Generate), Some(current))
             if matches!(current.value, VariableValue::Sealed { .. }) =>
@@ -249,11 +259,10 @@ pub(crate) fn set(
         (Some(Input::Seal(_)), _) => {
             return Err(sealer.refuse(key.as_str(), invalid(key, client_sealed::PLAINTEXT_REFUSED)));
         }
-        // Two browsers filling one Pending value: the first wins, which a database may
-        // already have started with.
-        (Some(Input::ClientSealed(_, Some(generator))), Some(current))
-            if matches!(current.value, VariableValue::Sealed { .. })
-                && current.generator() == Some(&generator) =>
+        // A made value fills only a Pending one: two browsers filling it, the first
+        // wins, which a database may already have started with.
+        (Some(Input::ClientSealed(_, Some(_))), Some(current))
+            if matches!(current.value, VariableValue::Sealed { .. }) =>
         {
             kept(current)
         }
@@ -874,24 +883,20 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             // A fixed message: a serde error would echo the value.
             Some(Value::Object(asked)) if asked.contains_key("sealedFor") => {
                 let mut sealed = asked.clone();
-                let generator = match sealed.remove("generated") {
-                    Some(Value::String(text)) => match Generator::parse(&text) {
-                        Ok(Some(generator)) => Some(generator),
-                        Ok(None) | Err(_) => {
-                            return Err(invalid(
-                                key,
-                                "generated takes a secret(…) call, such as ${{ secret(32) }}",
-                            ));
-                        }
-                    },
-                    Some(_) => {
-                        return Err(invalid(
-                            key,
-                            "generated takes a secret(…) call, such as ${{ secret(32) }}",
-                        ));
-                    }
-                    None => None,
-                };
+                let generator = sealed
+                    .remove("generated")
+                    .map(|generated| {
+                        generated
+                            .as_str()
+                            .and_then(|text| Generator::parse(text).ok().flatten())
+                            .ok_or_else(|| {
+                                invalid(
+                                    key,
+                                    "generated takes a secret(…) call, such as ${{ secret(32) }}",
+                                )
+                            })
+                    })
+                    .transpose()?;
                 serde_json::from_value(Value::Object(sealed))
                     .map(|value| Input::ClientSealed(value, generator))
                     .map_err(|_| {
@@ -1036,6 +1041,12 @@ fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
             Err(invalid(key, "exported is true or false"))
         }
     }
+}
+
+/// Why what needs `variable`'s Pending value, such as `db.PASSWORD`, is refused:
+/// only a person's browser makes it, at their next dashboard Deploy.
+pub(crate) fn awaiting_dashboard(variable: &str) -> String {
+    format!("{variable} has no value yet. Deploy from the dashboard to make it.")
 }
 
 /// A refused variable value: never echoed.
