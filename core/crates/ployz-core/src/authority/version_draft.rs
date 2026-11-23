@@ -7,16 +7,16 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    Against, Approved, ApprovedChange, Before, BirthError, Births, Held, Mounts, PlannedVolumes,
-    ServiceVersion, SignerKey, TrustedGrant, TrustedKeys, TrustedPasskey, Unknown, birth,
+    Against, Approved, ApprovedChange, Before, BirthError, Births, Held, HeldContainer, Mounts,
+    PlannedVolumes, ServiceVersion, SignerKey, TrustedGrant, TrustedKeys, TrustedPasskey, Unknown,
+    birth,
     canonical::{CanonicalError, Timestamp, to_canonical},
     deploy::content_addressed,
     keys::Signed,
     proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind},
 };
 use crate::{
-    ContainerObservation, DeviceKey, Namespace, OperationId, RequestedServiceSpec,
-    SealingPublicKey, ServiceName,
+    DeviceKey, Namespace, OperationId, RequestedServiceSpec, SealingPublicKey, ServiceName,
 };
 
 /// What a person is asked to sign: the specs of `services` in `namespace`, each tag image
@@ -43,7 +43,8 @@ pub struct VersionsAsked {
 }
 
 /// What Ployz Cloud relays to compare each mount with: each Service's last approved
-/// version, the keys one enforcing Server trusts, and the Containers its Servers list.
+/// version, the keys one enforcing Server trusts, and the mounts of the Containers its
+/// Servers list.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Relayed {
@@ -51,7 +52,7 @@ pub struct Relayed {
     #[serde(default)]
     pub parents: BTreeMap<ServiceName, Parent>,
     pub trusted: Trust,
-    pub containers: Vec<ContainerObservation>,
+    pub containers: Vec<HeldContainer>,
     /// Each Server whose Containers weren't listed, by name.
     #[serde(default)]
     pub unanswered: Vec<String>,
@@ -81,8 +82,8 @@ pub struct Trust {
 }
 
 impl Relayed {
-    /// Each Service's version checked against the relayed keys for `cluster`, and the
-    /// Containers of `namespace`.
+    /// Each Service's version in `namespace` checked against the relayed keys for
+    /// `cluster`, and the relayed Containers' mounts.
     fn evidence(
         self,
         cluster: SealingPublicKey,
@@ -110,7 +111,7 @@ impl Relayed {
                 (service, before)
             })
             .collect();
-        let held = Held::of(namespace, &self.containers, self.unanswered);
+        let held = Held::relayed(self.containers, self.unanswered);
         (before, held)
     }
 }

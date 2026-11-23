@@ -30,7 +30,7 @@ export type {
 } from "./generated/payloads";
 
 import type {
-  ContainerObservation,
+  HeldContainer,
   JoinApproval,
   MachineDetails,
   Parent,
@@ -94,12 +94,12 @@ export function versionSteps(asked: {
 
 /**
  * What each mount is compared with: each Service's last approved version, the keys one enforcing Server trusts, the
- * Namespace's Containers as the Servers that answered list them, and each Server that didn't answer, by name.
+ * mounts of the Namespace's Containers as the Servers that answered list them, and each Server that didn't answer, by name.
  */
 export type Against = {
   parents?: Readonly<Record<string, Parent>>;
   trusted: Pick<MachineDetails, "devices" | "passkeys" | "grants">;
-  containers: readonly ContainerObservation[];
+  containers: readonly HeldContainer[];
   unanswered?: readonly string[];
 };
 

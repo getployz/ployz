@@ -10,6 +10,7 @@ use ployz_agent_tools::cloud::{
 use ployz_agent_tools::{
     CloudQuery, Freshness, LogsQuery, ServerLogsQuery, ServerName, ServerRef, Source, Timestamp,
 };
+use ployz_core::authority::HeldContainer;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, MachineId,
@@ -454,17 +455,18 @@ pub async fn observe_service(
         .await
 }
 
-/// One Namespace's Containers as each Server lists them now, with env values redacted.
+/// The mounts of one Namespace's Service Containers as each Server lists them now, and
+/// nothing else of them.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NamespaceContainers {
-    pub containers: Vec<ContainerObservation>,
+    pub containers: Vec<HeldContainer>,
     /// The Servers whose listing came back. Only their Containers are here.
     pub answered: Vec<MachineId>,
     pub unanswered: Vec<ServerRef>,
 }
 
-/// The Containers of `namespace` that each Server lists itself, never rows the entry
-/// only remembers.
+/// The mounts of the Containers of `namespace` that each Server lists itself, never rows
+/// the entry only remembers.
 ///
 /// # Errors
 /// Returns the session's error when it is closed or the Servers cannot be listed.
@@ -484,10 +486,10 @@ pub async fn observe_namespace(
             let successes = live.containers.successes;
             Ok(NamespaceContainers {
                 answered: successes.iter().map(|success| success.machine_id).collect(),
-                containers: (successes.into_iter())
-                    .flat_map(|success| success.value)
-                    .filter(|container| &container.namespace == namespace)
-                    .collect(),
+                containers: HeldContainer::listed(
+                    namespace,
+                    successes.iter().flat_map(|success| &success.value),
+                ),
                 unanswered: machines
                     .iter()
                     .filter(|machine| unanswered.contains(&machine.machine.id))
