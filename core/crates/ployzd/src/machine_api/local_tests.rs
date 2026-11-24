@@ -429,18 +429,16 @@ async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
 }
 
 /// Only Ployz's reserved Services run on every Server, so a Full caller's Global in a
-/// user Namespace is refused before Docker makes anything.
+/// user Namespace is refused before Docker makes anything, its Volume included.
 #[tokio::test]
 async fn a_full_callers_global_in_a_user_namespace_is_refused() {
-    use ployz_core::{ContainerRefusalReason, EnsuredContainer};
+    use ployz_core::{ContainerRefusalReason, EnsuredContainer, ServiceMode};
     use serde_json::json;
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-user-global").await;
-    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name": "api",
-        "mode": {"mode": "global"},
-        "container": {"image": "example.test/api", "pull_policy": "missing"}
-    }))
-    .unwrap();
+    let mut spec = crate::docker::test_support::spec_with_sources(vec![
+        crate::docker::test_support::ordinary_source("data"),
+    ]);
+    spec.mode = ServiceMode::Global;
     let want = json!({"want": {"state": "running", "rotation": "pending", "container": {"new": {
         "slot": {"namespace": "app", "service": "api", "kind": "service_container",
                  "creation_key": ployz_core::global_creation_key(&spec)},
@@ -470,6 +468,10 @@ async fn a_full_callers_global_in_a_user_namespace_is_refused() {
     assert!(
         fake.named_containers.unwrap().lock().unwrap().is_empty(),
         "a refused Global reaches no Docker create"
+    );
+    assert!(
+        fake.volumes.lock().unwrap().is_empty(),
+        "a refused Global leaves no Volume behind"
     );
     std::fs::remove_dir_all(data_dir).unwrap();
 }

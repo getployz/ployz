@@ -690,6 +690,9 @@ impl LocalMachine {
             return Err(refused(MismatchField::VolumeStart));
         }
         if check {
+            // The Create after the promote admits the identity first, so a check refuses
+            // what it would.
+            self.admit_identity(namespace, resolved_spec).await?;
             let record = self.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             let storage = self.observe_storage().await;

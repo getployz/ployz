@@ -107,6 +107,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
     let ingress = crate::images::legacy_caddy_for_tests("caddy:test")
         .to_resolved(ServiceId::random(), Default::default())
         .unwrap();
+    // Outside ployz-system the Ingress Proxy's spec is a user Global, refused as one.
     let error = local
         .create_container(
             ContainerKind::ServiceContainer,
@@ -118,7 +119,10 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("accept"), "{error}");
+    assert!(
+        matches!(error, LocalMachineError::GlobalUnreserved),
+        "{error}"
+    );
     let error = local
         .create_container(
             ContainerKind::ServiceContainer,
