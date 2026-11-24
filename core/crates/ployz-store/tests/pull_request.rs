@@ -819,6 +819,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -997,6 +998,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     versions: Vec::new(),
                     copies: Vec::new(),
                     recreate: Vec::new(),
+                    rule: None,
                 }),
                 &Trusted::default(),
             )
@@ -1136,6 +1138,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2000,6 +2003,7 @@ fn two_first_reports_of_a_pull_request_take_turns() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )

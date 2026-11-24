@@ -100,6 +100,7 @@ fn admit(
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted::default(),
     )
@@ -4269,6 +4270,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -4375,6 +4377,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -4495,6 +4498,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         versions: Vec::new(),
                         copies: Vec::new(),
                         recreate: Vec::new(),
+                        rule: None,
                     }),
                     &Trusted::default(),
                 )
@@ -4585,6 +4589,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4718,6 +4723,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4764,6 +4770,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4850,6 +4857,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
     };
@@ -5372,6 +5380,7 @@ fn deploy_choosing(
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     };
     choose(&mut deploy);
     store.write_trusted(who, &Admit::Deploy(deploy), trusted)
@@ -5892,6 +5901,7 @@ fn agent_deploys_only(
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted {
             approval,
@@ -5940,6 +5950,7 @@ fn agent_deploys_upload(
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted {
             approval,
@@ -7290,6 +7301,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     versions: Vec::new(),
                     copies: Vec::new(),
                     recreate: Vec::new(),
+                    rule: None,
                 }),
                 &Trusted::default(),
             )
@@ -7366,6 +7378,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -7411,6 +7424,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     versions: Vec::new(),
                     copies: Vec::new(),
                     recreate: Vec::new(),
+                    rule: None,
                 }),
                 &Trusted::default(),
             )
@@ -8232,6 +8246,7 @@ fn a_deploy_plan_lowers_exactly_what_its_runner_is_handed() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -9165,6 +9180,7 @@ fn admit_with(
             versions,
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted::default(),
     )
@@ -9502,6 +9518,7 @@ fn admit_services(
             versions,
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted::default(),
     )
@@ -9568,6 +9585,7 @@ fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_un
                     versions: vec![version],
                     copies: Vec::new(),
                     recreate,
+                    rule: None,
                 }),
                 &Trusted::default(),
             )
@@ -9617,6 +9635,7 @@ fn a_retry_of_a_rotation_recreates_what_the_rotation_did() {
                     births: Default::default(),
                 }],
                 recreate: vec![web.clone()],
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -10688,6 +10707,7 @@ fn admit_copies(
             versions: Vec::new(),
             copies,
             recreate: Vec::new(),
+            rule: None,
         }),
         &Trusted::default(),
     )

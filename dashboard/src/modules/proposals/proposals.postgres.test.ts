@@ -28,7 +28,7 @@ import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
 import type { CliCall } from "#/modules/commands/cli-call.server";
 import { proposalsCliRoutes } from "#/modules/proposals/proposals.cli.server";
 import { operationProposals } from "#/modules/proposals/tables";
-import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId, SavedRule } from "@ployz/sdk";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -570,6 +570,22 @@ it.live("a member's Deploy to a Protected Environment that only the page can fin
     expect(yield* admitted(id)).toBe(0);
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
     expect(yield* admitted(id)).toBe(1);
+  }));
+
+// Catches a protected member's signed rule riding their proposal, so a protector's yes to the Deploy turns on every push.
+it.live("a member's CLI Deploy to a Protected Environment drops the automatic deploy rule it signed, and its approval keeps none", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, approve, admitted, protect, store } = yield* deployable();
+    yield* protect;
+    pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const ada = { ...(yield* provided(memberAgent)), via: "cli" } satisfies Caller;
+    const rule = asTestDouble<SavedRule>()({ rule: { body: "{}", signatures: [] }, births: {}, prior: null });
+    const id = linkedId(yield* cluster(linkDeploy(ada, { ...admitDeploy(production, ASKED), rule })));
+    expect(yield* cluster(filledBy(owner, id))).toMatchObject({ ok: true });
+    expect((yield* provided(deployStep(id))).command).not.toHaveProperty("rule");
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+    expect((yield* provided(deployStep(id))).command).not.toHaveProperty("rule");
   }));
 
 it.live("a member's dashboard Deploy to a Protected Environment needs no passkey of theirs, so it reaches the proposal", () =>

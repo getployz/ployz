@@ -7,12 +7,12 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { StoreRefused } from "#/lib/refusal";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
 import { SignedLines } from "./deploy-sheet";
 import { prepareSaveTapServerFn } from "./deploy-tap.functions";
 import { RuleSummaryList } from "./rule-summary";
-import { type Answered, type OwnerOf, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule } from "./save-tap";
+import { ownerLookup } from "./source-step";
+import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule } from "./save-tap";
 
 /** A Save that was not sent: refused before any prompt, or cancelled. Whoever said why already showed it. */
 class SaveNotSent extends Error {}
@@ -31,15 +31,7 @@ export function useSaveTap(organizationSlug: string) {
   const [busy, setBusy] = useState<"passkey" | "saving" | null>(null);
   const answered = useRef<Answered | null>(null);
 
-  const ownerOf: OwnerOf = async (repository, repositoryId) => {
-    try {
-      const owner = await queryClient.fetchQuery(githubRepositoryOwnerQueryOptions(organizationSlug, repository));
-      return owner.repositoryId === repositoryId ? { ownerId: owner.ownerId }
-        : { problem: `${repository} now names another repository. Connect your services to it again, then save.` };
-    } catch {
-      return { problem: `Couldn't read ${repository} on GitHub.` };
-    }
-  };
+  const ownerOf = ownerLookup(queryClient, organizationSlug);
 
   const steps: SaveSteps = {
     answered,
