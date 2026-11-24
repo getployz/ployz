@@ -49,7 +49,11 @@
 //!   (`ployz server forget`); a `ployz volume restore` from the one copy Cloud still
 //!   sees (`restoreVolume`) then promotes that copy. The forgotten Machine keeps
 //!   writing its copy when it comes back, until it departs (`forgotten_fence.rs`,
-//!   `volume_plugin/departure.rs`), which parks its root in a slot;
+//!   `volume_plugin/departure.rs`), which snapshots its root and parks it in a slot;
+//! - that Machine joining again with its parked copy, and a `volume mirror` onto it
+//!   (`mirrorVolume`'s round: snapshot the restored Writer, pull it). No Writer holds the
+//!   departure's snapshot, so the pull's incremental finds no base, and `pull_stream`
+//!   keeps a copy `written_here` rather than replace it with a full send;
 //! - a Deploy's lane at its real boundaries, sent to the Writer Cloud sees: Prepare
 //!   (`prepare_volumes`) takes the switch lock, reads the forgotten record, then in a
 //!   step of its own admits a plain mount (`admit_plain_mount`) from the copy and the
@@ -110,6 +114,8 @@ const SECOND_GEN: u8 = 4;
 const SECOND_EPOCH: u32 = 4;
 const RESTORE_GEN: u8 = 6;
 const RESTORE_EPOCH: u32 = 6;
+/// The `volume mirror` onto the old copy a Machine that joined again kept.
+const MIRROR_GEN: u8 = 7;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum Machine {
@@ -182,13 +188,18 @@ enum Cramped {
 }
 
 /// The first Move's warm round snapshot, which B already holds, and its cut's final
-/// `f-<epoch>`; the second Move's snapshot before its warm pull, and its cut's.
+/// `f-<epoch>`; the second Move's snapshot before its warm pull, and its cut's. In
+/// `Restore`, `Warm2` is the snapshot the mirror's round takes on the restored Writer.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Snap {
     Warm,
     Final,
     Warm2,
     Final2,
+    /// The `dep-<seconds>` snapshot a departure takes of a root it parks
+    /// (`freeze_root`): a point no other Machine holds, so no Writer can send a pull an
+    /// incremental from it.
+    Departure,
 }
 
 /// What a Machine holds of the Volume: `VolumeCopy` without the fields no step reads.
@@ -281,6 +292,7 @@ enum Lane {
     Drop,
     Restore,
     Deploy,
+    Mirror,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -476,6 +488,15 @@ enum RestoreStep {
     Over,
 }
 
+/// `mirrorVolume`'s one round (`runRounds`): snapshot the Writer, then pull it.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum MirrorStep {
+    Snapshot,
+    Pull,
+    Finish,
+    Over,
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum DeployStep {
     Prepare,
@@ -581,6 +602,17 @@ struct RestoreRun {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct MirrorRun {
+    row: Row,
+    driver: Driver<MirrorStep>,
+    writer: Machine,
+    epoch: u32,
+    to: Machine,
+    /// The slot `to` held when the run planned.
+    expect: Expect,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct DeployRun {
     row: Row,
     on: Machine,
@@ -598,6 +630,8 @@ enum Stage {
     Drop,
     /// The second Move, or the Restore, has run or holds the row.
     Second,
+    /// The `volume mirror` after the Restore has run or holds the row.
+    Mirror,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -633,6 +667,7 @@ struct State {
     moves: Vec<MoveRun>,
     drop: Option<DropRun>,
     restore: Option<RestoreRun>,
+    mirror: Option<MirrorRun>,
     deploy: Option<DeployRun>,
     stage: Stage,
     crashes: u8,
@@ -664,6 +699,8 @@ struct State {
     repair: Option<usize>,
     /// That Deploy's own Create started the Service on B.
     repaired: bool,
+    /// A pull destroyed a slot holding a departure's point, which no other Machine holds.
+    lost_written: bool,
 }
 
 /// The entry of a per-Machine array for `machine`.
@@ -845,6 +882,9 @@ impl State {
         if let Some(restore) = self.restore.as_mut() {
             held.push(&mut restore.driver.waiting);
         }
+        if let Some(mirror) = self.mirror.as_mut() {
+            held.push(&mut mirror.driver.waiting);
+        }
         if let Some(deploy) = self.deploy.as_mut() {
             held.push(&mut deploy.driver.waiting);
         }
@@ -956,6 +996,7 @@ impl State {
         moves
             && self.drop.is_none_or(|drop| !drop.row.running())
             && self.restore.is_none_or(|restore| !restore.row.running())
+            && self.mirror.is_none_or(|mirror| !mirror.row.running())
             && self.deploy.is_none_or(|deploy| !deploy.row.running())
     }
 
@@ -1030,6 +1071,9 @@ struct Broken {
     prepare_switch: bool,
     /// Create makes a fresh root on a Machine that forgot its copy.
     forgotten: bool,
+    /// A pull whose Writer can't send an incremental onto its slot replaces a copy a
+    /// departure parked with a full send (`pull_stream` without its `written_here`).
+    pull_replaces_written: bool,
     /// `planMove` plans a Move from a lone slot while no Machine holds a root.
     move_from_slots: bool,
 }
@@ -1051,7 +1095,8 @@ enum Scenario {
     /// C and its Release, and one Deploy at any moment the row is free.
     TwoMoves,
     /// On A, B and C: the first Move and its Release, a Machine away and forgotten, a
-    /// Restore from the copy left, and one Deploy at any moment the row is free.
+    /// Restore from the copy left, the forgotten Machine departing and joining again, a
+    /// `volume mirror` onto its parked copy, and one Deploy at any moment the row is free.
     Restore,
 }
 
@@ -1192,6 +1237,8 @@ enum Action {
     EndDrop,
     Restore,
     EndRestore,
+    /// The `volume mirror` run's next step.
+    Mirror,
     /// Cloud starts a Deploy while the row is free.
     StartDeploy,
     Deploy,
@@ -1203,6 +1250,8 @@ enum Action {
     Forget(Machine),
     /// A forgotten Machine learns it and leaves.
     Depart(Machine),
+    /// A departed Machine joins the Cluster again, its parked copy still in its slot.
+    Rejoin(Machine),
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -1213,6 +1262,7 @@ fn snapshot(snap: Snap) -> Snapshot {
         Snap::Final => ("f-2", 2),
         Snap::Warm2 => ("w-4-0", 3),
         Snap::Final2 => ("f-4", 4),
+        Snap::Departure => ("dep-1700000000", 5),
     };
     Snapshot {
         name: name.parse().expect("a valid snapshot name"),
@@ -1798,15 +1848,23 @@ impl VolumeRuns {
                 }
                 // The pull lands in one step when the source answers and holds the target.
                 let source = state.host(from);
-                if source.here() && source.copy.newest() == Some(target) {
-                    let copy = Held::Slot {
-                        newest: Some(target),
-                    };
-                    state.host_mut(to).copy = copy;
-                    state.reply(index, Reply::Copy(copy));
-                } else {
-                    state.reply(index, Reply::PullFailed);
+                if !source.here() || source.copy.newest() != Some(target) {
+                    return state.reply(index, Reply::PullFailed);
                 }
+                // `pull_stream`: no Writer holds a departure's snapshot, so the incremental
+                // from it finds no base, and the full send would replace the slot's copy.
+                // `written_here` keeps it: the pull fails.
+                if host.copy.newest() == Some(Snap::Departure) {
+                    if !self.broken.pull_replaces_written {
+                        return state.reply(index, Reply::PullFailed);
+                    }
+                    state.lost_written = true;
+                }
+                let copy = Held::Slot {
+                    newest: Some(target),
+                };
+                state.host_mut(to).copy = copy;
+                state.reply(index, Reply::Copy(copy));
             }
             (transition, want) => unreachable!("the planner paired {transition:?} with {want:?}"),
         }
@@ -2713,6 +2771,78 @@ impl VolumeRuns {
         }
     }
 
+    /// `mirrorVolume`: one round, a snapshot of the Writer and a pull of it onto `to`.
+    fn mirror_step(state: &mut State) {
+        let Some(mirror) = state.mirror else {
+            return;
+        };
+        let end = |state: &mut State, row: Row| {
+            if let Some(mirror) = state.mirror.as_mut() {
+                if mirror.row.running() {
+                    mirror.row = row;
+                }
+                mirror.driver.step = MirrorStep::Over;
+                mirror.driver.waiting = None;
+            }
+        };
+        if !mirror.row.running() {
+            return end(state, Row::Failed);
+        }
+        let reply = state.replied(mirror.driver.waiting);
+        if let Some(index) = mirror.driver.waiting
+            && reply.is_none()
+        {
+            if stalled(state, index) {
+                end(state, Row::Failed);
+            } else if let Some(mirror) = state.mirror.as_mut() {
+                mirror.driver.waiting = None;
+            }
+            return;
+        }
+        let next = |state: &mut State, step: MirrorStep| {
+            if let Some(mirror) = state.mirror.as_mut() {
+                mirror.driver.step = step;
+                mirror.driver.waiting = None;
+            }
+        };
+        match (mirror.driver.step, reply) {
+            (MirrorStep::Snapshot, None) => {
+                let sent = state.send(
+                    Lane::Mirror,
+                    MIRROR_GEN,
+                    mirror.writer,
+                    Expect::Writer {
+                        epoch: mirror.epoch,
+                    },
+                    Want::Snapshot { at: Snap::Warm2 },
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Snapshot, Some(Reply::Copy(_))) => next(state, MirrorStep::Pull),
+            (MirrorStep::Pull, None) => {
+                let sent = state.send(
+                    Lane::Mirror,
+                    MIRROR_GEN,
+                    mirror.to,
+                    mirror.expect,
+                    Want::Mirror {
+                        from: Some(mirror.writer),
+                        target: Snap::Warm2,
+                    },
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Pull, Some(Reply::Copy(_))) => next(state, MirrorStep::Finish),
+            (MirrorStep::Snapshot | MirrorStep::Pull, Some(_)) => end(state, Row::Failed),
+            (MirrorStep::Finish, _) => end(state, Row::Done),
+            (MirrorStep::Over, _) => {}
+        }
+    }
+
     fn deploy_driver(state: &mut State) {
         let Some(deploy) = state.deploy else {
             return;
@@ -2919,6 +3049,30 @@ impl VolumeRuns {
                 });
                 next.stage = Stage::Second;
             }
+            // `planCopies`' mirror: the one Writer, and no slot but on the Machine it
+            // mirrors to, so a Machine that joined again with its old copy takes the pull.
+            (Scenario::Restore, Stage::Second) => {
+                let ([writer], [to]) = (roots.as_slice(), slots.as_slice()) else {
+                    return None;
+                };
+                let Held::Root {
+                    readonly: false,
+                    epoch,
+                    ..
+                } = state.host(*writer).copy
+                else {
+                    return None;
+                };
+                next.mirror = Some(MirrorRun {
+                    row: Row::Warm,
+                    driver: Driver::new(MirrorStep::Snapshot, 0),
+                    writer: *writer,
+                    epoch,
+                    to: *to,
+                    expect: expect_of(state.host(*to).copy),
+                });
+                next.stage = Stage::Mirror;
+            }
             _ => return None,
         }
         Some(next)
@@ -3090,6 +3244,7 @@ impl VolumeRuns {
             }],
             drop: None,
             restore: None,
+            mirror: None,
             deploy: None,
             stage: Stage::First,
             crashes: 0,
@@ -3106,6 +3261,7 @@ impl VolumeRuns {
             repair: None,
             repaired: false,
             unapproved_start: false,
+            lost_written: false,
         };
         if three {
             // No resize on three Machines: the size never changes. A Deploy may come before
@@ -3236,6 +3392,12 @@ impl Model for VolumeRuns {
                 actions.push(Action::EndRestore);
             }
         }
+        if let Some(mirror) = state.mirror
+            && mirror.driver.step != MirrorStep::Over
+            && (!mirror.row.running() || retries(state, mirror.driver))
+        {
+            actions.push(Action::Mirror);
+        }
         if let Some(deploy) = state.deploy
             && deploy.driver.step != DeployStep::Over
         {
@@ -3267,6 +3429,20 @@ impl Model for VolumeRuns {
                     if host.member && self.scenario == Scenario::Restore {
                         actions.push(Action::Forget(machine));
                     }
+                }
+                // Only once the Restore is over and nothing sent to it is in flight: a
+                // late step reaching a Machine that departed and joined again is out of
+                // scope, as the model's departure keeps a pulled slot the real one
+                // destroys.
+                Presence::Departed
+                    if self.scenario == Scenario::Restore
+                        && state.stage == Stage::Second
+                        && state.row_free()
+                        && !state.requests.iter().any(|request| {
+                            request.to == machine && state_in_flight(request.progress)
+                        }) =>
+                {
+                    actions.push(Action::Rejoin(machine));
                 }
                 Presence::Here | Presence::Departed => {}
             }
@@ -3345,6 +3521,7 @@ impl Model for VolumeRuns {
                     restore.row = Row::Failed;
                 }
             }
+            Action::Mirror => Self::mirror_step(&mut state),
             Action::StartDeploy => state = Self::start_deploy(&state)?,
             Action::Deploy => Self::deploy_driver(&mut state),
             Action::DeployResend => {
@@ -3366,16 +3543,24 @@ impl Model for VolumeRuns {
             }
             Action::Back(machine) => state.host_mut(machine).presence = Presence::Here,
             Action::Forget(machine) => state.host_mut(machine).member = false,
-            // `departure.rs` seals every root into a slot; the Machine leaves the Cluster.
+            // `departure.rs` snapshots every root and seals it into a slot; the Machine
+            // leaves the Cluster.
             Action::Depart(machine) => {
                 let host = state.host_mut(machine);
-                if let Held::Root { newest, .. } = host.copy {
-                    host.copy = Held::Slot { newest };
+                if let Held::Root { .. } = host.copy {
+                    host.copy = Held::Slot {
+                        newest: Some(Snap::Departure),
+                    };
                 }
                 host.holder = Holder::Absent;
                 host.presence = Presence::Departed;
                 host.switch = None;
                 host.turn = None;
+            }
+            Action::Rejoin(machine) => {
+                let host = state.host_mut(machine);
+                host.presence = Presence::Here;
+                host.member = true;
             }
         }
         if self.scenario.three() {
@@ -3406,6 +3591,7 @@ impl Model for VolumeRuns {
                 !state.unapproved_start
             }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
+            Property::always(KEEPS_WRITTEN, |_, state: &State| !state.lost_written),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
                 state.resize.row != Row::Done || state.recorded()
             }),
@@ -3462,6 +3648,9 @@ fn all_over(model: &VolumeRuns, state: &State) -> bool {
         && state
             .restore
             .is_none_or(|restore| restore.driver.step == RestoreStep::Over)
+        && state
+            .mirror
+            .is_none_or(|mirror| mirror.driver.step == MirrorStep::Over)
         && state
             .deploy
             .is_none_or(|deploy| deploy.driver.step == DeployStep::Over)
@@ -3839,6 +4028,17 @@ fn restore_ends() -> Vec<Property<VolumeRuns>> {
                     })
             },
         ),
+        Property::sometimes(
+            "a mirror onto the old copy a departed Machine brought back fails and keeps it",
+            |_, state: &State| {
+                state.mirror.is_some_and(|mirror| {
+                    mirror.row == Row::Failed
+                        && mirror.driver.step == MirrorStep::Over
+                        && state.host(mirror.to).copy.newest() == Some(Snap::Departure)
+                        && state.host(mirror.writer).copy.newest() == Some(Snap::Warm2)
+                })
+            },
+        ),
     ]
 }
 
@@ -3851,6 +4051,7 @@ const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still send
 const ENFORCED_STARTS_NOTHING: &str =
     "a Machine creates no Container an Operator's Writer start names";
 const STORE_FITS: &str = "the Store's size fits every copy";
+const KEEPS_WRITTEN: &str = "a pull never destroys a point only its Machine holds";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
 const REFUSED_RECORDS_NOTHING: &str =
     "a resize refused before any copy changed ends recording nothing";
@@ -4283,6 +4484,22 @@ mod tests {
     /// The old Writer Cloud forgot while it was away comes back writable beside the copy
     /// a Restore promoted, until it departs: bet 6's accepted window, and the only copy
     /// `never two Writers` leaves out.
+    #[test]
+    fn a_pull_keeps_a_departed_copy_its_writer_cannot_send_onto() {
+        let checker = discoveries(
+            VolumeRuns {
+                broken: Broken {
+                    pull_replaces_written: true,
+                    ..Broken::default()
+                },
+                ..three(Scenario::Restore)
+            },
+            &[KEEPS_WRITTEN],
+        );
+        let path = checker.assert_any_discovery(KEEPS_WRITTEN);
+        println!("{KEEPS_WRITTEN} breaks with a full send over a departed copy:\n{path}");
+    }
+
     #[test]
     fn a_restored_copy_and_the_returning_old_one_are_the_accepted_window() {
         let checker = discoveries(
