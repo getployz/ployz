@@ -3,30 +3,37 @@
 //! request can arrive late. A takes each under the switch lock in two steps
 //! (`LocalMachine::seed_copy`, machine/local_machine/volume_copy.rs): it takes the step in
 //! its approvals record (`ConsumptionLog::take_copy`, consumption.rs), which admits a step
-//! not taken yet only while its window holds, then calls the plugin. The call can end
-//! before the plugin does anything: the socket refuses it, the daemon restarts before it
-//! sends, the plugin's mutation refuses or times out, or a read under it fails. Otherwise
-//! the plugin's bound seed runs in one step under `admit_mutation` (`VolumeStorage::
-//! seed_volume` with a `CopyBinding`, seed.rs). It reads the window on its own clock
-//! there, reserves the step in a file of its own before it makes a slot, and makes the slot
-//! carrying the step and recording the birth. A receive runs outside both locks. The daemon
-//! can restart between any two steps, which kills the receive and loses the request in
-//! hand, but keeps the record, the reservation and the datasets. The step's window closes
-//! once. The user can delete `into`, and another approval can then make a Volume of the
-//! same name, which carries another origin, or leave an empty slot parent of it, as an
-//! interrupted mirror pull does.
+//! not taken yet only while its window holds and tells the plugin whether the window was
+//! open (`StartWindow`), then calls the plugin. The call can end before the plugin does
+//! anything: the socket refuses it, the daemon restarts before it sends, or the plugin's
+//! mutation refuses. Otherwise the plugin's bound seed runs under `admit_mutation`
+//! (`VolumeStorage::seed_volume` with a `CopyBinding`, seed.rs): its reads, then for a new
+//! copy the slot ZFS makes carrying the step and recording the birth (`create_marked_slot`)
+//! and the receive's spawn, or for a copy a restart killed the clear of the old receive
+//! inside the slot it keeps (`Stale::restart`) and the spawn. Each of those effects reads
+//! the window right before it, and any of them can fail or be the last before a restart.
+//! A receive runs outside both locks. The user deletes `into` under the same mutation:
+//! every destroy of a dataset carrying the step leaves the step's tombstone first
+//! (`VolumeStorage::bury`, run by `VolumeStorage::zfs`), and a restart can come between.
+//! The daemon and the plugin can restart between any two steps, which kills the receive
+//! and loses the request in hand, but keeps the record, the tombstones and the datasets.
+//! The step's window closes once, and the plugin's wall clock may step back once after.
+//! Another approval can then make a Volume of the same name, which carries another origin,
+//! or leave an empty slot parent of it, as an interrupted mirror pull does.
 //!
-//! The properties: once a copy began and `into` was deleted, no copy makes it again; a
+//! The properties: once `into` was deleted carrying the birth, no copy makes it again; a
 //! copy never answers, lands on or destroys a copy of `into` it did not make; every root
 //! the copy answers carries the step's birth; a copy starts, or starts over, only inside
-//! the step's window; and a copy is refused as deleted only after one began under its
-//! step, so a call that ended before the plugin acted never costs the approval.
+//! the step's window on the plugin's clock; a call the daemon found past the window starts
+//! nothing; and a copy is refused as deleted only after `into` was deleted, so no call that
+//! ended or failed partway costs the approval.
 //!
 //! Out of scope: a receive that fails (its answer is the same `Failed` arm the unbound seed
-//! has), a failure between the zfs calls of one handler and between the reservation and
-//! the slot (it refuses a resend as deleted, which asks for a new approval and makes
-//! nothing), Docker adopting the root, the later runs `volume_marks` models, and the
-//! bundle's signature, which ployz-core's `authority::copy` tests cover.
+//! has), the zfs calls inside a landing (the `volume_marks` model checks their order), a
+//! wall clock that steps back while a call the daemon found open waits for the plugin
+//! (a monotonic clock both processes share would bound it; nothing here needs one), Docker
+//! adopting the root, the later runs `volume_marks` models, and the bundle's signature,
+//! which ployz-core's `authority::copy` tests cover.
 
 use std::fmt::Write as _;
 
@@ -63,7 +70,8 @@ enum Into {
         record: Option<Origin>,
         fs: Option<Fill>,
     },
-    /// A root, with the origin it carries (`ployz:origin`).
+    /// A root, with the origin it carries (`ployz:origin`). Only the step's landing makes
+    /// one carrying the birth, and that root carries the step too.
     Root(Origin),
 }
 
@@ -77,6 +85,14 @@ impl Into {
                     record: Some(Origin::Birth),
                     ..
                 }
+        )
+    }
+
+    /// A dataset of `into` carries the step's digest, so destroying it buries the step.
+    fn carries_step(self) -> bool {
+        matches!(
+            self,
+            Self::Root(Origin::Birth) | Self::Slot { ours: true, .. }
         )
     }
 
@@ -95,15 +111,31 @@ impl Into {
     };
 }
 
-/// The one request A holds under the switch lock, once taken.
+/// The effect a plugin call, its reads done, makes next. It reads the window right before.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Stage {
+    /// ZFS makes the slot carrying the step and recording the birth, in one create.
+    Make,
+    /// `Stale::restart` destroys the old receive's `fs`, keeping the parent.
+    Clear,
+    /// The receive starts into `fs`.
+    Spawn,
+}
+
+/// The one request A holds, once taken. `open` is the daemon's verdict on the window when
+/// it took the request, which the plugin hears as `StartWindow`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Held {
     Idle,
-    /// Taken. `open` is the window when A took it, and `began` what the daemon's own
-    /// record said then (read only under `Broken::reserves_in_daemon`).
     Took {
         open: bool,
-        began: bool,
+    },
+    /// Inside the plugin's call, under its mutation, before `at`. `new` for a copy into an
+    /// absent `into`, as against one started over.
+    Plugin {
+        open: bool,
+        at: Stage,
+        new: bool,
     },
 }
 
@@ -117,15 +149,16 @@ enum Path {
     AnswersRoot,
     /// A receive still running into the step's slot: `Copying`.
     Copying,
-    /// The step's complete slot: `Copied::land` stamps the record and renames it.
+    /// The step's complete slot: `Copied::land` stamps the record and renames it, and the
+    /// landing's destroy of the parent buries the step.
     Lands,
-    /// The step's slot holding no complete point: `Stale`, cleared and copied again.
+    /// The step's slot holding no complete point: `Stale`, its receive started over in it.
     StartsOver,
-    /// No `into` and no reservation: reserved, then a new slot and receive (`copy_point`).
+    /// No `into` and no tombstone: a new slot and receive.
     Starts,
-    /// No `into` and the step reserved: refused as deleted.
+    /// No `into` and the step's tombstone: refused as deleted.
     Deleted,
-    /// `Stale` or `Absent` with the window closed: `CopyBinding::may_start` refuses it.
+    /// `CopyBinding::may_start` refused: the window closed, or the daemon found it closed.
     Expired,
 }
 
@@ -135,19 +168,26 @@ enum Action {
     Send,
     /// A takes a request under the switch lock: verify, `take_copy`.
     Take,
-    /// The call ends before the plugin acts: refused, lost to a restart before it was sent,
-    /// or refused under the plugin's mutation before any effect.
+    /// The call ends with no further effect: refused before the plugin acts, lost to a
+    /// restart before it was sent, or a zfs call of the plugin's fails.
     Outage,
-    /// The plugin's bound seed, one step under `admit_mutation`.
+    /// The plugin's reads under `admit_mutation`, and the branch they choose.
     Plugin,
+    /// The plugin's next effect in the call, after the window read before it.
+    Advance,
     /// The receive task exits 0.
     Received,
-    /// The daemon restarts.
+    /// The daemon and the plugin restart.
     Restart,
     /// The step's window closes.
     WindowCloses,
-    /// The user deletes `into` (Volume.Remove, under `admit_mutation`).
+    /// The plugin's wall clock steps back across the window's end.
+    ClockBack,
+    /// The user deletes `into` (Volume.Remove or a forget, under `admit_mutation`): the
+    /// tombstone of a step it carries goes first.
     Delete,
+    /// The destroy that deletes `into`.
+    Destroyed,
     /// Another approval makes a Volume named `into`, which carries another origin.
     Reuse,
     /// An interrupted mirror pull of another Volume named `into` leaves an empty slot parent.
@@ -182,33 +222,43 @@ const MAX_SENDS: u8 = 3;
     reason = "each flag is one fact a property or coverage row reads"
 )]
 struct State {
+    /// The window on the daemon's clock, which only moves forward.
     open: bool,
+    /// The window on the plugin's wall clock.
+    plugin_open: bool,
+    clock_back: bool,
     /// The step is in `restart-approvals.json`.
     taken: bool,
-    /// The daemon's own record that a copy began (`Broken::reserves_in_daemon` only).
-    began: bool,
-    /// The plugin's reservation of the step.
-    reserved: bool,
+    /// The plugin's tombstone of the step, or under `Broken::reserves_at_begin` its
+    /// reservation.
+    tombstone: bool,
     into: Into,
     receiving: bool,
     held: Held,
+    /// A delete wrote its tombstone and has not destroyed `into` yet.
+    deleting: bool,
     on_wire: u8,
     sends: u8,
     restarted: bool,
-    /// A call ended before the plugin acted.
     outage: bool,
     reused: bool,
     /// A slot was made under the step.
     made: bool,
-    /// `into` was deleted while it carried the birth, so a copy had begun.
+    /// `into` was deleted while it carried the birth.
     deleted: bool,
+    /// A restart came between a delete's tombstone and its destroy.
+    delete_cut: bool,
+    /// The effect a call was cut before, by an outage or a restart.
+    cut: Option<Stage>,
     /// A step destroyed or landed on a copy of `into` it did not make.
     harmed_other: bool,
     /// The origin of the last root the plugin answered.
     answered: Option<Origin>,
-    /// A copy started, or started over, with the window closed.
+    /// A copy started, or started over, with the window closed on the plugin's clock.
     started_late: bool,
-    /// A copy was refused as deleted though none began under its step.
+    /// A copy started, or started over, in a call the daemon found past the window.
+    started_closed: bool,
+    /// A copy was refused as deleted though `into` was never deleted.
     falsely_deleted: bool,
     /// A restart came between the receive finishing and the landing.
     restarted_after_receipt: bool,
@@ -223,12 +273,14 @@ struct State {
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// The daemon records that a copy began before it calls the plugin, and the plugin's
-    /// `Absent` arm reads that record, as the first cut of this code did: a call that ends
-    /// before the plugin acts leaves it set.
-    reserves_in_daemon: bool,
-    /// The plugin's `Absent` arm ignores the reservation.
-    forgets_began: bool,
+    /// No destroy leaves a tombstone, so the `Absent` arm never knows `into` was deleted.
+    no_tombstone: bool,
+    /// The plugin reserves the step before it makes the slot and refuses an absent `into`
+    /// whose step is reserved, as the cut before this one did.
+    reserves_at_begin: bool,
+    /// `Stale` destroys the step's whole slot, burying the step, and makes it again, as
+    /// the first cuts did.
+    destroys_parent_on_restart: bool,
     /// A slot is the step's when its record is the birth or it records nothing and holds
     /// no `fs`, whatever step its parent carries.
     ignores_step: bool,
@@ -237,8 +289,14 @@ struct Broken {
     /// `take_copy` takes a new step, and `may_start` starts a copy, whatever the window.
     ignores_window: bool,
     /// The plugin starts a copy under the window as the daemon read it when it took the
-    /// request, not as it stands under the mutation.
+    /// request, not as its clock reads under the mutation.
     window_at_take: bool,
+    /// The plugin reads the window once, before its reads and preparation, not right
+    /// before each effect that starts a copy.
+    window_before_reads: bool,
+    /// The plugin reads only its own clock, not the daemon's verdict that the window
+    /// closed.
+    ignores_verdict: bool,
     /// `Copied::land` stamps the point's own origin, not the slot's record.
     lands_point_origin: bool,
 }
@@ -259,19 +317,21 @@ struct CopyStep {
 }
 
 fn took(state: &State, path: Path) -> bool {
-    state.last == Some(Action::Plugin) && state.path == Some(path)
+    matches!(state.last, Some(Action::Plugin | Action::Advance)) && state.path == Some(path)
 }
 
 fn fresh(model: &CopyStep) -> bool {
     model.scenario == Scenario::Fresh
 }
 
-const NEVER_REMADE: &str = "once a copy began and into was deleted, no copy makes it again";
+const NEVER_REMADE: &str = "once into was deleted carrying the birth, no copy makes it again";
 const KEEPS_OTHER: &str =
     "a copy never answers, lands on or destroys a copy of into it did not make";
 const ANSWERS_BIRTH: &str = "every root the copy answers carries the step's birth";
-const STARTS_IN_WINDOW: &str = "a copy starts, or starts over, only inside the step's window";
-const DELETED_ONLY_AFTER_BEGAN: &str = "a copy is refused as deleted only after one began";
+const STARTS_IN_WINDOW: &str =
+    "a copy starts, or starts over, only inside the step's window on the plugin's clock";
+const CLOSED_STAYS_CLOSED: &str = "a call the daemon found past the window starts nothing";
+const DELETED_ONLY_AFTER_DELETE: &str = "a copy is refused as deleted only after into was deleted";
 
 /// Each branch the bounds reach, once. `every_copy_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
@@ -286,7 +346,13 @@ const COVERAGE: &[Coverage] = &[
         name: "a resend after a call that ended before the plugin begins the copy",
         on: fresh,
         omit: Some(Omit::Actions(&[Action::Outage])),
-        reached: |_, state| took(state, Path::Starts) && state.outage,
+        reached: |_, state| took(state, Path::Starts) && state.outage && state.cut.is_none(),
+    },
+    Coverage {
+        name: "a resend after a call cut before its slot was made begins the copy",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Outage, Action::Restart])),
+        reached: |_, state| took(state, Path::Starts) && state.cut == Some(Stage::Make),
     },
     Coverage {
         name: "a copy lands carrying the birth",
@@ -319,16 +385,38 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Path::AnswersRoot),
     },
     Coverage {
-        name: "a copy killed by a restart starts over inside the window",
+        name: "a copy killed by a restart starts over in its own slot inside the window",
         on: fresh,
         omit: Some(Omit::Path(Path::StartsOver)),
         reached: |_, state| took(state, Path::StartsOver),
     },
     Coverage {
-        name: "a late resend refuses into deleted after its copy began",
+        name: "a copy cut after its slot was made, or while it starts over, starts over in its slot",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Outage, Action::Restart])),
+        reached: |_, state| {
+            took(state, Path::StartsOver) && matches!(state.cut, Some(Stage::Clear | Stage::Spawn))
+        },
+    },
+    Coverage {
+        name: "a late resend refuses into deleted",
         on: fresh,
         omit: Some(Omit::Path(Path::Deleted)),
         reached: |_, state| took(state, Path::Deleted) && state.deleted,
+    },
+    Coverage {
+        name: "a late resend after a restart refuses into deleted",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Restart])),
+        reached: |_, state| took(state, Path::Deleted) && state.restarted,
+    },
+    Coverage {
+        name: "a delete a restart cut leaves the copy, which a resend answers",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Restart])),
+        reached: |_, state| {
+            state.delete_cut && (took(state, Path::AnswersRoot) || took(state, Path::Copying))
+        },
     },
     Coverage {
         name: "a copy refuses a copy of into it did not make",
@@ -348,26 +436,48 @@ const COVERAGE: &[Coverage] = &[
         name: "a copy that never began is refused after the window",
         on: fresh,
         omit: Some(Omit::Path(Path::Expired)),
-        reached: |_, state| took(state, Path::Expired),
+        reached: |_, state| took(state, Path::Expired) && state.last == Some(Action::Plugin),
+    },
+    Coverage {
+        name: "a window that closes between a copy's reads and its next effect starts nothing",
+        on: fresh,
+        omit: Some(Omit::Path(Path::Expired)),
+        reached: |_, state| took(state, Path::Expired) && state.last == Some(Action::Advance),
+    },
+    Coverage {
+        name: "a call the daemon found closed refuses to start over though the clock stepped back",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::ClockBack])),
+        reached: |_, state| took(state, Path::Expired) && state.plugin_open,
     },
 ];
 
 impl CopyStep {
-    /// `seed_volume` under a `CopyBinding` (seed.rs): `seed_progress`'s bound reads, then
-    /// the arm it matched. Returns whether it refused before any effect.
-    fn plugin(&self, state: &mut State, (open_at_take, began_at_take): (bool, bool)) -> bool {
-        let checks_origin = !self.broken.ignores_origin;
-        let window = if self.broken.window_at_take {
-            open_at_take
+    /// `CopyBinding::may_start` read right before an effect, or with `!boundary` at the
+    /// top of the `Stale` and `Absent` arms.
+    fn may_start(&self, state: &State, open: bool, boundary: bool) -> bool {
+        if self.broken.ignores_window || (boundary && self.broken.window_before_reads) {
+            return true;
+        }
+        let verdict = open || self.broken.ignores_verdict;
+        let clock = if self.broken.window_at_take {
+            open
         } else {
-            state.open
-        } || self.broken.ignores_window;
-        let (path, refused) = match state.into {
-            Into::Root(origin) if checks_origin && origin != Origin::Birth => (Path::Taken, true),
+            state.plugin_open
+        };
+        verdict && clock
+    }
+
+    /// `seed_volume` under a `CopyBinding` (seed.rs): `seed_progress`'s bound reads, then
+    /// the arm it matched, up to its first effect that starts a copy.
+    fn plugin(&self, state: &mut State, open: bool) {
+        let checks_origin = !self.broken.ignores_origin;
+        let next = match state.into {
+            Into::Root(origin) if checks_origin && origin != Origin::Birth => Err(Path::Taken),
             Into::Root(origin) => {
                 state.harmed_other |= origin == Origin::Other;
                 state.answered = Some(origin);
-                (Path::AnswersRoot, false)
+                Err(Path::AnswersRoot)
             }
             Into::Slot { ours, record, fs } => {
                 let mine = if self.broken.ignores_step {
@@ -377,9 +487,9 @@ impl CopyStep {
                     ours && record == Some(Origin::Birth)
                 };
                 if checks_origin && !mine {
-                    (Path::Taken, true)
+                    Err(Path::Taken)
                 } else if state.receiving {
-                    (Path::Copying, false)
+                    Err(Path::Copying)
                 } else if fs == Some(Fill::Point) {
                     let stamped = if self.broken.lands_point_origin {
                         Origin::Source
@@ -387,50 +497,113 @@ impl CopyStep {
                         record.unwrap_or(Origin::Source)
                     };
                     state.harmed_other |= !ours;
+                    // The landing destroys the parent, which carries the step.
+                    state.tombstone |= ours && !self.broken.no_tombstone;
                     state.into = Into::Root(stamped);
                     state.answered = Some(stamped);
-                    (Path::Lands, false)
-                } else if !window {
-                    (Path::Expired, true)
+                    Err(Path::Lands)
+                } else if !self.may_start(state, open, false) {
+                    Err(Path::Expired)
                 } else {
                     state.harmed_other |= !ours;
-                    self.start(state);
-                    (Path::StartsOver, false)
+                    Ok(Held::Plugin {
+                        open,
+                        at: if fs.is_some() {
+                            Stage::Clear
+                        } else {
+                            Stage::Spawn
+                        },
+                        new: false,
+                    })
                 }
             }
             Into::Absent => {
-                let began = if self.broken.reserves_in_daemon {
-                    began_at_take
+                if state.tombstone && !self.broken.no_tombstone {
+                    state.falsely_deleted |= !state.deleted;
+                    Err(Path::Deleted)
+                } else if !self.may_start(state, open, false) {
+                    Err(Path::Expired)
                 } else {
-                    state.reserved
-                };
-                if began && !self.broken.forgets_began {
-                    state.falsely_deleted |= !state.made;
-                    (Path::Deleted, true)
-                } else if !window {
-                    (Path::Expired, true)
-                } else {
-                    state.reserved = true;
-                    self.start(state);
-                    (Path::Starts, false)
+                    state.tombstone |= self.broken.reserves_at_begin;
+                    Ok(Held::Plugin {
+                        open,
+                        at: Stage::Make,
+                        new: true,
+                    })
                 }
             }
         };
-        state.path = Some(path);
-        refused
+        match next {
+            Ok(held) => state.held = held,
+            Err(path) => {
+                state.path = Some(path);
+                state.held = Held::Idle;
+            }
+        }
     }
 
-    /// `copy_point`: a slot whose parent carries the step and records the birth, and a
-    /// receive into its `fs`.
-    fn start(&self, state: &mut State) {
-        state.started_late |= !state.open;
-        state.made = true;
-        state.into = Into::Slot {
-            ours: true,
-            record: Some(Origin::Birth),
-            fs: Some(Fill::Partial),
+    /// The plugin call's next effect, `at`, after the window read right before it.
+    fn advance(&self, state: &mut State, (open, at, new): (bool, Stage, bool)) {
+        if !self.may_start(state, open, true) {
+            state.path = Some(Path::Expired);
+            state.held = Held::Idle;
+            return;
+        }
+        let next = match at {
+            Stage::Make => {
+                state.made = true;
+                state.into = Into::Slot {
+                    ours: true,
+                    record: Some(Origin::Birth),
+                    fs: None,
+                };
+                Stage::Spawn
+            }
+            Stage::Clear if self.broken.destroys_parent_on_restart => {
+                // `destroy -r` of the parent buries the step, then the arm makes it again.
+                state.tombstone |= !self.broken.no_tombstone;
+                state.into = Into::Absent;
+                Stage::Make
+            }
+            Stage::Clear => {
+                if let Into::Slot { ours, record, .. } = state.into {
+                    state.into = Into::Slot {
+                        ours,
+                        record,
+                        fs: None,
+                    };
+                }
+                Stage::Spawn
+            }
+            Stage::Spawn => {
+                state.started_late |= !state.plugin_open;
+                state.started_closed |= !open;
+                if let Into::Slot { ours, record, .. } = state.into {
+                    state.into = Into::Slot {
+                        ours,
+                        record,
+                        fs: Some(Fill::Partial),
+                    };
+                }
+                state.receiving = true;
+                state.path = Some(if new { Path::Starts } else { Path::StartsOver });
+                state.held = Held::Idle;
+                return;
+            }
         };
-        state.receiving = true;
+        state.held = Held::Plugin {
+            open,
+            at: next,
+            new,
+        };
+    }
+
+    /// The call in hand ends, cut before the effect it was at, if any.
+    fn cut(state: &mut State) {
+        if let Held::Plugin { at, .. } = state.held {
+            state.cut = Some(at);
+        }
+        state.held = Held::Idle;
     }
 
     fn step(&self, state: &mut State, action: Action) {
@@ -446,29 +619,21 @@ impl CopyStep {
                     return;
                 }
                 state.taken = true;
-                let began = state.began;
-                if self.broken.reserves_in_daemon {
-                    state.began = true;
-                }
-                state.held = Held::Took {
-                    open: state.open,
-                    began,
-                };
+                state.held = Held::Took { open: state.open };
             }
             Action::Outage => {
                 state.outage = true;
-                state.held = Held::Idle;
+                Self::cut(state);
             }
             Action::Plugin => {
-                let Held::Took { open, began } = state.held else {
-                    return;
-                };
-                let refused = self.plugin(state, (open, began));
-                // The first cut took its record back only on a refusal the plugin gave.
-                if self.broken.reserves_in_daemon && refused && !began {
-                    state.began = false;
+                if let Held::Took { open } = state.held {
+                    self.plugin(state, open);
                 }
-                state.held = Held::Idle;
+            }
+            Action::Advance => {
+                if let Held::Plugin { open, at, new } = state.held {
+                    self.advance(state, (open, at, new));
+                }
             }
             Action::Received => {
                 state.receiving = false;
@@ -482,8 +647,10 @@ impl CopyStep {
             }
             Action::Restart => {
                 state.restarted = true;
-                state.held = Held::Idle;
+                Self::cut(state);
                 state.receiving = false;
+                state.delete_cut |= state.deleting;
+                state.deleting = false;
                 state.restarted_after_receipt |= matches!(
                     state.into,
                     Into::Slot {
@@ -492,10 +659,22 @@ impl CopyStep {
                     }
                 );
             }
-            Action::WindowCloses => state.open = false,
+            Action::WindowCloses => {
+                state.open = false;
+                state.plugin_open = false;
+            }
+            Action::ClockBack => {
+                state.plugin_open = true;
+                state.clock_back = true;
+            }
             Action::Delete => {
+                state.tombstone |= state.into.carries_step() && !self.broken.no_tombstone;
+                state.deleting = true;
+            }
+            Action::Destroyed => {
                 state.deleted |= state.into.carries_birth();
                 state.into = Into::Absent;
+                state.deleting = false;
             }
             Action::Reuse => {
                 state.reused = true;
@@ -534,12 +713,14 @@ impl Model for CopyStep {
         };
         vec![State {
             open: true,
+            plugin_open: true,
+            clock_back: false,
             taken: false,
-            began: false,
-            reserved: false,
+            tombstone: false,
             into,
             receiving: false,
             held: Held::Idle,
+            deleting: false,
             on_wire: 0,
             sends: 0,
             restarted: false,
@@ -547,9 +728,12 @@ impl Model for CopyStep {
             reused: false,
             made: false,
             deleted: false,
+            delete_cut: false,
+            cut: None,
             harmed_other: false,
             answered: None,
             started_late: false,
+            started_closed: false,
             falsely_deleted: false,
             restarted_after_receipt: false,
             path: None,
@@ -561,15 +745,17 @@ impl Model for CopyStep {
         if state.sends < MAX_SENDS {
             actions.push(Action::Send);
         }
+        let in_plugin = matches!(state.held, Held::Plugin { .. });
         match state.held {
             Held::Idle if state.on_wire > 0 => actions.push(Action::Take),
             Held::Idle => {}
-            Held::Took { .. } => {
-                actions.push(Action::Plugin);
-                if !state.outage {
-                    actions.push(Action::Outage);
-                }
-            }
+            // The plugin's call waits for the mutation a delete holds.
+            Held::Took { .. } if !state.deleting => actions.push(Action::Plugin),
+            Held::Took { .. } => {}
+            Held::Plugin { .. } => actions.push(Action::Advance),
+        }
+        if state.held != Held::Idle && !state.outage {
+            actions.push(Action::Outage);
         }
         if state.receiving {
             actions.push(Action::Received);
@@ -579,10 +765,20 @@ impl Model for CopyStep {
         }
         if state.open {
             actions.push(Action::WindowCloses);
+        } else if !state.clock_back {
+            actions.push(Action::ClockBack);
         }
-        // Volume.Remove refuses a Volume a receive is writing.
-        if state.into != Into::Absent && !state.receiving && !state.deleted {
+        // Volume.Remove refuses a Volume a receive is writing, and waits for the mutation.
+        if state.into != Into::Absent
+            && !state.receiving
+            && !state.deleted
+            && !state.deleting
+            && !in_plugin
+        {
             actions.push(Action::Delete);
+        }
+        if state.deleting {
+            actions.push(Action::Destroyed);
         }
         if state.into == Into::Absent && state.deleted && !state.reused {
             actions.push(Action::Reuse);
@@ -610,7 +806,10 @@ impl Model for CopyStep {
                 state.answered.is_none_or(|origin| origin == Origin::Birth)
             }),
             Property::always(STARTS_IN_WINDOW, |_, state: &State| !state.started_late),
-            Property::always(DELETED_ONLY_AFTER_BEGAN, |_, state: &State| {
+            Property::always(CLOSED_STAYS_CLOSED, |_, state: &State| {
+                !state.started_closed
+            }),
+            Property::always(DELETED_ONLY_AFTER_DELETE, |_, state: &State| {
                 !state.falsely_deleted
             }),
         ];
@@ -624,20 +823,33 @@ fn reads_as(action: Action, after: &State) -> String {
     match action {
         Action::Send => "Cloud sends SeedCopy; it may wait in transit".to_owned(),
         Action::Take => format!(
-            "A takes a request under the switch lock: take_copy (volume_copy.rs seed_copy); taken={} began={}",
-            after.taken, after.began
+            "A takes a request under the switch lock: take_copy (volume_copy.rs seed_copy); taken={} held={:?}",
+            after.taken, after.held
         ),
-        Action::Outage => {
-            "the call ends before the plugin acts: refused, lost to a restart, or refused under its mutation".to_owned()
-        }
+        Action::Outage => format!(
+            "the call ends: refused before the plugin acts, lost to a restart, or a zfs call fails; cut={:?}",
+            after.cut
+        ),
         Action::Plugin => format!(
-            "the plugin's bound seed (seed.rs seed_volume) takes {:?}; reserved={}",
-            after.path, after.reserved
+            "the plugin's bound seed (seed.rs seed_volume) reads into: {:?} held={:?} tombstone={}",
+            after.path, after.held, after.tombstone
+        ),
+        Action::Advance => format!(
+            "the plugin reads the window and makes its next effect: {:?} held={:?}",
+            after.path, after.held
         ),
         Action::Received => "the receive exits 0: fs holds the point".to_owned(),
-        Action::Restart => "the daemon restarts: the receive and the held request end".to_owned(),
+        Action::Restart => format!(
+            "the daemon and the plugin restart: the receive and the held request end; cut={:?}",
+            after.cut
+        ),
         Action::WindowCloses => "the step's window closes".to_owned(),
-        Action::Delete => "the user deletes into".to_owned(),
+        Action::ClockBack => "the plugin's wall clock steps back inside the window".to_owned(),
+        Action::Delete => format!(
+            "the user deletes into: bury leaves the tombstone first; tombstone={}",
+            after.tombstone
+        ),
+        Action::Destroyed => "the delete destroys into".to_owned(),
         Action::Reuse => "another approval makes a Volume named into".to_owned(),
         Action::ReuseEmpty => {
             "an interrupted mirror pull leaves an empty slot parent of into".to_owned()
@@ -653,13 +865,13 @@ impl Narrated for CopyStep {
             let Some(action) = action else { continue };
             let _ = write!(
                 story,
-                "{}. {}\n    open={} into={:?} receiving={} held={:?} on_wire={}\n",
+                "{}. {}\n    open={} plugin_open={} into={:?} receiving={} on_wire={}\n",
                 number + 1,
                 reads_as(*action, after),
                 after.open,
+                after.plugin_open,
                 after.into,
                 after.receiving,
-                after.held,
                 after.on_wire,
             );
         }
@@ -711,62 +923,82 @@ mod tests {
         }
     }
 
-    /// Recorded by the daemon before it calls the plugin, a copy's start outlives a call
-    /// that ended before the plugin acted, and the resend inside the window is refused as
-    /// deleted though nothing was made.
+    /// With no tombstone, nothing on A says `into` was deleted: a resend inside the window
+    /// finds it absent and makes it again.
     #[test]
-    fn a_copy_reserves_its_step_only_where_the_slot_is_made() {
+    fn a_copy_never_remakes_its_deleted_volume_without_the_tombstone() {
         let path = breaks(
             broken(
                 Scenario::Fresh,
                 Broken {
-                    reserves_in_daemon: true,
-                    ..Broken::default()
-                },
-            ),
-            DELETED_ONLY_AFTER_BEGAN,
-        );
-        assert!(last(&path).outage, "a call ended before the plugin acted");
-    }
-
-    #[test]
-    fn a_copy_refuses_its_deleted_volume() {
-        breaks(
-            broken(
-                Scenario::Fresh,
-                Broken {
-                    forgets_began: true,
+                    no_tombstone: true,
                     ..Broken::default()
                 },
             ),
             NEVER_REMADE,
         );
+        assert!(
+            harness::took_action(&path, Action::Destroyed),
+            "into was deleted"
+        );
+    }
+
+    /// Reserved before the slot exists, a step a stop cut before ZFS made the slot reads as
+    /// deleted, and the resend inside the window is refused though nothing was made.
+    #[test]
+    fn a_copy_cut_before_its_slot_was_made_is_not_refused_as_deleted() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    reserves_at_begin: true,
+                    ..Broken::default()
+                },
+            ),
+            DELETED_ONLY_AFTER_DELETE,
+        );
+        assert_eq!(last(&path).cut, Some(Stage::Make), "cut before the make");
+    }
+
+    /// Starting over by destroying its own slot buries the step, so a stop before the slot
+    /// is made again leaves the copy refused as deleted.
+    #[test]
+    fn a_copy_starts_over_inside_the_slot_it_keeps() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    destroys_parent_on_restart: true,
+                    ..Broken::default()
+                },
+            ),
+            DELETED_ONLY_AFTER_DELETE,
+        );
+        assert!(last(&path).restarted, "a restart killed the first receive");
     }
 
     /// An empty slot parent passes for the step's own when the step it carries is not
-    /// read: a resend clears another's parent, and after a delete makes the Volume again.
+    /// read: a resend starts its copy over in another's parent, one there from the start
+    /// or one left after the step's own Volume was deleted.
     #[test]
     fn a_copy_restarts_only_a_slot_carrying_its_step() {
-        breaks(
-            broken(
-                Scenario::EmptySlot,
-                Broken {
-                    ignores_step: true,
-                    ..Broken::default()
-                },
-            ),
-            KEEPS_OTHER,
-        );
-        breaks(
-            broken(
-                Scenario::Fresh,
-                Broken {
-                    ignores_step: true,
-                    ..Broken::default()
-                },
-            ),
-            NEVER_REMADE,
-        );
+        for scenario in [Scenario::EmptySlot, Scenario::Fresh] {
+            let path = breaks(
+                broken(
+                    scenario,
+                    Broken {
+                        ignores_step: true,
+                        ..Broken::default()
+                    },
+                ),
+                KEEPS_OTHER,
+            );
+            assert_eq!(
+                last(&path).deleted,
+                scenario == Scenario::Fresh,
+                "{scenario:?}"
+            );
+        }
     }
 
     #[test]
@@ -816,6 +1048,47 @@ mod tests {
         assert!(
             harness::took_action(&path, Action::WindowCloses),
             "the window closed after the take"
+        );
+    }
+
+    /// Read once before the plugin's reads and preparation, the window closes before the
+    /// slot is made or the receive spawned, and the copy starts late.
+    #[test]
+    fn a_copy_reads_its_window_right_before_each_effect() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    window_before_reads: true,
+                    ..Broken::default()
+                },
+            ),
+            STARTS_IN_WINDOW,
+        );
+        assert!(
+            harness::took_action(&path, Action::Advance),
+            "the window closed inside the plugin's call"
+        );
+    }
+
+    /// The daemon found the window closed, so the call may only finish a copy underway;
+    /// a plugin that reads only its own clock starts the copy over once the clock steps
+    /// back.
+    #[test]
+    fn a_copy_the_daemon_found_closed_starts_nothing_whatever_the_clock() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    ignores_verdict: true,
+                    ..Broken::default()
+                },
+            ),
+            CLOSED_STAYS_CLOSED,
+        );
+        assert!(
+            harness::took_action(&path, Action::ClockBack),
+            "the plugin's clock stepped back"
         );
     }
 

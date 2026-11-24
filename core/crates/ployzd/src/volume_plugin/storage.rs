@@ -40,7 +40,8 @@ pub(super) struct VolumeStorage {
     pub(super) stop_deadline: Duration,
     /// Where a rename under a name lists the Containers that mount it.
     pub(super) holders: super::holders::Holders,
-    /// Where each Copy step a seed began a copy under is reserved ([`super::seed`]).
+    /// Where each Copy step whose Volume was destroyed leaves its tombstone
+    /// ([`super::seed`]).
     pub(super) copies: PathBuf,
     /// The wall clock a Copy step's window is read against.
     pub(super) now: Clock,
@@ -49,7 +50,7 @@ pub(super) struct VolumeStorage {
 /// A wall clock; tests set the time it reads.
 pub(super) type Clock = Arc<dyn Fn() -> ployz_core::authority::Timestamp + Send + Sync>;
 
-/// The directory of Copy reservations under the plugin's data directory.
+/// The directory of Copy tombstones under the plugin's data directory.
 const COPIES_DIR: &str = "seed-copies";
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
@@ -403,7 +404,15 @@ impl VolumeStorage {
         Ok(names.lines().any(|name| name == dataset))
     }
 
+    /// Runs `zfs` with `args`. A `destroy` of a dataset first leaves the tombstone of each
+    /// Copy step it, or with `-r` a dataset under it, carries ([`Self::bury`]), so no path
+    /// destroys a Copy's Volume without it.
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
+        if let ["destroy", flags @ .., dataset] = args
+            && !dataset.contains('@')
+        {
+            self.bury(dataset, flags.contains(&"-r")).await?;
+        }
         checked_command(&self.zfs, args).await
     }
 

@@ -964,6 +964,7 @@ case "$name" in
       'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
       'get -H -o value ployz:promote '*) echo '-' ;;
       'get -Hp -o value,source ployz:origin '*|'get -Hp -o value,source ployz:pull-origin '*) printf -- '-\t-\n' ;;
+      'get -r -H -s local -o value ployz:copy-step '*) ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on ployz/ployz-mirror') touch '{mirror_root}' ;;
       'create -o canmount=off -o readonly=on -o refquota='*' ployz/ployz-mirror/data')

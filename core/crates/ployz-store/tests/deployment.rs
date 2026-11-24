@@ -10425,6 +10425,17 @@ fn copy_into_restored(
     taken: u64,
     nonce: u8,
 ) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
+    copy_in_bundle(store, who, (taken, nonce), true)
+}
+
+/// [`copy_into_restored`], in a bundle the person signed when `signed`, and otherwise in
+/// the same bundle carrying no signature and no passkey's answer.
+fn copy_in_bundle(
+    store: &ConfigStore,
+    who: &Actor,
+    (taken, nonce): (u64, u8),
+    signed: bool,
+) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
     use ployz_core::authority::{
         ProposalApproval, ProposalStep, Signed, StepDigest, StepKind, Timestamp,
     };
@@ -10443,7 +10454,12 @@ fn copy_into_restored(
         expires_at: Timestamp::now().plus(600_000),
         signer: step.signer,
     };
-    Signed::proposed(&step, Signed::sign(&plan, &signer).unwrap()).unwrap()
+    let bundle = if signed {
+        Signed::sign(&plan, &signer).unwrap()
+    } else {
+        Signed::unsigned(&plan).unwrap()
+    };
+    Signed::proposed(&step, bundle).unwrap()
 }
 
 /// The Copy [`copy_into_restored`] makes, signed alone, as no Server takes it.
@@ -10563,6 +10579,24 @@ fn a_copy_outside_an_approval_claims_no_birth_before_the_approved_one() {
     let alone = copy_alone(&store, &who, 1_700_000_000, 9);
     assert_eq!(
         code(admit_copies(&store, &who, 1, vec![alone])),
+        RpcErrorCode::InvalidArgument
+    );
+
+    let approved = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    admit_copies(&store, &who, 1, vec![approved]).unwrap();
+}
+
+/// A Copy in a bundle nobody signed, an approval left unfinished, is refused as no Server
+/// takes it, and claims no birth: the signed restore with another birth is admitted after.
+#[test]
+fn a_copy_in_an_unsigned_approval_claims_no_birth_before_the_signed_one() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+
+    let unsigned = copy_in_bundle(&store, &who, (1_700_000_000, 9), false);
+    assert_eq!(
+        code(admit_copies(&store, &who, 1, vec![unsigned])),
         RpcErrorCode::InvalidArgument
     );
 

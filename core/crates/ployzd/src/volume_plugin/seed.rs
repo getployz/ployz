@@ -5,20 +5,23 @@
 //!
 //! A seed a Copy step admitted is bound to the step: the slot it makes carries the step's
 //! digest and records the birth's origin from the moment ZFS makes it, and the root lands
-//! carrying that origin. Only a slot carrying both, or a root carrying the origin, is this
-//! copy's; any other refuses, so the seed never adopts, clears or lands on another copy of
-//! `into`. Before it makes the slot, the seed reserves the step in a file of its own,
-//! which deleting `into` leaves, so once the reservation stands an `into` that is gone was
-//! deleted and the step never makes it again. A call that fails before the reservation,
-//! however it fails, leaves the step free to begin on a resend. It starts a copy, or starts
-//! one over, only while the step's window holds on its own clock, read under its mutation.
+//! carrying both. Only a slot carrying both, or a root carrying the origin, is this copy's;
+//! any other refuses, so the seed never adopts, clears or lands on another copy of `into`.
+//! A copy killed partway starts over inside the slot it made, which it keeps. Every destroy
+//! of a dataset carrying a step's digest first leaves a tombstone of the step, in a file of
+//! its own ([`VolumeStorage::bury`]), so an `into` that is gone and a tombstone mean the
+//! step's Volume was deleted, and the step never makes it again. With no tombstone the step
+//! never made anything that was then destroyed, however a call before ended, so it may
+//! start. It starts a copy, or starts one over, only while the step's window holds on its
+//! own clock, read right before each effect that starts one, and never once the daemon
+//! found the window closed.
 
-use std::{fs, io, process::Stdio};
+use std::{fs, io, path::PathBuf, process::Stdio};
 
 use crate::{
     dataset_layout::DatasetLayout,
     machine_pool::MachinePool,
-    volume_copy::{CopyBinding, SeedCopy},
+    volume_copy::{CopyBinding, SeedCopy, StartWindow},
     volume_send::begin::{self, READ_BOUND},
 };
 use axum::{Json, extract::State};
@@ -33,9 +36,9 @@ use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
     holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::answering,
-    marks::{Mark, Marks},
+    marks::{Mark, Marks, Write},
     origin::Origin,
-    storage::HeldMutation,
+    storage::{HeldMutation, checked_command},
     transfer::{Busy, Stop, ZfsChild, exited},
 };
 
@@ -124,12 +127,13 @@ struct Copied {
 impl Copied {
     /// Makes the complete copy the root of `into`, marked with its point and unregistered
     /// until Docker's Create adopts it. Every Container that already mounts `into` must
-    /// expect the origin the copy carries.
+    /// expect the origin the copy carries. A copy `copy` made lands carrying the step's
+    /// digest too, so destroying the root leaves the step's tombstone.
     async fn land(
         self,
         storage: &VolumeStorage,
         into: &DockerVolumeName,
-        guid: SnapshotGuid,
+        (guid, copy): (SnapshotGuid, Option<&CopyBinding>),
     ) -> Result<(), RpcError> {
         let fs = &self.fs;
         storage.complete(&self.parent, fs).await?;
@@ -144,7 +148,11 @@ impl Copied {
                 }
             })?;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
-        storage.marks(fs).apply(&Marks::landed(guid)).await?;
+        let mut marks = Marks::landed(guid);
+        if let Some(copy) = copy {
+            marks.insert(0, Write::Set(Mark::CopyStep, copy.step.to_string()));
+        }
+        storage.marks(fs).apply(&marks).await?;
         storage.zfs(&["rename", fs, &self.root]).await?;
         Renamed {
             root: self.root,
@@ -179,6 +187,29 @@ impl Stale {
         storage.zfs(&["destroy", "-r", &self.parent]).await?;
         Ok(())
     }
+
+    /// Clears the slot's `fs` so `copy`'s copy starts over in the parent it made, which
+    /// stays: the parent names the step, so a stop at any point leaves a slot the next call
+    /// starts over again. Refused, changing nothing, once the window has closed.
+    async fn restart(
+        self,
+        storage: &VolumeStorage,
+        into: &VolumeName,
+        copy: &CopyBinding,
+    ) -> Result<(), RpcError> {
+        let Some(fs) = &self.fs else {
+            return Ok(());
+        };
+        if storage.written_here(fs).await? {
+            return Err(SwitchError::Precondition.rpc_error(format!(
+                "Volume {into} is held in slot {}; promote or restore it before seeding it",
+                self.parent
+            )));
+        }
+        copy.may_start(into, (storage.now)())?;
+        storage.zfs(&["destroy", "-r", fs]).await?;
+        Ok(())
+    }
 }
 
 /// The source's restore point the Seed copies, its origin, and the bound the copy takes
@@ -192,54 +223,90 @@ struct Source {
 }
 
 impl CopyBinding {
-    /// Refuse to start a copy into `into`, or start one over, once the step's window has
-    /// closed at `now`.
+    /// Refuse to start a copy into `into`, or start one over, unless the daemon found the
+    /// step's window open and it still holds at `now`.
     fn may_start(&self, into: &VolumeName, now: Timestamp) -> Result<(), RpcError> {
-        if now <= self.closes {
-            return Ok(());
+        match self.window {
+            StartWindow::Open { closes } if now <= closes => Ok(()),
+            StartWindow::Open { .. } | StartWindow::Closed => {
+                Err(SwitchError::Expired.rpc_error(format!(
+                    "The approval to copy into Volume {into} expired before its copy started; approve the restore again"
+                )))
+            }
         }
-        Err(SwitchError::Expired.rpc_error(format!(
-            "The approval to copy into Volume {into} expired before its copy started; approve the restore again"
-        )))
     }
 
-    /// The slot marks the step's copy carries from the moment ZFS makes its parent.
-    fn slot_marks(&self) -> [(Mark, String); 2] {
+    /// The slot marks the step's copy of `point` carries from the moment ZFS makes its
+    /// parent.
+    fn slot_marks(&self, point: &str) -> [(Mark, String); 3] {
         [
             (Mark::PullOrigin, self.birth.to_string()),
             (Mark::CopyStep, self.step.to_string()),
+            (Mark::Pull, point.to_owned()),
         ]
     }
 }
 
 impl VolumeStorage {
-    fn reservation(&self, step: StepDigest) -> std::path::PathBuf {
+    fn tombstone(&self, step: StepDigest) -> PathBuf {
         self.copies.join(step.to_string())
     }
 
-    /// Whether a copy began under `step` on this Machine.
-    fn reserved(&self, step: StepDigest) -> Result<bool, RpcError> {
-        match fs::symlink_metadata(self.reservation(step)) {
+    /// Whether a dataset carrying `step` was destroyed on this Machine.
+    fn buried(&self, step: StepDigest) -> Result<bool, RpcError> {
+        match fs::symlink_metadata(self.tombstone(step)) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(RpcError::internal(format!(
-                "could not read the Copy reservations: {error}"
+                "could not read the Copy tombstones: {error}"
             ))),
         }
     }
 
-    /// Reserve `step` for a copy into `into`, durably, before any slot of it is made.
-    fn reserve(&self, step: StepDigest, into: &VolumeName) -> Result<(), RpcError> {
-        let failed =
-            |error: io::Error| RpcError::internal(format!("could not reserve the copy: {error}"));
-        fs::create_dir_all(&self.copies).map_err(failed)?;
-        if let Some(parent) = self.copies.parent() {
-            fs::File::open(parent)
-                .and_then(|directory| directory.sync_all())
+    /// Leaves a tombstone, durably, for each Copy step `dataset` carries as its own mark,
+    /// and with `recursive` each one a dataset under it carries, before the caller destroys
+    /// it. [`Self::zfs`] runs it ahead of every `destroy` of a dataset, under the mutation
+    /// the destroy runs under.
+    pub(super) async fn bury(&self, dataset: &str, recursive: bool) -> super::Result<()> {
+        let mut args = vec!["get"];
+        if recursive {
+            args.push("-r");
+        }
+        args.extend([
+            "-H",
+            "-s",
+            "local",
+            "-o",
+            "value",
+            Mark::CopyStep.name(),
+            dataset,
+        ]);
+        let carried = checked_command(&self.zfs, &args).await?;
+        for value in carried
+            .lines()
+            .filter(|value| !value.is_empty() && *value != "-")
+        {
+            let step = StepDigest::parse(value).map_err(|error| {
+                PluginError::from(format!(
+                    "{dataset} carries an unreadable {} {value:?}: {error}",
+                    Mark::CopyStep
+                ))
+            })?;
+            let failed = |error: io::Error| {
+                PluginError::from(format!(
+                    "could not keep the copy in {dataset} as deleted: {error}"
+                ))
+            };
+            fs::create_dir_all(&self.copies).map_err(failed)?;
+            if let Some(parent) = self.copies.parent() {
+                fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(failed)?;
+            }
+            crate::filesystem::atomic_write(&self.tombstone(step), dataset.as_bytes(), 0o600)
                 .map_err(failed)?;
         }
-        crate::filesystem::atomic_write(&self.reservation(step), into.to_string().as_bytes(), 0o600)
-            .map_err(failed)
+        Ok(())
     }
 }
 
@@ -276,40 +343,59 @@ impl VolumeStorage {
                 })
             }
             SeedProgress::Copied(copied) => {
-                copied.land(self, &request.into, guid).await?;
+                copied.land(self, &request.into, (guid, copy)).await?;
                 self.seeded(&pool, &into).await
             }
             SeedProgress::Stale(stale) => {
-                let source = self
-                    .seed_source(&pool, &datasets, (request, &name, &into), copy)
-                    .await?;
                 if let Some(copy) = copy {
                     copy.may_start(&into, (self.now)())?;
                 }
-                stale.clear(self, &into).await?;
-                self.copy_point(&held, &pool, &into, (source, copy)).await
+                let source = self
+                    .seed_source(&pool, &datasets, (request, &name, &into), copy)
+                    .await?;
+                match copy {
+                    Some(copy) => {
+                        stale.restart(self, &into, copy).await?;
+                        self.receive_point(&held, &pool, &into, (source, copy))
+                            .await
+                    }
+                    None => {
+                        stale.clear(self, &into).await?;
+                        self.copy_point(&held, &pool, &into, source).await
+                    }
+                }
             }
             SeedProgress::Absent => {
                 if let Some(copy) = copy
-                    && self.reserved(copy.step)?
+                    && self.buried(copy.step)?
                 {
                     return Err(SwitchError::Precondition.rpc_error(format!(
-                        "Volume {into} was deleted after its copy began; approve the restore again"
+                        "Volume {into} was deleted after its copy was made; approve the restore again"
                     )));
+                }
+                if let Some(copy) = copy {
+                    copy.may_start(&into, (self.now)())?;
                 }
                 let source = self
                     .seed_source(&pool, &datasets, (request, &name, &into), copy)
                     .await?;
-                if let Some(copy) = copy {
-                    copy.may_start(&into, (self.now)())?;
-                }
                 self.ensure_commitment(&pool, &datasets, source.bound)
                     .await?;
                 self.ensure_mirror_root(&pool, &datasets).await?;
-                if let Some(copy) = copy {
-                    self.reserve(copy.step, &into)?;
+                match copy {
+                    Some(copy) => {
+                        copy.may_start(&into, (self.now)())?;
+                        self.create_marked_slot(
+                            &DatasetLayout::of(&pool).slot_parent(&into),
+                            source.bound,
+                            &copy.slot_marks(source.point.name.as_str()),
+                        )
+                        .await?;
+                        self.receive_point(&held, &pool, &into, (source, copy))
+                            .await
+                    }
+                    None => self.copy_point(&held, &pool, &into, source).await,
                 }
-                self.copy_point(&held, &pool, &into, (source, copy)).await
             }
         }
     }
@@ -480,34 +566,47 @@ impl VolumeStorage {
     }
 
     /// A new slot of `into` marked with the point it pulls, and the copy started into it.
-    /// Under `copy`, ZFS makes the slot carrying the step and recording its birth.
     async fn copy_point(
         &self,
         held: &HeldMutation,
         pool: &MachinePool,
         into: &VolumeName,
-        (source, copy): (Source, Option<&CopyBinding>),
+        source: Source,
     ) -> Result<VolumeCopyView, RpcError> {
         let parent = DatasetLayout::of(pool).slot_parent(into);
+        self.create_slot(&parent, source.bound).await?;
+        self.marks(&parent)
+            .set_pull(source.point.name.as_str())
+            .await?;
+        self.write_record(&parent, source.record).await?;
+        self.spawn_copy(held, pool, into, source).await
+    }
+
+    /// `copy`'s copy started into the slot of `into` it made, unless the window closed
+    /// since the call began: the slot then stays as it is, for a call the window admits.
+    async fn receive_point(
+        &self,
+        held: &HeldMutation,
+        pool: &MachinePool,
+        into: &VolumeName,
+        (source, copy): (Source, &CopyBinding),
+    ) -> Result<VolumeCopyView, RpcError> {
+        copy.may_start(into, (self.now)())?;
+        self.spawn_copy(held, pool, into, source).await
+    }
+
+    /// The receive of `source`'s point into the slot's `fs`, run outside the mutation.
+    async fn spawn_copy(
+        &self,
+        held: &HeldMutation,
+        pool: &MachinePool,
+        into: &VolumeName,
+        source: Source,
+    ) -> Result<VolumeCopyView, RpcError> {
         let fs = DatasetLayout::of(pool).slot_fs(into);
         let Source {
-            root,
-            point,
-            record,
-            bound,
+            root, point, bound, ..
         } = source;
-        match copy {
-            Some(copy) => {
-                self.create_marked_slot(&parent, bound, &copy.slot_marks())
-                    .await?;
-                self.marks(&parent).set_pull(point.name.as_str()).await?;
-            }
-            None => {
-                self.create_slot(&parent, bound).await?;
-                self.marks(&parent).set_pull(point.name.as_str()).await?;
-                self.write_record(&parent, record).await?;
-            }
-        }
         let storage = self.clone();
         let snapshot = format!("{root}@{}", point.name);
         // A receive still alive refuses the spawn, and the copy as it stands answers then too.

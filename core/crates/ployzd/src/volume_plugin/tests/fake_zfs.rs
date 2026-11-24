@@ -244,6 +244,16 @@ case "$*" in
     require "$6"
     prop "$6" guid 1
     ;;
+  'get -r -H -s local -o value '*)
+    require "$9"
+    check_property "$8"
+    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/{seed} tank/ployz-mirror/{seed}/fs; do
+      case "$d" in "$9"|"$9"/*) ;; *) continue ;; esac
+      exists "$d" || continue
+      f='{props}'/"$d/$8"
+      [ ! -e "$f" ] || prop "$d" "$8" -
+    done
+    ;;
   'get -H -s local -o value '*)
     require "$8"
     check_property "$7"
@@ -346,13 +356,14 @@ case "$*" in
     new_guid
     printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/data/guid'
     ;;
-  'create -o canmount=off -o readonly=on -o refquota='*' -o ployz:pull-origin='*' -o ployz:copy-step='*' tank/ployz-mirror/{seed}')
+  'create -o canmount=off -o readonly=on -o refquota='*' -o ployz:pull-origin='*' -o ployz:copy-step='*' -o ployz:pull='*' tank/ployz-mirror/{seed}')
     if [ -e '{seed_slot}' ]; then echo "cannot create 'tank/ployz-mirror/{seed}': dataset already exists" >&2; exit 1; fi
     touch '{seed_slot}'
     mkdir -p '{props}/tank/ployz-mirror/{seed}'
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/{seed}/refquota'
     printf '%s\n' "${{9#ployz:pull-origin=}}" > '{props}/tank/ployz-mirror/{seed}/ployz:pull-origin'
     printf '%s\n' "${{11#ployz:copy-step=}}" > '{props}/tank/ployz-mirror/{seed}/ployz:copy-step'
+    printf '%s\n' "${{13#ployz:pull=}}" > '{props}/tank/ployz-mirror/{seed}/ployz:pull'
     new_guid
     printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/{seed}/guid'
     ;;
@@ -469,6 +480,13 @@ case "$*" in
     guid=$(printf '%s' "$line" | cut -f2)
     begin "$guid"
     printf 'snapshot %s %s\n' "${{4#*@}}" "$guid"
+    ;;
+  'destroy -r tank/ployz-mirror/{seed}/fs')
+    require tank/ployz-mirror/{seed}/fs
+    if pid=$(cat '{props}/receive-pid' 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then
+      echo 'dataset is busy' >&2; exit 1
+    fi
+    rm -rf '{seed_fs}' '{props}/tank/ployz-mirror/{seed}/fs'
     ;;
   'destroy -r tank/ployz-mirror/data/fs')
     require tank/ployz-mirror/data/fs

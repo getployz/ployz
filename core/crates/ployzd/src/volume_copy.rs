@@ -74,13 +74,26 @@ pub struct CopyBinding {
     pub source: VolumeOrigin,
     /// When the point was taken, as the source's snapshot records it to the second.
     pub taken_at: ployz_core::authority::Timestamp,
-    /// The step's digest. The plugin reserves it before it makes the slot, and the slot
-    /// carries it, so only that slot is this step's and a new Volume gone after the
-    /// reservation was deleted.
+    /// The step's digest. The slot the copy makes carries it, and so does the root it
+    /// lands as, so only that slot is this step's, and destroying either leaves the step's
+    /// tombstone: a new Volume gone with its step's tombstone was deleted.
     pub step: ployz_core::authority::StepDigest,
-    /// The last instant on this Machine's clock a copy may start, or start over, under the
-    /// step. The plugin reads it under its mutation, right before it does.
-    pub closes: ployz_core::authority::Timestamp,
+    /// Whether the call may start a copy, or start one over.
+    pub window: StartWindow,
+}
+
+/// Whether a Copy may still start, as the daemon found its window when it took the call.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartWindow {
+    /// The window holds until `closes`, the last instant on the plugin's clock a copy may
+    /// start. The plugin reads its clock right before each effect that starts one.
+    Open {
+        closes: ployz_core::authority::Timestamp,
+    },
+    /// The window had closed: the call only finishes a copy underway, whatever the plugin's
+    /// clock reads.
+    Closed,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

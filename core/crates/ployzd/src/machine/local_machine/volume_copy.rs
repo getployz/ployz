@@ -11,7 +11,9 @@ use ployz_core::{
     WantedCopy,
 };
 
-use ployz_core::authority::{AuthorityRefusal, CopyFacts, CopyVerified, Purpose, Timestamp, copy};
+use ployz_core::authority::{
+    AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
+};
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
 use crate::{
@@ -21,8 +23,8 @@ use crate::{
     volume_copy::{
         CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE,
         ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SeedCopy,
-        SnapshotRequest, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE,
-        WRITER_ROUTE, WriterRequest,
+        SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
+        VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
     },
 };
 
@@ -119,10 +121,12 @@ impl LocalMachine {
 
     /// SeedCopy: a Volume.Seed an Operator sends under a person's Copy step, under the
     /// switch lock. The step must open here for exactly this seed, and is taken in the
-    /// approvals record only while its window holds. The plugin then starts a copy, or
-    /// starts it over, only while the window still holds on its own clock, and reserves the
-    /// step before it makes the new Volume's slot, so a resend finishes a copy underway and
-    /// never makes a deleted new Volume again.
+    /// approvals record only while its window holds. A step taken before is taken again
+    /// past its window, and the plugin then hears the window closed, so a resend only
+    /// finishes a copy underway. Otherwise the plugin starts a copy, or starts it over,
+    /// only while the window still holds on its own clock. It leaves the step's tombstone
+    /// whenever it destroys what the step made, so a resend never makes a deleted new
+    /// Volume again.
     ///
     /// # Errors
     ///
@@ -166,7 +170,12 @@ impl LocalMachine {
                 source: step.origin,
                 taken_at: step.taken_at,
                 step: verified.digest,
-                closes: plugin_closes(&verified, (read, now)),
+                window: match verified.window {
+                    CopyWindow::Open => StartWindow::Open {
+                        closes: plugin_closes(&verified, (read, now)),
+                    },
+                    CopyWindow::Closed => StartWindow::Closed,
+                },
             },
         };
         self.volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
