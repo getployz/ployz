@@ -46,8 +46,8 @@ pub struct LocalMachine {
     /// switch, and every create or start of a Provisioned Volume's holder waits out.
     switch: Arc<tokio::sync::Mutex<()>>,
     /// This handle runs inside a switch whose guard its caller holds, so it takes no
-    /// switch lock of its own. Only [`LocalMachine::lock_switch`] sets it.
-    in_switch: bool,
+    /// switch lock of its own. A clone never carries it.
+    in_switch: switch::InSwitch,
     /// How many calls have asked for the switch lock, which a test awaits to know a call
     /// queued behind it.
     #[cfg(test)]
@@ -87,9 +87,11 @@ mod register;
 mod reserved;
 pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
-pub(crate) use call::{Call, Caller, Scope};
+pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
 pub(crate) use container::CutRefusal;
+#[cfg(test)]
+pub(crate) use container::names_content;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
@@ -269,6 +271,10 @@ pub enum Error {
     /// An upgrade is running; the fence is retried once it ends.
     #[error(transparent)]
     FenceRefused(RpcError),
+    /// An Operator's pull named an image by tag, which this Server writes only for a
+    /// caller with Full access. The refusal names the route's capability in its details.
+    #[error(transparent)]
+    TagRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
@@ -310,7 +316,7 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             pacing: private_access::Pacing::default(),
             switch: Arc::default(),
-            in_switch: false,
+            in_switch: switch::InSwitch::default(),
             #[cfg(test)]
             switch_asked: Arc::new(tokio::sync::watch::channel(0).0),
             #[cfg(test)]

@@ -49,7 +49,8 @@ impl LocalMachine {
         &self,
         request: SetVolumeCopyRequest,
     ) -> Result<Copy, Error> {
-        // The spec of the Container this request's start creates, when it creates one.
+        // The spec of the Container this request's start creates, when it creates one,
+        // which the create checks again under its turn.
         let admitted = match &request.want {
             WantedCopy::Writer {
                 start: Some(start), ..
@@ -87,20 +88,6 @@ impl LocalMachine {
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
         )
         .await;
-        // A start admitted at a scope its caller lost while this queued is admitted again
-        // at the scope left.
-        let admitted = match &request.want {
-            WantedCopy::Writer {
-                start: Some(start), ..
-            } if switch.call() != self.call() => {
-                switch.admit_volume_start(&request.name, start).await?
-            }
-            WantedCopy::Writer { .. }
-            | WantedCopy::Mirror { .. }
-            | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
-            | WantedCopy::Floor => admitted,
-        };
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
         // free the next request to plan against a cut still running. The task runs this
         // one transition and ends when ZFS or Docker answers; it never retries or starts
@@ -118,6 +105,9 @@ impl LocalMachine {
         request: &SeedVolumeRequest,
     ) -> Result<VolumeCopyView, Error> {
         let switch = self.lock_switch().await?;
+        // Only a Full caller seeds, checked under the switch: the Machine API refused an
+        // Operator on arrival, and a key that lost its Device slot since is one now.
+        switch.full_caller()?;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.

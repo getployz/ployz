@@ -21,7 +21,7 @@ use ployz_decide::service_floor::{self, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{Caller, ConsumptionLog, Error, FullCaller, LocalMachine, RecordOwner, Scope};
+use super::{Caller, Checked, ConsumptionLog, Error, FullCaller, LocalMachine, RecordOwner, Scope};
 use crate::docker::ContainerRuntime;
 
 /// Who admitted a Container, and when, kept with it for as long as it exists.
@@ -366,11 +366,14 @@ impl LocalMachine {
     /// Decide whether `want` may make its Container, under the `versions` and the
     /// Operator's `rule` the caller brought, keeping what `admit` says. `None` is the
     /// answer for a want that makes none. A hook that already exists is never started
-    /// again for an Operator.
+    /// again for an Operator, checked here and again under the turn of the start, by
+    /// [`Checked::start_kept`].
     ///
     /// A version that admits the spec records its signers, so removing them stops a later
     /// start. Short of one, a Full caller's creation is kept under who asked, and `rule`
-    /// is read only for an Operator.
+    /// is read only for an Operator. The scope is the caller's as the keys stand now, and
+    /// what this keeps is checked again under the turn right before Docker creates, so a
+    /// key removed in between makes nothing.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] naming what the
@@ -387,11 +390,13 @@ impl LocalMachine {
         let ContainerWant::Running { container, .. } = want else {
             return Ok(None);
         };
-        let scope = self.scope();
+        let scope = self.scope_now()?;
         let new = match container {
             RunTarget::New(new) => new,
             RunTarget::Existing(locator) => {
-                if matches!(scope, Scope::Operator) {
+                // Refused here as well as under the turn, so an Operator naming a hook that
+                // already runs, which no start reaches, is refused too.
+                if let Scope::Operator = scope {
                     self.refuse_hook_start(locator).await?;
                 }
                 return Ok(None);
@@ -531,36 +536,6 @@ impl LocalMachine {
         }
     }
 
-    /// Start `id`. An Operator's start is refused when the admission kept with the
-    /// Container no longer stands here, as [`Standing::admits`] decides, and when this
-    /// Machine kept no admission for it. Docker's start refuses it beside another running
-    /// holder of its Provisioned Volume, as [`crate::docker::holder::start`] decides.
-    ///
-    /// # Errors
-    /// Returns [`Error::DeployRefused`] for a refused start, [`Error::ApprovalRecord`]
-    /// when the rule marks cannot be read, [`crate::docker::Error::VolumeHeld`] beside a
-    /// running holder, and the Docker error of a start that fails.
-    pub(super) async fn start_checked(
-        &self,
-        containers: &ContainerRuntime,
-        id: &ContainerId,
-    ) -> Result<(), Error> {
-        if let Scope::Operator = self.scope() {
-            let refusal = match containers.lifecycle().admitted_by(id).await? {
-                Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
-                None => Some(AuthorityRefusal::Mismatch {
-                    field: MismatchField::KeptAdmission,
-                }),
-            };
-            if let Some(refusal) = refusal {
-                tracing::warn!(container = %id, "start refused: {refusal}");
-                return Err(Error::DeployRefused(refusal));
-            }
-        }
-        containers.lifecycle().start(id).await?;
-        Ok(())
-    }
-
     /// Who a Full access creation of `service` is kept under: the Device whose own
     /// connection asked, so removing that Device ends it, or this Server's own socket. Its
     /// time is this Machine's floored clock, or the Service's floor when that is later, so
@@ -604,11 +579,12 @@ impl LocalMachine {
     }
 
     /// Let a Writer's start through. Starting a Container the Machine already holds is
-    /// served, unless it is a hook an Operator names. A Create is admitted as
-    /// [`Self::admit_spec`] admits its spec. An Operator's needs a signature from the
-    /// versions or rule proof it carries, and a spec that mounts `volume`, so no
-    /// signature of a spec opens another Volume. A `check` keeps nothing, and refuses a
-    /// spec this Machine's placement doesn't take.
+    /// served, unless it is a hook an Operator names, checked here and again under the
+    /// turn that starts it, by [`Checked::start_kept`]. A Create is admitted as
+    /// [`Self::admit_spec`] admits its spec, at the scope the caller holds now. An
+    /// Operator's needs a signature from the versions or rule proof it carries, and a spec
+    /// that mounts `volume`, so no signature of a spec opens another Volume. A `check`
+    /// keeps nothing, and refuses a spec this Machine's placement doesn't take.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] for a refused start
@@ -619,7 +595,7 @@ impl LocalMachine {
         volume: &DockerVolumeName,
         start: &Start,
     ) -> Result<Option<AdmittedSpec>, Error> {
-        let operator = matches!(self.scope(), Scope::Operator);
+        let operator = matches!(self.scope_now()?, Scope::Operator);
         let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, check) =
             match start {
                 Start::Kept { container_id } => {
@@ -719,6 +695,65 @@ impl LocalMachine {
         phase: ployz_core::LocalMachinePhase,
     ) -> Option<ployz_core::SealingPublicKey> {
         self.held_sealing(phase).and_then(Sealing::held_key)
+    }
+}
+
+impl Checked {
+    /// Start `id`. An Operator's start is refused when the admission kept with the
+    /// Container no longer stands here, as [`Standing::admits`] decides, and when this
+    /// Machine kept no admission for it. Docker's start refuses it beside another running
+    /// holder of its Provisioned Volume, as [`crate::docker::holder::start`] decides.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for a refused start, [`Error::ApprovalRecord`]
+    /// when the rule marks cannot be read, [`crate::docker::Error::VolumeHeld`] beside a
+    /// running holder, and the Docker error of a start that fails.
+    pub(super) async fn start_checked(
+        &self,
+        containers: &ContainerRuntime,
+        id: &ContainerId,
+    ) -> Result<(), Error> {
+        if let Scope::Operator = self.scope() {
+            let refusal = match containers.lifecycle().admitted_by(id).await? {
+                Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
+                None => Some(AuthorityRefusal::Mismatch {
+                    field: MismatchField::KeptAdmission,
+                }),
+            };
+            if let Some(refusal) = refusal {
+                tracing::warn!(container = %id, "start refused: {refusal}");
+                return Err(Error::DeployRefused(refusal));
+            }
+        }
+        containers.lifecycle().start(id).await?;
+        Ok(())
+    }
+
+    /// Start `id`, a Container this Machine already holds that no create of this request
+    /// made, as [`Self::start_checked`] does, after [`Self::refuse_operator_hook`].
+    ///
+    /// # Errors
+    /// As [`Self::refuse_operator_hook`] and [`Self::start_checked`].
+    pub(super) async fn start_kept(
+        &self,
+        containers: &ContainerRuntime,
+        id: &ContainerId,
+    ) -> Result<(), Error> {
+        self.refuse_operator_hook(id).await?;
+        self.start_checked(containers, id).await
+    }
+
+    /// A hook runs once, when it is created: no Operator starts one this Machine already
+    /// holds again.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for an Operator's start of a hook, and
+    /// [`Error::Docker`] when the Container cannot be read.
+    pub(super) async fn refuse_operator_hook(&self, id: &ContainerId) -> Result<(), Error> {
+        match self.scope() {
+            Scope::Operator => self.refuse_hook_start(&ContainerLocator::Id(*id)).await,
+            Scope::Full(_) => Ok(()),
+        }
     }
 }
 

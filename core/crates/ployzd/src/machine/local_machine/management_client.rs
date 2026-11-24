@@ -13,7 +13,7 @@ use super::{Caller, Error, FullCaller, LocalMachine};
 use crate::machine::LocalMachineRecord;
 
 impl LocalMachine {
-    /// Set or clear one labelled Management Client slot under mutation admission.
+    /// Set or clear one labelled Management Client slot, as a key change.
     ///
     /// `Set` stages a fresh client public key in the slot and returns its Management
     /// Capability. The slot's accepted key remains usable through read-only replacement
@@ -38,7 +38,7 @@ impl LocalMachine {
             return Err(Error::DeviceSlot);
         }
         let caller = self.call.caller();
-        self.finish_mutation(move |local| async move {
+        self.finish_key_change(move |local| async move {
             local
                 .owner
                 .mutate(move |store| {
@@ -69,8 +69,8 @@ impl LocalMachine {
     }
 
     /// Approve one Device on this Machine, or remove the key a code names, Device or passkey,
-    /// under mutation admission. A removal goes through [`LocalMachineStore::remove_key`],
-    /// so the key stays removed and the last key stays.
+    /// as a key change, which waits out a switch step under way. A removal goes through
+    /// [`LocalMachineStore::remove_key`], so the key stays removed and the last key stays.
     ///
     /// The scope recheck runs on the Machine the caller dialed: a Device removed there
     /// while its own request waited for admission changes nothing. A routed call reaches
@@ -86,8 +86,8 @@ impl LocalMachine {
     ///
     /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
-        let full = self.full_caller()?;
-        self.finish_mutation(move |local| async move {
+        self.finish_key_change(move |local| async move {
+            let full = local.full_caller()?;
             local
                 .owner
                 .mutate(move |store| {
@@ -117,14 +117,14 @@ impl LocalMachine {
     }
 
     /// Trust one person's passkey or CLI Device on this Machine alone, as root on this
-    /// Server asks with `ployz key add`, under mutation admission. It reuses [`trust`], so a
+    /// Server asks with `ployz key add`, as a key change. It reuses [`trust`], so a
     /// removed key, or one that collides with a key held as another kind, is refused.
     ///
     /// # Errors
     /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
-        let full = self.full_caller()?;
-        self.finish_mutation(move |local| async move {
+        self.finish_key_change(move |local| async move {
+            let full = local.full_caller()?;
             local
                 .owner
                 .mutate(move |store| {
@@ -137,8 +137,7 @@ impl LocalMachine {
         .await
     }
 
-    /// Apply a person's signed change to the keys this Machine trusts, under mutation
-    /// admission: a trust as a step of a bundle whose window holds on this Machine's floored
+    /// Apply a person's signed change to the keys this Machine trusts, as a key change: a trust as a step of a bundle whose window holds on this Machine's floored
     /// clock and that names this Machine, a removal alone or in a bundle. Signature, window
     /// and removed keys are checked inside the record write, so a removal that lands first
     /// wins.
@@ -152,7 +151,7 @@ impl LocalMachine {
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
     pub async fn key_step(&self, request: KeyStepRequest) -> Result<DeviceSet, Error> {
-        self.finish_mutation(move |local| async move {
+        self.finish_key_change(move |local| async move {
             let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
                 .map_err(Error::JoinRecord)?
                 .map(|key| key.public_key());
@@ -217,6 +216,10 @@ impl FullCaller {
 
 impl LocalMachine {
     /// Activate a staged management key for an authenticated operational RPC.
+    ///
+    /// It retires only the key its own slot accepted, for the holder that proved it holds
+    /// the new one, so it narrows no other caller and takes no switch: every first call on
+    /// a rotated key would otherwise wait out a Volume step.
     ///
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.

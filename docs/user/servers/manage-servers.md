@@ -271,7 +271,10 @@ connection under omissions. Either way the command exits 3.
 A removal is for good: a server that removed a key never trusts it again, even when someone
 approves it later. A command from that device that a server is still working on stops at its next
 step and changes nothing more. That covers a command waiting behind another one, a removal waiting
-for a service's connections to drain, and a volume change waiting behind another volume change. If
+for a service's connections to drain, and a volume change waiting behind another volume change. A
+volume step already running on a server, such as a move's switch, finishes first: the removal waits
+for it there, so once `device rm` returns, nothing that device asked for is still changing the
+server. If
 the same key also holds another connection slot on that server, such as Ployz Cloud's, the command
 goes on with Operator access only, so it can't start a container that only that device approved.
 Every server that answers marks the key removed, including one that never

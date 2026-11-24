@@ -197,7 +197,10 @@ impl LocalMachine {
     }
 
     /// Place this Machine's Private Access router, or remove it. An Operator's turn on
-    /// needs an approval, as [`Self::admit_operator_private_access`] decides.
+    /// needs an approval, as [`Self::admit_operator_private_access`] decides: refused
+    /// before any effect at the scope the caller holds now, and checked again under the
+    /// turn that writes the auth key, so a caller downgraded while this waited writes
+    /// nothing.
     ///
     /// # Errors
     ///
@@ -211,13 +214,14 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
-        if let Scope::Operator = self.scope() {
+        if let Scope::Operator = self.scope_now()? {
             self.admit_operator_private_access(&request)?;
         }
         let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request
                 .sealed_auth_key
+                .clone()
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
                 .sealing()
@@ -244,15 +248,20 @@ impl LocalMachine {
                         .doors()
                         .prepare_pinned_image(&spec.container.image)
                         .await?;
-                    containers
-                        .machine_files()
-                        .write_private_access_key(&key)
-                        .map_err(Error::PrivateAccessKeyFile)?;
                     Some(Wanted { spec, key })
                 }
                 None => None,
             };
             let turn = local.exclusive_turn().await?;
+            if let Scope::Operator = turn.scope() {
+                turn.admit_operator_private_access(&request)?;
+            }
+            if let Some(wanted) = &wanted {
+                containers
+                    .machine_files()
+                    .write_private_access_key(&wanted.key)
+                    .map_err(Error::PrivateAccessKeyFile)?;
+            }
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
                 .converge_router(&turn, &containers, &plan, wanted.as_ref(), Watch::Settle)

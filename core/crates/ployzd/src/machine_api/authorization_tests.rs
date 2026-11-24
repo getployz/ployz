@@ -1570,6 +1570,7 @@ mod revoked {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
     async fn a_hook_start_queued_while_its_device_slot_goes_runs_no_hook_again() {
         use ployz_core::MachineRpc;
         let machine = Enforcing::new().await;
@@ -1612,6 +1613,7 @@ mod revoked {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
     async fn a_full_create_queued_while_its_device_slot_goes_pulls_nothing() {
         use ployz_core::MachineRpc;
         let machine = Enforcing::new().await;

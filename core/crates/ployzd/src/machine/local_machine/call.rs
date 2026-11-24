@@ -1,5 +1,11 @@
-//! Who one call to this Machine came from and what it may do, decided once at the Machine
-//! API's edge and carried on the [`LocalMachine`] that serves it.
+//! Who one call to this Machine came from and the scope it claims, decided once at the
+//! Machine API's edge and carried on the [`LocalMachine`] that serves it.
+//!
+//! Nothing reads that claim as it arrived. Work that acts learns its scope from a
+//! [`Checked`] handle, which an admission turn or the switch makes by checking the claim
+//! against the keys as they stand while it holds a lock every key change takes. A read,
+//! and an admission that [`super::AdmittedSpec::still_holds`] checks again before Docker
+//! acts, asks [`LocalMachine::scope_now`].
 
 use ployz_core::{ClientKey, ManagementScope};
 
@@ -17,7 +23,7 @@ pub(crate) enum Caller {
     Routed,
 }
 
-/// One call's caller, scope, and whether Cloud routed it.
+/// One call's caller, the scope it claims, and whether Cloud routed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Call {
     caller: Caller,
@@ -47,17 +53,38 @@ impl Call {
     pub(crate) fn cloud_routed(self) -> bool {
         self.cloud_routed
     }
+
+    fn scope(self) -> Scope {
+        match self.scope {
+            ManagementScope::Full => Scope::Full(FullCaller(self)),
+            ManagementScope::Operator => Scope::Operator,
+        }
+    }
 }
 
 /// What one call may do on this Machine. Work that differs by scope matches on this, so
 /// only a Full caller's path holds a [`FullCaller`].
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Scope {
     Full(FullCaller),
     Operator,
 }
 
-/// A call at Full access. Only [`LocalMachine::scope`] makes one, from the call a
-/// [`LocalMachine`] serves, so an operation that takes one never runs for an Operator.
+impl Scope {
+    /// The Full caller, or [`Error::NeedsFullScope`] for an Operator.
+    ///
+    /// # Errors
+    /// Returns [`Error::NeedsFullScope`] for an Operator.
+    pub(crate) fn full(self) -> Result<FullCaller, Error> {
+        match self {
+            Self::Full(full) => Ok(full),
+            Self::Operator => Err(Error::NeedsFullScope),
+        }
+    }
+}
+
+/// A call at Full access. Only a check of the caller against the keys as they stand
+/// makes one, so an operation that takes one never runs for an Operator.
 #[derive(Clone, Copy, Debug)]
 pub struct FullCaller(Call);
 
@@ -77,6 +104,42 @@ impl FullCaller {
     }
 }
 
+/// This Machine serving its call at the scope its caller held when a lock every key change
+/// takes was held. Only the admission turns and the switch make one, each holding its lock
+/// for as long as the handle lives, so its scope holds as long as it does. It is not
+/// `Clone`: a clone of the [`LocalMachine`] inside reads no scope.
+pub(crate) struct Checked(LocalMachine);
+
+impl std::ops::Deref for Checked {
+    type Target = LocalMachine;
+
+    fn deref(&self) -> &LocalMachine {
+        &self.0
+    }
+}
+
+impl Checked {
+    pub(crate) fn scope(&self) -> Scope {
+        self.0.call.scope()
+    }
+
+    /// The Full caller this handle serves. The Machine API refuses an Operator's call to a
+    /// route that needs one first, so this refuses only a caller downgraded since.
+    ///
+    /// # Errors
+    /// Returns [`Error::NeedsFullScope`] for an Operator.
+    pub(crate) fn full_caller(&self) -> Result<FullCaller, Error> {
+        self.scope().full()
+    }
+}
+
+/// A lock every key change takes: either admission turn, or the switch.
+pub(super) trait Held {}
+
+impl Held for tokio::sync::OwnedRwLockWriteGuard<()> {}
+impl Held for tokio::sync::OwnedRwLockReadGuard<()> {}
+impl Held for tokio::sync::OwnedMutexGuard<()> {}
+
 impl LocalMachine {
     /// This Machine serving `call`.
     #[must_use]
@@ -89,61 +152,55 @@ impl LocalMachine {
         self.call
     }
 
-    /// This Machine serving its call at the access its caller holds now: a management key
-    /// no slot accepts any more is refused, and one that lost its Device slot but keeps
-    /// another acts at Operator scope. A call never widens past the scope it arrived with.
-    ///
-    /// # Errors
-    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
-    /// caller's key.
-    pub(super) fn as_it_stands(&self) -> Result<Self, Error> {
+    /// The scope the caller holds as the keys stand now: a management key no slot accepts
+    /// any more is refused, and one that lost its Device slot but keeps another holds
+    /// Operator scope. A call never widens past the scope it claims.
+    fn scope_as_it_stands(&self) -> Result<ManagementScope, Error> {
         let Caller::Management(remote) = self.call.caller else {
-            return Ok(self.clone());
+            return Ok(self.call.scope);
         };
         let record = self.record();
         if !record.accepts_management_client(&remote) {
             return Err(Error::ManagementRevoked);
         }
-        let scope = match (self.call.scope, record.management_scope(&remote)) {
+        Ok(match (self.call.scope, record.management_scope(&remote)) {
             (ManagementScope::Full, Some(ManagementScope::Full)) => ManagementScope::Full,
             _ => ManagementScope::Operator,
-        };
-        Ok(self.clone().at(Call { scope, ..self.call }))
-    }
-
-    /// This Machine serving its call at Operator scope, for work that has not yet
-    /// checked what its caller holds now.
-    #[must_use]
-    pub(super) fn narrowest(&self) -> Self {
-        self.clone().at(Call {
-            scope: ManagementScope::Operator,
-            ..self.call
         })
     }
 
-    pub(crate) fn scope(&self) -> Scope {
-        match self.call.scope {
-            ManagementScope::Full => Scope::Full(FullCaller(self.call)),
-            ManagementScope::Operator => Scope::Operator,
-        }
-    }
-
-    /// The call this Machine serves at Full access, or `None` for an Operator's.
-    #[must_use]
-    pub fn full(&self) -> Option<FullCaller> {
-        match self.scope() {
-            Scope::Full(full) => Some(full),
-            Scope::Operator => None,
-        }
-    }
-
-    /// The call this Machine serves, for an operation only a Full caller makes. The Machine
-    /// API refuses an Operator's call to its route first.
+    /// The scope the caller holds now, bound to no lock, so a key change may land right
+    /// after. Only a read takes it, or an admission whose kept spec
+    /// [`super::AdmittedSpec::still_holds`] checks again under the turn before Docker acts.
     ///
     /// # Errors
-    /// Returns [`Error::NeedsFullScope`] for an Operator's call.
-    pub(super) fn full_caller(&self) -> Result<FullCaller, Error> {
-        self.full().ok_or(Error::NeedsFullScope)
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
+    pub(crate) fn scope_now(&self) -> Result<Scope, Error> {
+        Ok(Call {
+            scope: self.scope_as_it_stands()?,
+            ..self.call
+        }
+        .scope())
+    }
+
+    /// The call this Machine serves at Full access as the keys stand now, or `None` for
+    /// an Operator's or a removed caller's. Bound to no lock, as [`Self::scope_now`] is.
+    #[must_use]
+    pub fn full_now(&self) -> Option<FullCaller> {
+        self.scope_now().ok()?.full().ok()
+    }
+
+    /// This Machine serving its call at the scope the caller holds now, checked while
+    /// `_held` is held, so a key change lands only before the check or after the lock drops.
+    ///
+    /// # Errors
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
+    pub(super) fn checked_under(self, _held: &impl Held) -> Result<Checked, Error> {
+        let scope = self.scope_as_it_stands()?;
+        let call = Call { scope, ..self.call };
+        Ok(Checked(self.at(call)))
     }
 
     /// Mark subsequent calls as from the authenticated management client `remote`.

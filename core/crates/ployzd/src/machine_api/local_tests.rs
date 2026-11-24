@@ -1,6 +1,7 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, names_content, store_error, withhold_opened};
+use super::{MachineService, store_error, withhold_opened};
+use crate::machine::local_machine::names_content;
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -6621,7 +6622,7 @@ mod ensure_container {
                 })
                 .await
                 .unwrap();
-            // A call the Device sent before it was removed is not kept as Full access.
+            // A call the Device sent before it was removed is answered as a removed key's.
             let late = direct
                 .ensure_container(Request::new(
                     op::EnsureContainer::into_request(
@@ -6631,7 +6632,7 @@ mod ensure_container {
                     .unwrap(),
                 ))
                 .await;
-            assert_eq!(late.unwrap_err().code(), Code::PermissionDenied);
+            assert_eq!(late.unwrap_err().code(), Code::Unauthenticated);
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 

@@ -98,10 +98,11 @@ impl LocalMachine {
         &self,
         WrapSealingKeyRequest { code }: WrapSealingKeyRequest,
     ) -> Result<SealingKeyWrapped, super::Error> {
-        if self.full_caller()?.cloud_routed() {
+        // Checked as the keys stand now, so a caller downgraded since it arrived gets no
+        // backup; one removed after this read was served before its removal.
+        if self.scope_now()?.full()?.cloud_routed() {
             return Err(Error::CloudRouted.into());
         }
-        self.require_management_access()?;
         let key = SealingKey::load(self.owner.data_dir())
             .map_err(Error::Unreadable)?
             .ok_or(Error::NotHeld)?;
@@ -139,11 +140,13 @@ impl LocalMachine {
         &self,
         request: RecoverSealingKeyRequest,
     ) -> Result<SealingKeyRecovered, super::Error> {
-        if self.full_caller()?.cloud_routed() {
-            return Err(Error::CloudRouted.into());
-        }
-        self.finish_mutation(move |local| async move { local.recover_admitted(request).await })
-            .await
+        self.finish_mutation(move |local| async move {
+            if local.full_caller()?.cloud_routed() {
+                return Err(Error::CloudRouted.into());
+            }
+            local.recover_admitted(request).await
+        })
+        .await
     }
 
     /// Recover reads the Cluster's Sealing and opens the backup first, then

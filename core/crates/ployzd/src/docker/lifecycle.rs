@@ -443,6 +443,12 @@ impl Lifecycle {
                 return Ok(existing);
             }
         }
+        // A key that admitted the spec may have been removed while this creation waited
+        // for its turn: it then makes and pulls nothing, Volumes included.
+        admitted
+            .still_holds(Error::AdmissionUnread)
+            .map_err(E::from)?
+            .map_err(|refusal| E::from(Error::Unadmitted(refusal)))?;
         tracing::info!(
             namespace = namespace.as_str(),
             service = spec.name.as_str(),
