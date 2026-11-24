@@ -17,13 +17,17 @@
 //! - **The editor** changes the plan once, at any step before the request ends: a
 //!   collaborator edits or discards the draft, a Deployment lands so a retry or a cancel
 //!   reads another version, every Server leaves, or the drained Server leaves the frame
-//!   (`Command::edits`).
+//!   (`ApprovalBinding::edits`). With `open_paths` it also makes the changes the code's
+//!   digest doesn't bind: the cancelled Deployment's runner claims it (`Plan::Started`), or
+//!   a Volume the Drain's dialog showed staying can now move (`Plan::VolumeMoves`), and it
+//!   may change a Drain's plan after Cloud's last compare.
 //! - **The remover** revokes the caller's management access on a Machine once
 //!   (`Action::Revoke`): a Full caller's `set_device` removes the Device and its slot under
 //!   its own exclusive turn (`machine/local_machine/management_client.rs`).
 //! - **The executor** sends the request (`Action::Send`), and where the code splits it, takes
 //!   its later steps: Cloud's second Store call before f06d2a6351 (`Action::Resend`), a
-//!   Drain's run and Inngest's retry of it (`Action::Run`, `Action::Crash`), a Machine's
+//!   Drain's compare and Inngest's retry of it (`Action::Run`, `Action::Crash`), then its
+//!   Engine call (`Action::Engine`) and its Volume moves (`Action::Volumes`), a Machine's
 //!   admitted turn (`Action::Run`).
 //!
 //! Each gate is restated by hand from the function it copies, with each shortcut that once
@@ -38,13 +42,24 @@
 //! - Cloud's `gateOperation` (`dashboard/src/modules/operations/gate.server.ts`) weighs a
 //!   Drain's yes when it is asked, and `stillCovered`
 //!   (`dashboard/src/modules/machines/server-drain.server.ts`) plans again each time
-//!   `executeDrainOnce` runs (`Command::Drain`).
+//!   `executeDrainOnce` runs. It hands the Engine only the Services in scope:
+//!   `drain_machine` (`ployz/src/drain.rs`, `preflight`) reads the Cluster again and drains
+//!   them as it finds them, and `planDrainVolumes`
+//!   (`dashboard/src/modules/machines/server-drain-volumes.server.ts`) plans each Volume
+//!   move later still, from a new frame (`Command::Drain`).
 //! - A Machine checks the caller's management access, `require_management_access`
 //!   (`ployzd/src/machine/local_machine.rs`), in `admit_installation`
 //!   (`ployzd/src/machine/local_machine/turns.rs`). `finish_mutation` and `finish_shared`
 //!   take their turn first and check under it; `finish_installed` checks when the call
 //!   arrives and its work takes `exclusive_turn` later, which checks nothing
 //!   (`Command::Machine`).
+//!
+//! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
+//! binds the Deployment and the review version, which stay put when its runner claims it,
+//! so a yes to taking a queued Deployment out of the queue stops one already running
+//! (#4555); a Drain's digest binds no Volume forecast (`drainPlan`'s `data`), so a Volume
+//! the dialog showed staying moves when the frame `planDrainVolumes` reads lets it, and the
+//! Engine drains what it reads after Cloud's compare (#4556).
 //!
 //! Out of scope: a yes the dashboard gives itself (a dashboard confirm), a Deploy that waits
 //! at an approval link, the proposal decision that answers a Protected ask, an Organization
@@ -129,8 +144,9 @@ impl Command {
         Self::Machine(Route::Installed),
     ];
 
-    /// The plans the editor may move this command's plan to.
-    fn edits(self) -> &'static [Plan] {
+    /// The plans the editor may move this command's plan to, among the ones the code's
+    /// digest binds.
+    const fn edits(self) -> &'static [Plan] {
         match self {
             Self::Store(Write::Save) => &[Plan::Other, Plan::Harmless, Plan::Discarded],
             Self::Store(Write::Deploy | Write::Retry | Write::Remove) => {
@@ -168,23 +184,34 @@ enum Plan {
     Forgets,
     /// The drained Server left the frame, so `drainPlan` answers null.
     Gone,
+    /// The cancelled Deployment's runner claimed it: `Queued` became `Running`, so the
+    /// cancel stops it partway instead of taking it out of the queue (`deployment::cancel`).
+    /// Head's token counts only Deployments that ended (`history::head`), so the review
+    /// version, and with it the digest, stays the asked one's.
+    Started,
+    /// A Volume the Drain's dialog showed staying (`dataPlan`'s `stays`) can move now: the
+    /// Service sharing it stopped, or its one Container started. `operationDigest` binds the
+    /// preview's `moves`, `stays` and `retires` and the effects, not `data`, so the digest
+    /// stays the asked one's.
+    VolumeMoves,
 }
 
 impl Plan {
     /// Whether the plan names a destructive effect.
     const fn destroys(self) -> bool {
         match self {
-            Self::Asked | Self::Other | Self::Forgets => true,
+            Self::Asked | Self::Other | Self::Forgets | Self::Started | Self::VolumeMoves => true,
             Self::Harmless | Self::Discarded | Self::Gone => false,
         }
     }
 
     /// The digest the code binds for this plan, written as the plan it names.
     /// `approve_shut_down` binds `forgets`; without it, forgetting reads as taking the
-    /// same Services off.
+    /// same Services off. Nothing binds a Deployment's start or a Drain's Volume forecast.
     const fn digest(self, broken: Broken) -> Self {
         match self {
             Self::Forgets if broken.forget_unbound => Self::Asked,
+            Self::Started | Self::VolumeMoves => Self::Asked,
             Self::Asked
             | Self::Other
             | Self::Harmless
@@ -298,6 +325,12 @@ enum Exec {
     Waiting {
         digest: Plan,
     },
+    /// `stillCovered` matched the row's digest; the Engine is still to be asked.
+    Covered {
+        digest: Plan,
+    },
+    /// The Engine drained and answered; the Volume moves are still to be planned.
+    Moving,
     Ran,
     /// Refused, `waited` once admitted, at the run.
     Refused {
@@ -322,6 +355,8 @@ struct State {
     live: Plan,
     /// The editor made its one change.
     edited: bool,
+    /// It made it after Cloud's last compare of a Drain.
+    late: bool,
     /// The Machine accepts the caller's key.
     trusted: bool,
     /// The Drain's step died once before its effect, and Inngest ran it again.
@@ -333,6 +368,11 @@ struct State {
 impl State {
     const fn over(&self) -> bool {
         matches!(self.exec, Exec::Ran | Exec::Refused { .. })
+    }
+
+    /// Cloud compared the Drain's plan for the last time.
+    const fn compared(&self) -> bool {
+        matches!(self.exec, Exec::Covered { .. } | Exec::Moving | Exec::Ran)
     }
 
     fn refuse(&mut self, why: Why) {
@@ -395,6 +435,10 @@ struct Broken {
 struct ApprovalBinding {
     command: Command,
     broken: Broken,
+    /// The editor may also make the changes the shipped code lets through: a Cancel's
+    /// Deployment starts, a Drain's Volume forecast flips, or a Drain's plan changes after
+    /// Cloud's last compare. Each breaks the property; see the module doc.
+    open_paths: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -407,13 +451,29 @@ enum Action {
     Send,
     /// Cloud's second Store call, with the yes (before f06d2a6351).
     Resend,
-    /// The Drain's `executeDrainOnce`, or the Machine's admitted turn.
+    /// The Drain's `executeDrainOnce` up to `stillCovered`, or the Machine's admitted turn.
     Run,
-    /// The Drain's step dies before its effect; Inngest runs it again.
+    /// The Drain's step dies before the Engine is asked; Inngest runs it again from the top.
     Crash,
+    /// `executeDrainOnce` calls `drainMachine` with the Services in scope, and the Engine
+    /// drains them as its own read finds them.
+    Engine,
+    /// `planDrainVolumes` reads a new frame and moves each Volume it can.
+    Volumes,
 }
 
 impl ApprovalBinding {
+    /// The plans the editor may move the plan to from `state`.
+    const fn edits(&self, state: &State) -> &'static [Plan] {
+        match (self.command, self.open_paths) {
+            (Command::Store(Write::Cancel), true) => &[Plan::Other, Plan::Started],
+            (Command::Drain, true) => &[Plan::Other, Plan::Harmless, Plan::Gone, Plan::VolumeMoves],
+            // The shipped check holds the world still from Cloud's last compare.
+            (Command::Drain, false) if state.compared() => &[],
+            (command, _) => command.edits(),
+        }
+    }
+
     /// `Gate::ask`'s comparison, at `protection` as the gate holds it.
     fn require(&self, protection: Protection, digest: Plan, approval: Approval) -> Result<(), Ask> {
         let member = protection == Protection::Asks && !self.broken.member_yes_answers_protected;
@@ -597,7 +657,8 @@ impl ApprovalBinding {
         }
     }
 
-    /// `executeDrainOnce`'s `stillCovered`, for a Drain a person said yes to.
+    /// `executeDrainOnce`'s `stillCovered`, for a Drain a person said yes to. Covered, it
+    /// waits for the Engine call.
     fn run_drain(&self, state: &mut State, digest: Plan) {
         let plan = state.live;
         let present = plan != Plan::Gone;
@@ -612,10 +673,38 @@ impl ApprovalBinding {
             matches
         };
         if covered {
-            self.run(state);
+            state.exec = Exec::Covered { digest };
         } else {
             state.refuse(Why::Changed);
         }
+    }
+
+    /// `drainMachine`: the Engine's `preflight` reads the Cluster again and drains the
+    /// Services in scope as it finds them. It leaves a Service with a Volume where it is, so
+    /// a Volume forecast reads as the asked plan here. A Server Cloud's frame lost may still
+    /// be one the Engine sees, so the Engine drains it too.
+    fn engine_drain(&self, state: &mut State) {
+        let plan = if state.live == Plan::VolumeMoves {
+            Plan::Asked
+        } else {
+            state.live
+        };
+        state.wrote = Some(Wrote {
+            plan,
+            valid: self.valid(state),
+        });
+        state.exec = Exec::Moving;
+    }
+
+    /// `planDrainVolumes`: each Service the Engine left for its Volume moves when the new
+    /// frame's `dataCheck` and `candidateServers` let it.
+    fn drain_volumes(state: &mut State) {
+        if state.live == Plan::VolumeMoves
+            && let Some(wrote) = &mut state.wrote
+        {
+            wrote.plan = Plan::VolumeMoves;
+        }
+        state.exec = Exec::Ran;
     }
 }
 
@@ -670,6 +759,7 @@ impl Model for ApprovalBinding {
                         },
                         live: Plan::Asked,
                         edited: false,
+                        late: false,
                         trusted: true,
                         crashed: false,
                         exec: Exec::Ready,
@@ -686,7 +776,7 @@ impl Model for ApprovalBinding {
             return;
         }
         if !state.edited {
-            actions.extend(self.command.edits().iter().map(|plan| Action::Edit(*plan)));
+            actions.extend(self.edits(state).iter().map(|plan| Action::Edit(*plan)));
         }
         if self.command.machine() && state.trusted {
             actions.push(Action::Revoke);
@@ -700,6 +790,13 @@ impl Model for ApprovalBinding {
                     actions.push(Action::Crash);
                 }
             }
+            Exec::Covered { .. } => {
+                actions.push(Action::Engine);
+                if !state.crashed {
+                    actions.push(Action::Crash);
+                }
+            }
+            Exec::Moving => actions.push(Action::Volumes),
             Exec::Ran | Exec::Refused { .. } => {}
         }
     }
@@ -710,6 +807,7 @@ impl Model for ApprovalBinding {
             Action::Edit(plan) => {
                 state.live = plan;
                 state.edited = true;
+                state.late = state.compared();
             }
             Action::Revoke => state.trusted = false,
             Action::Send => match self.command {
@@ -750,7 +848,15 @@ impl Model for ApprovalBinding {
                     Command::Machine(_) | Command::Store(_) => self.run(&mut state),
                 }
             }
-            Action::Crash => state.crashed = true,
+            Action::Crash => {
+                let (Exec::Waiting { digest } | Exec::Covered { digest }) = state.exec else {
+                    return None;
+                };
+                state.exec = Exec::Waiting { digest };
+                state.crashed = true;
+            }
+            Action::Engine => self.engine_drain(&mut state),
+            Action::Volumes => Self::drain_volumes(&mut state),
         }
         Some(state)
     }
@@ -793,8 +899,15 @@ impl Model for ApprovalBinding {
                 if write != Write::Remove {
                     properties.push(Property::sometimes(MEMBER_ASKS, |_, state: &State| {
                         state.facts.protection == Protection::Asks
+                            && state.facts.signer == Signer::Person
                             && state.live == Plan::Asked
-                            && matches!(state.exec, Exec::Refused { .. })
+                            && matches!(
+                                state.exec,
+                                Exec::Refused {
+                                    why: Why::Protected,
+                                    ..
+                                }
+                            )
                     }));
                 }
             }
@@ -852,7 +965,7 @@ const BOUND: &str = "every effect runs the plan a valid yes was given for";
 const YES_RUNS: &str = "a yes runs the plan it was given for";
 const EDIT_ASKS: &str = "a plan changed since the ask asks again";
 const AGENT_REFUSED: &str = "an agent's yes is refused";
-const MEMBER_ASKS: &str = "a member's own yes asks again in a Protected Environment";
+const MEMBER_ASKS: &str = "a member's own yes reaches the Store and asks an owner or admin";
 const DRAIN_CHANGED: &str = "a Drain whose plan changed after its gate is refused when it runs";
 const DRAIN_RETRIED: &str = "a Drain runs after Inngest ran its step again";
 const REVOKED_UNDER_TURN: &str = "a key revoked while its call waited is refused under the turn";
@@ -917,6 +1030,8 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Exec::Refused { why, .. } => format!("and it is refused: {why:?}"),
         Exec::Resending => "and Cloud's first call asks for the yes's digest".to_owned(),
         Exec::Waiting { digest } => format!("and it waits, holding digest {digest:?}"),
+        Exec::Covered { digest } => format!("and it matches digest {digest:?}"),
+        Exec::Moving => "and the Engine answers".to_owned(),
         Exec::Ready => String::new(),
     };
     match action {
@@ -926,8 +1041,15 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
                 .to_owned()
         }
         Action::Crash => {
-            "Inngest: executeDrainOnce's step dies before its effect, to run again".to_owned()
+            "Inngest: executeDrainOnce's step dies before the Engine is asked, to run again"
+                .to_owned()
         }
+        Action::Engine => format!(
+            "Engine: drainMachine's preflight reads the Cluster again and drains the Services in scope, {outcome}"
+        ),
+        Action::Volumes => format!(
+            "Cloud: planDrainVolumes reads a new frame and moves each Volume it can, {outcome}"
+        ),
         Action::Send => match model.command {
             Command::Store(write) if broken.cloud_calls_twice => format!(
                 "executor: handleConfigRequest's first Store call carries no yes (under Broken), {} weighs `required`, {outcome}",
@@ -961,7 +1083,7 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         },
         Action::Run => match model.command {
             Command::Drain => format!(
-                "Inngest: executeDrainOnce plans again and stillCovered weighs the row, {outcome}"
+                "Inngest: executeDrainOnce plans again and stillCovered compares the row, {outcome}"
             ),
             Command::Machine(Route::Turned) if broken.turn_trusts_arrival => format!(
                 "Machine: finish_admitted takes the turn and runs what arrival admitted, unchecked (under Broken), {outcome}"
@@ -987,6 +1109,12 @@ const fn edit_words(plan: Plan) -> &'static str {
             "every Server leaves: forgettable answers Forgotten, so the Store only forgets what ran"
         }
         Plan::Gone => "the drained Server leaves the frame: drainPlan answers null",
+        Plan::Started => {
+            "the runner claims the queued Deployment: it is running now, at the same review version"
+        }
+        Plan::VolumeMoves => {
+            "a Volume the dialog showed staying can move now: its sharer stopped or its Container started"
+        }
     }
 }
 
@@ -1021,7 +1149,19 @@ mod tests {
     }
 
     const fn without(command: Command, broken: Broken) -> ApprovalBinding {
-        ApprovalBinding { command, broken }
+        ApprovalBinding {
+            command,
+            broken,
+            open_paths: false,
+        }
+    }
+
+    /// The code with the changes its digest doesn't bind.
+    fn open(command: Command) -> ApprovalBinding {
+        ApprovalBinding {
+            open_paths: true,
+            ..code(command)
+        }
     }
 
     /// The first path in BFS order that breaks the property under `model` and ends in a
@@ -1047,7 +1187,8 @@ mod tests {
     /// branch the code handles: a yes runs its plan, an edited plan asks again, an agent's
     /// yes and a member's in a Protected Environment are refused, a Drain refuses a plan
     /// that changed after its gate and runs after a retry, and a turn refuses a key revoked
-    /// while its call waited. `Route::Installed` is the finding below, so it is left out.
+    /// while its call waited. `Route::Installed` is the finding below, so it is left out, and
+    /// the changes `open_paths` adds are the open paths at the end of this module.
     #[test]
     fn the_code_binds_every_yes_to_its_plan_and_moment() {
         for command in Command::ALL {
@@ -1375,5 +1516,57 @@ mod tests {
             |state| state.wrote.is_some(),
         ));
         assert!(!ran.trusted, "the key was revoked while the call drained");
+    }
+
+    /// Open, #4555. A Cancel's digest binds the Deployment and the review version. The
+    /// runner's claim moves neither, so a yes given to take a queued Deployment out of the
+    /// queue stops it partway once it runs, the caller's own or someone else's.
+    #[test]
+    fn a_cancel_s_yes_while_queued_stops_a_started_deployment() {
+        for theirs in [true, false] {
+            breaks_ending(open(Command::Store(Write::Cancel)), move |state| {
+                state.facts.theirs == theirs
+                    && state.wrote
+                        == Some(Wrote {
+                            plan: Plan::Started,
+                            valid: true,
+                        })
+            });
+        }
+    }
+
+    /// Open, #4556. `stillCovered` compares the plan; the Engine then drains what its own
+    /// read finds, and `planDrainVolumes` later moves each Volume a new frame lets it. A
+    /// Volume the dialog showed staying moves under the same digest, here with the change
+    /// landing after Cloud's last compare.
+    #[test]
+    fn a_drain_moves_a_volume_its_dialog_showed_staying() {
+        let path = breaks_where(open(Command::Drain), BOUND, |path| {
+            last(path).late
+                && last(path).wrote
+                    == Some(Wrote {
+                        plan: Plan::VolumeMoves,
+                        valid: true,
+                    })
+        });
+        assert!(
+            path.iter()
+                .any(|(_, action)| *action == Some(Action::Volumes))
+        );
+    }
+
+    /// Open, #4556. Between `stillCovered` and the Engine's `preflight`, a global Service's
+    /// last other copy stops, and the Engine retires it: the Drain removes a Service its
+    /// yes didn't name.
+    #[test]
+    fn the_engine_drains_what_it_reads_after_cloud_compared() {
+        breaks_where(open(Command::Drain), BOUND, |path| {
+            last(path).late
+                && last(path).wrote
+                    == Some(Wrote {
+                        plan: Plan::Other,
+                        valid: true,
+                    })
+        });
     }
 }
