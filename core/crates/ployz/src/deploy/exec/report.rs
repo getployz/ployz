@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerRefusal, DeployWarning, ExecutionError, MachineAction, MachineId,
-    MachineName, QualifiedService, RpcError, RpcErrorCode,
+    MachineName, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
 };
 
 use super::machine_error;
@@ -136,7 +136,8 @@ impl<'a> Report<'a> {
         self.name_left(progress, service, machine_id, container_id, reason);
     }
 
-    /// A copy this run couldn't remove, for `reason`, which keeps running.
+    /// A copy this run couldn't remove that never went In, for `reason`, which keeps
+    /// running. It was only ever an attempt at its slot, so its removal is a Rollout.
     pub(super) fn name_left(
         &self,
         progress: &Progress,
@@ -150,28 +151,43 @@ impl<'a> Report<'a> {
             container_id,
             machine: self.machine_name(&machine_id),
             reason,
+            purpose: RemoveContainerPurpose::Rollout,
         });
     }
 
-    /// Names each copy a removal leaves on a Machine it could not reach, once.
+    /// Names each copy a removal leaves on a Machine it could not reach, once. No new
+    /// copy reached that Machine either, so each one is a Retire.
     pub(super) fn leave_unreached(&self, progress: &Progress, copies: &[cleanup::Copy]) {
         let mut named = self.unreached.lock().expect("unreached copies lock");
         for copy in copies {
             if named.insert(copy.container_id) {
-                self.leave_running(progress, copy, Left::Unreached);
+                self.leave_running(
+                    progress,
+                    copy,
+                    RemoveContainerPurpose::Retire,
+                    Left::Unreached,
+                );
             }
         }
     }
 
     /// A Machine that was cut off or powered off can route the copy again once
-    /// it is back, so the report names each one.
-    pub(super) fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
+    /// it is back, so the report names each one, with `purpose` for the cleanup
+    /// that retries its removal.
+    pub(super) fn leave_running(
+        &self,
+        progress: &Progress,
+        copy: &cleanup::Copy,
+        purpose: RemoveContainerPurpose,
+        left: Left,
+    ) {
         let (reason, away) = self.explain(copy, left);
         progress.warn(DeployWarning::LeftRunning {
             service: copy.service.clone(),
             container_id: copy.container_id,
             machine: self.machine_name(&copy.machine_id),
             reason,
+            purpose,
         });
         for machine in away {
             progress.warn(DeployWarning::MixedAfterReturn {

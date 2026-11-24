@@ -852,5 +852,8 @@ async fn a_moved_copys_old_container_keeps_its_anonymous_volumes() {
         .unwrap()
         .unwrap();
     assert_eq!(end, OldCopyEnd::Stopped);
-    assert_eq!(*client.deleted_volumes.lock().unwrap(), [false]);
+    assert_eq!(
+        *client.deleted_volumes.lock().unwrap(),
+        [(container('a'), false)]
+    );
 }

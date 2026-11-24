@@ -128,7 +128,12 @@ pub(super) async fn publish_group<C: MachineOperations>(
                     container_id: *container_id,
                     rotation: CopyRotation::Pending,
                 };
-                shared.report.leave_running(progress, &copy, left_by(error));
+                shared.report.leave_running(
+                    progress,
+                    &copy,
+                    RemoveContainerPurpose::Rollout,
+                    left_by(error),
+                );
                 continue;
             }
         };
@@ -144,9 +149,12 @@ pub(super) async fn publish_group<C: MachineOperations>(
             && let Some(routing) =
                 gaps_still_routing(client, &copy, gapped.machines.iter().copied()).await
         {
-            shared
-                .report
-                .leave_running(progress, &copy, Left::NotConfirmed(routing));
+            shared.report.leave_running(
+                progress,
+                &copy,
+                RemoveContainerPurpose::Rollout,
+                Left::NotConfirmed(routing),
+            );
             continue;
         }
         // The owner refuses this Out (LastIn) until its own view lists a new copy.
@@ -173,7 +181,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 Err(error) => Some(Left::Failed(error)),
             };
             if let Some(left) = left {
-                shared.report.leave_running(progress, &copy, left);
+                shared
+                    .report
+                    .leave_running(progress, &copy, RemoveContainerPurpose::Rollout, left);
                 continue;
             }
             listed_on.insert(copy.machine_id);
@@ -195,17 +205,23 @@ pub(super) async fn publish_group<C: MachineOperations>(
         match sent {
             Ok(None) => unlisting.push(copy),
             Ok(Some(refusal)) => {
-                shared
-                    .report
-                    .leave_running(progress, &copy, Left::Refused(refusal));
+                shared.report.leave_running(
+                    progress,
+                    &copy,
+                    RemoveContainerPurpose::Rollout,
+                    Left::Refused(refusal),
+                );
             }
             Err(error) => {
                 unconfirmed.get_or_insert_with(|| {
                     machine_error(MachineAction::StopContainer, error.clone())
                 });
-                shared
-                    .report
-                    .leave_running(progress, &copy, Left::Failed(error));
+                shared.report.leave_running(
+                    progress,
+                    &copy,
+                    RemoveContainerPurpose::Rollout,
+                    Left::Failed(error),
+                );
             }
         }
     }
@@ -229,7 +245,12 @@ pub(super) async fn publish_group<C: MachineOperations>(
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
-                    shared.report.leave_running(progress, copy, left.clone());
+                    shared.report.leave_running(
+                        progress,
+                        copy,
+                        RemoveContainerPurpose::Rollout,
+                        left.clone(),
+                    );
                 }
             }
         }
@@ -245,7 +266,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
     .await;
     for (copy, removed) in gone.iter().zip(removed) {
         if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-            shared.report.leave_running(progress, copy, left);
+            shared
+                .report
+                .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left);
         }
     }
     match (unconfirmed, gapped) {

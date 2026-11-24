@@ -25,7 +25,7 @@ use super::{
     schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind, creates_container},
 };
 
-use super::cleanup::{self, ACK_WAIT};
+use super::cleanup::{self, ACK_WAIT, EmptyPolicy};
 pub(super) use super::progress::Progress;
 
 mod gens;
@@ -770,13 +770,7 @@ impl<'a> PlanFacts<'a> {
                     .map(move |index| (*index, service))
             })
             .filter(|(index, _)| {
-                matches!(
-                    operation_at(operations, *index),
-                    DeployOperation::RemoveContainer {
-                        purpose: RemoveContainerPurpose::Rollout,
-                        ..
-                    }
-                )
+                TaskKind::of(operation_at(operations, *index)) == TaskKind::Unroute
             })
             .collect();
         Self {
@@ -935,12 +929,18 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
             purpose,
+            ..
         } => {
+            let empty = if TaskKind::of(operation) == TaskKind::Unroute {
+                EmptyPolicy::RequireOtherIn
+            } else {
+                EmptyPolicy::MayEmpty
+            };
             remove_container(
                 client,
                 index,
                 progress,
-                (machine_id, container_id, *purpose),
+                (machine_id, container_id, *purpose, empty),
                 shared,
                 cancellation,
             )

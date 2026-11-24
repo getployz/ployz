@@ -417,15 +417,6 @@ pub(crate) enum EmptyPolicy {
     MayEmpty,
 }
 
-impl From<RemoveContainerPurpose> for EmptyPolicy {
-    fn from(purpose: RemoveContainerPurpose) -> Self {
-        match purpose {
-            RemoveContainerPurpose::Rollout => Self::RequireOtherIn,
-            RemoveContainerPurpose::Retire => Self::MayEmpty,
-        }
-    }
-}
-
 pub(crate) async fn take_out<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,

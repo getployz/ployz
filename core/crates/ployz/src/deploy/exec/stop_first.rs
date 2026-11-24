@@ -111,6 +111,7 @@ pub(super) async fn restore_group<C: MachineOperations>(
             shared.report.leave_running(
                 progress,
                 old,
+                RemoveContainerPurpose::Rollout,
                 Left::NotRestored(Box::new(Left::DeployFailed), why),
             );
         }
@@ -133,13 +134,16 @@ pub(super) async fn restore_group<C: MachineOperations>(
                 Err(error) => Some(Left::Failed(error)),
             };
             if let Some(left) = left {
-                shared.report.leave_running(progress, &copy, left);
+                shared
+                    .report
+                    .leave_running(progress, &copy, RemoveContainerPurpose::Rollout, left);
             }
         } else if may_run.contains(&copy.machine_id) {
             // Its old copy may be writing the Volume, so it stays stopped.
             shared.report.leave_running(
                 progress,
                 &copy,
+                RemoveContainerPurpose::Rollout,
                 Left::NotRestored(
                     Box::new(Left::DeployFailed),
                     "its old copy may be serving".to_owned(),
@@ -247,10 +251,12 @@ pub(super) async fn withdraw<C: MachineOperations>(
 /// Removes one Container. A copy that is not there is already removed. Otherwise
 /// what the removal must reach decides how it goes:
 ///
-/// - A `Rollout` removal takes an old copy a new one replaced, with its anonymous
-///   Volumes. The Service keeps running, so a copy still In goes Out first, and
-///   the drain waits for every proxy to confirm.
-/// - A `Retire` keeps the anonymous Volumes and may leave the Service empty.
+/// - `purpose` alone decides the anonymous Volumes: a `Rollout` takes them with an
+///   old copy a new one replaced in its slot, and a `Retire` keeps them.
+/// - When the Service stays (`empty` is `RequireOtherIn`), as for a replaced copy or
+///   one a scale-down drops, a copy still In goes Out first, and the drain waits for
+///   every proxy to confirm.
+/// - Otherwise the removal may leave the Service empty.
 ///   - For a Service this Deploy keeps, such as an exited pre-deploy hook of one
 ///     that stays, it is plain cleanup. The Service's other copies are its own,
 ///     wherever they run, so none is named.
@@ -270,7 +276,12 @@ pub(super) async fn remove_container<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &Progress,
-    (machine_id, container_id, purpose): (&MachineId, &ContainerId, RemoveContainerPurpose),
+    (machine_id, container_id, purpose, empty): (
+        &MachineId,
+        &ContainerId,
+        RemoveContainerPurpose,
+        EmptyPolicy,
+    ),
     shared: &Shared<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Ran, OperationFailure> {
@@ -292,7 +303,7 @@ pub(super) async fn remove_container<C: MachineOperations>(
                 };
                 shared
                     .report
-                    .leave_running(progress, &copy, Left::Failed(cause.clone()));
+                    .leave_running(progress, &copy, purpose, Left::Failed(cause.clone()));
             }
             return Err(error.into());
         }
@@ -307,13 +318,13 @@ pub(super) async fn remove_container<C: MachineOperations>(
     {
         shared
             .report
-            .leave_running(progress, &copy, Left::NotConfirmed(routing));
+            .leave_running(progress, &copy, purpose, Left::NotConfirmed(routing));
         return Ok(Ran::default());
     }
     // A copy an earlier gapped Deploy left may still be routed by a gap Server's
     // proxy, which never acks its drain (#3676).
     if copy.drains()
-        && matches!(purpose, RemoveContainerPurpose::Rollout)
+        && empty == EmptyPolicy::RequireOtherIn
         && let Some(gaps) = shared
             .gens
             .gaps_routing(client, progress, &copy, cancellation)
@@ -321,10 +332,9 @@ pub(super) async fn remove_container<C: MachineOperations>(
     {
         shared
             .report
-            .leave_running(progress, &copy, Left::NotConfirmed(gaps));
+            .leave_running(progress, &copy, purpose, Left::NotConfirmed(gaps));
         return Ok(Ran::default());
     }
-    let empty = EmptyPolicy::from(purpose);
     let unreached = shared
         .gens
         .unreached(client, &copy.service, cancellation)
@@ -347,20 +357,20 @@ pub(super) async fn remove_container<C: MachineOperations>(
         {
             shared
                 .report
-                .leave_running(progress, &copy, Left::Refused(refusal));
+                .leave_running(progress, &copy, purpose, Left::Refused(refusal));
             Ok(Ran::default())
         }
         Ok(Err(failure)) => {
             let (left, error) = shared
                 .report
                 .failed(failure, MachineAction::RemoveContainer);
-            shared.report.leave_running(progress, &copy, left);
+            shared.report.leave_running(progress, &copy, purpose, left);
             Err(error.into())
         }
         Err(error) => {
             shared
                 .report
-                .leave_running(progress, &copy, Left::Failed(error.clone()));
+                .leave_running(progress, &copy, purpose, Left::Failed(error.clone()));
             Err(machine_error(MachineAction::RemoveContainer, error).into())
         }
     }
@@ -462,7 +472,9 @@ pub(super) async fn leave_unstopped<C: MachineOperations>(
     left: Left,
 ) {
     if copy.rotation != CopyRotation::Held(shared.plan.run().clone()) {
-        shared.report.leave_running(progress, copy, left);
+        shared
+            .report
+            .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left);
         return;
     }
     let not_restored =
@@ -478,12 +490,15 @@ pub(super) async fn leave_unstopped<C: MachineOperations>(
             Err(error) => Some(error.message),
         };
     match not_restored {
-        None => shared.report.leave_running(progress, copy, left),
-        Some(why) => {
-            shared
-                .report
-                .leave_running(progress, copy, Left::NotRestored(Box::new(left), why))
-        }
+        None => shared
+            .report
+            .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left),
+        Some(why) => shared.report.leave_running(
+            progress,
+            copy,
+            RemoveContainerPurpose::Rollout,
+            Left::NotRestored(Box::new(left), why),
+        ),
     }
 }
 
@@ -493,18 +508,23 @@ pub(super) async fn retire_older<C: MachineOperations>(
     copy: &cleanup::Copy,
     shared: &Shared<'_>,
 ) {
+    // The newer copy may serve from another Server, so nothing is known to take this
+    // copy's slot.
     let retired = cleanup::retire(
         client,
         copy,
         EmptyPolicy::RequireOtherIn,
-        RemoveContainerPurpose::Rollout,
+        RemoveContainerPurpose::Retire,
         &CancellationToken::new(),
     )
     .await;
     if let Some(left) = left_unless_done(retired) {
-        shared
-            .report
-            .leave_running(progress, copy, Left::OlderNotRemoved(Box::new(left)));
+        shared.report.leave_running(
+            progress,
+            copy,
+            RemoveContainerPurpose::Retire,
+            Left::OlderNotRemoved(Box::new(left)),
+        );
     }
 }
 

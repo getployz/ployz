@@ -224,6 +224,35 @@ async fn a_newer_in_copy_removes_the_stop_first_copy_it_keeps_from_coming_back()
     client.assert_done();
 }
 
+/// The newer copy that keeps a stop-first copy from coming back may serve from another
+/// Server, so nothing is known to take the old copy's slot, and its anonymous Volume stays.
+#[tokio::test(start_paused = true)]
+async fn a_stop_first_copy_a_newer_copy_elsewhere_retires_keeps_its_anonymous_volumes() {
+    let (here, there) = (machine('1'), machine('2'));
+    let (old, newer, new) = (container('a'), container('c'), container('d'));
+    let plan = vec![global_replacement(&here, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(here, old), running()),
+        ok(Call::Stop(here, old)),
+        created(Call::Run(here, ContainerKind::ServiceContainer), &new),
+        ok(Call::Discard(here, new)),
+        ok(Call::Remove(here, old)),
+    ])
+    .with_copy(&here, &old, CopyRotation::In)
+    .with_copy_at(&api(), &there, &newer, CopyRotation::In, Gen::new(100));
+
+    let (outcome, _) = execute_reported(&plan, &[here], &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Newer)]));
+    assert_eq!(client.rotation(&old), None);
+    assert_eq!(
+        *client.deleted_volumes.lock().unwrap(),
+        [(new, true), (old, false)],
+        "this run's own new copy goes with its Volumes; the old copy keeps them"
+    );
+    client.assert_done();
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_old_copy_a_newer_copy_refuses_that_will_not_go_is_left_saying_why() {
     let machine = machine('1');
@@ -366,6 +395,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
             machine_id: machine,
             container_id: draining,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted::new(vec![
@@ -458,6 +488,7 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
         machine_id: machine,
         container_id: removed,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, removed), running()),
@@ -489,6 +520,7 @@ async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
         machine_id: machine,
         container_id: removed,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted {
         withheld: BTreeMap::from([(api(), usize::MAX)]),
@@ -597,6 +629,7 @@ async fn a_removal_of_the_last_in_copy_is_refused() {
         machine_id: machine,
         container_id: removed,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted::new(vec![observed(Call::Inspect(machine, removed), running())])
         .with_copy(&machine, &kept, CopyRotation::Pending)
@@ -666,6 +699,7 @@ async fn a_rollout_removal_waits_until_every_machine_lists_the_new_copy() {
             machine_id: machine,
             container_id: draining,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -824,6 +858,7 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: false,
         },
         DeployOperation::RemoveVolume { id: volume },
     ];
@@ -890,6 +925,99 @@ async fn remove_everything(client: &Scripted) -> DeployOutcome<ExecutionError> {
         None,
     )
     .await
+}
+
+/// Runs the Deploy of `requested` the planner makes from what `client` holds, whose
+/// copies were started for two replicas.
+async fn deploy_planned(
+    client: &Scripted,
+    requested: ployz_core::RequestedServiceSpec,
+) -> DeployOutcome<ExecutionError> {
+    let mut snapshot = client.snapshot();
+    for copy in &mut snapshot.containers {
+        copy.try_update(|parts| {
+            parts.resolved_spec.mode = ployz_core::ServiceMode::Replicated {
+                replicas: std::num::NonZeroU32::new(2).unwrap(),
+            };
+        })
+        .unwrap();
+    }
+    let intent = crate::deploy::DeployIntent::apply_one(
+        test_namespace(),
+        requested,
+        crate::deploy::PlanOptions::default(),
+    );
+    let plan = crate::deploy::plan_deploy(&intent, &snapshot).unwrap();
+    super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await
+}
+
+fn unchanged_api() -> ployz_core::RequestedServiceSpec {
+    serde_json::from_value(serde_json::to_value(spec(None, None, None)).unwrap()).unwrap()
+}
+
+/// Scaling `api` from two copies to one takes a copy off its Server with nothing in
+/// its slot after it. A Service run without a Volume, such as postgres, keeps its data
+/// in the anonymous Volume its image declares, so that Volume stays.
+#[tokio::test(start_paused = true)]
+async fn a_scale_down_keeps_the_removed_copys_anonymous_volumes() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (kept, removed) = (container('a'), container('b'));
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(second, removed), running()),
+        ok(Call::Remove(second, removed)),
+    ])
+    .with_copy(&first, &kept, CopyRotation::In)
+    .with_copy(&second, &removed, CopyRotation::In);
+
+    let outcome = deploy_planned(&client, unchanged_api()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&kept), Some(CopyRotation::In));
+    assert_eq!(*client.deleted_volumes.lock().unwrap(), [(removed, false)]);
+    client.assert_done();
+}
+
+/// A Deploy whose placement no longer allows a copy's Server starts a copy elsewhere
+/// and removes the old one. Nothing takes the old copy's slot on its Server, so its
+/// anonymous Volume stays.
+#[tokio::test(start_paused = true)]
+async fn a_deploy_that_excludes_a_server_keeps_its_copys_anonymous_volumes() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (replaced, removed, new) = (container('a'), container('b'), container('c'));
+    let client = Scripted::new(vec![
+        created(Call::Run(first, ContainerKind::ServiceContainer), &new),
+        observed(Call::Inspect(first, replaced), running()),
+        ok(Call::Remove(first, replaced)),
+        observed(Call::Inspect(second, removed), running()),
+        ok(Call::Remove(second, removed)),
+    ])
+    .with_copy(&first, &replaced, CopyRotation::In)
+    .with_copy(&second, &removed, CopyRotation::In);
+    let mut requested = unchanged_api();
+    requested.placement.constraints =
+        [ployz_core::PlacementConstraint::parse(format!("node.id != {second}")).unwrap()].into();
+
+    let outcome = deploy_planned(&client, requested).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        *client.deleted_volumes.lock().unwrap(),
+        [(replaced, true), (removed, false)]
+    );
+    client.assert_done();
 }
 
 fn execute_groups<C: MachineOperations>(
@@ -1656,6 +1784,7 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_the_rollout_would_remove
             machine_id: machine,
             container_id: surplus,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -1704,6 +1833,7 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_already_out() {
             machine_id: machine,
             container_id: surplus,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -1750,6 +1880,7 @@ fn the_left_copys_removal(machine: &MachineId) -> Vec<DeployOperation> {
         machine_id: *machine,
         container_id: container('a'),
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }]
 }
 
@@ -1814,6 +1945,7 @@ async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_swi
             machine_id: machine,
             container_id: left,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -1892,6 +2024,7 @@ async fn a_gapped_publish_removes_a_surplus_the_undialed_proxy_never_routed() {
             machine_id: machine,
             container_id: surplus,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -1946,6 +2079,7 @@ async fn a_gapped_publish_leaves_a_surplus_the_owner_refuses_to_take_out() {
             machine_id: machine,
             container_id: surplus,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted {
@@ -1997,6 +2131,7 @@ async fn an_undialed_servers_proxy_that_already_dropped_a_copy_lets_it_go() {
         machine_id: machine,
         container_id: dropped,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted {
         acks: BTreeMap::from([(undialed, Ack::Never)]),
@@ -2275,6 +2410,7 @@ async fn only_a_machine_whose_proxy_row_never_arrived_is_named_as_serving_on_ret
         machine_id: owner,
         container_id: old,
         purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: false,
     }];
     let client = Scripted {
         acks: BTreeMap::from([(owner, Ack::Never), (away, Ack::Missing)]),
@@ -2640,6 +2776,7 @@ async fn global_with_no_matching_machine_keeps_last_copy_serving() {
         machine_id: machine,
         container_id: last,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted::new(vec![observed(Call::Inspect(machine, last), running())]).with_copy(
         &machine,
@@ -3490,6 +3627,7 @@ async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
         machine_id: machine,
         container_id: removed,
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        service_stays: false,
     }];
     let client = Scripted::new(
         std::iter::repeat_with(|| {
@@ -3533,6 +3671,7 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
             machine_id: machine,
             container_id: container('e'),
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
     ];
     let client = Scripted::new(vec![

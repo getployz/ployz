@@ -364,7 +364,8 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         )
         .await;
         assert_eq!(
-            ran.ok().map(|copy| copy.map(|copy| copy.container_id)),
+            ran.ok()
+                .map(|placed| placed.map(|placed| placed.copy.container_id)),
             match outcome {
                 "new" | "matching" => Some(Some(container_id('a'))),
                 "revision" => Some(Some(container_id('b'))),

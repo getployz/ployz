@@ -1283,16 +1283,19 @@ impl CatchUpClient for FakeCatchUpClient {
         machine_id: &MachineId,
         new: NewContainer,
         _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Option<Copy>, RpcError> {
+    ) -> Result<Option<Placed>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
         let service =
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         self.run_calls.push(new);
-        Ok(self.run_result.clone()?.map(|container_id| Copy {
-            machine_id: self.machine_id,
-            service,
-            container_id,
-            rotation: CopyRotation::Pending,
+        Ok(self.run_result.clone()?.map(|container_id| Placed {
+            copy: Copy {
+                machine_id: self.machine_id,
+                service,
+                container_id,
+                rotation: CopyRotation::Pending,
+            },
+            undo: RemoveContainerPurpose::Rollout,
         }))
     }
 
@@ -1334,7 +1337,11 @@ impl CatchUpClient for FakeCatchUpClient {
         })
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
+    async fn remove_copy(
+        &mut self,
+        copy: &Copy,
+        _purpose: RemoveContainerPurpose,
+    ) -> Result<Removal, RpcError> {
         self.removed.push(copy.clone());
         Ok((self.remove_step)())
     }
@@ -1481,7 +1488,7 @@ async fn placed(
     slot: &mut FakeSlot,
     joiner: &Machine,
     origin: &ContainerObservation,
-) -> Result<Option<Copy>, RpcError> {
+) -> Result<Option<Placed>, RpcError> {
     place_slot(
         slot,
         &joiner.id,
@@ -1516,9 +1523,14 @@ async fn a_slot_whose_copy_runs_here_is_adopted_not_recreated() {
     let origin = running_on(&peer, 'a');
     let here = running_on(&joiner, 'b');
     let mut slot = FakeSlot::listing(vec![here.clone()]);
-    let copy = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
-    assert_eq!(copy.container_id, here.container_id);
+    let placed = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
+    assert_eq!(placed.copy.container_id, here.container_id);
     assert_eq!(slot.ensured, ["existing"]);
+    assert_eq!(
+        placed.undo,
+        RemoveContainerPurpose::Retire,
+        "a copy an earlier attempt left keeps its anonymous Volumes if it does not come In"
+    );
 }
 
 #[tokio::test]

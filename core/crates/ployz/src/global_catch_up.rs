@@ -111,7 +111,7 @@ pub(crate) trait CatchUpClient: SlotIo {
         machine_id: &MachineId,
         new: NewContainer,
         cancel: &CancellationToken,
-    ) -> Result<Option<Copy>, RpcError>;
+    ) -> Result<Option<Placed>, RpcError>;
     /// Set `machine_id`'s Doors to the Cluster's for the Ingress Proxy `proxy_service`,
     /// or remove its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
     async fn run_doors(
@@ -132,7 +132,11 @@ pub(crate) trait CatchUpClient: SlotIo {
         copy: &Copy,
         spec: &ResolvedServiceSpec,
     ) -> Result<BroughtIn, RpcError>;
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
+    async fn remove_copy(
+        &mut self,
+        copy: &Copy,
+        purpose: RemoveContainerPurpose,
+    ) -> Result<Removal, RpcError>;
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
@@ -210,6 +214,16 @@ impl SlotIo for Client {
     }
 }
 
+/// The copy [`place_slot`] put in a slot, and how removing it ends should it not come
+/// In.
+#[derive(Debug)]
+pub(crate) struct Placed {
+    pub(crate) copy: Copy,
+    /// `Rollout` for a copy this attempt made, which it undoes. `Retire` for one an earlier
+    /// attempt left, which may hold data and keeps its anonymous Volumes.
+    pub(crate) undo: RemoveContainerPurpose,
+}
+
 /// Place `new`, the copy of one observed Global, on `machine_id`: nothing when the Machine
 /// rules the slot out, the copy already there when one of the same shape runs, and
 /// otherwise a keyed create.
@@ -218,7 +232,7 @@ async fn place_slot<C: SlotIo>(
     machine_id: &MachineId,
     new: NewContainer,
     cancel: &CancellationToken,
-) -> Result<Option<Copy>, RpcError> {
+) -> Result<Option<Placed>, RpcError> {
     let target = MachineTarget::from(machine_id);
     if client
         .retire_if_ineligible(machine_id, &new, cancel)
@@ -262,10 +276,12 @@ async fn place_slot<C: SlotIo>(
                 RunTarget::Existing(ployz_core::ContainerLocator::Id(existing.container_id)),
             )
             .await?;
-        return Ok(Some(
-            now.present()
+        return Ok(Some(Placed {
+            copy: now
+                .present()
                 .map_or_else(|| Copy::observed(&existing), Copy::observed),
-        ));
+            undo: RemoveContainerPurpose::Retire,
+        }));
     }
     let capacity = client
         .bridge_capacity(machine_id)
@@ -275,7 +291,10 @@ async fn place_slot<C: SlotIo>(
         return Err(RpcError::conflict(error.to_string()));
     }
     let now = client.ensure_pending(&target, RunTarget::New(new)).await?;
-    Ok(now.present().map(Copy::observed))
+    Ok(now.present().map(|copy| Placed {
+        copy: Copy::observed(copy),
+        undo: RemoveContainerPurpose::Rollout,
+    }))
 }
 
 impl CatchUpClient for Client {
@@ -302,7 +321,7 @@ impl CatchUpClient for Client {
         machine_id: &MachineId,
         new: NewContainer,
         cancel: &CancellationToken,
-    ) -> Result<Option<Copy>, RpcError> {
+    ) -> Result<Option<Placed>, RpcError> {
         place_slot(self, machine_id, new, cancel).await
     }
 
@@ -357,8 +376,12 @@ impl CatchUpClient for Client {
         cleanup::bring_in(&*self, copy, spec, None).await
     }
 
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
-        cleanup::remove(&*self, copy, RemoveContainerPurpose::Rollout).await
+    async fn remove_copy(
+        &mut self,
+        copy: &Copy,
+        purpose: RemoveContainerPurpose,
+    ) -> Result<Removal, RpcError> {
+        cleanup::remove(&*self, copy, purpose).await
     }
 
     async fn target_containers(
@@ -522,8 +545,12 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
 
 /// A copy that did not come In is removed; `message` is why, and what the removal did
 /// follows it when it did not finish.
-async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: String) -> String {
-    match client.remove_copy(copy).await {
+async fn remove_started<C: CatchUpClient>(
+    client: &mut C,
+    placed: &Placed,
+    message: String,
+) -> String {
+    match client.remove_copy(&placed.copy, placed.undo).await {
         Ok(Removal::Removed) => message,
         Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
         Err(error) => format!("{message}; {}", error_chain::row(&error)),
@@ -761,20 +788,24 @@ async fn start_copy<C: CatchUpClient>(
     cancel: &CancellationToken,
 ) -> Result<Started, SlotOutcome> {
     let spec = origin.resolved_spec.clone();
-    let copy = match client.run_slot(machine_id, new_copy(origin), cancel).await {
-        Ok(Some(copy)) => copy,
+    let placed = match client.run_slot(machine_id, new_copy(origin), cancel).await {
+        Ok(Some(placed)) => placed,
         Ok(None) => return Err(SlotOutcome::Excluded),
         Err(error) => return Err(SlotOutcome::failed(error_chain::row(&error))),
     };
-    if copy.rotation != CopyRotation::In {
-        let message = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
+    if placed.copy.rotation != CopyRotation::In {
+        let message = match client
+            .bring_in(&placed.copy, &spec)
+            .await
+            .map(BroughtIn::not_in)
+        {
             Ok(Ok(())) => None,
             Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
             Ok(Err(NotIn::OlderThanIn(_))) => {
-                Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
+                Some(remove_started(client, &placed, OUTDATED.to_owned()).await)
             }
             Ok(Err(NotIn::Refused(refusal))) => {
-                Some(remove_started(client, &copy, refusal.message).await)
+                Some(remove_started(client, &placed, refusal.message).await)
             }
             Err(error) => Some(error_chain::row(&error)),
         };
@@ -784,7 +815,7 @@ async fn start_copy<C: CatchUpClient>(
     }
     Ok(Started {
         identity,
-        copy,
+        copy: placed.copy,
         spec,
     })
 }

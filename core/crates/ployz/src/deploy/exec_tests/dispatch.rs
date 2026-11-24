@@ -38,6 +38,7 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: first,
@@ -470,6 +471,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            service_stays: false,
         },
         DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
@@ -685,6 +687,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
             machine_id: machine('1'),
             container_id: container('a'),
             purpose,
+            service_stays: false,
         }],
         &client,
         &CancellationToken::new(),
@@ -1364,6 +1367,7 @@ async fn stop_and_remove_rows_never_read_as_starting() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: false,
         },
         DeployOperation::StopHook {
             machine_id: machine,

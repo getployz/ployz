@@ -1152,10 +1152,13 @@ fn remove_unused(
         if !used.contains(&observation.container_id) && !unknown_placement {
             // TODO: placement changes remove now-ineligible containers; there is no
             // deploy-time Machine filter that leaves excluded containers running.
+            // No copy takes this one's slot on its Server: a new copy elsewhere is
+            // another slot, so its anonymous Volumes stay there.
             operations.push(DeployOperation::RemoveContainer {
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
-                purpose: ployz_core::RemoveContainerPurpose::Rollout,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
+                service_stays: true,
             });
             placement.capacity.release(&observation.machine_id);
             placement

@@ -2281,6 +2281,7 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
             container_id: serde_json::from_value(json!("0".repeat(64))).unwrap(),
             machine: "db-1".into(),
             reason: reason.into(),
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
         },
     ] {
         store

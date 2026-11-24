@@ -1225,6 +1225,7 @@ fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the
         container_id: ployz_core::ContainerId::parse(container.to_string().repeat(64)).unwrap(),
         machine: "alpha".into(),
         reason: reason.into(),
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
     };
     let frame = Frame {
         run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),

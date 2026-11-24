@@ -39,7 +39,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, Copy, Rotated};
+use crate::deploy::cleanup::{self, Copy, EmptyPolicy, Rotated};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -350,9 +350,11 @@ struct LeftCopy {
     service: ServiceName,
     container_id: ContainerId,
     machine: String,
-    /// Retire when the Deploy removed its Service, so it goes exactly as a plain
-    /// Service removal takes a copy out; Rollout when a new copy replaced it.
+    /// What the run recorded about the copy's slot, which decides its anonymous Volumes.
     purpose: RemoveContainerPurpose,
+    /// The Deploy removed the Service, so its last copy may go Out as a plain removal
+    /// takes it.
+    service_removed: bool,
 }
 
 /// Each copy the Deploy reported left running, with its Service's outcome.
@@ -374,6 +376,7 @@ fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, Nod
             service,
             container_id,
             machine,
+            purpose,
             ..
         } = warning
         else {
@@ -388,11 +391,8 @@ fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, Nod
             service: name.clone(),
             container_id: *container_id,
             machine: machine.clone(),
-            purpose: if outcome == NodeStatus::Removed {
-                RemoveContainerPurpose::Retire
-            } else {
-                RemoveContainerPurpose::Rollout
-            },
+            purpose: *purpose,
+            service_removed: outcome == NodeStatus::Removed,
         };
         Some((copy, outcome))
     })
@@ -492,7 +492,11 @@ async fn retire_copy<C: CopyLifecycle>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        copy.purpose.into(),
+        if copy.service_removed {
+            EmptyPolicy::MayEmpty
+        } else {
+            EmptyPolicy::RequireOtherIn
+        },
         copy.purpose,
         &CancellationToken::new(),
     )

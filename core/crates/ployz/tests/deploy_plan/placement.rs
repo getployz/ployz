@@ -306,7 +306,8 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
         [DeployOperation::RemoveContainer {
             machine_id: target_machine_id,
             container_id: removed,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         }] if target_machine_id == &machine_id('1')
             && [container_id('b'), container_id('c')].contains(removed)
     ));
@@ -362,7 +363,8 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
         vec![DeployOperation::RemoveContainer {
             machine_id: machine_id('2'),
             container_id: container_id('c'),
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         }]
     );
 }

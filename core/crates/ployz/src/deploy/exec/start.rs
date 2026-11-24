@@ -89,7 +89,9 @@ pub(super) async fn discard_new<C: MachineOperations>(
             }
         }
         (None, Some(left)) => {
-            shared.report.leave_running(progress, &copy, left);
+            shared
+                .report
+                .leave_running(progress, &copy, RemoveContainerPurpose::Rollout, left);
             running()
         }
         (Some(run), Some(left)) => {
