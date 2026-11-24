@@ -1726,14 +1726,14 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
-        // Only a key or a rule keeps a name: Cloud never learns of a Local admission, so a
-        // name it kept would refuse every later Cloud deploy of a Service that reaches no
-        // data. System Containers are skipped: the replica may be one of them.
+        // Only a key or a rule keeps a name: Cloud never learns of a deploy through this
+        // Server's own socket, so a name it kept would refuse every later Cloud deploy of a
+        // Service that reaches no data. System Containers are skipped: the replica may be
+        // one of them.
         let keeps_name = admitted.admission() == ployz_core::Admission::Signed
             && kind == ContainerKind::ServiceContainer
             && *namespace != Namespace::system();
-        let free_service = admitted.admission() == ployz_core::Admission::Free
-            && kind == ContainerKind::ServiceContainer;
+        let by = admitted.by().clone();
         containers
             .lifecycle()
             .create_with_admission(
@@ -1787,8 +1787,7 @@ impl LocalMachine {
                         }
                         // Read again in this turn: a signed create may have kept the name
                         // since the request's admission read it.
-                        if free_service && self.replicated()?.signed_service_kept(&identity).await?
-                        {
+                        if self.name_refuses(&by, kind, &identity).await? {
                             return Err(Error::DeployRefused(
                                 ployz_core::authority::AuthorityRefusal::SignedName {
                                     service: identity,
@@ -2007,9 +2006,9 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
-/// `admission` is how this Machine admitted the request. It never adopts a Container
-/// admitted less vouched for: a copy admitted free answers for no name a signed one keeps,
-/// and adopting it would skip the write that keeps the name.
+/// `admission` is how this Machine admitted the request. A signed request never adopts a
+/// Container it didn't admit signed: that copy answers for no name a signed one keeps, and
+/// adopting it would skip the write that keeps the name.
 fn plan_container(
     want: ContainerWant,
     now: &ContainerNow,
@@ -2032,10 +2031,12 @@ fn plan_container(
             ..
         } => match present {
             None => ContainerStep::CreateAndStart(new),
-            Some(observed) if !observed.admits_as(admission) => ContainerStep::Refuse(refuse(
-                ContainerRefusalReason::SlotOccupied,
-                "the slot holds a Container this server admitted from a deploy with less approval",
-            )),
+            Some(observed) if admission == ployz_core::Admission::Signed && !observed.signed() => {
+                ContainerStep::Refuse(refuse(
+                    ContainerRefusalReason::SlotOccupied,
+                    "the slot holds a Container this server didn't admit from a signed deploy",
+                ))
+            }
             Some(observed)
                 if same_creation(
                     observed,

@@ -485,8 +485,8 @@ fn replaced_on_machine(
         || unsigned_for_signed(observation, requested, options)
 }
 
-/// Whether a signed deploy of `requested` finds a copy its Machine admitted free or from
-/// its own socket. That copy keeps no name, so the deploy replaces it with one that does.
+/// Whether a signed deploy of `requested` finds a copy its Machine admitted free. That
+/// copy keeps no name, so the deploy replaces it with one that does.
 /// One from a Machine that doesn't report stays.
 fn unsigned_for_signed(
     observation: &ContainerObservation,
@@ -497,10 +497,7 @@ fn unsigned_for_signed(
 }
 
 fn unsigned(observation: &ContainerObservation) -> bool {
-    matches!(
-        observation.admission,
-        Some(ployz_core::Admission::Free | ployz_core::Admission::Local)
-    )
+    observation.admission == Some(ployz_core::Admission::Free)
 }
 
 fn on_machine(

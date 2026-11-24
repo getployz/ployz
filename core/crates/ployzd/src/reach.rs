@@ -55,20 +55,19 @@ impl Reach {
 
     /// The routes the observed `containers` give, carrying the route kept by [`Self::keep`].
     ///
-    /// `kept`, with the names copies in view vouch for, narrows both: a copy it doesn't
-    /// admit is neither routed now nor carried from an earlier pass, so a signed copy that is Pending or on a Down Machine never falls
+    /// `kept` narrows both: a copy it doesn't admit is neither routed now nor carried from
+    /// an earlier pass, so a signed copy that is Pending or on a Down Machine never falls
     /// back to one. A carried route with only such copies counts as never routed, so its
     /// signed copies on Down Machines still stand in.
     pub(crate) fn pass(&self, containers: &[ServiceContainer], kept: &KeptNames) -> ReachPass {
-        let held = kept.in_view(containers);
-        let view = signed_view(containers, &held);
+        let view = signed_view(containers, kept);
         let carried: ProxyRoutes = self
             .routed
             .iter()
             .filter_map(|(service, route)| {
                 let admitted: Vec<_> = route
                     .iter()
-                    .filter(|serving| held.admits(serving.as_observation()))
+                    .filter(|serving| kept.admits(serving.as_observation()))
                     .cloned()
                     .collect();
                 (route.is_empty() || !admitted.is_empty()).then(|| (service.clone(), admitted))

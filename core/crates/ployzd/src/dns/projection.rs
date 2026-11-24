@@ -119,9 +119,8 @@ impl Projection {
             let observation = serving.as_observation();
             let address = serving.address();
             let identity = observation.identity();
-            // A Service ID is whatever its creator chose, so only a copy its Machine vouched
-            // for answers by it.
-            if observation.vouched() {
+            // A Service ID is whatever its creator chose, so only a signed copy answers by it.
+            if observation.signed() {
                 service_ids
                     .entry(observation.service_id())
                     .or_default()

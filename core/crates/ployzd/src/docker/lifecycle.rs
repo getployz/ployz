@@ -758,8 +758,8 @@ impl Lifecycle {
 
     /// The Container an earlier create under `key` made. Every caller holds the spec
     /// store's config lock, so no create is between Docker's create and its spec's write.
-    /// A create refuses a copy this Machine admitted less vouched for than `wanted`
-    /// rather than adopt it: that copy answers for no name a signed one keeps.
+    /// A create `wanted` signed refuses a copy this Machine didn't admit signed rather
+    /// than adopt it: that copy answers for no name a signed one keeps.
     async fn matching_creation(
         &self,
         operation: &mut ConfigOperation<'_>,
@@ -773,7 +773,8 @@ impl Lifecycle {
         let Some(existing) = existing else {
             return Ok(None);
         };
-        if !same_creation(&existing, namespace, kind, spec) || !existing.admits_as(wanted) {
+        let signed = wanted == ployz_core::Admission::Signed;
+        if !same_creation(&existing, namespace, kind, spec) || (signed && !existing.signed()) {
             return Err(Error::SlotNameOccupied(name.into()));
         }
         Ok(Some(ContainerCreated {

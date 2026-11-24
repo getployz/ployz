@@ -699,7 +699,7 @@ mod plan {
     }
 
     #[test]
-    fn a_request_never_adopts_a_copy_admitted_with_less_approval() {
+    fn a_signed_request_never_adopts_a_copy_admitted_unsigned() {
         let participating = &LocalMachinePhase::Participating;
         let admitted = |now: ContainerNow, admission| {
             let ContainerNow::Present(mut observed) = now else {
@@ -713,10 +713,7 @@ mod plan {
         for now in [running("img"), exited("img")] {
             for (wanted, held, adopts) in [
                 (Admission::Signed, Admission::Free, false),
-                (Admission::Signed, Admission::Local, false),
                 (Admission::Signed, Admission::Signed, true),
-                (Admission::Local, Admission::Free, false),
-                (Admission::Local, Admission::Local, true),
                 (Admission::Free, Admission::Free, true),
             ] {
                 let shown = format!("{wanted:?} over {held:?} in {now:?}");
@@ -1489,7 +1486,8 @@ mod settled {
     }
 
     /// Ployz Cloud never learns of a create this Server's own socket admitted, so it keeps
-    /// no name a later Cloud deploy of the Service would be refused under.
+    /// no name a later Cloud deploy of the Service would be refused under, and reports
+    /// free like one.
     #[tokio::test]
     async fn a_create_this_servers_socket_admits_keeps_no_name() {
         let Settling {
@@ -1499,7 +1497,7 @@ mod settled {
         let new = new_container("settled");
         let admitted =
             super::super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec);
-        assert_eq!(admitted.admission(), ployz_core::Admission::Local);
+        assert_eq!(admitted.admission(), ployz_core::Admission::Free);
 
         let reply = local
             .ensure_container(run(new), Some(admitted))

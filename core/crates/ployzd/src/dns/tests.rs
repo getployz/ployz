@@ -1211,56 +1211,6 @@ fn a_route_carried_from_before_a_name_was_kept_drops_its_unsigned_copy() {
 }
 
 #[test]
-fn a_local_copy_holds_its_name_only_while_it_is_in_view() {
-    let machine = MachineId::parse("a".repeat(32)).unwrap();
-    let id = ServiceId::parse("b".repeat(32)).unwrap();
-    let db = ServiceName::parse("db").unwrap();
-    let copy = |suffix, admission| {
-        admitted(
-            observation(
-                suffix,
-                &machine,
-                &id,
-                &db,
-                ContainerKind::ServiceContainer,
-                running(HealthObservation::Healthy),
-                Some([10, 210, 1, suffix]),
-            ),
-            Some(admission),
-        )
-    };
-    let mut inputs = ProjectionInputs::new(machine);
-    inputs.load(Snapshot {
-        observations: vec![copy(1, Admission::Local), copy(2, Admission::Free)],
-        cluster: None,
-        kept: KeptNames::default(),
-    });
-    let projection = inputs.build();
-    assert_eq!(
-        addresses(plan(&projection, "db.app.internal.", RecordType::A)),
-        vec![Ipv4Addr::new(10, 210, 1, 1)]
-    );
-    assert_eq!(
-        addresses(plan(
-            &projection,
-            &format!("{id}.id.lookup.internal."),
-            RecordType::A
-        )),
-        vec![Ipv4Addr::new(10, 210, 1, 1)]
-    );
-
-    inputs.load(Snapshot {
-        observations: vec![copy(2, Admission::Free)],
-        cluster: None,
-        kept: KeptNames::default(),
-    });
-    assert_eq!(
-        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A)),
-        vec![Ipv4Addr::new(10, 210, 1, 2)]
-    );
-}
-
-#[test]
 fn a_name_that_never_ran_signed_answers_unsigned_copies_but_not_by_id() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let id = ServiceId::parse("b".repeat(32)).unwrap();

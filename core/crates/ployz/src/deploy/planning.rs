@@ -903,18 +903,25 @@ fn hostname_handovers(
     volume_handovers: &[VolumeHandover],
 ) -> Result<Vec<HostnameHandover>, PlanError> {
     let applied = intent.applied_names();
-    let owners = hostname_owners(
-        snapshot
-            .containers
-            .iter()
-            .filter(|container| !retiring.contains(&container.identity())),
-    );
+    let owners = |signed_only: bool| {
+        hostname_owners(snapshot.containers.iter().filter(|container| {
+            !retiring.contains(&container.identity()) && (!signed_only || container.signed())
+        }))
+    };
+    // A Service this Deploy signs takes a hostname from a publisher not admitted signed
+    // without waiting for it, as `reject_hostname_conflicts` lets it.
+    let (owners, signed_owners) = (owners(false), owners(true));
     let mut handovers: Vec<HostnameHandover> = Vec::new();
     for spec in intent
         .target
         .iter()
         .filter(|spec| applied.contains(&spec.name))
     {
+        let owners = if intent.options.signs(&spec.name) {
+            &signed_owners
+        } else {
+            &owners
+        };
         for hostname in explicit_ingress_hosts(&spec.ports) {
             let Some(owner) = owners.get(hostname) else {
                 continue;
@@ -1524,8 +1531,8 @@ fn reject_hostname_conflicts(
     // A full Deploy may transfer a hostname from a Service it retires after desired work
     // succeeds, and a Service may hand one to another in the same Deploy. Recompute
     // ownership without the copies that give it up so other publishers still block it.
-    // A Service this Deploy signs outranks a publisher no Server vouched for, as every
-    // Ingress Proxy ranks them, so only a vouched publisher blocks it.
+    // A Service this Deploy signs outranks a publisher not admitted signed, as every
+    // Ingress Proxy ranks them, so only a signed publisher blocks it.
     let retiring = retiring.iter().collect::<BTreeSet<_>>();
     let owner_of = |hostname: &IngressHost, claimant: &ServiceName| {
         let signs = options.signs(claimant);
@@ -1541,7 +1548,7 @@ fn reject_hostname_conflicts(
             let identity = container.identity();
             !retiring.contains(&identity)
                 && !handed_over(&identity)
-                && (!signs || container.vouched())
+                && (!signs || container.signed())
         }))
         .remove(hostname)
     };

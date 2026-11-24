@@ -36,8 +36,8 @@ pub enum AuthorityRefusal {
     },
     #[error("the spec {reach}, and nothing signed it")]
     NeedsSignature { reach: DataReach },
-    /// The spec reaches no data, but its Service has run signed in this Cluster, and
-    /// such a name answers only for a signed Container.
+    /// No Device or rule signed the spec, but its Service has run signed in this Cluster,
+    /// and such a name answers only for a signed Container.
     #[error("{service} has run signed, and nothing signed this spec")]
     SignedName { service: crate::QualifiedService },
     #[error("the approval names {field} this request does not match")]

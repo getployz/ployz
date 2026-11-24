@@ -222,10 +222,12 @@ and running `off` again finishes the removal.
   automatic deploy rule, its name answers only with replicas deployed that way, even after
   you delete the service. A container started any other way under that name gets no answers,
   and your servers refuse to create one. Deploy it with your passkey or `ployz deploy`.
-- **A service deployed over SSH holds its name only while it runs.** A deploy with
-  `--connect ssh://` answers ahead of containers started any other way under its name, but
-  Ployz Cloud never sees it, so the name doesn't stay signed. Once that service is gone, a deploy
-  from the dashboard can use the name again.
+- **A deploy run on a server without an approved device doesn't protect a name.** A deploy
+  with `--connect ssh://` or on the server itself that no approved device signs counts like any
+  other unsigned container: its name doesn't stay signed, and once the name has run signed, your
+  servers refuse it. Deploy from an
+  [approved device](../servers/manage-servers.md#what-needs-an-approved-device) to protect the
+  name.
 - **After upgrading from 0.4.0-beta.2 or earlier, deploy each environment once.** Upgrade every
   server first, then deploy with your passkey or `ployz deploy`. Until then, names from before
   the upgrade aren't kept signed. The deploy restarts each service once, including ones that

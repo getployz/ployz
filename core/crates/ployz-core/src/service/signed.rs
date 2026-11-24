@@ -59,38 +59,22 @@ impl KeptNames {
         self.0.contains(service)
     }
 
-    /// The names held for one pass over `containers`: these, and the name of each Service
-    /// Container in `containers` its Machine vouched for, while it is in view. A Local
-    /// copy holds its name only this way, so the name frees once it is gone.
-    #[must_use]
-    pub fn in_view(&self, containers: &[ServiceContainer]) -> Self {
-        let mut held = self.clone();
-        held.0.extend(
-            containers
-                .iter()
-                .map(ServiceContainer::as_observation)
-                .filter(|observation| observation.vouched())
-                .map(ContainerObservation::identity),
-        );
-        held
-    }
-
-    /// Whether a proxy may route `observation`: its Machine vouched for it, or its name is
-    /// not held.
+    /// Whether a proxy may route `observation`: it was admitted signed, or its name was
+    /// never kept.
     #[must_use]
     pub fn admits(&self, observation: &ContainerObservation) -> bool {
-        observation.vouched() || !self.contains(&observation.identity())
+        observation.signed() || !self.contains(&observation.identity())
     }
 }
 
-/// The Service Containers a proxy may route: all of `containers`, less each one its
-/// Machine didn't vouch for whose name `held` holds. A Container whose Machine doesn't
-/// report its admission counts as not vouched for.
+/// The Service Containers a proxy may route: all of `containers`, less each one not
+/// admitted signed whose name `kept` holds. A Container whose Machine doesn't report its
+/// admission counts as not signed.
 #[must_use]
-pub fn signed_view(containers: &[ServiceContainer], held: &KeptNames) -> Vec<ServiceContainer> {
+pub fn signed_view(containers: &[ServiceContainer], kept: &KeptNames) -> Vec<ServiceContainer> {
     containers
         .iter()
-        .filter(|container| held.admits(container.as_observation()))
+        .filter(|container| kept.admits(container.as_observation()))
         .cloned()
         .collect()
 }
@@ -100,19 +84,5 @@ impl crate::ContainerObservationParts {
     #[must_use]
     pub fn signed(&self) -> bool {
         self.admission == Some(Admission::Signed)
-    }
-
-    /// Whether a request admitted `wanted` may adopt it: its Machine vouched for it at
-    /// least as much. One whose Machine doesn't report counts as admitted free.
-    #[must_use]
-    pub fn admits_as(&self, wanted: Admission) -> bool {
-        self.admission.unwrap_or(Admission::Free) >= wanted
-    }
-
-    /// Whether its Machine reports it admitted signed or from its own socket, so it routes
-    /// under a held name and owns a Hostname ahead of a copy admitted free.
-    #[must_use]
-    pub fn vouched(&self) -> bool {
-        self.admission >= Some(Admission::Local)
     }
 }

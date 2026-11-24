@@ -396,6 +396,49 @@ fn a_conflict_an_observed_publisher_can_clear_keeps_its_retry() {
     assert!(!not_included.same_again(), "{not_included}");
 }
 
+/// A targeted signed Deploy of `api` takes the hostname `web` drops without applying
+/// `web`, when no Server admitted `web` signed: every Ingress Proxy already ranks `api`
+/// first, so nothing waits on `web` giving it up.
+#[test]
+fn a_signed_deploy_takes_a_hostname_from_an_unsigned_publisher_it_leaves_out() {
+    let (web, api) = handover_specs();
+    let intent = DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        vec![web, api.clone()],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: api.name.clone(),
+            }],
+            ..PlanOptions::default()
+        }
+        .as_runner(ployz_core::RunnerOptions {
+            operator: ployz_core::Operator::Cloud,
+            ended_runs: BTreeSet::new(),
+            recreate: BTreeSet::new(),
+            signed: BTreeSet::from([api.name]),
+        }),
+    );
+    let publisher = |admission| {
+        let mut live = container('c', '1', &custom_web(), &service_id('a'));
+        live.try_update(|parts| parts.admission = Some(admission))
+            .unwrap();
+        snapshot_with(vec![live])
+    };
+
+    let plan = preview_deploy(&intent, &publisher(ployz_core::Admission::Free)).unwrap();
+    first_operation(&plan, "api");
+    assert!(
+        matches!(
+            preview_deploy(&intent, &publisher(ployz_core::Admission::Signed)),
+            Err(PlanError::HostnameConflict {
+                refusal: HostnameRefusal::OwnerNotIncluded,
+                ..
+            })
+        ),
+        "a signed publisher still hands it over only in a Deploy that applies it"
+    );
+}
+
 /// `web` publishes `api.example.com` today and drops it; `api` takes it.
 fn handover_specs() -> (RequestedServiceSpec, RequestedServiceSpec) {
     let mut web = custom_web();

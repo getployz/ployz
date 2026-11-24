@@ -643,8 +643,9 @@ async fn a_checked_start_answers_as_a_start_and_keeps_nothing() {
     assert!(floor().is_some(), "the start itself keeps the forget");
 }
 
-/// An Operator's unsigned create of a Service that reaches no data runs, until its name
-/// has run signed: then it is refused, with no signed copy left running.
+/// An Operator's unsigned create of a Service that reaches no data runs, and so does a
+/// create through this Server's own socket, until its name has run signed: then both are
+/// refused, with no signed copy left running. The socket's copy would answer for nothing.
 #[tokio::test]
 async fn an_unsigned_create_under_a_name_that_ran_signed_is_refused() {
     let fixture = fixture().await;
@@ -659,19 +660,33 @@ async fn an_unsigned_create_under_a_name_that_ran_signed_is_refused() {
         "container": {"image": IMAGE, "pull_policy": "missing"},
     });
     let operator = machine.clone().at_operator_scope();
+    let socket = machine.clone().on_local_socket();
     let want = want(&plain);
-    let admit = || operator.admit_spec(&want, None, &[], Admit::Check);
     assert!(matches!(
-        admit().await.unwrap().map(|admitted| admitted.by().clone()),
+        operator
+            .admit_spec(&want, None, &[], Admit::Check)
+            .await
+            .unwrap()
+            .map(|admitted| admitted.by().clone()),
         Some(AdmittedBy::Free)
+    ));
+    assert!(matches!(
+        socket
+            .admit_spec(&want, None, &[], Admit::Check)
+            .await
+            .unwrap()
+            .map(|admitted| admitted.by().clone()),
+        Some(AdmittedBy::Local { .. })
     ));
 
     replicated.keep_signed_service(&api()).await.unwrap();
-    assert!(
-        matches!(
-            admit().await,
-            Err(Error::DeployRefused(AuthorityRefusal::SignedName { ref service })) if *service == api()
-        ),
-        "a name kept signed takes no unsigned Container"
-    );
+    for (caller, machine) in [("an Operator", &operator), ("the socket", &socket)] {
+        assert!(
+            matches!(
+                machine.admit_spec(&want, None, &[], Admit::Check).await,
+                Err(Error::DeployRefused(AuthorityRefusal::SignedName { ref service })) if *service == api()
+            ),
+            "a name kept signed takes no Container {caller} admits unsigned"
+        );
+    }
 }
