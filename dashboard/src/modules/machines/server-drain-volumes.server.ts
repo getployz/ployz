@@ -7,13 +7,14 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { attemptRows } from "#/modules/inngest/attempt-row.server";
 import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
 import { candidateServers, copyHolder, dataCheck, type DrainRunRow, finalReport, type FinishedMove, volumeLine, type VolumeLine } from "#/modules/machines/server-drain-volumes";
-import { organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
+import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { serverDrainAttempt } from "#/modules/machines/tables";
 import { parseDockerVolumeName } from "#/modules/runtime/naming";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { expectOf, planFromCopies } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
-import { leftContainerOn, observeVolumeMembers, readHolder, startRefusal } from "#/modules/volume-run/volume-run.cluster.server";
+import { observeVolumeMembers, readHolder, startRefusal } from "#/modules/volume-run/volume-run.cluster.server";
 import { activeLane, admitGuardedRun, commitment, laneInputOf, namedOwedRefusal, readRow, releaseOfMove, resolveVolume, type ResolvedVolume, rowlessGen } from "#/modules/volume-run/volume-run.rows.server";
 import { Database } from "#/server/database.server";
 import { uuidFrom } from "#/server/uuid-from";
@@ -103,6 +104,10 @@ export const planDrainVolumes = Effect.fn("ServerDrain.planVolumes")(function* (
   const frame = yield* readFrame(request.organizationId);
   const { namespaces } = yield* readStore(request.organizationId, { query: "namespaces" });
   const draining = yield* drainingServers(request.organizationId);
+  // A drain's cut needs the Service still running when it stops it, which only a Server advertising it checks: an older
+  // one would cut a Service its operator stopped since, and B would start it.
+  const source = frame.machines.find(({ machine }) => machine.id === request.machineId)?.machine;
+  const cutsRunning = source !== undefined && serverSupports({ capabilities: source.runtime.capabilities ?? [] }, requirements.volumeCutRunning) === true;
   const listings = new Map<string, Effect.Success<ReturnType<typeof listVolumes>>>();
   const volumes: DrainVolume[] = [];
   const notes = new Map<QualifiedService, Note>();
@@ -130,6 +135,10 @@ export const planDrainVolumes = Effect.fn("ServerDrain.planVolumes")(function* (
     const volume = listed.find((candidate) => candidate.id === parsed.volumeId);
     if (volume === undefined) {
       notes.set(entry.service, stay(undefined, "its volume is no longer in its Environment"));
+      continue;
+    }
+    if (!cutsRunning) {
+      notes.set(entry.service, stay(volume.name, `Upgrade ${row.report.server.name} to move ${volume.name} with the drain`));
       continue;
     }
     const refused = yield* volumeBusy(volume.id, volume.name, volume.shared_writes === true);
@@ -261,7 +270,15 @@ export const admitDrainVolume = Effect.fn("ServerDrain.admitVolume")(function* (
 const asRunRow = (row: typeof volumeRun.$inferSelect | undefined): DrainRunRow | undefined => {
   if (row === undefined) return undefined;
   const input = laneInputOf(row);
-  return { id: row.id, kind: row.kind, state: row.state, phase: row.phase, message: row.message, to: input.kind === "move" ? input.args.to : null };
+  return {
+    id: row.id,
+    kind: row.kind,
+    state: row.state,
+    phase: row.phase,
+    message: row.message,
+    to: input.kind === "move" ? input.args.to : null,
+    restarted: row.result?.restarted ?? null,
+  };
 };
 
 const runRows = Effect.fn("ServerDrain.runRows")(function* (moves: readonly string[]) {
@@ -287,9 +304,10 @@ export const drainMoveState = Effect.fn("ServerDrain.moveState")(function* (requ
   return { waitFor, leftMs };
 });
 
-/** The drain's moves that finished, by run, read from their rows now. */
-const finishedMoves = Effect.fn("ServerDrain.finishedMoves")(function* (report: DrainReport) {
-  const found = yield* runRows(report.services.flatMap((entry) => entry.run ?? []));
+type RunRows = ReadonlyMap<string, typeof volumeRun.$inferSelect>;
+
+/** The drain's moves that finished, by run, as `found` holds their rows and their Releases'. */
+const finishedMoves = (report: DrainReport, found: RunRows) => {
   const finished = new Map<string, FinishedMove>();
   for (const entry of report.services) {
     const move = entry.run === undefined ? undefined : found.get(entry.run);
@@ -300,14 +318,18 @@ const finishedMoves = Effect.fn("ServerDrain.finishedMoves")(function* (report: 
     const input = laneInputOf(move);
     if (finisher === undefined || input.kind !== "move") continue;
     const to: MachineRef = { id: move.current ?? input.args.machine ?? report.server.id, name: input.args.to };
-    finished.set(entry.run, { to, removed: leftContainerOn(finisher.message, report.server.name) ? null : input.args.holder?.container ?? null });
+    // Only a Container a Server acknowledged removing is gone; one a frame missed stays where it was.
+    const removed = [...(move.result?.removed ?? []), ...(release?.result?.removed ?? [])];
+    finished.set(entry.run, { to, removed });
   }
-  return { found, finished };
-});
+  return finished;
+};
 
-/** The report with what its moves did since the drain stopped waiting on them, read against a fresh frame. */
-const settledReport = Effect.fn("ServerDrain.settledReport")(function* (organizationId: string, report: DrainReport) {
-  const { finished } = yield* finishedMoves(report);
+const reportRuns = (report: DrainReport) => runRows(report.services.flatMap((entry) => entry.run ?? []));
+
+/** The report with what its moves did since the drain stopped waiting on them, as `found` holds them, read against a fresh frame. */
+const settledReport = Effect.fn("ServerDrain.settledReport")(function* (organizationId: string, report: DrainReport, found: RunRows) {
+  const finished = finishedMoves(report, found);
   if (!report.services.some((entry) => entry.run !== undefined && finished.has(entry.run) && entry.result !== "moved")) return report;
   return finalReport(report, finished, yield* freshFrame(organizationId));
 });
@@ -323,13 +345,14 @@ const freshFrame = (organizationId: string) =>
 export const readVolumeLines = Effect.fn("ServerDrain.readVolumeLines")(function* (organizationId: string, ended: DrainReport, drainEnded: boolean) {
   const lines: Record<string, VolumeLine> = {};
   if (!ended.services.some((entry) => entry.volume !== undefined || entry.detail !== undefined)) return { report: ended, lines };
-  const report = drainEnded ? yield* settledReport(organizationId, ended) : ended;
-  const found = yield* runRows(report.services.flatMap((entry) => entry.run ?? []));
+  // One read of the rows, so the report's outcome and its lines say the same of each move.
+  const found = yield* reportRuns(ended);
+  const report = drainEnded ? yield* settledReport(organizationId, ended, found) : ended;
   const services = report.services.map((entry) => {
     const run = entry.run;
     const line = volumeLine({
       entry,
-      server: report.server.name,
+      server: report.server,
       move: run === undefined ? undefined : asRunRow(found.get(run)),
       release: run === undefined ? undefined : asRunRow(found.get(releaseOfMove(run))),
       drainEnded,
@@ -345,7 +368,7 @@ export const readVolumeLines = Effect.fn("ServerDrain.readVolumeLines")(function
 export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: Request, runId: string) {
   const row = yield* ownedReport(request, runId);
   if (row === null) return { attemptId: request.attemptId, state: yield* rows.stateOf(request.attemptId) };
-  const { finished } = yield* finishedMoves(row.report);
+  const finished = finishedMoves(row.report, yield* reportRuns(row.report));
   // With nothing moved, the Engine's own observation of what remains still holds.
   const final = finished.size === 0 ? null : finalReport(row.report, finished, yield* freshFrame(request.organizationId));
   const state = yield* rows.end(request.attemptId, runId, { state: "finished", endedAt: new Date(), ...(final !== null && { report: final }) }, ["running"]);
@@ -355,14 +378,11 @@ export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: R
 /**
  * A Volume Run that will start a Service on `machineId`: an active move there, or a committed move or release still owed
  * its start there. While one does, nothing turns services off there or drains it. A move admitted before moves recorded
- * their Server's id names it only by name, so it counts for the Server last known by that name, or for any Server
- * whose name Cloud never learned.
+ * their Server's id names it only by name until its run resolves and pins it, so until then it counts for every
+ * Server: a name Cloud knows may be one the Server has since dropped.
  */
 export const volumeRunTargeting = Effect.fn("ServerDrain.volumeRunTargeting")(function* (organizationId: string, machineId: MachineId) {
   const { drizzle } = yield* Database;
-  const [known] = yield* drizzle.select({ name: organizationMachine.machineName }).from(organizationMachine)
-    .where(and(eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.machineId, machineId)));
-  const named = (to: string) => known?.name === undefined || known.name === null || known.name === to;
   const candidates = yield* drizzle.select().from(volumeRun).where(and(
     eq(volumeRun.organizationId, organizationId),
     inArray(volumeRun.kind, ["move", "release"]),
@@ -374,12 +394,15 @@ export const volumeRunTargeting = Effect.fn("ServerDrain.volumeRunTargeting")(fu
   for (const row of candidates) {
     const input = laneInputOf(row);
     const active = ACTIVE_VOLUME_RUN_STATES.some((state) => state === row.state);
-    if (active && input.kind === "move" && (input.args.machine === undefined ? named(input.args.to) : input.args.machine === machineId)) return row;
+    if (active && input.kind === "move" && (input.args.machine === undefined || input.args.machine === machineId)) return row;
     if (active && row.current === machineId) return row;
     if (row.phase === "committed" && row.current === machineId && (yield* commitment(row.volumeId)).owed?.id === row.id) return row;
   }
   return null;
 });
 
-export const targetedMessage = (row: Pick<typeof volumeRun.$inferSelect, "id" | "volumeName">) =>
-  `${row.volumeName} is moving to this server. Wait for run ${row.id} to finish.`;
+export const targetedMessage = (row: typeof volumeRun.$inferSelect) => {
+  const input = laneInputOf(row);
+  const to = input.kind === "move" && input.args.machine === undefined ? `${input.args.to}, which may be this server` : "this server";
+  return `${row.volumeName} is moving to ${to}. Wait for run ${row.id} to finish.`;
+};

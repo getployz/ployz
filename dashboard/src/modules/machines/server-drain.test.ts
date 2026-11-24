@@ -1,4 +1,4 @@
-import type { DrainReport, MachineRef, Move, MoveFailure, ServiceDrain } from "@ployz/sdk";
+import type { DrainReport, MachineId, MachineRef, Move, MoveFailure, ServiceDrain } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { LatestDrain, LatestDrains } from "#/modules/machines/server-drain";
 import {
@@ -306,19 +306,30 @@ describe("A leftover still running here", () => {
 });
 
 describe("A drained Volume's line", () => {
-  const entry: ServiceDrain = { service: "shop-production/web", result: "stays", reason: { kind: "volume", server: { id: "f1", name: "fsn-1" } as MachineRef }, volume: "data", run: "m1" };
-  const move = { id: "m1", kind: "move", state: "failed", phase: "warm", message: "fsn-2 refused the start", to: "fsn-2" } as const;
-  const release = (message: string) => ({ id: "r1", kind: "release", state: "failed", phase: "warm", message, to: null }) as const;
+  const server = { id: "f1", name: "fsn-1" } as MachineRef;
+  const entry: ServiceDrain = { service: "shop-production/web", result: "stays", reason: { kind: "volume", server }, volume: "data", run: "m1" };
+  const move = { id: "m1", kind: "move", state: "failed", phase: "warm", message: "fsn-2 refused the start", to: "fsn-2", restarted: null } as const;
+  const release = (message: string) => ({ id: "r1", kind: "release", state: "failed", phase: "warm", message, to: null, restarted: null }) as const;
 
   // Catches a Release that already says to Deploy getting a second, contradicting next step appended.
   it("keeps a failed Release's own next step", () => {
-    const line = volumeLine({ entry, server: "fsn-1", move, release: release("fsn-1 holds data again, but its Service didn't start there: refused. Deploy it again to start it"), drainEnded: true });
+    const line = volumeLine({ entry, server, move, release: release("fsn-1 holds data again, but its Service didn't start there: refused. Deploy it again to start it"), drainEnded: true });
 
     expect(line).toEqual({ tone: "failed", text: "didn't move: fsn-2 refused the start; release run r1 ended: fsn-1 holds data again, but its Service didn't start there: refused. Deploy it again to start it" });
   });
 
   it("adds the next step to a failed Release that names none", () => {
-    expect(volumeLine({ entry, server: "fsn-1", move, release: release("the run failed"), drainEnded: true })?.text)
+    expect(volumeLine({ entry, server, move, release: release("the run failed"), drainEnded: true })?.text)
       .toBe("didn't move: fsn-2 refused the start; release run r1 ended: the run failed. Where it runs now is unknown; ployz volume release data finishes it");
+  });
+
+  // Catches a Release before the commit read as having put the Service back on the drained Server when it had no
+  // Container there to start, as when its operator removed it.
+  it("claims a restart on the drained Server only when the Release confirmed one", () => {
+    const finished = (restarted: MachineId | null) =>
+      volumeLine({ entry, server, move, release: { id: "r1", kind: "release", state: "done", phase: "warm", message: null, to: null, restarted }, drainEnded: true })?.text;
+
+    expect(finished(null)).toBe("didn't move: fsn-2 refused the start; release run r1 finished");
+    expect(finished(server.id)).toBe("didn't move: fsn-2 refused the start; release run r1 finished and started it again on fsn-1");
   });
 });

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DestructiveEffect, EnvironmentRef, MachineId, SnapshotGuid, VolumeKind } from "@ployz/sdk";
+import type { ContainerId, DestructiveEffect, EnvironmentRef, MachineId, SnapshotGuid, VolumeKind } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -950,6 +950,35 @@ export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunConte
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumeRun).set({ message: clip(message), updatedAt: new Date() })
     .where(and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
+});
+
+const ownedRunning = (ctx: Pick<RunContext, "id">, inngestRunId: string) =>
+  and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running"));
+
+/** Records a Container its Server acknowledged removing, while this run owns its row. */
+export const recordRemoved = Effect.fn("VolumeRun.recordRemoved")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, containerId: ContainerId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({
+    result: sql`jsonb_set(coalesce(${volumeRun.result}, '{}'::jsonb), '{removed}', coalesce(${volumeRun.result} -> 'removed', '[]'::jsonb) || jsonb_build_array(${containerId}::text))`,
+  }).where(ownedRunning(ctx, inngestRunId));
+});
+
+/** Records the Server a Release started the Service on again, once it answered the start, while this run owns its row. */
+export const recordRestarted = Effect.fn("VolumeRun.recordRestarted")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, machine: MachineId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({
+    result: sql`coalesce(${volumeRun.result}, '{}'::jsonb) || jsonb_build_object('restarted', ${machine}::text)`,
+  }).where(ownedRunning(ctx, inngestRunId));
+});
+
+/**
+ * Pins the Server a Move admitted by name alone resolved to, so what guards that Server finds the Move by its id
+ * whatever Cloud later calls it.
+ */
+export const pinDestination = Effect.fn("VolumeRun.pinDestination")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, machine: MachineId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({ args: sql`jsonb_set(${volumeRun.args}, '{machine}', to_jsonb(${machine}::text))` })
+    .where(and(ownedRunning(ctx, inngestRunId), eq(volumeRun.kind, "move"), sql`${volumeRun.args} ->> 'machine' is null`));
 });
 
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>

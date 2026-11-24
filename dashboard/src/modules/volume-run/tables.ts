@@ -16,7 +16,7 @@ import {
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import type { AnyVolumeRunArgs, ServiceSpec } from "#/modules/volume-run/volume-run";
+import type { AnyVolumeRunArgs, ServiceSpec, VolumeRunResult } from "#/modules/volume-run/volume-run";
 import { VOLUME_RUN_KINDS, VOLUME_RUN_PHASES, VOLUME_RUN_STATES, type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 
 /**
@@ -60,6 +60,8 @@ export const volumeRun = pgTable(
     heldBy: text("held_by"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     message: text("message"),
+    /** What its Servers confirmed it did (see `VolumeRunResult`). */
+    result: jsonb("result").$type<VolumeRunResult>(),
     createdAt,
     updatedAt,
     finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),

@@ -23,7 +23,7 @@ import { Database } from "#/server/database.server";
 import { listNames } from "#/lib/plural";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
-import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, readRow, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
+import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, readRow, recordRemoved, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
 
 /**
  * A requested run planned against the copies the Servers hold now, so a refusal reaches the caller before any row
@@ -728,24 +728,20 @@ const KeptWithoutSpec = Schema.Struct({
 const keptWithoutSpec = (error: PloyzSdkError) =>
   "cause" in error && Option.isSome(Schema.decodeUnknownOption(KeptWithoutSpec)(error.cause));
 
-/** The sentence a run's message carries for a Container it couldn't remove from `machine`. */
-const staysSentence = (containerId: ContainerId, machine: MachineRef) => `${containerId} stays on ${machine.name}, not removed`;
-
-/** Whether a run's message says it left a Container it couldn't remove on the Server named `machineName`. */
-export const leftContainerOn = (message: string | null, machineName: string) =>
-  message !== null && message.includes(` stays on ${machineName}, not removed`);
-
 /**
- * Removes one Container, or returns the sentence saying it stays, when its Server holds no spec for it.
+ * Removes one Container, recording on the run that its Server acknowledged the removal, or returns the sentence saying
+ * it stays, when its Server holds no spec for it.
  */
 export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
-  return yield* session.removeContainer(machine.id, containerId).pipe(
+  const stay = yield* session.removeContainer(machine.id, containerId).pipe(
     Effect.as(null),
-    Effect.catchIf(keptWithoutSpec, () => Effect.succeed(staysSentence(containerId, machine))),
+    Effect.catchIf(keptWithoutSpec, () => Effect.succeed(`${containerId} stays on ${machine.name}, not removed`)),
     Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
   );
+  if (stay === null) yield* recordRemoved(ctx, inngestRunId, containerId);
+  return stay;
 }, Effect.scoped);
 
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */

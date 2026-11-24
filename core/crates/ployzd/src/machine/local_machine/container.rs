@@ -587,9 +587,8 @@ impl LocalMachine {
     /// Container it didn't count, and only `only` is stopped: a stopped holder beside it
     /// stays as it is. When `only` also must run, a holder no longer running refuses
     /// the cut `Stopped`, so a Move doesn't start elsewhere a Service someone stopped.
-    /// A cut at this `gen` that stopped `only` before it failed recorded that first, so
-    /// its resend goes on, and a holder beside it then is `Busy`, not `Held`: the cut
-    /// stopped something.
+    /// That cut records its stop before it makes it, so its resend at this `gen` goes
+    /// on, and a holder beside it then is `Busy`, not `Held`: the cut stopped something.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
@@ -610,8 +609,17 @@ impl LocalMachine {
             let stop = StopOptions::default();
             let mut holders = containers.volumes().volume_holder_ids(&name).await?;
             if let Some((only, must_run)) = &only {
-                let mut floor = containers.lifecycle().floor_turn().await;
-                let resent = floor.cut_stopped(&name, r#gen, only).await?;
+                // Only a cut whose holder must run keeps a record of its stop: any other
+                // cut naming a holder stops it again on a resend, as before.
+                let mut floor = if *must_run {
+                    Some(containers.lifecycle().floor_turn().await)
+                } else {
+                    None
+                };
+                let resent = match floor.as_mut() {
+                    Some(floor) => floor.cut_stopped(&name, r#gen, only).await?,
+                    None => false,
+                };
                 if let Some(other) = containers
                     .volumes()
                     .running_beside(&name, Some(only))
@@ -624,7 +632,9 @@ impl LocalMachine {
                     }));
                 }
                 holders.retain(|holder| holder == only);
-                if !resent {
+                if let Some(floor) = floor.as_mut()
+                    && !resent
+                {
                     let machine_id = local.record().id();
                     let mut runs = false;
                     for holder in &holders {
@@ -634,12 +644,10 @@ impl LocalMachine {
                             .await?;
                         runs |= is_running(&observed.runtime);
                     }
-                    if *must_run && !runs {
+                    if !runs {
                         return Ok(Err(CutRefusal::Stopped));
                     }
-                    if runs {
-                        floor.note_cut_stop(&name, r#gen, only).await?;
-                    }
+                    floor.note_cut_stop(&name, r#gen, only).await?;
                 }
             }
             for holder in holders {

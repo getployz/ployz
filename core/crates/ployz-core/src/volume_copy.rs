@@ -205,8 +205,9 @@ pub enum WantedCopy {
         holder: Option<ContainerId>,
         /// With `holder`, the cut refuses [`CopyRefusal::Stopped`] when that Container
         /// no longer runs, unless a cut at this `gen` stopped it, so the Service a
-        /// Move starts elsewhere is one that was running. A Machine that predates it
-        /// cuts a stopped holder.
+        /// Move starts elsewhere is one that was running. A Machine without
+        /// [`crate::VOLUME_CUT_RUNNING_CAPABILITY`] ignores it and cuts a stopped holder,
+        /// so a caller sends it only to one advertising it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         running: bool,

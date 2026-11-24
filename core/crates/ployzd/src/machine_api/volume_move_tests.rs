@@ -556,3 +556,28 @@ async fn a_resent_cut_knows_the_stop_it_made() {
         "{cut:?}"
     );
 }
+
+/// A cut that names its holder without `running` is one a caller sent before the
+/// capability, or one that isn't a drain's: it keeps no record of its stop, so a
+/// Container beside its resend reads held, as it always has.
+#[tokio::test]
+async fn a_cut_naming_only_its_holder_keeps_no_record_of_its_stop() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    let plugin = FakePlugin::default();
+    plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+    let machine = fleet.with_plugin(0, &plugin);
+    let cut = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0}, "gen":3,
+        "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0, "holder":source}});
+
+    try_set_copy(&machine, cut.clone())
+        .await
+        .expect_err("the snapshot fails after the stop");
+    assert!(!fleet.node(0).running(source), "the first cut stopped it");
+
+    add_stray(&fleet, 0, "running");
+    let held = try_set_copy(&machine, cut)
+        .await
+        .expect_err("a Container beside the resend refuses it");
+    assert!(held.contains("\"held\""), "{held}");
+}

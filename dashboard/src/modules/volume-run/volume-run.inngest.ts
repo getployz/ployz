@@ -13,7 +13,7 @@ import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volum
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, committedWriter, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
-import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
+import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
 import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, type Holder, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
@@ -64,6 +64,11 @@ export async function runVolume(
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  // A Move admitted before moves recorded their Server's id names it only by name; once it resolved, it pins the id.
+  if (run.kind === "move" && run.args.machine === undefined && (phase.kind === "move" || phase.kind === "landed")) {
+    const machine = phase.target.machine.id;
+    await step.run("02-pin", () => runEffect(pinDestination(run, runId, machine)));
+  }
   if (phase.kind === "resize" && phase.unheld !== undefined) return resizeUnheld(steps, deployments);
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
@@ -563,6 +568,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
     });
     if (!answer.ok) throw new NonRetriableError(answer.message);
+    if (containerId !== null) await steps.step.run(`${id}-restarted`, () => steps.runEffect(recordRestarted(run, steps.runId, member.machine.id)));
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
@@ -617,6 +623,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     }
     const resumed = await resumeA("05-resume");
     if (!resumed.ok) throw new NonRetriableError(resumed.message);
+    await steps.step.run("05-restarted", () => steps.runEffect(recordRestarted(run, steps.runId, A.id)));
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
   } catch (error) {

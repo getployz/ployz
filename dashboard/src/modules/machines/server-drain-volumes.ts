@@ -114,6 +114,8 @@ export type DrainRunRow = {
   readonly phase: string;
   readonly message: string | null;
   readonly to: string | null;
+  /** The Server a Release confirmed it started the Service on again. */
+  readonly restarted: MachineId | null;
 };
 
 /** How a Volume's line reads on the Server page. */
@@ -131,12 +133,13 @@ const ACTIVE: readonly VolumeRunState[] = ["requested", "running"];
  */
 export function volumeLine(input: {
   readonly entry: ServiceDrain;
-  readonly server: string;
+  readonly server: MachineRef;
   readonly move: DrainRunRow | undefined;
   readonly release: DrainRunRow | undefined;
   readonly drainEnded: boolean;
 }): VolumeLine | null {
-  const { entry, server, move, release } = input;
+  const { entry, move, release } = input;
+  const server = input.server.name;
   if (move === undefined) {
     // A Service Cloud kept for its data has a reason even when it has no one Volume to name.
     if (entry.detail !== undefined) return { tone: "stayed", text: entry.detail };
@@ -153,9 +156,11 @@ export function volumeLine(input: {
   if (release === undefined) return { tone: "stayed", text: why };
   if (ACTIVE.includes(release.state)) return { tone: "failed", text: `didn't move: ${why}; still releasing, run ${release.id}` };
   if (release.state === "done") {
-    // A Release after the commit finishes the move on the new Server; one before it puts the Service back.
+    // A Release after the commit finishes the move on the new Server; one before it leaves the writer on the drained
+    // Server, and starts the Service there only when it kept a Container to start.
     if (move.phase === "committed") return { tone: "moved", text: `moved to ${to} by release run ${release.id} after the move failed: ${why}`, to };
-    return { tone: "stayed", text: `didn't move: ${why}; release run ${release.id} put it back on ${server}${release.message === null ? "" : `; ${release.message}`}` };
+    const restarted = release.restarted === input.server.id ? ` and started it again on ${server}` : "";
+    return { tone: "stayed", text: `didn't move: ${why}; release run ${release.id} finished${restarted}${release.message === null ? "" : `; ${release.message}`}` };
   }
   const end = release.message ?? release.state;
   // A Release that ended naming what to do next keeps its own advice.
@@ -196,13 +201,13 @@ const cleanElsewhere = (entry: ServiceDrain, server: MachineId) => {
   }
 };
 
-/** A drain's move that finished: the Server it started the Service on, and the Container it removed from the drained one. */
-export type FinishedMove = { readonly to: MachineRef; readonly removed: ContainerId | null };
+/** A drain's move that finished: the Server it started the Service on, and the Containers a Server acknowledged it removed. */
+export type FinishedMove = { readonly to: MachineRef; readonly removed: readonly ContainerId[] };
 
 /**
  * The report once its moves finished: each Service a finished move took rewritten as moved from the drained Server,
- * what remains there read from `frame`, and `complete` worked out again by the Engine's rule. A move's record says only
- * what it did to the Container it stopped, so only that Container is left out of what remains; a frame in which the
+ * what remains there read from `frame`, and `complete` worked out again by the Engine's rule. Only a Container a
+ * Server acknowledged removing is left out of what remains, since a frame may still list it; a frame in which the
  * drained Server didn't answer observes nothing there.
  */
 export function finalReport(report: DrainReport, finished: ReadonlyMap<string, FinishedMove>, frame: RuntimeWatchView | null): DrainReport {
@@ -212,7 +217,7 @@ export function finalReport(report: DrainReport, finished: ReadonlyMap<string, F
     if (move === undefined) return entry;
     return { service: entry.service, volume: entry.volume, run: entry.run, result: "moved", moves: [{ from, to: move.to, old: { kind: "stopped" } }] };
   });
-  const removed = new Set([...finished.values()].flatMap((move) => move.removed ?? []));
+  const removed = new Set([...finished.values()].flatMap((move) => move.removed));
   const answered = frame !== null && !frame.unanswered.includes(from.id) && frame.machines.some(({ machine }) => machine.id === from.id);
   const remaining: DrainReport["remaining"] = !answered
     ? { kind: "unobserved", error: `Cloud couldn't read ${from.name} after the drain's volumes moved` }

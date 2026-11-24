@@ -27,7 +27,7 @@ import { RpcError } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
-import type { PoolClient } from "pg";
+import { Client, type PoolClient, type QueryResult } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -57,7 +57,7 @@ import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
-import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
+import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { untried } from "#/modules/machines/server-drain-volumes";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
@@ -176,6 +176,7 @@ const ON_PLOYZ_04 = [
   requirements.volumeFloor.capability,
   requirements.volumeSize.capability,
   requirements.volumeShrink.capability,
+  requirements.volumeCutRunning.capability,
 ];
 describe("volume runs", () => {
   let harness: PostgresTestHarness;
@@ -2192,14 +2193,117 @@ describe("volume runs", () => {
     it.each([
       ["Cloud knows the Server by that name", "fsn-2", true],
       ["Cloud never learned the Server's name", null, true],
-      ["the Server goes by another name", "fsn-9", false],
+      // Cloud's name may be one the Server dropped since, or one it took since: until the run pins it, the move's
+      // Server is uncertain.
+      ["Cloud knows the Server by another name", "fsn-9", true],
     ])("guards the Server a move names only by name when %s", async (_, name, guarded) => {
       await harness.pool.query(
         `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name) values ($1, $2, $3, '{}', $4)`,
         [organizationId, fsn2.id, "a".repeat(64), name]);
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
 
-      expect((await runEffect(volumeRunTargeting(organizationId, fsn2.id)))?.id ?? null).toBe(guarded ? move.id : null);
+      const targeted = await runEffect(volumeRunTargeting(organizationId, fsn2.id));
+      expect(targeted?.id ?? null).toBe(guarded ? move.id : null);
+      if (targeted !== null) expect(targetedMessage(targeted)).toBe(`data is moving to fsn-2, which may be this server. Wait for run ${move.id} to finish.`);
+    });
+
+    // Catches a move asked for by name before moves recorded ids that, once its run resolved the name, still guards
+    // only by Cloud's name for that Server: renamed since, the Server it moves to could be drained mid-move.
+    it("pins the Server a move named only by name once its run resolves it", async () => {
+      await harness.pool.query(
+        `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name) values ($1, $2, $3, '{}', 'fsn-9')`,
+        [organizationId, fsn2.id, "a".repeat(64)]);
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const guards: Array<{ readonly id: string } | null> = [];
+      beforeSet.set("pull@fsn-2", async () => {
+        guards.push(await runEffect(volumeRunTargeting(organizationId, fsn2.id)), await runEffect(volumeRunTargeting(organizationId, hex("a1"))));
+      });
+
+      await execute(move.id);
+
+      expect(guards.map((row) => row?.id ?? null)).toEqual([move.id, null]);
+    });
+
+    // Catches an older Server receiving a cut that needs its Service running, which it ignores: an operator's stop after
+    // the drain chose the Service would be cut and started on the new Server.
+    it("names the upgrade, admitting nothing, when the drained Server can't check its Service still runs", async () => {
+      named("fsn-1").capabilities = ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeCutRunning.capability);
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-1", running: true })]);
+      expect((await entry()).entry).toMatchObject({ result: "stays", volume: "data", detail: "Upgrade fsn-1 to move data with the drain" });
+    });
+
+    // Catches a drain that reads its Service gone from the drained Server because the move picked its Container, when
+    // the frame the move cleaned up from missed it and it was never removed.
+    it("keeps in what remains a Container the move never removed", async () => {
+      await answered();
+      beforeSet.set("writer@fsn-2", () => {
+        const kept = containers.find((container) => container.id === "web-fsn-1");
+        if (kept !== undefined) kept.unframed = true;
+      });
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        for (const container of containers) delete container.unframed;
+        return null;
+      };
+
+      await drain();
+
+      expect(containers).toEqual(expect.arrayContaining([expect.objectContaining({ machine: "fsn-1", id: "web-fsn-1", running: false })]));
+      expect(await entry()).toEqual({ entry: expect.objectContaining({ result: "moved" }), complete: false });
+      const read = await cli();
+      expect(read?.state === "finished" && read.report.remaining).toEqual({ kind: "observed", services: ["shop-production/web"], unchosen: [] });
+    });
+
+    // Catches a read of an ended drain that sees its move running for the report and done for its line, and answers a
+    // stay whose line says it moved.
+    it("reads a move's outcome and its line from one look at its row", async () => {
+      await answered();
+      runActive = async () => {
+        await runEffect(closeDrainRun("run-drain", "cancellation", DRAIN));
+        return null;
+      };
+      await drain();
+      let finished = false;
+      type Answer = (error: Error, result: QueryResult) => void;
+      // A read reaches pg as `query(config, answer)`; every other call passes through as it came.
+      type Query = (this: Client, asked: { readonly text: string }, answer: Answer, rest?: Answer) => Promise<QueryResult> | undefined;
+      const send = asTestDouble<Query>()(Client.prototype.query);
+      // The move finishes right after the first read of the drain's runs, before that read's answer comes back.
+      const spy = vi.spyOn(Client.prototype, "query").mockImplementation(asTestDouble<typeof Client.prototype.query>()(function (this: Client, asked: { readonly text: string }, answer: Answer, rest?: Answer) {
+        if (finished || !String(asked.text).includes('from "volume_run" where "volume_run"."id" in')) return send.call(this, asked, answer, rest);
+        finished = true;
+        return send.call(this, asked, (error, result) => {
+          void harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [moveId]).then(() => answer(error, result));
+        });
+      }));
+      try {
+        const { entry: read } = await entry();
+        expect(finished).toBe(true);
+        expect(read).toMatchObject({ result: "stays", detail: expect.stringMatching(/^moving to fsn-2, run /) });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Catches a Release before the commit read as having started the Service again on the drained Server when it had no
+    // Container there to start.
+    it("reads a Release that had no Container to start as finished, claiming no restart", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      // Its operator removes the Service on fsn-1 as the cut fails, leaving fsn-1 the writer with nothing to start.
+      beforeSet.set("cut@fsn-1", () => { containers = containers.filter((container) => container.id !== "web-fsn-1"); });
+      failNext.set("cut@fsn-1", "mismatch");
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ finished$/) });
     });
 
     // Catches a move its Release finished on the new Server read as both moved and didn't move, and as a stay by the CLI.
@@ -2229,7 +2333,7 @@ describe("volume runs", () => {
       expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
       expect(containers.filter((container) => container.running)).toEqual([expect.objectContaining({ machine: "fsn-1" })]);
       expect(await entry()).toEqual({
-        entry: expect.objectContaining({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ put it back on fsn-1$/) }),
+        entry: expect.objectContaining({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ finished and started it again on fsn-1$/) }),
         complete: false,
       });
     });
