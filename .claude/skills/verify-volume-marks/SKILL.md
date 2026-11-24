@@ -1,6 +1,6 @@
 ---
 name: verify-volume-marks
-description: Model-check a Volume.Seed request against the ZFS ployz:* marks (seed, promote, cut, pulled) on one Machine, while Docker's Create adopts the seeded root, a later Move cuts it away, and a mirror pull brings it back as a Mirror, with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployzd/src/volume_plugin/seed.rs (seed_volume, seed_progress, SeedProgress, Copied::land, Renamed::finish_landing, Stale::clear), inspect.rs (root_marks), ployz-decide volume_root.rs (RootCopy::parse), copy.rs (copy_cut, copy_pull, mark_pulled, copy_writer's ployz:seed clear), departure.rs (written_here, marked_written_here), marks.rs (Mark, Marks::holds_alone, Marks::received, Marks::clear_provenance, Marks::landed, Marks::promote_slot, Marks::pulled_local), storage.rs (create_volume's adoption, admit_mutation), slot.rs (park_root_in_slot), transfer.rs (Receives::take_failure, Status::busy), the Volume.Seed route in machine_api/local.rs, `LocalMachine::lock_switch` in machine/local_machine.rs, admit_gen or check_gen in machine/local_machine/volume_copy.rs, FloorTurn in docker/spec_store.rs, SeedVolumeRequest or VolumeCopy::Root's mark in ployz-core's volume_switch.rs, or Cloud's seedVolume and sendSwitch in dashboard/src/modules/volume-run/.
+description: Model-check a Volume.Seed request against the ZFS ployz:* marks (seed, promote, cut, pulled) on one Machine, while Docker's Create adopts the seeded root, a later Move cuts it away, and a mirror pull brings it back as a Mirror, with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployzd/src/volume_plugin/seed.rs (seed_volume, seed_progress, SeedProgress, Copied::land, Renamed::finish_landing, Stale::clear), inspect.rs (root_marks), ployz-decide volume_root.rs (RootCopy::parse), copy.rs (copy_cut, copy_pull, mark_pulled, copy_writer's ployz:seed clear), departure.rs (written_here, marked_written_here), marks.rs (Mark, Marks::holds_alone, Marks::received, Marks::clear_provenance, Marks::landed, Marks::promote_slot, Marks::pulled_local), storage.rs (create_volume's adoption, admit_mutation), slot.rs (park_root_in_slot), transfer.rs (Receives::take_failure, Status::busy), the Volume.Seed route in machine_api/local.rs, `LocalMachine::lock_switch` in machine/local_machine.rs, admit_gen or check_gen in machine/local_machine/volume_copy.rs, FloorTurn in docker/spec_store.rs, SeedVolumeRequest or VolumeCopy::Root's mark in ployz-core's volume_switch.rs, or Cloud's seedVolume and sendSwitch in dashboard/src/modules/volume-run/. Also when a change touches a seed a Copy step admits: `CopyBinding` and the `seed_copy` route in volume_plugin/seed.rs, `seed_copy` and `began_nothing` in machine/local_machine/volume_copy.rs, or `take_copy` and `copy_began` in machine/local_machine/consumption.rs.
 ---
 
 # Verify Volume marks
@@ -26,9 +26,9 @@ Each property is phrased over a stale Seed, or over a copy no writer elsewhere h
 cd core && cargo test -p ployz-verify volume_marks -- --nocapture --test-threads=1
 ```
 
-A warm run of the eleven tests takes under a second, since the largest scenario has 258 states. The whole crate took 111 s at `0928c565` on a shared host, almost all of it in the other models. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
+A warm run of the eighteen tests (eleven here, seven in the Copy step model below) takes under a second, since the largest scenario has 1,883 states (258 in the Seed model). The whole crate took 111 s at `0928c565` on a shared host, almost all of it in the other models. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
 
-The run is green when all eleven tests pass. Read them as three groups.
+The run is green when all eighteen tests pass. Read the Seed model's eleven as three groups; the Copy step model's seven are under its own heading.
 
 - **The holds test.** `the_floor_keeps_a_late_seed_off_a_later_copy` runs the code as it is in every scenario. Seed carries its run's gen (`SeedVolumeRequest` in `core/crates/ployz-core/src/volume_switch.rs`), and Cloud sends the seed run's (`dashboard/src/modules/volume-run/volume-run.inngest.ts:811`). `seed_volume` takes the switch lock and then checks that gen against `into`'s floor, before the plugin's `seed_volume` runs (`seed_volume` in `core/crates/ployzd/src/machine_api/local.rs`). The check is `check_gen` (`core/crates/ployzd/src/machine/local_machine/volume_copy.rs`) through `FloorTurn::check` (`ployzd::docker::spec_store::FloorTurn::check`, deciding with `ployz_decide::volume_floor::check`), which refuses a gen below the floor and writes nothing, so an equal gen passes and the floor stays where it was. The model's one atomic Seed step is that check and the plugin call together. Every property holds, and every `sometimes` is reached. Each `sometimes` is one `COVERAGE` row naming a branch the code handles. `every_sometimes_needs_what_it_names` takes each row's `omit` out of the model and expects the row unreached. A row reached without its cut has a predicate looser than its name, and that test stays red until the predicate names the branch.
 - **The finding, kept as a guard.** `a_seed_needs_the_floor_of_into` sets `Broken::seed_skips_floor`, the Seed before the fix, and prints the path that breaks `STALE_KEEPS_LATER`. The same Seed runs today when the request has no gen, since `seed_volume` checks only `Some` (the `if let Some(gen)` check in `seed_volume`, `core/crates/ployzd/src/machine_api/local.rs`). That covers a Cloud that sends none, and a Machine that predates the field, which drops it as an unknown field (`SeedVolumeRequest` has no `deny_unknown_fields`, in `core/crates/ployz-core/src/volume_switch.rs`). `without_the_floor_only_the_late_seed_property_breaks` expects every other property to hold under that flag in every scenario, and the finding to need the later Move (`Scenario::Fresh`).
@@ -122,6 +122,36 @@ These are out of scope:
 - two stranded requests, where the second could land a root of `into` on A while B is the writer. The model has not checked this.
 
 A green model says nothing about them. Cover them with the seed tests in `core/crates/ployzd/src/volume_plugin/tests/seed_tests.rs` (`cargo nextest run -p ployzd volume_plugin::`).
+
+## The Copy step
+
+`core/crates/ployz-verify/src/volume_marks/copy_step.rs` is a second, smaller model of the same Seed when a person's Copy step admits it. Cloud resends `SeedCopy` for `into` until Machine A answers a root, and any request can arrive late. A takes each request under the switch lock in three steps (`LocalMachine::seed_copy` in `core/crates/ployzd/src/machine/local_machine/volume_copy.rs`):
+
+1. It takes the step in its approvals record, and records that a copy may begin before it calls the plugin (`ConsumptionLog::take_copy` and `copy_began` in `core/crates/ployzd/src/machine/local_machine/consumption.rs`).
+2. It runs the plugin's bound seed as one step under `admit_mutation` (`VolumeStorage::seed_volume` with a `CopyBinding`, `core/crates/ployzd/src/volume_plugin/seed.rs`).
+3. It takes `began` back only when the plugin refused before any effect (`began_nothing`).
+
+The daemon restarts at most once, between any two steps. A restart kills the receive and drops the request in hand, but keeps the record and the datasets. The step's window closes once. The user can delete `into`, and another approval can then make a Volume of that name, which carries another origin. Three scenarios start `into` absent (`Fresh`), as another approval's root (`TakenRoot`), or as another Volume's partial slot (`TakenSlot`).
+
+Its properties:
+
+- `NEVER_REMADE`: **once a copy began and `into` was deleted, no copy makes it again.**
+- `KEEPS_OTHER`: **a copy never answers, lands on or destroys a copy of `into` that carries another origin.**
+- `ANSWERS_BIRTH`: **every root the copy answers carries the step's birth.**
+- `STARTS_IN_WINDOW`: **a copy starts, or starts over, only inside the step's window.**
+
+Its tests:
+
+- `a_copy_step_holds_in_every_scenario` checks the code as it is.
+- `every_copy_sometimes_needs_what_it_names` cuts each `COVERAGE` row's omit and expects the row unreached. The rows include a resend after the window finishing a copy that is underway, and a copy landing after a restart between the end of the receive and the stamp.
+- Five `breaks` tests each remove one guard:
+  - `a_copy_records_began_before_the_plugin_may_begin` (`began_after_plugin`, the order before the fix: a restart while the plugin works loses `began`, and a resend after a delete makes `into` again).
+  - `a_copy_refuses_its_deleted_volume` (`forgets_began`).
+  - `a_copy_checks_the_origin_of_into` (`ignores_origin`).
+  - `a_copy_starts_only_inside_its_window` (`ignores_window`).
+  - `a_copy_lands_with_the_birth_its_slot_records` (`lands_point_origin`).
+
+A restart after step 1 and before the plugin runs leaves `began` set with nothing made. The next resend is refused as deleted, so the person approves the restore again. That is a liveness cost the model allows on purpose, not a property it checks. Out of scope: a receive that fails, a failure between the zfs calls of one handler, Docker adopting the root, and the bundle's signature, which the `authority::copy` tests in `ployz-core` cover.
 
 ## Coverage
 
