@@ -251,7 +251,7 @@ fn serve(
     reader.read_line(&mut request)?;
     let method = request.split(' ').next().unwrap_or_default().to_owned();
     let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
-    let (mut length, mut organization, mut approval) = (0, None, None);
+    let (mut length, mut organization, mut approval, mut key) = (0, None, None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header)?;
@@ -264,6 +264,9 @@ fn serve(
         }
         if let Some(value) = header.strip_prefix("x-ployz-approval:") {
             approval = Some(value.trim().to_owned());
+        }
+        if let Some(value) = header.strip_prefix("x-ployz-request-key:") {
+            key = Some(value.trim().to_owned());
         }
         if let Some(value) = header.strip_prefix("authorization: bearer ployz_") {
             // Cloud names who acts: here, the token's Organization.
@@ -430,7 +433,7 @@ fn serve(
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), "/api/logs/read") => (200, json!({ "lines": [], "cursor": null })),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
-            approvals.run(&method, route, &body, approval.as_deref())
+            approvals.run(&method, route, &body, approval.as_deref(), key.as_deref())
         }
         (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
     };
@@ -668,6 +671,8 @@ struct Approvals {
     /// How many times Cloud asked.
     asked: std::sync::Mutex<usize>,
     runs: std::sync::Mutex<Vec<String>>,
+    /// The request key each run carried, in the order of `runs`.
+    keys: std::sync::Mutex<Vec<Option<String>>>,
     bodies: std::sync::Mutex<Vec<Value>>,
     /// Each Store command the gate weighed, as Cloud received it.
     gated: std::sync::Mutex<Vec<Value>>,
@@ -728,6 +733,10 @@ impl Approvals {
         self.runs.lock().unwrap().clone()
     }
 
+    fn keys(&self) -> Vec<Option<String>> {
+        self.keys.lock().unwrap().clone()
+    }
+
     fn bodies(&self) -> Vec<Value> {
         self.bodies.lock().unwrap().clone()
     }
@@ -743,7 +752,14 @@ impl Approvals {
         assert!(!waited.timed_out(), "never ran {run}: {runs:?}");
     }
 
-    fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
+    fn run(
+        &self,
+        method: &str,
+        route: &str,
+        body: &[u8],
+        approval: Option<&str>,
+        key: Option<&str>,
+    ) -> (u16, Value) {
         let carried = approval
             .map(|digest| format!(" with {digest}"))
             .unwrap_or_default();
@@ -753,6 +769,7 @@ impl Approvals {
                 .lock()
                 .unwrap()
                 .push(format!("{method} {route}{carried}"));
+            self.keys.lock().unwrap().push(key.map(str::to_owned));
         }
         self.ran.notify_all();
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -7756,6 +7773,37 @@ fn a_drain_asks_and_without_a_terminal_starts_nothing() {
             format!("POST servers/{CLOUD_SERVER}/drain"),
         ]
     );
+}
+
+/// The ask and the yes are one command, so they carry one request key: Cloud starts
+/// at most one run however many times either is sent.
+#[cfg(target_os = "linux")]
+#[test]
+fn at_a_terminal_the_ask_and_the_yes_carry_one_request_key() {
+    for (args, route) in [
+        (
+            format!("server drain {CLOUD_SERVER}"),
+            format!("POST servers/{CLOUD_SERVER}/drain"),
+        ),
+        (
+            "server clean --namespace a --confirm a".to_owned(),
+            "POST namespaces/a/clean".to_owned(),
+        ),
+    ] {
+        let (target, approvals) = running(true);
+        let (code, screen) = at_a_terminal(&target, &args, "y\n");
+        assert_eq!(code, Some(0), "{args}: {screen}");
+        let sent: Vec<_> = approvals
+            .runs()
+            .into_iter()
+            .zip(approvals.keys())
+            .filter(|(run, _)| run.starts_with(&route))
+            .collect();
+        assert_eq!(sent.len(), 2, "{args}: {sent:?}");
+        let (asked, yes) = (&sent[0].1, &sent[1].1);
+        assert!(asked.is_some(), "{args}: {sent:?}");
+        assert_eq!(asked, yes, "{args}: {sent:?}");
+    }
 }
 
 /// A yes to a drain whose plan moved since starts nothing and asks no second yes.

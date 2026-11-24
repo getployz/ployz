@@ -554,6 +554,7 @@ fn start(
     let Some(credential) = &surveyed.cloud else {
         return Ok(Started::Run(None));
     };
+    let key = uuid::Uuid::new_v4().to_string();
     let started = approval::approved(
         runtime,
         removal.verb(),
@@ -569,15 +570,18 @@ fn start(
                 selected,
                 &confirmed.confirmation,
                 approval,
+                &key,
             )
             .await
             .map(Ok),
-            Removal::Forget => match cloud::account::start_forget(credential, selected, approval)
-                .await
-            {
-                Err(StoreCallError::Refused(refused)) if no_cloud_row(&refused) => Ok(Err(refused)),
-                started => started.map(Ok),
-            },
+            Removal::Forget => {
+                match cloud::account::start_forget(credential, selected, approval, &key).await {
+                    Err(StoreCallError::Refused(refused)) if no_cloud_row(&refused) => {
+                        Ok(Err(refused))
+                    }
+                    started => started.map(Ok),
+                }
+            }
         },
     )?;
     Ok(match started {

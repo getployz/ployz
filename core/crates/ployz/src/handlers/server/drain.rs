@@ -83,6 +83,7 @@ fn through_cloud(
     machine: &Machine,
     selector: &str,
 ) -> Result<DrainReport, Error> {
+    let key = uuid::Uuid::new_v4().to_string();
     let id = approval::approved(
         runtime,
         OperationVerb::Drain,
@@ -95,6 +96,7 @@ fn through_cloud(
                 &format!("servers/{}/drain", machine.id),
                 &json!({ "server_name": machine.name }),
                 approval,
+                Some(&key),
             )
             .await
         },

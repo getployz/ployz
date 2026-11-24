@@ -15,7 +15,8 @@ use crate::cloud::login::LoginError;
 use crate::cloud::reply::{EndedCode, RunState};
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
-/// for one, and return the run's id.
+/// for one, and return the run's id. One `request_key` for every send of one command
+/// starts at most one run.
 ///
 /// # Errors
 ///
@@ -26,12 +27,14 @@ pub(crate) async fn start_run(
     path: &str,
     body: &serde_json::Value,
     approval: Option<&str>,
+    request_key: Option<&str>,
 ) -> Result<String, StoreCallError> {
     #[derive(Deserialize)]
     struct Queued {
         id: String,
     }
-    let queued: Queued = approved_answer(credential, method, path, body, approval).await?;
+    let queued: Queued =
+        keyed_answer(credential, method, path, body, approval, request_key).await?;
     Ok(queued.id)
 }
 
