@@ -362,3 +362,17 @@ fn only_cloud_s_link_answer_is_followed() {
     assert!(Linked::of(&plain).is_none());
     assert!(Linked::of(&link_answer("https://cloud.test")).is_some());
 }
+
+/// Cloud's own refusal envelopes for a failed query and an outage are tried again,
+/// not taken as the end of the wait.
+#[test]
+fn cloud_failing_inside_or_unavailable_is_tried_again() {
+    for code in ["INTERNAL", "UNAVAILABLE"] {
+        let body = json!({"_tag":"PublicError", "code":code, "message":"try again"}).to_string();
+        let refused = crate::cloud::reply::public_error(body.as_bytes()).unwrap();
+        assert!(temporary(&StoreCallError::Refused(refused)), "{code}");
+    }
+    let body = json!({"_tag":"PublicError", "code":"NOT_FOUND", "message":"gone"}).to_string();
+    let refused = crate::cloud::reply::public_error(body.as_bytes()).unwrap();
+    assert!(!temporary(&StoreCallError::Refused(refused)));
+}

@@ -322,7 +322,7 @@ Then it follows the deploy as usual. If no one approves within 10 minutes, it st
 `Nothing deployed yet` and the link, which still works. If someone approved but the deploy
 hasn't started by then, or Cloud stops answering, it says so with the link. A denied deploy
 stops with the reason given. With `--json` or `--detach`, or on a computer that has a device
-key or `PLOYZ_KEY`, it returns the link and `proposal_id` at once. An upload from `ployz up` is
+key or `PLOYZ_KEY`, it returns the link at once, and `--json` also gives the `proposal_id`. An upload from `ployz up` is
 kept for a day, so approving it after that deploys nothing. See
 [Deploy with no key](../deploy/deployments.md#deploy-with-no-key).
 

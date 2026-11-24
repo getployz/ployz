@@ -189,10 +189,14 @@ async fn settled(
     lost
 }
 
-/// Whether Cloud may answer the same look if asked again: it was unreachable, slow or busy.
+/// Whether Cloud may answer the same look if asked again: it was unreachable, slow or
+/// busy, or failed inside, as a query that failed once.
 fn temporary(error: &StoreCallError) -> bool {
     match error {
-        StoreCallError::Refused(refused) => refused.code == RpcErrorCode::Unavailable,
+        StoreCallError::Refused(refused) => matches!(
+            refused.code,
+            RpcErrorCode::Unavailable | RpcErrorCode::Internal
+        ),
         StoreCallError::Cloud(error) => error.code() == RpcErrorCode::Unavailable,
         StoreCallError::Stopped(_) => false,
     }

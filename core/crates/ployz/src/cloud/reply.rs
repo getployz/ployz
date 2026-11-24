@@ -64,6 +64,7 @@ pub(crate) enum PublicCode {
     Unauthorized,
     Forbidden,
     RateLimited,
+    Unavailable,
     Unknown(String),
 }
 
@@ -76,6 +77,7 @@ impl PublicCode {
             "UNAUTHORIZED" => Self::Unauthorized,
             "FORBIDDEN" => Self::Forbidden,
             "RATE_LIMITED" => Self::RateLimited,
+            "UNAVAILABLE" => Self::Unavailable,
             other => Self::Unknown(other.to_owned()),
         }
     }
@@ -86,7 +88,7 @@ impl PublicCode {
             Self::NotFound => RpcErrorCode::NotFound,
             Self::ValidationFailed => RpcErrorCode::InvalidArgument,
             Self::Unauthorized | Self::Forbidden => RpcErrorCode::Unauthenticated,
-            Self::RateLimited => RpcErrorCode::Unavailable,
+            Self::RateLimited | Self::Unavailable => RpcErrorCode::Unavailable,
             Self::Unknown(_) => RpcErrorCode::Internal,
         }
     }
