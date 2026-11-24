@@ -17,11 +17,15 @@
 //! - **The editor** changes the plan once, at any step before the request ends: a
 //!   collaborator edits or discards the draft, a Deployment lands so a retry or a cancel
 //!   reads another version, every Server leaves, or the drained Server leaves the frame
-//!   (`ApprovalBinding::edits`). After Cloud's last compare of a Drain it may still fail a
-//!   global's last other copy, which the Engine's `LastIn` guard reads (`Plan::LastCopy`).
-//!   With `open_paths` it also makes the changes the code doesn't bind: the cancelled
-//!   Deployment's runner claims it (`Plan::Started`), or a global's other copy fails after
-//!   the guard counted it and before its copy here goes Out.
+//!   (`ApprovalBinding::edits`). With `open_paths` it also makes the change the code
+//!   doesn't bind: the cancelled Deployment's runner claims it (`Plan::Started`).
+//! - **The other copy** is global G's copy on Server B, which the Drain's yes counted on
+//!   when it retires G's copy on the drained Server. Two things about it change apart
+//!   (`OtherCopy`): its Container stops running, which Cloud's `drainPlan` reads
+//!   (`runtime.state`) and the Engine's `LastIn` guard does not; and it leaves rotation or
+//!   its owner stops answering, which `last_in` reads and `drainPlan` does not. With
+//!   `open_paths` its Container also stops after Cloud's last compare, and either change
+//!   lands after the guard counted it and before G's copy here goes Out.
 //! - **The frame** changes what `dataCheck` reads of a Service the Engine leaves on the
 //!   drained Server for its Volume, once (`Data`): the Volume's reason to stay clears, or
 //!   the Service now mounts another managed Volume.
@@ -65,9 +69,10 @@
 //! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
 //! binds the Deployment and the review version, which stay put when its runner claims it,
 //! so a yes to taking a queued Deployment out of the queue stops one already running
-//! (#4555); and `last_in` counts a global's other copy In when its owner answers, but
-//! nothing reads it again before the Out write, so a copy that fails in between leaves the
-//! global with none (#4556).
+//! (#4555); and `last_in` counts B's copy when its owner answers that it is In and not
+//! leaving, whether or not its Container runs, and nothing reads B again before the Out
+//! write. So B's Container stopping after Cloud's compare, or B failing after the guard
+//! counted it, leaves G with no serving copy (#4556).
 //!
 //! Out of scope: a yes the dashboard gives itself (a dashboard confirm, including the Drain
 //! dialog's Volume forecast, `previewServerDrain`), a Deploy that waits
@@ -165,7 +170,7 @@ impl Command {
                 &[Plan::Other, Plan::Harmless, Plan::Forgets]
             }
             Self::Store(Write::Cancel | Write::Move) => &[Plan::Other],
-            Self::Drain => &[Plan::Other, Plan::Harmless, Plan::Gone, Plan::LastCopy],
+            Self::Drain => &[Plan::Other, Plan::Harmless, Plan::Gone],
             Self::Machine(_) => &[],
         }
     }
@@ -198,8 +203,9 @@ enum Plan {
     /// Head's token counts only Deployments that ended (`history::head`), so the review
     /// version, and with it the digest, stays the asked one's.
     Started,
-    /// A global the Drain retires lost its last other running copy, so `drainPlan` now
-    /// names `removes_service` for it and retiring it here leaves it no copy.
+    /// Global G's other copy no longer serves. Read by Cloud, B's Container isn't running,
+    /// so `drainPlan` names `removes_service` for G. As an effect, the Out write retired G's
+    /// copy here while B's copy didn't serve, so G was left with no serving copy.
     LastCopy,
 }
 
@@ -379,6 +385,46 @@ enum Data {
     Switched,
 }
 
+/// Global G's other copy, on Server B, which the Drain counts on when it retires G's copy
+/// on the drained Server.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct OtherCopy {
+    /// Its Container runs. Cloud's `drainPlan` reads it (`runtime.state === "running"`);
+    /// `last_in` does not.
+    running: bool,
+    /// Its owner answers that it is In and not leaving, and proxy acks name it: what
+    /// `last_in` counts. A stopped Container stays In: nothing on B writes Out when it
+    /// exits, and its daemon still answers.
+    in_rotation: bool,
+}
+
+impl OtherCopy {
+    const fn serves(self) -> bool {
+        self.running && self.in_rotation
+    }
+}
+
+/// The Drain step B's copy last changed before.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Before {
+    /// Cloud's last compare, which reads a stopped Container.
+    Compare,
+    /// The guard's read, after the compare.
+    Guard,
+    /// The Out write, after the guard counted it.
+    Out,
+}
+
+/// What the drained Server's `LastIn` guard decided for G's copy there.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Retirement {
+    /// `last_in` counted another copy, so the copy here goes Out and is removed.
+    Retired,
+    /// `last_in` counted none: the copy here stays In and runs, and the Drain reports
+    /// `DrainOutcome::NotRetired` with the refusal.
+    NotRetired,
+}
+
 /// What `admitDrainVolume` did with a planned move.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Admission {
@@ -396,15 +442,17 @@ struct State {
     live: Plan,
     /// The editor made its one change.
     edited: bool,
-    /// It made it after Cloud's last compare of a Drain.
-    late: bool,
     /// The Machine accepts the caller's key.
     trusted: bool,
     /// The Drain's step died once before its effect, and Inngest ran it again.
     crashed: bool,
-    /// The Engine's `LastIn` guard kept a global's last copy on the drained Server.
-    kept: bool,
+    other: OtherCopy,
+    /// When B's copy last changed.
+    changed: Option<Before>,
+    retirement: Option<Retirement>,
     data: Data,
+    /// The frame changed `data` after Cloud's last compare.
+    data_late: bool,
     exec: Exec,
     wrote: Option<Wrote>,
     admission: Option<Admission>,
@@ -425,6 +473,17 @@ impl State {
                 | Exec::Admitting { .. }
                 | Exec::Ran
         )
+    }
+
+    /// Where a change to B's copy lands now.
+    const fn window(&self) -> Before {
+        match self.exec {
+            Exec::Covered { .. } => Before::Guard,
+            Exec::Retiring | Exec::Moving | Exec::Admitting { .. } | Exec::Ran => Before::Out,
+            Exec::Ready | Exec::Resending | Exec::Waiting { .. } | Exec::Refused { .. } => {
+                Before::Compare
+            }
+        }
     }
 
     fn refuse(&mut self, why: Why) {
@@ -490,9 +549,9 @@ struct Broken {
 struct ApprovalBinding {
     command: Command,
     broken: Broken,
-    /// The editor may also make the changes the shipped code lets through: a Cancel's
-    /// Deployment starts, or a global's other copy fails after the Drain's `LastIn` guard
-    /// counted it. Each breaks the property; see the module doc.
+    /// The changes the shipped code lets through: a Cancel's Deployment starts; B's
+    /// Container stops after Cloud's compare, which `last_in` never reads; or B's copy
+    /// changes after the guard counted it. Each breaks the property; see the module doc.
     open_paths: bool,
 }
 
@@ -500,6 +559,10 @@ struct ApprovalBinding {
 enum Action {
     /// The editor moves the plan.
     Edit(Plan),
+    /// B's Container stops running. Its rotation stays In.
+    CopyStops,
+    /// B's copy goes Out, is being taken out too, or its owner stops answering.
+    CopyLeaves,
     /// The remover revokes the caller's management access.
     Revoke,
     /// The executor sends its request.
@@ -528,15 +591,33 @@ impl ApprovalBinding {
     const fn edits(&self, state: &State) -> &'static [Plan] {
         match (self.command, state.exec) {
             (Command::Store(Write::Cancel), _) if self.open_paths => &[Plan::Other, Plan::Started],
-            // After Cloud's last compare the Engine reads what it drains itself. The change
-            // that read can meet is a global losing its last other copy, which `LastIn`
-            // reads before its copy here goes Out.
-            (Command::Drain, Exec::Covered { .. }) => &[Plan::LastCopy],
-            // The guard counted the other copy; it fails before the Out write.
-            (Command::Drain, Exec::Retiring) if self.open_paths => &[Plan::LastCopy],
+            // After Cloud's last compare, what changes is B's copy (`copy_changes`) and the
+            // Volume read (`data_changes`).
             (Command::Drain, _) if state.compared() => &[],
             (command, _) => command.edits(),
         }
+    }
+
+    /// What may happen to B's copy from `state`: `(stops, leaves)`. Before Cloud's compare
+    /// either may, and the compare reads a stopped Container. Between the compare and the
+    /// guard, a copy that leaves is the one `last_in` refuses; a Container that stops is
+    /// counted anyway, so it is open. After the guard, both are open.
+    fn copy_changes(&self, state: &State) -> (bool, bool) {
+        if self.command != Command::Drain {
+            return (false, false);
+        }
+        let (stops, leaves) = match state.exec {
+            Exec::Ready | Exec::Resending | Exec::Waiting { .. } => (true, true),
+            Exec::Covered { .. } => (self.open_paths, true),
+            Exec::Retiring => (self.open_paths, self.open_paths),
+            Exec::Moving | Exec::Admitting { .. } | Exec::Ran | Exec::Refused { .. } => {
+                (false, false)
+            }
+        };
+        (
+            stops && state.other.running,
+            leaves && state.other.in_rotation,
+        )
     }
 
     /// What the frame may change `dataCheck`'s read to from `state`: a reason to stay
@@ -716,9 +797,19 @@ impl ApprovalBinding {
         }
     }
 
+    /// The Drain's plan as Cloud's `drainPlan` reads it: G with no running copy elsewhere is
+    /// `removes_service`. It reads B's runtime state, not its rotation.
+    fn drain_plan(state: &State) -> Plan {
+        if state.live == Plan::Asked && !state.other.running {
+            Plan::LastCopy
+        } else {
+            state.live
+        }
+    }
+
     /// `drainServer`'s `planDrain` and `gateOperation`, then the row it records.
     fn send_drain(&self, state: &mut State) {
-        let plan = state.live;
+        let plan = Self::drain_plan(state);
         if plan == Plan::Gone {
             state.refuse(Why::NoPlan);
             return;
@@ -741,7 +832,7 @@ impl ApprovalBinding {
     /// `executeDrainOnce`'s `stillCovered`, for a Drain a person said yes to. Covered, it
     /// waits for the Engine call.
     fn run_drain(&self, state: &mut State, digest: Plan) {
-        let plan = state.live;
+        let plan = Self::drain_plan(state);
         let present = plan != Plan::Gone;
         let harmless = !plan.destroys();
         let matches = present && plan.digest(self.broken) == digest;
@@ -761,19 +852,28 @@ impl ApprovalBinding {
     }
 
     /// `drainMachine`'s `preflight` reads the Cluster again, and `retire_copies` asks each
-    /// global copy Out. The drained Server's `last_in` refuses the only In copy, so a global
-    /// whose last other copy failed before it read stays (`StayReason::LastIn`).
+    /// global copy Out with `EmptyPolicy::RequireOtherIn`. The drained Server's `last_in`
+    /// counts B's copy when its owner answers In and not leaving and proxies ack it; it
+    /// never reads whether B's Container runs.
     fn engine_drain(&self, state: &mut State) {
-        state.kept = state.live == Plan::LastCopy && !self.broken.retire_skips_last_in;
+        let refuses = !state.other.in_rotation && !self.broken.retire_skips_last_in;
+        state.retirement = Some(if refuses {
+            Retirement::NotRetired
+        } else {
+            Retirement::Retired
+        });
         state.exec = Exec::Retiring;
     }
 
-    /// `retire_copies`' Out write and removal, then the rest of `execute`. Nothing reads the
-    /// other copies again here. A global the guard kept leaves the asked plan less its
-    /// retirement. A Server Cloud's frame lost may still be one the Engine sees, so the
-    /// Engine drains it too.
+    /// `retire_copies`' Out write and removal, then the rest of `execute`. Nothing reads B
+    /// again here. A refused copy stays In and the Drain reports `NotRetired`: the asked
+    /// plan less its retirement. A retired copy leaves G with what serves on B. A Server
+    /// Cloud's frame lost may still be one the Engine sees, so the Engine drains it too.
     fn engine_retire(&self, state: &mut State) {
-        let plan = if state.kept { Plan::Asked } else { state.live };
+        let plan = match state.retirement {
+            Some(Retirement::Retired) if !state.other.serves() => Plan::LastCopy,
+            Some(Retirement::Retired | Retirement::NotRetired) | None => state.live,
+        };
         state.wrote = Some(Wrote {
             plan,
             valid: self.valid(state),
@@ -842,11 +942,16 @@ impl Model for ApprovalBinding {
                         },
                         live: Plan::Asked,
                         edited: false,
-                        late: false,
                         trusted: true,
                         crashed: false,
-                        kept: false,
+                        other: OtherCopy {
+                            running: true,
+                            in_rotation: true,
+                        },
+                        changed: None,
+                        retirement: None,
                         data: Data::Stays,
+                        data_late: false,
                         exec: Exec::Ready,
                         wrote: None,
                         admission: None,
@@ -863,6 +968,13 @@ impl Model for ApprovalBinding {
         }
         if !state.edited {
             actions.extend(self.edits(state).iter().map(|plan| Action::Edit(*plan)));
+        }
+        let (stops, leaves) = self.copy_changes(state);
+        if stops {
+            actions.push(Action::CopyStops);
+        }
+        if leaves {
+            actions.push(Action::CopyLeaves);
         }
         actions.extend(
             self.data_changes(state)
@@ -903,7 +1015,14 @@ impl Model for ApprovalBinding {
             Action::Edit(plan) => {
                 state.live = plan;
                 state.edited = true;
-                state.late = state.compared();
+            }
+            Action::CopyStops => {
+                state.other.running = false;
+                state.changed = Some(state.window());
+            }
+            Action::CopyLeaves => {
+                state.other.in_rotation = false;
+                state.changed = Some(state.window());
             }
             Action::Revoke => state.trusted = false,
             Action::Send => match self.command {
@@ -951,7 +1070,10 @@ impl Model for ApprovalBinding {
                 state.exec = Exec::Waiting { digest };
                 state.crashed = true;
             }
-            Action::Data(data) => state.data = data,
+            Action::Data(data) => {
+                state.data = data;
+                state.data_late = state.compared();
+            }
             Action::Engine => self.engine_drain(&mut state),
             Action::Retire => self.engine_retire(&mut state),
             Action::Volumes => Self::drain_volumes(&mut state),
@@ -1052,10 +1174,16 @@ impl Model for ApprovalBinding {
                     state.crashed && state.wrote.is_some()
                 }));
                 properties.push(Property::sometimes(LAST_IN_KEEPS, |_, state: &State| {
-                    state.late && state.kept && state.wrote.is_some()
+                    state.changed == Some(Before::Guard)
+                        && state.retirement == Some(Retirement::NotRetired)
+                        && state.wrote
+                            == Some(Wrote {
+                                plan: Plan::Asked,
+                                valid: true,
+                            })
                 }));
                 properties.push(Property::sometimes(SWITCHED_MOVES, |_, state: &State| {
-                    state.admission == Some(Admission::Moved(Data::Switched))
+                    state.data_late && state.admission == Some(Admission::Moved(Data::Switched))
                 }));
                 properties.push(Property::sometimes(
                     ADMISSION_REFUSES,
@@ -1088,10 +1216,10 @@ const MEMBER_ASKS: &str = "a member's own yes reaches the Store and asks an owne
 const DRAIN_CHANGED: &str = "a Drain whose plan changed after its gate is refused when it runs";
 const DRAIN_RETRIED: &str = "a Drain runs after Inngest ran its step again";
 const REVOKED_UNDER_TURN: &str = "a key revoked while its call waited is refused under the turn";
-const LAST_IN_KEEPS: &str =
-    "a global whose last other copy failed after Cloud's compare stays: LastIn refuses it";
-const SWITCHED_MOVES: &str =
-    "a Volume the Service switched to moves once admitted, which the carried yes never named";
+const LAST_IN_KEEPS: &str = "a global whose other copy left rotation after Cloud's compare \
+     stays NotRetired: LastIn refuses it";
+const SWITCHED_MOVES: &str = "a Volume the Service switched to after Cloud's compare and \
+     before services-off moves once admitted, which the carried yes never named";
 const ADMISSION_REFUSES: &str = "admission refuses a planned Volume move, and the Volume stays";
 
 /// `path` under `model` in the code's words: each step, and what stands once it ran.
@@ -1136,7 +1264,23 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
             },
         );
         let volume = if model.command == Command::Drain {
-            format!(" data={:?} admission={:?}", state.data, state.admission)
+            format!(
+                " B=({}, {}, changed {:?}) retirement={:?} data={:?} admission={:?}",
+                if state.other.running {
+                    "running"
+                } else {
+                    "stopped"
+                },
+                if state.other.in_rotation {
+                    "In"
+                } else {
+                    "gone"
+                },
+                state.changed,
+                state.retirement,
+                state.data,
+                state.admission
+            )
         } else {
             String::new()
         };
@@ -1160,13 +1304,21 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Exec::Resending => "and Cloud's first call asks for the yes's digest".to_owned(),
         Exec::Waiting { digest } => format!("and it waits, holding digest {digest:?}"),
         Exec::Covered { digest } => format!("and it matches digest {digest:?}"),
-        Exec::Retiring => "and the guard lets the copies go".to_owned(),
+        Exec::Retiring => "and the guard has decided".to_owned(),
         Exec::Moving => "and the Engine answers".to_owned(),
         Exec::Admitting { read } => format!("and it plans a move from what it read: {read:?}"),
         Exec::Ready => String::new(),
     };
     match action {
         Action::Edit(plan) => format!("editor: {}", edit_words(plan)),
+        Action::CopyStops => {
+            "B: G's Container there stops running; its rotation stays In and its daemon still answers"
+                .to_owned()
+        }
+        Action::CopyLeaves => {
+            "B: G's copy there goes Out, is being taken out too, or its owner stops answering"
+                .to_owned()
+        }
         Action::Revoke => {
             "remover: set_device removes the Device and its slot under its own exclusive turn"
                 .to_owned()
@@ -1177,13 +1329,15 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         }
         Action::Data(data) => format!("frame: {}", data_words(data)),
         Action::Engine => format!(
-            "Engine: drainMachine's preflight reads the Cluster again, and the drained Server's last_in {} each global copy, {outcome}",
-            if after.kept {
-                "refuses the only In copy of"
-            } else if broken.retire_skips_last_in {
-                "lets go (under Broken)"
-            } else {
-                "weighs"
+            "Engine: drainMachine's preflight reads the Cluster again, and the drained Server's last_in {}, {outcome}",
+            match after.retirement {
+                Some(Retirement::NotRetired) => "counts no other In copy and refuses: NotRetired",
+                Some(Retirement::Retired) if broken.retire_skips_last_in => {
+                    "lets G's copy go without counting (under Broken)"
+                }
+                Some(Retirement::Retired) | None => {
+                    "counts B's copy In from its owner's answer, reading no runtime state"
+                }
             }
         ),
         Action::Retire => format!(
@@ -1260,9 +1414,7 @@ const fn edit_words(plan: Plan) -> &'static str {
         Plan::Started => {
             "the runner claims the queued Deployment: it is running now, at the same review version"
         }
-        Plan::LastCopy => {
-            "a global's last other running copy fails: retiring it here now leaves it no copy"
-        }
+        Plan::LastCopy => "G's other copy no longer serves: retiring it here leaves it none",
     }
 }
 
@@ -1695,9 +1847,17 @@ mod tests {
         }
     }
 
-    /// A guard, not a past bug: between Cloud's compare and the Engine's read, a global's
-    /// last other copy fails. The drained Server's `last_in` refuses taking its copy Out, so
-    /// the global keeps it. Without the guard the Drain removes the Service's last copy.
+    /// The step `path` took `wanted` from, if any.
+    fn taken_from(path: &[(State, Option<Action>)], wanted: Action) -> Option<&State> {
+        path.iter()
+            .find(|(_, action)| *action == Some(wanted))
+            .map(|(state, _)| state)
+    }
+
+    /// A guard, not a past bug: between Cloud's compare and the Engine's read, G's copy on
+    /// B leaves rotation. The drained Server's `last_in` refuses taking its copy Out, so G
+    /// keeps it and the Drain reports `NotRetired`. Without the guard the Drain retires G's
+    /// last In copy.
     #[test]
     fn a_retirement_keeps_a_global_s_last_copy() {
         let broken = Broken {
@@ -1705,37 +1865,56 @@ mod tests {
             ..Broken::default()
         };
         let path = breaks_where(without(Command::Drain, broken), BOUND, |path| {
-            last(path).late
+            last(path).changed == Some(Before::Guard)
                 && last(path).wrote
                     == Some(Wrote {
                         plan: Plan::LastCopy,
                         valid: true,
                     })
         });
+        let left = taken_from(&path, Action::CopyLeaves).expect("B's copy leaves");
         assert!(
-            path.iter()
-                .any(|(_, action)| *action == Some(Action::Retire))
+            matches!(left.exec, Exec::Covered { .. }),
+            "after the compare"
         );
     }
 
-    /// Open, #4556. `last_in` counts the other copy In when its owner answers, and nothing
-    /// reads it again before `retire_copies` takes the copy here Out and removes it. A copy
-    /// that fails in between leaves the global with none, until it comes back.
+    /// Open, #4556. B's Container stops after Cloud's compare and before the guard reads.
+    /// Its rotation stays In and its daemon still answers In, not leaving, so `last_in`
+    /// counts it while proxy acks name it, and the Drain retires G's only serving copy.
+    /// Had the stop come before the compare, `drainPlan` would read it and refuse.
+    #[test]
+    fn a_retirement_counts_a_global_s_other_copy_whose_container_stopped_before_its_guard() {
+        let path = breaks_where(open(Command::Drain), BOUND, |path| {
+            taken_from(path, Action::CopyStops)
+                .is_some_and(|state| matches!(state.exec, Exec::Covered { .. }))
+        });
+        let ran = last(&path);
+        assert_eq!(ran.retirement, Some(Retirement::Retired));
+        assert!(ran.other.in_rotation && !ran.other.running);
+        assert_eq!(
+            ran.wrote,
+            Some(Wrote {
+                plan: Plan::LastCopy,
+                valid: true,
+            })
+        );
+    }
+
+    /// Open, #4556. `last_in` counts B's copy when its owner answers, and nothing reads B
+    /// again before `retire_copies` takes the copy here Out and removes it. A copy that
+    /// stops or leaves in between leaves G with none, until it comes back.
     #[test]
     fn a_retirement_takes_out_a_global_whose_other_copy_failed_after_its_guard() {
-        let path = breaks_where(open(Command::Drain), BOUND, |path| {
-            last(path).wrote
-                == Some(Wrote {
-                    plan: Plan::LastCopy,
-                    valid: true,
-                })
-        });
-        let step = |wanted: Action| {
-            path.iter()
-                .position(|(_, action)| *action == Some(wanted))
-                .expect("the path takes the step")
-        };
-        assert!(step(Action::Engine) < step(Action::Edit(Plan::LastCopy)));
-        assert!(step(Action::Edit(Plan::LastCopy)) < step(Action::Retire));
+        for change in [Action::CopyStops, Action::CopyLeaves] {
+            let path = breaks_where(open(Command::Drain), BOUND, move |path| {
+                taken_from(path, change).is_some_and(|state| state.exec == Exec::Retiring)
+            });
+            assert_eq!(
+                last(&path).retirement,
+                Some(Retirement::Retired),
+                "{change:?}"
+            );
+        }
     }
 }
