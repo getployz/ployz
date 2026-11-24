@@ -1821,8 +1821,8 @@ fn plan_one_service<'snapshot>(
     spread.wait_for(&away);
     let identity = QualifiedService::new(namespace.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
-    let (service_id, current, hooks) = match existing {
-        None => (ServiceId::random(), &[][..], &[][..]),
+    let (service_id, (leaving, current), hooks) = match existing {
+        None => (ServiceId::random(), (Vec::new(), Vec::new()), &[][..]),
         Some(service) => {
             // A user Global, from Compose before 0.1.2-beta.42, may only leave: no Machine
             // admits it Global any more, so its copies are recreated Replicated.
@@ -1837,11 +1837,15 @@ fn plan_one_service<'snapshot>(
             }
             (
                 service.service_id,
-                service.containers.as_slice(),
+                service.containers.iter().cloned().partition(|container| {
+                    leaves_global
+                        && container.as_observation().resolved_spec.mode == ServiceMode::Global
+                }),
                 service.hook_containers.as_slice(),
             )
         }
     };
+    let current = current.as_slice();
     let starts = !machines.is_empty();
     let (operations, regions) = if starts {
         let reservation = budget.placement.take_reservation(&requested.name);
@@ -1850,6 +1854,21 @@ fn plan_one_service<'snapshot>(
                 .volumes
                 .constrain_candidates(requested, &mut machines)?;
         }
+        // A leaving Global's copies go before the Replicated ones start, and never as a
+        // replacement: a replacement deletes the old copy's anonymous volumes, while a
+        // retirement keeps the data they hold for the user to carry over.
+        let retired: Vec<DeployOperation> = leaving
+            .iter()
+            .map(|container| {
+                let observation = container.as_observation();
+                DeployOperation::RemoveContainer {
+                    machine_id: observation.machine_id,
+                    container_id: observation.container_id,
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
+                }
+            })
+            .collect();
+        budget.placement.release_containers(&leaving);
         let target = ServiceTarget {
             spread: &spread,
             service_id,
@@ -1857,7 +1876,7 @@ fn plan_one_service<'snapshot>(
             hooks,
             machines,
         };
-        match reservation {
+        let (operations, regions) = match reservation {
             // The reservation fixed each copy's action when it was made.
             Some(reservation) => place_service(
                 &target,
@@ -1874,10 +1893,12 @@ fn plan_one_service<'snapshot>(
                 |budget, landing| place_service(&target, None, budget, options, landing),
                 |(operations, _)| Landing::stands(operations.iter().filter_map(TrialStep::of)),
             )?,
-        }
+        };
+        (retired.into_iter().chain(operations).collect(), regions)
     } else {
         // Every region the counts name is away, so nothing starts. A replica past a
         // region's count still goes, since a Server that takes no services can give one up.
+        // A leaving Global's copies stay until a Replicated copy can start.
         placement::withdraw(&spread, current, requested, &mut budget.placement)
     };
     let short = PlanError::RegionUnmatched {

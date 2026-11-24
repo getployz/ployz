@@ -470,14 +470,17 @@ fn a_changed_pre_deploy_hook_alone_runs_it_and_replaces_the_container() {
 
 /// A Global outside Ployz's own Services, left from Compose `deploy.mode: global` before
 /// 0.1.2-beta.42, leaves by a Deploy with a replica count: its copies are recreated
-/// Replicated, since no Machine admits it Global any more.
+/// Replicated, since no Machine admits it Global any more. Each Global copy is retired, never
+/// rolled out, so its anonymous volumes stay on its Server: a Replicated copy holds a slot
+/// of its own, and the data in the old copy's volumes is the user's to carry over.
 #[test]
-fn a_legacy_global_redeploys_replicated() {
+fn a_legacy_global_redeploys_replicated_and_keeps_its_anonymous_volumes() {
     let current = requested(ServiceMode::Global);
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     let current_service_id = service_id('a');
+    let globals = [container_id('b'), container_id('c')];
 
     let plan = plan_deploy(
         [&requested],
@@ -494,11 +497,30 @@ fn a_legacy_global_redeploys_replicated() {
     .unwrap();
 
     let operations = operations(&plan);
-    let started = operations
-        .iter()
-        .filter_map(|operation| match operation {
-            DeployOperation::RunContainer { spec, .. } => Some(spec),
-            DeployOperation::ReplaceContainer(replacement) => Some(&replacement.spec),
+    let mut started = Vec::new();
+    let mut retired = Vec::new();
+    for operation in &operations {
+        match operation {
+            DeployOperation::RunContainer { spec, .. } => started.push(spec),
+            DeployOperation::ReplaceContainer(replacement) => {
+                assert!(
+                    !globals.contains(&replacement.old_container_id),
+                    "a replacement deletes its old copy's anonymous volumes: {operations:?}"
+                );
+                started.push(&replacement.spec);
+            }
+            DeployOperation::RemoveContainer {
+                container_id,
+                purpose,
+                ..
+            } if globals.contains(container_id) => {
+                assert_eq!(
+                    *purpose,
+                    ployz_core::RemoveContainerPurpose::Retire,
+                    "a Global copy keeps its anonymous volumes: {operations:?}"
+                );
+                retired.push(*container_id);
+            }
             DeployOperation::PrepareVolumes { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
@@ -506,24 +528,16 @@ fn a_legacy_global_redeploys_replicated() {
             | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. } => None,
-        })
-        .collect::<Vec<_>>();
+            | DeployOperation::RemoveVolume { .. } => {}
+        }
+    }
     let [started] = started.as_slice() else {
         panic!("one Replicated copy starts: {operations:?}");
     };
     assert_eq!(started.mode, requested.mode);
     assert_eq!(started.service_id, current_service_id);
-    let retired = operations
-        .iter()
-        .filter(|operation| {
-            matches!(
-                operation,
-                DeployOperation::RemoveContainer { .. } | DeployOperation::ReplaceContainer(..)
-            )
-        })
-        .count();
-    assert_eq!(retired, 2, "both Global copies go: {operations:?}");
+    retired.sort();
+    assert_eq!(retired, globals, "both Global copies go: {operations:?}");
 }
 
 #[test]
