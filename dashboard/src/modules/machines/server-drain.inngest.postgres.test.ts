@@ -336,6 +336,32 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
+  // Catches a Drain admitted by an approval row before upgrade draining a changed plan, read as nobody's yes.
+  it("reads a Drain row that names an older approval as a yes, so a changed plan runs nothing", async () => {
+    frame = frameOf("replicated");
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved: false, serverName: null,
+    }));
+    await harness.pool.query(`update server_drain_attempt set approval_id = $1`, [crypto.randomUUID()]);
+
+    await drain(attemptId);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: "The drain changed since you said yes. Drain the server again to review it." }]);
+  });
+
+  // Catches a yes to one plan reaching the Store with no plan at all once its Server left the frame.
+  it("runs nothing for a Drain a person said yes to once its Server is gone from the frame", async () => {
+    const replicated = frameOf("replicated");
+    frame = asTestDouble<RuntimeWatchView>()({ ...replicated, machines: replicated.machines.filter(({ machine }) => machine.id !== machineId) });
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved: true, serverName: null,
+    }));
+
+    await drain(attemptId);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused" }]);
+  });
+
   it("a dashboard Drain that destroys nothing records no approval and drains only the services it planned", async () => {
     await request();
     await drain();

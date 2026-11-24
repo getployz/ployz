@@ -287,7 +287,9 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
 ) {
   const plan = drainPlan(frame, new Set(yield* ownedNamespaces(request.organizationId)), request.machineId);
   const moves = plan === null || plan.moves.length > 0;
-  const harmless = plan === null || (plan.effects.length === 0 && !admitted.approved);
+  // A yes covers only the plan it was given: one whose Server left the frame, so nothing plans, runs nothing.
+  if (admitted.approved) return { covered: plan !== null && admitted.planDigest === operationDigest(plan), moves };
+  const harmless = plan === null || plan.effects.length === 0;
   return { covered: harmless || admitted.planDigest === operationDigest(plan), moves };
 });
 
@@ -321,6 +323,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
         targets: serverDrainAttempt.targets,
         planDigest: serverDrainAttempt.planDigest,
         approved: serverDrainAttempt.approved,
+        approvalId: serverDrainAttempt.approvalId,
         requestedAt: serverDrainAttempt.requestedAt,
       }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, id));
       const deadline = row === undefined ? 0 : row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
@@ -343,9 +346,11 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
       const { frame } = reached.value;
       yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
         .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
-      const { covered, moves } = yield* stillCovered(request, frame, { planDigest: row?.planDigest ?? null, approved: row?.approved ?? false });
+      // A row an older worker wrote, or one from before `approved`, names the approval it consumed instead: a yes too.
+      const approved = row !== undefined && (row.approved || row.approvalId !== null);
+      const { covered, moves } = yield* stillCovered(request, frame, { planDigest: row?.planDigest ?? null, approved });
       if (!covered) {
-        const changed = row?.approved === true ? "The drain changed since you said yes." : "The drain now destroys something nobody approved.";
+        const changed = approved ? "The drain changed since you said yes." : "The drain now destroys something nobody approved.";
         return yield* endPending(refused(`${changed} Drain the server again to review it.`));
       }
       // The Drain's Container steps run on the drained Server, which retires its Globals, and, when the Drain moves
