@@ -658,6 +658,12 @@ struct State {
     refused_start: bool,
     /// A Container an Operator's start created while its Machine refused such starts.
     unapproved_start: bool,
+    /// A Move's recheck before `commitMove` found its start refused, so it ended warm.
+    rechecked: bool,
+    /// The promote of B a Deploy repairing a refused start sent (`fenceFollowed`).
+    repair: Option<usize>,
+    /// That Deploy's own Create started the Service on B.
+    repaired: bool,
 }
 
 /// The entry of a per-Machine array for `machine`.
@@ -842,6 +848,7 @@ impl State {
         if let Some(deploy) = self.deploy.as_mut() {
             held.push(&mut deploy.driver.waiting);
         }
+        held.push(&mut self.repair);
         for host in &mut self.hosts {
             held.push(&mut host.switch);
             held.push(&mut host.turn);
@@ -1176,6 +1183,9 @@ enum Action {
     EndResize,
     /// The Machines begin refusing created starts.
     Enforce,
+    /// A Deploy follows a committed Move whose start was refused: it promotes B with no
+    /// start, then creates the Service from its own approved spec.
+    Repair,
     /// Cloud starts the next run the row lock lets in.
     Next,
     Drop,
@@ -1277,6 +1287,7 @@ fn wanted(want: Want) -> WantedCopy {
             }),
             target: snapshot(target).name,
             drain: Drain::NONE,
+            holder: None,
         },
         Want::Snapshot { at } => WantedCopy::Snapshot {
             name: snapshot(at).name,
@@ -1300,6 +1311,7 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::Written
         | CopyRefusal::NoSource
         | CopyRefusal::Foreign
+        | CopyRefusal::Held
         | CopyRefusal::DockerUnavailable
         | CopyRefusal::Unrecognized => Refusal::Other,
     }
@@ -1996,6 +2008,44 @@ impl VolumeRuns {
         }
     }
 
+    /// `fenceFollowed` on a committed Move whose forward Release failed on a refused start:
+    /// B, already writable at the committed epoch, needs no promote; otherwise it becomes
+    /// the Writer at the snapshot the commit recorded, with no start. Then the Deploy's
+    /// Create, which carries its own approved spec, starts the Service on B's Writer.
+    fn repair_step(state: &mut State) {
+        let plan = state.first().plan;
+        let to = plan.to;
+        let copy = state.host(to).copy;
+        let writes =
+            matches!(copy, Held::Root { readonly: false, epoch, .. } if epoch == plan.epoch);
+        if state.repair.is_none() && !writes {
+            if copy.newest().is_none() {
+                state.repaired = true;
+                return;
+            }
+            let sent = state.send(
+                Lane::Deploy,
+                plan.release_gen(),
+                to,
+                expect_of(copy),
+                Want::Writer {
+                    at: plan.last,
+                    epoch: plan.epoch,
+                    start: None,
+                },
+            );
+            state.repair = Some(sent);
+            return;
+        }
+        if let Some(sent) = state.repair.take() {
+            state.forget(sent);
+        }
+        if state.host(to).copy.is_writer() && state.host(to).holder != Holder::Running {
+            state.host_mut(to).holder = Holder::Running;
+        }
+        state.repaired = true;
+    }
+
     /// `failAndRelease` and the cancel handler: end Move `k`'s running row and request
     /// the Release, back to `from` while warm and forward to `to` once committed.
     fn end_move(&self, state: &mut State, k: usize) {
@@ -2106,6 +2156,13 @@ impl VolumeRuns {
                 wait(state, sent);
             }
             (MoveStep::Commit, _, _) => {
+                // `commitAndStart` asks `to` to check its start just before `commitMove`; a
+                // refusal ends the row while warm, so its Release starts the Service on `from`.
+                if row == Row::Warm && state.enforcing {
+                    state.rechecked = true;
+                    self.end_move(state, k);
+                    return next(state, MoveStep::Over);
+                }
                 // `commitMove`: only a row still running commits.
                 if row.running() || self.broken.owner_checks {
                     if row == Row::Warm {
@@ -2384,15 +2441,15 @@ impl VolumeRuns {
             (ReleaseStep::StartForward, None) => {
                 // `commitAndStart` on the inherited commit, then `startWriter` to `to`.
                 let copy = state.host(plan.to).copy;
-                let Some(at) = copy.newest() else {
+                let Some(newest) = copy.newest() else {
                     return fail(state);
                 };
-                // A committed Move's Release inherits the Move's epoch (`endAndRelease`), and
-                // `takeEpoch` keeps it.
-                let epoch = match copy {
-                    Held::Root { epoch, .. } => epoch,
-                    Held::Slot { .. } | Held::None => plan.epoch,
-                };
+                // A committed Move's Release inherits its snapshot and epoch (`endAndRelease`),
+                // and `takeEpoch` keeps the epoch. A `to` already writing at that epoch keeps its
+                // own newest (`committedWriter`).
+                let epoch = plan.epoch;
+                let writes = matches!(copy, Held::Root { readonly: false, epoch: held, .. } if held == epoch);
+                let at = if writes { newest } else { plan.last };
                 let start = if state.host(plan.to).holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
                 } else if state.host(plan.from).holder == Holder::Stopped {
@@ -3043,6 +3100,9 @@ impl VolumeRuns {
             stale_landed: false,
             enforcing: false,
             refused_start: false,
+            rechecked: false,
+            repair: None,
+            repaired: false,
             unapproved_start: false,
         };
         if three {
@@ -3116,6 +3176,9 @@ impl Model for VolumeRuns {
         }
         if self.enforce && !state.enforcing && !at_rest_but_enforce(self, state) {
             actions.push(Action::Enforce);
+        }
+        if repairs(state) {
+            actions.push(Action::Repair);
         }
         let three = self.scenario.three();
         for (k, run) in state.moves.iter().enumerate() {
@@ -3266,6 +3329,7 @@ impl Model for VolumeRuns {
                 state.resize.cut_short = true;
             }
             Action::Enforce => state.enforcing = true,
+            Action::Repair => Self::repair_step(&mut state),
             Action::Next => state = self.next_run(&state)?,
             Action::Drop => Self::drop_step(&mut state),
             Action::EndDrop => {
@@ -3415,6 +3479,26 @@ fn enforced_reached() -> Vec<Property<VolumeRuns>> {
                         .release
                         .as_ref()
                         .is_some_and(|release| !release.forward && release.row == Row::Done)
+            },
+        ),
+        Property::sometimes(
+            "a Move B would refuse to start releases back to A before its commit",
+            |_, state: &State| {
+                state.rechecked
+                    && state.host(Machine::A).holder == Holder::Running
+                    && state
+                        .first()
+                        .release
+                        .as_ref()
+                        .is_some_and(|release| !release.forward && release.row == Row::Done)
+            },
+        ),
+        Property::sometimes(
+            "a Deploy repairs a refused start: B writes and runs the Service",
+            |_, state: &State| {
+                state.repaired
+                    && state.host(Machine::B).copy.is_writer()
+                    && state.host(Machine::B).holder == Holder::Running
             },
         ),
         Property::sometimes(
@@ -3785,6 +3869,23 @@ fn on_the_wire(state: &State) -> bool {
             .requests
             .iter()
             .any(|request| request.lane == Lane::Resize && request.progress == Progress::Sent)
+}
+
+/// A Deploy may follow the first Move's commitment once its forward Release failed on a
+/// refused start, and then reads the promote it sent once answered.
+fn repairs(state: &State) -> bool {
+    let Some(first) = state.moves.first() else {
+        return false;
+    };
+    let failed = first.release.as_ref().is_some_and(|release| {
+        release.forward && release.row == Row::Failed && release.driver.step == ReleaseStep::Over
+    });
+    failed
+        && state.refused_start
+        && !state.repaired
+        && state
+            .repair
+            .is_none_or(|sent| state.replied(Some(sent)).is_some())
 }
 
 fn at_rest(model: &VolumeRuns, state: &State) -> bool {

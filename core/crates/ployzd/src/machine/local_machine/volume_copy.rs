@@ -5,9 +5,9 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, RpcError, RunRotation, RunTarget, SeedVolumeRequest,
-    SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, Start,
-    VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
+    EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
+    SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply,
+    SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
 };
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
@@ -55,10 +55,20 @@ impl LocalMachine {
             | WantedCopy::Floor => None,
         };
         if let WantedCopy::Writer {
-            start: Some(Start::Create { check: true, .. }),
+            start:
+                Some(Start::Create {
+                    check: true,
+                    resolved_spec,
+                    ..
+                }),
             ..
         } = &request.want
         {
+            // What the Create after the promote refuses, a check refuses before the cut.
+            self.docker()?
+                .lifecycle()
+                .check_start_volumes(resolved_spec, self.plugin(), &request.name)
+                .await?;
             return self.inspect_copy(&request.name).await;
         }
         if request.want == WantedCopy::Floor {
@@ -250,7 +260,15 @@ impl LocalMachine {
                 }
                 Ok(copy)
             }
-            (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, drain, .. }) => {
+            (
+                CopyTransition::WriterToMirror,
+                WantedCopy::Mirror {
+                    target,
+                    drain,
+                    holder,
+                    ..
+                },
+            ) => {
                 let plugin = self.plugin().clone();
                 let request = CutRequest {
                     name: name.clone(),
@@ -258,7 +276,7 @@ impl LocalMachine {
                     r#gen,
                 };
                 let cut = self
-                    .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
+                    .cut_volume_copy(name.clone(), r#gen, drain, holder, move || async move {
                         // This closure runs only past the Busy re-check, so the line means every
                         // holder is stopped, whoever signalled it. The verify harness credits that
                         // moment by this line's Volume, target and gen, after its restart cursor.
@@ -285,6 +303,15 @@ impl LocalMachine {
                     Err(CutRefusal::Stale(floor)) => {
                         Err(stale(floor, self.inspect_copy(&name).await?, &name))
                     }
+                    Err(CutRefusal::Held(holder)) => Err(refusal(
+                        SetVolumeCopyRefused {
+                            reason: CopyRefusal::Held,
+                            copy: self.inspect_copy(&name).await?,
+                            floor: None,
+                            holder: Some(holder),
+                        },
+                        &name,
+                    )),
                 }
             }
             (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name: snapshot }) => {
@@ -392,9 +419,9 @@ impl LocalMachine {
     }
 
     /// Whether the Writer's start already runs. It runs when Docker runs the Container
-    /// `start` names, or any other holder of the Volume: a Service that moved on to a
-    /// new Container after the start landed has the start's effect already. A Kept
-    /// Container Docker no longer has is gone, and nothing can start it again.
+    /// `start` names, or a [`Self::replacement_running`]. Another holder of the Volume
+    /// is not the Service, so its run is no start. A Kept Container Docker no longer
+    /// has is gone, and nothing can start it again.
     async fn start_state(
         &self,
         start: &Start,
@@ -404,7 +431,9 @@ impl LocalMachine {
         if observed
             .as_ref()
             .is_some_and(|observed| observed.runtime.is_running())
-            || self.volume_holder_running(name).await?
+            || self
+                .replacement_running(start, observed.as_ref(), name)
+                .await?
         {
             return Ok(StartState::Running);
         }
@@ -412,6 +441,46 @@ impl LocalMachine {
             (Start::Kept { .. }, None) => StartState::Gone,
             _ => StartState::Stopped,
         })
+    }
+
+    /// Whether Docker runs another Service Container of the Service `start` starts on
+    /// the Volume `name`: a Service that moved on to a new Container after the start
+    /// landed has the start's effect already. A helper Ployz didn't make, a hook, or
+    /// another Service is not that Service. A Kept Container Docker no longer has names
+    /// no Service, so any Service Container on the Volume counts for it.
+    async fn replacement_running(
+        &self,
+        start: &Start,
+        observed: Option<&ContainerObservation>,
+        name: &DockerVolumeName,
+    ) -> Result<bool, Error> {
+        let service = match (start, observed) {
+            (
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    ..
+                },
+                _,
+            ) => Some(QualifiedService::new(
+                namespace.clone(),
+                resolved_spec.name.clone(),
+            )),
+            (Start::Kept { .. }, Some(observed)) => Some(QualifiedService::new(
+                observed.namespace.clone(),
+                observed.resolved_spec.name.clone(),
+            )),
+            (Start::Kept { .. }, None) => None,
+        };
+        Ok(self
+            .docker()?
+            .volumes()
+            .service_beside(
+                name,
+                observed.map(|observed| &observed.container_id),
+                service.as_ref(),
+            )
+            .await?)
     }
 
     async fn start_observed(&self, start: &Start) -> Result<Option<ContainerObservation>, Error> {
@@ -470,9 +539,14 @@ impl LocalMachine {
         let running = created
             .as_ref()
             .is_some_and(|created| created.runtime.is_running());
-        // A resend lands here too when another holder runs; only this Create's own copy is
-        // routed. A copy that exited is started again by its In want, which reports health.
-        if !running && self.volume_holder_running(name).await? {
+        // A resend lands here too when a replacement of the Service runs; only this
+        // Create's own copy is routed. A copy that exited is started again by its In want,
+        // which reports health.
+        if !running
+            && self
+                .replacement_running(start, created.as_ref(), name)
+                .await?
+        {
             return Ok(());
         }
         let Some(created) = created else {
@@ -537,6 +611,7 @@ fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> Error {
             reason,
             copy,
             floor: None,
+            holder: None,
         },
         name,
     )
@@ -548,6 +623,7 @@ fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> Error {
             reason: CopyRefusal::Stale,
             copy,
             floor: Some(floor),
+            holder: None,
         },
         name,
     )
@@ -568,6 +644,10 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
         CopyRefusal::DockerUnavailable => {
             format!("Docker is not answering on this Machine, so Volume {name} stays as it is")
         }
+        CopyRefusal::Held => format!(
+            "{} also runs on Volume {name}, so the cut stopped nothing",
+            refused.holder.as_deref().unwrap_or("another Container")
+        ),
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",

@@ -197,6 +197,12 @@ pub enum WantedCopy {
         from: Option<ManagementAddress>,
         target: SnapshotName,
         drain: Drain,
+        /// On a Writer, the one Container the cut may stop: any other running holder
+        /// refuses the cut [`CopyRefusal::Held`] before it stops anything. `None` stops
+        /// every holder, as a Machine that predates it does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        holder: Option<ContainerId>,
     },
     /// A Writer with a run snapshot named `name`, taken only if anything was written
     /// since its newest one.
@@ -278,6 +284,9 @@ pub enum CopyRefusal {
     /// Docker could not say which Containers mount the Volume, so no copy went under its
     /// name.
     DockerUnavailable,
+    /// A Container other than the cut's `holder` runs on the root, so the cut stopped
+    /// nothing.
+    Held,
     /// A reason introduced after this build. This daemon never sends it.
     #[serde(other)]
     Unrecognized,
@@ -292,6 +301,10 @@ pub struct SetVolumeCopyRefused {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub floor: Option<VolumeGen>,
+    /// The Docker name of the running Container that refused a cut `Held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub holder: Option<String>,
 }
 
 impl SetVolumeCopyRefused {
@@ -317,7 +330,8 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::Written
             | CopyRefusal::NoSource
             | CopyRefusal::Stale
-            | CopyRefusal::Foreign => RpcErrorCode::Conflict,
+            | CopyRefusal::Foreign
+            | CopyRefusal::Held => RpcErrorCode::Conflict,
             CopyRefusal::Unrecognized => RpcErrorCode::Internal,
         }
     }
@@ -596,6 +610,7 @@ mod tests {
             from: from.then(|| ManagementAddress("fd00::1".parse().unwrap())),
             target: target.parse().unwrap(),
             drain: Drain::NONE,
+            holder: None,
         }
     }
 
@@ -1190,6 +1205,7 @@ mod tests {
             reason: CopyRefusal::Busy,
             copy: Some(root(1, false, None)),
             floor: None,
+            holder: None,
         };
         assert!(
             serde_json::to_value(&refused)
@@ -1204,6 +1220,7 @@ mod tests {
             reason: CopyRefusal::NoCapacity,
             copy: None,
             floor: None,
+            holder: None,
         }
         .rpc_error("no room");
         assert_eq!(capacity.code, RpcErrorCode::Unavailable);
@@ -1215,6 +1232,7 @@ mod tests {
             reason: CopyRefusal::Stale,
             copy: None,
             floor: Some(VolumeGen::new(7)),
+            holder: None,
         };
         assert_eq!(
             serde_json::to_value(&stale).unwrap(),

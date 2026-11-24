@@ -9,11 +9,11 @@ const web = { name: "web", replicas: 2 };
 
 it("names a Service whose Volume is on a Server outside the region it is kept in, in the Deploy's words", () => {
   const moved = deployWaits({ services: [web, postgres], home: "syd", volumes, copies: [copy("m1")], servers });
-  expect(moved).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead", refused: false }]);
+  expect(moved).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn. Move it with ployz volume move pg-data --to <a server in syd>, or run it in fsn", refused: false }]);
   const pinned = deployWaits({ services: [{ ...postgres, replicas: { syd: 1 } }], home: "fsn", volumes, copies: [copy("m1")], servers });
-  expect(pinned).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead", refused: false }]);
+  expect(pinned).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn. Move it with ployz volume move pg-data --to <a server in syd>, or run it in fsn", refused: false }]);
   const unlabelled = deployWaits({ services: [postgres], home: "syd", volumes, copies: [copy("m1")], servers: [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }] });
-  expect(unlabelled).toEqual([{ service: "postgres", why: "its Volume pg-data is on machine-1, a Server in no region, and can't move to syd yet. Give machine-1 the region syd instead", refused: false }]);
+  expect(unlabelled).toEqual([{ service: "postgres", why: "its Volume pg-data is on machine-1, a Server in no region. Move it with ployz volume move pg-data --to <a server in syd>, or give machine-1 the region syd", refused: false }]);
 });
 
 it("names a Service the Deploy refuses, in the Engine's words, when a Service kept elsewhere shares its Volume", () => {
@@ -84,7 +84,7 @@ it("holds a Service mounting a made Volume to the Volume's region, even when its
 
 it("names a Service whose Volume has only a mirror in its region, as the Deploy looks for the copy it writes to", () => {
   const waits = deployWaits({ services: [postgres], home: "syd", volumes, copies: [copy("m1"), copy("m2", "slot")], servers });
-  expect(waits).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead", refused: false }]);
+  expect(waits).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn. Move it with ployz volume move pg-data --to <a server in syd>, or run it in fsn", refused: false }]);
 });
 
 it("names no Service whose Volume is written in its region, or that runs in any region", () => {

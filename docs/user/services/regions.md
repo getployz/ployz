@@ -153,12 +153,12 @@ another service can only pick the volume's region, and its row says so.
 ## When a volume is outside the region
 
 A service with a [volume](volumes.md) runs on the server that writes the volume. A
-[mirror](mirror-a-volume.md) in the region doesn't count. A volume can't move to another region in
-this version of Ployz, so a service whose volume is outside its region waits. With
-the environment moved to `syd` and `pg-data` on a server in `fsn`:
+[mirror](mirror-a-volume.md) in the region doesn't count. A deploy doesn't move a volume, so a
+service whose volume is outside its region waits. With the environment moved to `syd` and
+`pg-data` on a server in `fsn`:
 
 ```
-postgres: not started (its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead)
+postgres: not started (its Volume pg-data is in fsn. Move it with ployz volume move pg-data --to <a server in syd>, or run it in fsn)
 ```
 
 The rest of the deploy goes ahead. If `postgres` already ran, it keeps running in `fsn`. A new
@@ -167,7 +167,15 @@ service doesn't start. The deployment reads
 and `ployz deploy` exits 3. In Ployz Cloud the Deployment page says the same under the
 deployment's title, and **Details** says it before you deploy.
 
-To stop the wait, run the service in the volume's region, from **Scale** in Ployz Cloud. The deploy
+Where the approval has an approved version to compare with, such as the Deploy sheet in Ployz
+Cloud, it reads "moves pg-data to syd". Once the deploy is approved, move the volume to a server in
+`syd`. The move needs no approval of its own, and starts `postgres` there:
+
+```sh
+ployz volume move pg-data --to db-syd-1
+```
+
+Or run the service in the volume's region, from **Scale** in Ployz Cloud. The deploy
 prints the command that does it:
 
 ```sh
@@ -182,7 +190,7 @@ If the volume's server is in no region, the line names the server, and the deplo
 command that gives it the service's region:
 
 ```
-postgres: not started (its Volume pg-data is on db-1, a Server in no region, and can't move to syd yet. Give db-1 the region syd instead)
+postgres: not started (its Volume pg-data is on db-1, a Server in no region. Move it with ployz volume move pg-data --to <a server in syd>, or give db-1 the region syd)
 ```
 
 ```sh

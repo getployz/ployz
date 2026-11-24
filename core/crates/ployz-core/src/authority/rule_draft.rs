@@ -442,6 +442,7 @@ impl AutoDeployRule {
                             .map(|spec| settings(spec, mounted))
                             .unwrap_or_default()
                             .into_iter()
+                            .chain(spec.and_then(|spec| mounts.region(spec)))
                             .map(String::from)
                             .collect(),
                     }

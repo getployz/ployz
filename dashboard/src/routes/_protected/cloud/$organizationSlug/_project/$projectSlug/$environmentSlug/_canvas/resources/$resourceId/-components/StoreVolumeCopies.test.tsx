@@ -37,7 +37,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; matchedAt?: string; refreshing?: boolean; deploying?: boolean; owed?: boolean;
-  forgetGate?: RoleGate; floorless?: string[]; restorable?: string[]; rows?: PlacementRow[]; unrouted?: string[];
+  forgetGate?: RoleGate; floorless?: string[]; restorable?: string[]; rows?: PlacementRow[];
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -49,7 +49,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
   render(<RouterContextProvider router={router}><VolumeCopiesPanel organizationSlug="ada" forgetGate={options.forgetGate ?? { allowed: true, reason: undefined }} volume={volume} members={members} rows={options.rows ?? (placement ? [placement] : [])} running={null} owed={options.owed ?? false} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
-    moveTo={members.filter((entry) => !(options.unrouted ?? []).includes(entry.machine.name)).map((entry) => entry.machine.id)} floorless={(options.floorless ?? []).map(id)}
+    floorless={(options.floorless ?? []).map(id)}
     upgrade={options.upgrade ?? []} restorable={(options.restorable ?? members.map((entry) => entry.machine.name)).map(id)} disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} /></RouterContextProvider>);
@@ -325,7 +325,6 @@ describe("VolumeCopiesPanel", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([member("web-2", "unanswered"), unlisted], row(["web-2"], { primary: "web-2" }), { open: "web-2" });
     expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove mirror" })).toBeNull();
   });
 
@@ -333,7 +332,6 @@ describe("VolumeCopiesPanel", () => {
     const unlisted: Member = { machine: { id: id("web-1"), name: id("web-1") }, answered: false, incomplete: true };
     panel([member("web-2", "unanswered"), unlisted], row(["web-2"]), { open: "web-2" });
     expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove mirror" })).toBeNull();
   });
 
@@ -427,7 +425,7 @@ describe("mirror detail", () => {
     expect(screen.getByText("web-2 is not answering.")).toBeTruthy();
     expect(screen.queryByText("Every 15 min · on deploy")).toBeNull();
     expect(screen.queryByText(/Not yet|hours ago/)).toBeNull();
-    for (const name of ["Make primary", "Remove mirror", "Refresh now"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    for (const name of ["Remove mirror", "Refresh now"]) expect(screen.queryByRole("button", { name })).toBeNull();
     expect(stage).not.toHaveBeenCalled();
   });
 

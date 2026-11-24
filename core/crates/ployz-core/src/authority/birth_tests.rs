@@ -709,3 +709,39 @@ fn a_new_volume_in_place_of_a_bind_mount_asks() {
         );
     }
 }
+
+/// A Volume's data lives where its Service runs, so the approval that moves the Service
+/// to another region says it moves the Volume, and one kept in no region says so.
+#[test]
+fn a_region_change_of_a_volumes_service_says_where_its_volume_goes() {
+    let anywhere = files(Some(&previews()));
+    let mut in_fsn = anywhere.clone();
+    in_fsn
+        .placement
+        .constraints
+        .insert(crate::Region::parse("fsn").unwrap().constraint());
+    let region = |spec: &RequestedServiceSpec, base: &RequestedServiceSpec| {
+        let before = BTreeMap::from([(spec.name.clone(), approved(base))]);
+        let mounts = Mounts {
+            namespace: &APP,
+            volumes: &planned("previews", false),
+            minted: &Births::new(),
+            now: at(MADE + 16 * DAY),
+            against: Some(Against {
+                before: &before,
+                held: None,
+            }),
+        };
+        mounts.region(spec).map(String::from)
+    };
+    assert_eq!(
+        region(&in_fsn, &anywhere).as_deref(),
+        Some("moves previews to fsn")
+    );
+    assert_eq!(
+        region(&anywhere, &in_fsn).as_deref(),
+        Some("moves previews to any region")
+    );
+    assert_eq!(region(&anywhere, &anywhere).as_deref(), Some("any region"));
+    assert_eq!(region(&in_fsn, &in_fsn), None);
+}

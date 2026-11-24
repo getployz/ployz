@@ -159,8 +159,9 @@ describe("plan_from_copies_table", () => {
     ["orphan delete of a root an older daemon reports", orphan, [member("a", "rootWithoutSeed")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],
 
-    ["move from a writer onto an empty Server is turned off", move("b"), [member("a", "writer"), member("b", "empty")], "refuse server_lacks"],
-    ["move that already landed is turned off", move("b"), [member("a", "final"), member("b", "writer")], "refuse server_lacks"],
+    ["move from a writer onto an empty Server runs rounds", move("b"), [member("a", "writer"), member("b", "empty")], "move a->b at rounds"],
+    ["move from a writer onto its mirror runs rounds", move("b"), [member("a", "writer"), member("b", "mirror")], "move a->b at rounds"],
+    ["move that already landed starts the Service on it", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
     ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse already_on"],
     ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse already_on"],
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
@@ -615,8 +616,10 @@ function follow(input: PlanInput, members: readonly Member[]) {
     return;
   }
   const target = slots[0] ?? left.find((each) => roleOf(each) === "empty")?.machine.name ?? "no empty Server";
-  // Moves are turned off, so the move a refusal names is refused for now.
-  expect(outcome(move(target), left)).toBe("refuse server_lacks");
+  // A born Volume moves only between Servers that check where its data began.
+  const ends = left.filter((each): each is AnsweredMember => each.answered && (each === kept || each.machine.name === target));
+  const unchecked = ends.some((each) => each.view.copy?.origin != null) && ends.some((each) => each.checksOrigins !== true);
+  expect(outcome(move(target), left)).toBe(unchecked ? "refuse server_lacks" : `move ${kept.machine.name}->${target} at cut`);
   if (slots.length > 0) expect(outcome(move(named(left, "empty")[0] ?? "no empty Server"), left)).toBe("refuse second_mirror");
 }
 

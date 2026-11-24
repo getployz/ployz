@@ -3576,6 +3576,39 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A check refuses a slot holding other data, as the Create after the promote would,
+    /// so the Move refuses before its cut rather than after it.
+    #[tokio::test]
+    async fn a_checked_start_refuses_a_copy_of_other_data() {
+        let (data_dir, _store, mut service, _fake) =
+            fake_docker_service("ployzd-copy-check-origin").await;
+        service.local = service.local.with_zpool("true");
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let (spec, born) = born_spec("app");
+        let (_, other) = born_spec("other-env");
+        let check = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec,
+                "creation_key":"move-1", "gen":1, "rotation":"pending", "check":true}}});
+        let slot_of = |origin: &ployz_core::VolumeOrigin| {
+            json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
+                "newest":snapshot("f-1", 7), "resume_token":null, "pull":null,
+                "role":"mirror", "origin":origin}})
+        };
+
+        plugin.reply(INSPECT_ROUTE, slot_of(&other));
+        let refused = format!("{:?}", set_copy(&service, check.clone()).await);
+        assert!(refused.contains("another Volume's data"), "{refused}");
+
+        plugin.reply(INSPECT_ROUTE, slot_of(&born));
+        reply(&set_copy(&service, check).await);
+        assert_eq!(effects(&plugin), Vec::<String>::new());
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// Cloud asks the destination before the cut whether it would start the Move. The
     /// answer promotes no copy and makes no Container.
     #[tokio::test]

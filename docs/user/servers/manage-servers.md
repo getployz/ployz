@@ -458,8 +458,8 @@ forgetting a server, upgrading along a Release Channel, and mirroring, syncing, 
 resizing a volume. Each still asks what it asked before: a typed name, an owner's approval in a
 [Protected Environment](../environments/environments.md), or both.
 
-Moving a volume to another server through Ployz Cloud is turned off in this version of Ployz;
-see [Move a volume](../services/move-a-volume.md).
+`ployz volume move` needs no signature either, unless the volume's service runs in a region and
+the move leaves it. See [Move a volume](../services/move-a-volume.md).
 
 `ployz server rm` and `ployz server forget <server>` work only from an approved device or over
 SSH on a server. Elsewhere they stop before changing anything and name the server that needs an
@@ -497,7 +497,8 @@ what a server answered when it first checked that build with GitHub, while the r
 stands. A copy of a version nobody signed
 moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). The drain
 reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
-run `ployz deploy` from an approved device to move those off. A volume stays on its server; see
+run `ployz deploy` from an approved device to move those off. A volume stays on its server, and
+the drain names each one it leaves, with the `ployz volume move` line that moves it. See
 [Move a volume](../services/move-a-volume.md).
 
 `ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.

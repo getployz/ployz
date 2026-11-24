@@ -43,6 +43,7 @@ mod sealed;
 pub mod stderr_log;
 mod store_call;
 mod store_runner;
+mod volume_start;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use github_build::{
@@ -56,6 +57,7 @@ pub use store_call::store_call;
 pub use store_runner::{
     RetireLeft, RetireOutcome, Sources, retire_old, run_deployment, run_deployment_expecting,
 };
+pub use volume_start::{VolumeStartProof, VolumeStartQuery, volume_start_proof};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;

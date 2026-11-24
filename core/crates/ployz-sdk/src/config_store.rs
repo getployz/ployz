@@ -313,6 +313,25 @@ impl ConfigStore {
         to_json(ployz::sdk::drain_machine_kept(connections, expect, kept, (&machine, &scope)).await)
     }
 
+    /// What admits the start of a moved Volume's Service on its new Server
+    /// (`VolumeStartQuery`): the signed versions this Store keeps for the spec it starts
+    /// there, or the verified build of its image when the rule lists that Server. Only
+    /// Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for malformed input, or the Store's error, which is never
+    /// read as a spec nothing signed.
+    #[napi(ts_return_type = "Promise<VolumeStartProof>")]
+    pub async fn volume_start_proof(
+        &self,
+        organization: String,
+        #[napi(ts_arg_type = "VolumeStartQuery")] query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let query = decode(query, "Expected a Volume start")?;
+        to_json(ployz::sdk::volume_start_proof(&self.store, who.organization, query).await)
+    }
+
     /// Claim the Organization's queued Deployment `deployment` as `runner`, and
     /// resolve to its summary. Its upload is the one it builds from now that the
     /// Deployment ahead of it settled: the one Cloud extracts before `runDeployment`

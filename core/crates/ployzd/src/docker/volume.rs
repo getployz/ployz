@@ -469,6 +469,38 @@ impl Volumes {
         super::holder::refuse_beside(&self.docker.client, None, name).await
     }
 
+    /// The Docker name of a Container, other than `me` when given, that runs on the
+    /// Docker Volume `name`, whatever made it, or `None`.
+    pub(crate) async fn running_beside(
+        &self,
+        name: &DockerVolumeName,
+        me: Option<&ContainerId>,
+    ) -> Result<Option<String>, Error> {
+        super::holder::running_beside(
+            &self.docker.client,
+            me.map(ContainerId::as_str),
+            name.as_str(),
+        )
+        .await
+    }
+
+    /// Whether a Service Container of `service` other than `me` runs on the Docker
+    /// Volume `name`. See [`super::holder::service_beside`].
+    pub(crate) async fn service_beside(
+        &self,
+        name: &DockerVolumeName,
+        me: Option<&ContainerId>,
+        service: Option<&QualifiedService>,
+    ) -> Result<bool, Error> {
+        super::holder::service_beside(
+            &self.docker.client,
+            me.map(ContainerId::as_str),
+            name.as_str(),
+            service,
+        )
+        .await
+    }
+
     /// Every Container, running or not, that mounts the Docker Volume `name`.
     pub(crate) async fn volume_holder_ids(
         &self,
@@ -601,7 +633,7 @@ fn external_driver<'a>(
     }
 }
 
-fn other_data(name: &DockerVolumeName) -> Error {
+pub(super) fn other_data(name: &DockerVolumeName) -> Error {
     Error::ForeignVolume {
         name: name.clone(),
         found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),

@@ -407,6 +407,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
             reason,
             copy: None,
             floor: None,
+            holder: None,
         };
         let error = refusal.clone().rpc_error("m");
         assert_eq!(error.code, code);
@@ -417,6 +418,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
         reason: CopyRefusal::Stale,
         copy: None,
         floor: Some(VolumeGen::new(7)),
+        holder: None,
     }
     .rpc_error("m");
     assert_eq!(
@@ -429,6 +431,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
             reason: CopyRefusal::Stale,
             copy: None,
             floor: None,
+            holder: None,
         }),
         "a refusal without its copy key reads as no copy"
     );
@@ -438,6 +441,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
             reason: CopyRefusal::Unrecognized,
             copy: None,
             floor: None,
+            holder: None,
         }),
         "a reason from a later release still reads as a refusal"
     );

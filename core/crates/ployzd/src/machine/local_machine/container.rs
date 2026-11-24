@@ -112,11 +112,13 @@ impl SettledCreations {
 }
 
 /// Why the cut's Container half left the root a writer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CutRefusal {
     Busy,
     /// A newer lane raised the floor above the cut's `gen`.
     Stale(VolumeGen),
+    /// The named Container runs on the root beside the one the cut may stop.
+    Held(String),
 }
 
 impl LocalMachine {
@@ -577,6 +579,11 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
+    /// With `only`, another running holder, a hook's or one Ployz didn't make included,
+    /// refuses the cut `Held` before it stops anything, so a Move never interrupts a
+    /// Container it didn't count, and only `only` is stopped: a stopped holder beside it
+    /// stays as it is.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
@@ -584,6 +591,7 @@ impl LocalMachine {
         name: DockerVolumeName,
         r#gen: VolumeGen,
         drain: Drain,
+        only: Option<ContainerId>,
         zfs: Z,
     ) -> Result<Result<(), CutRefusal>, Error>
     where
@@ -593,7 +601,17 @@ impl LocalMachine {
         self.finish_installed(move |local| async move {
             let containers = local.docker()?;
             let stop = StopOptions::default();
-            let holders = containers.volumes().volume_holder_ids(&name).await?;
+            let mut holders = containers.volumes().volume_holder_ids(&name).await?;
+            if let Some(only) = &only {
+                if let Some(other) = containers
+                    .volumes()
+                    .running_beside(&name, Some(only))
+                    .await?
+                {
+                    return Ok(Err(CutRefusal::Held(other)));
+                }
+                holders.retain(|holder| holder == only);
+            }
             for holder in holders {
                 if let Err(floor) = containers
                     .lifecycle()
@@ -616,7 +634,13 @@ impl LocalMachine {
                 }
             }
             let _turn = local.exclusive_turn().await;
-            if local.volume_holder_running(&name).await? {
+            // Every holder, whatever made it: the cut needs the Volume idle.
+            if containers
+                .volumes()
+                .running_beside(&name, None)
+                .await?
+                .is_some()
+            {
                 return Ok(Err(CutRefusal::Busy));
             }
             let mut floor = containers.lifecycle().floor_turn().await;
@@ -667,28 +691,6 @@ impl LocalMachine {
                 field: MismatchField::SourceServer,
             },
         ))
-    }
-
-    /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
-    /// between the list and its inspect does not run.
-    pub(crate) async fn volume_holder_running(
-        &self,
-        name: &DockerVolumeName,
-    ) -> Result<bool, Error> {
-        let containers = self.docker()?;
-        let machine_id = self.record().id();
-        for holder in containers.volumes().volume_holder_ids(name).await? {
-            match containers
-                .observation()
-                .inspect_managed(&holder, &machine_id)
-                .await
-            {
-                Ok(observed) if is_running(&observed.runtime) => return Ok(true),
-                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(false)
     }
 
     /// Refuse to create a Service Container on a Provisioned Volume root another

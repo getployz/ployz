@@ -379,15 +379,10 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
   return { kind: "drain", count: split.drainable.length, unowned };
 }
 
-/**
- * The Volumes a Drain found nowhere to move. One with an `upgrade` names a Server that would take it once upgraded,
- * whose Ployz can't finish a Move yet; the rest say only that nowhere takes them.
- */
-export function stuckMessage(blocked: readonly { readonly volume: string; readonly upgrade: string | null }[]) {
-  const nowhere = blocked.filter((entry) => entry.upgrade === null).map((entry) => entry.volume);
-  const servers = [...new Set(blocked.flatMap((entry) => entry.upgrade ?? []))];
-  return [
-    ...(nowhere.length > 0 ? [`${listNames(nowhere)} ${nowhere.length === 1 ? "has" : "have"} nowhere to move`] : []),
-    ...servers.map((server) => `Upgrade ${server} to move ${listNames(blocked.filter((entry) => entry.upgrade === server).map((entry) => entry.volume))} there`),
-  ].join(". ");
+/** The Volumes a Drain leaves on `server`, and how to move them. */
+export function stuckMessage(volumes: readonly string[], server: string) {
+  const [one] = volumes;
+  return volumes.length === 1 && one !== undefined
+    ? `${one} stays on ${server}. To move it, run ployz volume move ${one} --to <server>`
+    : `${listNames([...volumes])} stay on ${server}. To move each, run ployz volume move <volume> --to <server>`;
 }

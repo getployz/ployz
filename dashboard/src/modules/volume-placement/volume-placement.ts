@@ -440,12 +440,12 @@ export function seedOffer(
   return { offered: false, refused: SEED_OFF };
 }
 
-export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };
+export type PlacementTargets = { readonly mirror: readonly MachineRef[] };
 
 /**
- * Servers a move or a mirror may target, by what Cloud's planner accepts once detached copies are gone, since the
- * Deploy deletes those first. `servers` names the Servers that accept Services. None while a committed Move is `owed`
- * its finish, since the server refuses both until a release finishes it.
+ * Servers a mirror may target, by what Cloud's planner accepts once detached copies are gone, since the Deploy deletes
+ * those first. `servers` names the Servers that accept Services. None while a committed Move is `owed` its finish,
+ * since the server refuses it until a release finishes it.
  */
 export function placementTargets(
   volume: PlacementVolume,
@@ -454,34 +454,15 @@ export function placementTargets(
   servers: readonly MachineId[],
   owed: boolean,
 ): PlacementTargets {
-  if (owed) return { move: [], mirror: [] };
+  if (owed) return { mirror: [] };
   const observed = observePlacement(members);
   const detached = new Set(detachedCopies(observed).map((copy) => copy.server.id));
   const cleared = members.map((member): Member =>
     member.answered && detached.has(member.machine.id) ? { ...member, view: { ...member.view, copy: null } } : member);
-  const accepts = (kind: "move" | "mirror", member: Member) => {
-    const planned = planFromCopies({ kind, args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared);
-    return planned.ok && planned.phase.kind !== "landed";
-  };
+  const accepts = (member: Member) =>
+    planFromCopies({ kind: "mirror", args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared).ok;
   const candidates = members.filter((member) => servers.includes(member.machine.id));
-  const mirrors = appliedMirrors(observed, row);
-  return {
-    move: candidates.filter((member) => accepts("move", member)).map((member) => member.machine),
-    mirror: mirrors.length > 0 ? [] : candidates.filter((member) => accepts("mirror", member)).map((member) => member.machine),
-  };
-}
-
-/**
- * Where a Drain of `server` stages the Volume: its primary moves to its mirror, else to the first other Server that
- * accepts Services and that the planner takes. Null when the primary is elsewhere, or nowhere takes it.
- */
-export function drainPlacement(
-  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, accepting: readonly MachineId[], server: MachineId, owed: boolean,
-): Placement | null {
-  const target = targetPlacement(observePlacement(members), row);
-  if (target === null || target.primary !== server) return null;
-  const to = placementTargets(volume, members, row, accepting.filter((id) => id !== server), owed).move[0];
-  return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
+  return { mirror: appliedMirrors(observed, row).length > 0 ? [] : candidates.filter(accepts).map((member) => member.machine) };
 }
 
 /** How many Volumes whose primary is on `server` have a move off it staged, by the copies the Runtime Watch reports. */

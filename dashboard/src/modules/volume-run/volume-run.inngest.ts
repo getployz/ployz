@@ -11,11 +11,11 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
-import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
@@ -527,16 +527,41 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
   const { from } = phase;
   const kept = async (id: string, machines: readonly MachineRef[]) =>
     steps.step.run(id, () => steps.runEffect(findKept(run, steps.runId, machines)));
+  // A refusal leaves the copy as it was. An error the Server answered past its planner is a start that failed after
+  // the promote, so the Server holds the writer and starts the Service only from a Deploy someone approves again, as
+  // when its approval was revoked. A request no answer came back for may never have reached it, so A is read first.
+  const restart = async (id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => {
+    const ask = setVolumeCopy(run, steps.runId, machine, expect, want).pipe(
+      Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) =>
+        Effect.succeed<CopyAnswer>({ ok: false, reason: "refused", copy: null, message: error.message })),
+    );
+    let answer: CopyAnswer;
+    try {
+      answer = await settle(steps, id, ask, `${machine.name} is still starting ${run.volumeName}'s Service`);
+    } catch (error) {
+      // A step's last failure rejects with Inngest's StepError, an Error.
+      if (error instanceof NonRetriableError || !(error instanceof Error)) throw error;
+      const now = await steps.step.run(`${id}-inspect`, () => steps.runEffect(inspectCopy(run, steps.runId, machine).pipe(
+        Effect.catchIf((failed) => failed instanceof SwitchAttemptError, () => Effect.succeed(undefined)),
+      )));
+      throw new NonRetriableError(unconfirmedRestart(run.volumeName, machine, now, epoch, error.message));
+    }
+    if (!answer.ok && answer.reason === "refused") {
+      throw new NonRetriableError(`${machine.name} holds ${run.volumeName} again, but its Service didn't start there: ${answer.message}. Deploy it again to start it`);
+    }
+    return answer;
+  };
   const resume = async (id: string, member: AnsweredMember, containerId: ContainerId | null) => {
     const copy = member.view.copy;
     const at = copy?.newest ?? null;
     if (copy?.kind !== "root" || at === null) return;
-    await mustSet(steps, id, member.machine, expectOf(copy), {
+    const answer = await restart(id, member.machine, expectOf(copy), {
       kind: "writer",
       at: at.guid,
       epoch,
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
-    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`);
+    });
+    if (!answer.ok) throw new NonRetriableError(answer.message);
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
@@ -568,12 +593,12 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
         + `Run ployz volume release ${run.volumeName} again`,
     );
     if (plan !== undefined && !plan.sources.includes(A.id)) throw changed();
-    const resumeA = (id: string) => setCopy(steps, id, A, expectOf(cut), {
+    const resumeA = (id: string) => restart(id, A, expectOf(cut), {
       kind: "writer",
       at: at.guid,
       epoch,
       start: { kind: "kept", container_id: source.containerId },
-    }, `${A.name} is still starting ${run.volumeName}'s Service`);
+    });
     const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy }> = [];
     for (const { machine } of from.slots.filter((slot) => slot !== owner)) {
       const now = await steps.step.run(`04-inspect-${machine.name}`, () => steps.runEffect(inspectCopy(run, steps.runId, machine)));
@@ -597,6 +622,19 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     return stopped(steps, "06-failed", error instanceof Error ? error : new Error(String(error)));
   }
 }
+
+/**
+ * A release's restart of `machine` that got no answer, said from what `machine` holds now (`undefined` when it
+ * didn't answer that either): a writer at the release's epoch took the promote, and whether its Service started is
+ * unknown; anything else stays as it was.
+ */
+const unconfirmedRestart = (name: string, machine: MachineRef, now: VolumeCopy | null | undefined, epoch: number, failure: string) => {
+  if (now?.kind === "root" && !now.readonly && now.epoch === epoch) {
+    return `${machine.name} holds ${name} again, but didn't say whether its Service started: ${failure}. Deploy it again if it isn't running`;
+  }
+  const stays = now === undefined ? `${machine.name} didn't answer what it holds` : `${copyName(name, machine.name)} stays as it was`;
+  return `${machine.name} didn't answer the restart of ${name}'s Service: ${failure}. ${stays}; run ployz volume release ${name} again`;
+};
 
 const FORWARD_WAITS = waitsFor(15 * 60);
 
@@ -636,8 +674,7 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
         to: target.machine,
         from: null,
         expect: expectOf(copy),
-        at: copy.newest.guid,
-        epoch: copy.kind === "root" ? copy.epoch : epoch,
+        ...committedWriter(run, copy, epoch),
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
       stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
@@ -674,13 +711,19 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   let source = phase.writer.view.copy;
   let copy = phase.target.view.copy;
   let service = "the Service";
+  let holder: ContainerId | null = null;
   let stoppedAt: number | null = null;
   let downtime: string | null = null;
   let stays: readonly string[] | null = null;
   const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
-    const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
+    // Before anything stops: B must be able to start what A runs, as the commit will ask again.
+    const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A).pipe(
+      Effect.flatMap((found) => (found.ok ? startRefusal(run, A, B, expectOf(copy)) : Effect.succeed(null)).pipe(
+        Effect.map((refusal) => (refusal === null ? found : { ok: false, refusal: { code: "invalid", message: refusal } } as const)),
+      )),
+    )));
     if (!found.ok) {
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };
@@ -701,11 +744,14 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
       service = imaged.holder.redactedSpec.name;
+      holder = imaged.holder.containerId;
+      // A stops only this Container, and refuses before it stops anything if another runs on the Volume.
       const stopped = await setCopy(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
+        holder,
       }, `${A.name} is still stopping ${name}'s Service`);
       if (!stopped.ok) throw new NonRetriableError(stopped.message);
       source = stopped.copy;
@@ -721,6 +767,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
       from: A,
+      holder,
       expect: expectOf(copy),
       at: cut.newest.guid,
       epoch: writerEpoch,

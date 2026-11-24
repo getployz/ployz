@@ -111,8 +111,8 @@ export function deployWaits(lens: Lens): DeployWait[] {
       const server = servers.find(({ id }) => id === writers[0]?.machineId);
       if (server === undefined) continue;
       const at = regionOf.get(server.id);
-      const why = at ? `its Volume ${volume.name} is in ${at} and can't move to ${region} yet. Run it in ${at} instead`
-        : `its Volume ${volume.name} is on ${server.name}, a Server in no region, and can't move to ${region} yet. Give ${server.name} the region ${region} instead`;
+      const why = at ? `its Volume ${volume.name} is in ${at}. Move it with ployz volume move ${volume.name} --to <a server in ${region}>, or run it in ${at}`
+        : `its Volume ${volume.name} is on ${server.name}, a Server in no region. Move it with ployz volume move ${volume.name} --to <a server in ${region}>, or give ${server.name} the region ${region}`;
       return [{ service: name, why, refused: false }];
     }
     return [];

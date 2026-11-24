@@ -218,6 +218,56 @@ impl Lifecycle {
         Ok(())
     }
 
+    /// Refuse what a Volume start's Create would refuse once `moving`'s copy is promoted:
+    /// each other mounted Provisioned Volume this Machine forgot and holds no copy of, and
+    /// each copy, root or a slot the start would promote, whose origin isn't the one the
+    /// spec expects. `moving` with no copy here yet is the one the Move pulls before its
+    /// start, even onto a Server that once forgot it.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeNotWritable`] or [`Error::ForeignVolume`] for such a Volume,
+    /// or the read's error.
+    pub(crate) async fn check_start_volumes(
+        &self,
+        spec: &ResolvedServiceSpec,
+        plugin: &crate::storage::Plugin,
+        moving: &ployz_core::DockerVolumeName,
+    ) -> Result<(), Error> {
+        for volume in spec.volume_graph().mounted_provisioned_volumes() {
+            let Some(name) = volume.source.docker_volume_name() else {
+                continue;
+            };
+            let copy = plugin
+                .call::<Option<ployz_core::VolumeCopy>>(
+                    crate::volume_copy::INSPECT_ROUTE,
+                    &crate::volume_copy::CopyRequest { name: name.clone() },
+                )
+                .await
+                .map_err(|source| Error::VolumeOriginUnread {
+                    name: name.clone(),
+                    source: Box::new(source),
+                })?;
+            let carried = match copy {
+                None if name != moving && self.forgot_here(volume).await? => {
+                    return Err(Error::VolumeNotWritable(name.clone()));
+                }
+                None => continue,
+                Some(
+                    ployz_core::VolumeCopy::Root { origin, .. }
+                    | ployz_core::VolumeCopy::Slot { origin, .. },
+                ) => origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(name)),
+            };
+            let expected = ployz_core::VolumeOrigin::expected(volume.source.birth(), name)
+                .map_err(|error| {
+                    Error::InvalidContainerConfig(format!("mount origins: {error}"))
+                })?;
+            if carried != expected {
+                return Err(super::volume::other_data(name));
+            }
+        }
+        Ok(())
+    }
+
     /// Take the lock `remove` takes and read a copy's rotation under it, so no other
     /// rotation write or removal lands before the turn is spent.
     ///

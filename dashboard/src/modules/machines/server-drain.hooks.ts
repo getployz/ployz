@@ -2,8 +2,6 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { moveServers, placementBlockers, unroutedServers } from "#/modules/runtime/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { drainView, type DrainView, stuckMessage } from "./server-drain-view";
@@ -21,8 +19,7 @@ export type ServerDrain = {
  * Drain on a Server page: the row reads as starting at once, asks Cloud in the background under a request id this tab
  * minted, and settles when that Drain's row arrives. Cloud answers with the Drain it admitted, which is another tab's
  * when one was already active on this Server; the row then waits on that one. Cloud refusing toasts its words.
- * Once Cloud admits the Drain, each Volume primary here is staged to move off with it, for the next Deploy; one that
- * nowhere takes toasts. While a Server with storage runs an older daemon, nothing is staged and every primary stays.
+ * Once Cloud admits the Drain, each Volume whose primary is here stays, and a toast names them with how to move them.
  */
 export function useServerDrain(
   organizationSlug: string,
@@ -31,7 +28,6 @@ export function useServerDrain(
 ): ServerDrain {
   const queryClient = useQueryClient();
   const { servers: latest } = serverDrains.useLatest(organizationSlug);
-  const { machines } = useRuntimeLens(organizationSlug);
   const [requested, setRequested] = usePendingAttempt<string, string | undefined>(
     latest[server.id]?.attemptId,
     (attemptId, latestId) => latestId === attemptId,
@@ -39,12 +35,9 @@ export function useServerDrain(
   const [open, setOpen] = useState(false);
 
   const stageOff = () => {
-    if (placementBlockers(machines).length > 0) return;
-    const accepting = [...moveServers(machines)].filter((id) => id !== server.id);
-    const unrouted = [...unroutedServers(machines)].filter((id) => id !== server.id);
-    stageOffServerServerFn({ data: { organizationSlug, server: server.id, accepting, unrouted } }).then(
-      ({ blocked }) => {
-        if (blocked.length > 0) toast.error(stuckMessage(blocked));
+    stageOffServerServerFn({ data: { organizationSlug, server: server.id } }).then(
+      ({ stuck }) => {
+        if (stuck.length > 0) toast.error(stuckMessage(stuck, server.name));
         void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
       },
       (error: Error) => toast.error(toErrorMessage(error, `Could not move the volumes off ${server.name}`)),

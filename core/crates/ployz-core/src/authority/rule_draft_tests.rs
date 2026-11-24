@@ -167,6 +167,30 @@ fn the_summary_shows_what_the_body_pins() {
     );
 }
 
+/// A Volume's data lives where its Service runs, so a rule over a Service kept in no
+/// region says the Volume may land in any region, as a Deploy's approval does.
+#[test]
+fn the_summary_says_a_volumes_service_runs_in_any_region() {
+    let mut view = view_json();
+    view["target"][0]["volumes"] = json!([{
+        "reference": "data",
+        "source": {"kind": "provisioned", "name": "pg-data", "maximum_bytes": 1024}
+    }]);
+    view["target"][0]["mounts"] = json!([{"volume": "data", "target": "/var/lib/data"}]);
+    let basis = basis(view);
+    let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms())
+        .unwrap()
+        .drafted(&basis)
+        .unwrap()
+        .summary;
+    assert_eq!(
+        summary.services[0].settings.last().map(String::as_str),
+        Some("any region"),
+        "{:#?}",
+        summary.services[0].settings
+    );
+}
+
 /// Each build setting Cloud could plant changes the body the person signs and what they
 /// read: the builder runs the signed policy exactly.
 #[test]

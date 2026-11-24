@@ -76,26 +76,7 @@ pub(crate) async fn refuse_beside(
     me: Option<&str>,
     volume: &str,
 ) -> Result<(), Error> {
-    let filters = std::collections::HashMap::from([("volume", vec![volume])]);
-    let listed = client
-        .list_containers(Some(
-            ListContainersOptionsBuilder::default()
-                .all(true)
-                .filters(&filters)
-                .build(),
-        ))
-        .await?;
-    for id in listed.into_iter().filter_map(|container| container.id) {
-        if me == Some(id.as_str()) {
-            continue;
-        }
-        let Some(holder) = inspect(client, &id).await.map_err(inspect::failed)? else {
-            continue;
-        };
-        // Before reading labels, so a stopped helper Ployz didn't make never matters.
-        if !active(&holder) {
-            continue;
-        }
+    for (id, holder) in active_beside(client, me, volume).await? {
         let held_by = match holder.labels().map(ServiceLabels::parse) {
             Some(Ok(service)) => {
                 if service.kind != ContainerKind::ServiceContainer
@@ -125,6 +106,87 @@ pub(crate) async fn refuse_beside(
         });
     }
     Ok(())
+}
+
+/// The Docker name of a Container other than `me`, when given, that runs on Docker Volume `volume`:
+/// running, restarting or paused, a hook or the Ingress Proxy included.
+///
+/// # Errors
+/// The error of a read that failed.
+pub(crate) async fn running_beside(
+    client: &Docker,
+    me: Option<&str>,
+    volume: &str,
+) -> Result<Option<String>, Error> {
+    Ok(active_beside(client, me, volume)
+        .await?
+        .into_iter()
+        .next()
+        .map(|(id, holder)| {
+            holder
+                .name
+                .as_deref()
+                .unwrap_or(&id)
+                .trim_start_matches('/')
+                .to_owned()
+        }))
+}
+
+/// Whether a Service Container of `service`, other than `me`, runs on Docker Volume
+/// `volume`. Only Docker's `running` counts: a paused or restarting replacement serves
+/// nothing. With no `service`, a Service Container of any Service but the Ingress
+/// Proxy. A hook, or a Container Ployz didn't make, is no Service.
+///
+/// # Errors
+/// The error of a read that failed.
+pub(crate) async fn service_beside(
+    client: &Docker,
+    me: Option<&str>,
+    volume: &str,
+    service: Option<&QualifiedService>,
+) -> Result<bool, Error> {
+    Ok(active_beside(client, me, volume)
+        .await?
+        .iter()
+        .filter(|(_, holder)| holder.is_running())
+        .filter_map(|(_, holder)| holder.labels().map(ServiceLabels::parse)?.ok())
+        .any(|labels| {
+            labels.kind == ContainerKind::ServiceContainer
+                && labels.identity != QualifiedService::system_ingress()
+                && service.is_none_or(|service| *service == labels.identity)
+        }))
+}
+
+/// Each Container other than `me` on Docker Volume `volume` that is running,
+/// restarting or paused, each of which can write again without a start, with its ID.
+/// A holder gone between the list and its inspect is not one.
+async fn active_beside(
+    client: &Docker,
+    me: Option<&str>,
+    volume: &str,
+) -> Result<Vec<(String, Inspected)>, Error> {
+    let filters = std::collections::HashMap::from([("volume", vec![volume])]);
+    let listed = client
+        .list_containers(Some(
+            ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&filters)
+                .build(),
+        ))
+        .await?;
+    let mut active_holders = Vec::new();
+    for id in listed.into_iter().filter_map(|container| container.id) {
+        if Some(id.as_str()) == me {
+            continue;
+        }
+        let Some(holder) = inspect(client, &id).await.map_err(inspect::failed)? else {
+            continue;
+        };
+        if active(&holder) {
+            active_holders.push((id, holder));
+        }
+    }
+    Ok(active_holders)
 }
 
 /// The Docker name of each Provisioned Volume `spec` mounts.

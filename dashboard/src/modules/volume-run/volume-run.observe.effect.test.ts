@@ -239,7 +239,7 @@ it.effect("a Move onto a Server whose Ployz can't route the moved copy names its
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
 );
 
-it.effect("a Move reads the copy of its destination when that Server routes the moved copy, and of a source that can't", () =>
+it.effect("a Move reads the copy of its destination when that Server routes and starts the moved copy, and of a source that can't", () =>
   Effect.gen(function* () {
     const read = (capabilities: readonly string[], run: typeof move | typeof moveAway) => Effect.gen(function* () {
       const cluster = yield* lacking(capabilities, null);
@@ -247,7 +247,7 @@ it.effect("a Move reads the copy of its destination when that Server routes the 
       return member?.answered;
     });
     const beta6 = [requirements.volumeMove.capability, requirements.volumeFloor.capability];
-    assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability], move), true);
+    assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability, requirements.volumeStart.capability], move), true);
     assert.strictEqual(yield* read(beta6, moveAway), true);
   }),
 );

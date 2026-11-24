@@ -9212,6 +9212,62 @@ fn a_deploy_that_changes_a_signed_setting_runs_the_tag_not_the_last_pin() {
     assert_eq!(web_runs(&store, 2), None);
 }
 
+/// A Provisioned Volume's Service lists one region, which its signature covers. A Deploy
+/// that only changes that region still runs the image the last one pinned, though its tag
+/// moved since, so a move to the new region finds that Deploy's signature for what runs.
+#[test]
+fn a_region_change_of_a_service_with_a_volume_keeps_its_pin() {
+    let (store, who) = shop();
+    data_volume_of(
+        &store,
+        &who,
+        ployz_core::config::VolumeKind::provisioned_default(),
+    );
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
+    apply(&store, 1);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::REGION,
+                    value: json!("fsn"),
+                }],
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P1.to_owned(), 0)));
+}
+
+/// A Service whose data no move takes along, here on a Docker Volume, keeps no pin when
+/// only its region changes: the Deploy resolves its tag again, as for any signed change.
+#[test]
+fn a_region_change_of_a_service_without_a_provisioned_volume_drops_its_pin() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::REGION,
+                    value: json!("fsn"),
+                }],
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), None);
+}
+
 #[test]
 fn a_service_saved_by_digest_records_the_digest_it_sends() {
     let (store, who) = shop();
@@ -9787,6 +9843,10 @@ const DATA: &str = "00000000-0000-4000-8000-000000000005";
 
 /// Stage a Docker Volume `data` mounted by `web` at `/data`.
 fn data_volume(store: &ConfigStore, who: &Actor) {
+    data_volume_of(store, who, ployz_core::config::VolumeKind::Docker {});
+}
+
+fn data_volume_of(store: &ConfigStore, who: &Actor, storage: ployz_core::config::VolumeKind) {
     store
         .write(
             who,
@@ -9794,7 +9854,7 @@ fn data_volume(store: &ConfigStore, who: &Actor) {
                 id: ployz_store::VolumeId::parse(DATA).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_store::VolumeName::parse("data").unwrap(),
-                storage: ployz_core::config::VolumeKind::Docker {},
+                storage,
                 shared_writes: false,
                 storage_locked: false,
                 restored_from: None,
