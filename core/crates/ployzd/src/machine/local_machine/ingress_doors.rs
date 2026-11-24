@@ -19,7 +19,7 @@ use ployz_core::{
 use zeroize::Zeroizing;
 
 use super::reserved::{self, Effects, Gate, Placed, Retiree, Step, newest, retirees, usable};
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, turns::ExclusiveTurn};
 use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::images::{DoorSpecs, TunnelSpecs};
 
@@ -460,9 +460,9 @@ impl LocalMachine {
                     .machine_files().write_tunnel_token(&token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             local
-                .converge_doors_admitted(&containers, &inventory, &pinned, Legacy::No)
+                .converge_doors_admitted(&turn, &containers, &inventory, &pinned, Legacy::No)
                 .await
                 .map(Some)
         })
@@ -510,9 +510,9 @@ impl LocalMachine {
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             let set = local
-                .converge_doors_admitted(&containers, &inventory, &specs, legacy)
+                .converge_doors_admitted(&turn, &containers, &inventory, &specs, legacy)
                 .await?;
             if specs.tunnel.is_none() && set.failure.is_none() {
                 containers
@@ -545,6 +545,7 @@ impl LocalMachine {
     /// the next call starts or replaces the door that failed.
     async fn converge_doors_admitted(
         &self,
+        _turn: &ExclusiveTurn,
         containers: &ContainerRuntime,
         inventory: &[DoorEntry],
         specs: &DoorSpecs,

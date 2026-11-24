@@ -269,7 +269,9 @@ that answers. A server that doesn't answer is listed under failures, and one wit
 connection under omissions. Either way the command exits 3.
 
 A removal is for good: a server that removed a key never trusts it again, even when someone
-approves it later. Every server that answers marks the key removed, including one that never
+approves it later. A command from that device that a server is still working on, such as a
+removal waiting for a service's connections to drain, stops there before it changes anything more.
+Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held
 it shows `not marked removed` and the command exits 3; run it again once those servers answer.

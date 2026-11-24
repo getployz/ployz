@@ -86,7 +86,6 @@ impl LocalMachine {
         &self,
         GenerateSealingKeyRequest {}: GenerateSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
-        self.require_management_access()?;
         self.finish_mutation(move |local| async move { local.generate_admitted().await })
             .await
     }
@@ -158,7 +157,6 @@ impl LocalMachine {
         &self,
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
-        self.require_management_access()?;
         self.finish_mutation(
             move |local| async move { local.share_sealing_key_admitted(request).await },
         )
@@ -169,7 +167,6 @@ impl LocalMachine {
         &self,
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
-        self.require_management_access()?;
         self.refuse_removed(request.machine, Some(request.public_key))
             .await?;
         let record = self.record();
@@ -284,7 +281,6 @@ impl LocalMachine {
         &self,
         request: InstallSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
-        self.require_management_access()?;
         self.finish_mutation(move |local| async move { local.install_admitted(request).await })
             .await
     }

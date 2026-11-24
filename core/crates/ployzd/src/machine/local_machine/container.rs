@@ -26,7 +26,10 @@ use ployz_core::{
 };
 
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
-use super::{AdmittedSpec, Error, LocalMachine, turns::Installed};
+use super::{
+    AdmittedSpec, Error, LocalMachine,
+    turns::{ExclusiveTurn, Installed},
+};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
@@ -501,7 +504,7 @@ impl Installed {
         if let Err(refused) = guard.drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.exclusive_turn().await;
+        let turn = self.exclusive_turn().await?;
         let held = match guard.check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -671,7 +674,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
-            let _turn = local.exclusive_turn().await;
+            let _turn = local.exclusive_turn().await?;
             // Every holder, whatever made it: the cut needs the Volume idle.
             if containers
                 .volumes()
@@ -1509,10 +1512,11 @@ impl LocalMachine {
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let _turn = local.exclusive_turn().await;
+                    let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
+                            &turn,
                             containers,
                             &id,
                             anonymous_volumes == AnonymousVolumes::Remove,
@@ -1529,10 +1533,11 @@ impl LocalMachine {
             } => {
                 self.finish_installed(move |local| async move {
                     local.await_log_read(&id, logs_to_read).await;
-                    let _turn = local.exclusive_turn().await;
+                    let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
+                            &turn,
                             containers,
                             &id,
                             anonymous_volumes == AnonymousVolumes::Remove,
@@ -2120,6 +2125,7 @@ async fn leave_rotation<'a>(
 
 /// A Container Docker no longer has serves nothing, so only its records go.
 async fn remove_out_of_rotation(
+    _turn: &ExclusiveTurn,
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
     remove_volumes: bool,

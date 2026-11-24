@@ -5,6 +5,10 @@
 //!
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
 //! it halfway, and the task holds its guards until the work ends.
+//!
+//! Each turn admitted work acts under checks the caller's access once taken, against the
+//! keys as they stand: removing a key takes its own exclusive turn, so a caller removed
+//! while its work waited is refused before any effect.
 
 use tokio::sync::OwnedRwLockWriteGuard;
 
@@ -25,14 +29,34 @@ impl std::ops::Deref for Admission {
 
 /// This Machine inside work that holds the installation guard and no turn, which only
 /// [`LocalMachine::finish_installed`] makes. The work takes the turns it needs itself, so
-/// a drain inside it never holds one.
+/// a drain inside it never holds one, and takes each through [`Installed::exclusive_turn`].
 pub(crate) struct Installed(LocalMachine);
+
+/// The exclusive admission turn, held by work [`LocalMachine::finish_installed`] runs,
+/// with the caller's access checked under it. Only [`Installed::exclusive_turn`] makes
+/// one, so an effect that takes one never runs for a caller removed while the work waited.
+pub(crate) struct ExclusiveTurn {
+    _turn: OwnedRwLockWriteGuard<()>,
+}
 
 impl std::ops::Deref for Installed {
     type Target = LocalMachine;
 
     fn deref(&self) -> &LocalMachine {
         &self.0
+    }
+}
+
+impl Installed {
+    /// The exclusive admission turn, with the caller's access checked under it.
+    ///
+    /// # Errors
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
+    pub(crate) async fn exclusive_turn(&self) -> Result<ExclusiveTurn, Error> {
+        let turn = self.0.unchecked_exclusive_turn().await;
+        self.0.require_management_access()?;
+        Ok(ExclusiveTurn { _turn: turn })
     }
 }
 
@@ -51,7 +75,7 @@ impl LocalMachine {
         F: FnOnce(Admission) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
-        let exclusive = self.exclusive_turn().await;
+        let exclusive = self.unchecked_exclusive_turn().await;
         self.finish_admitted(exclusive, work).await
     }
 
@@ -82,7 +106,9 @@ impl LocalMachine {
         .await?
     }
 
-    /// Run `work` holding the installation guard and no turn.
+    /// Run `work` holding the installation guard and no turn. The caller's access is
+    /// checked now, so a removed caller drains nothing, and again under each turn the work
+    /// takes.
     pub(super) async fn finish_installed<T, F, Fut>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
@@ -98,15 +124,16 @@ impl LocalMachine {
         .await?
     }
 
-    /// The exclusive admission turn, for work that takes it itself. Work holding one never
-    /// asks for the installation guard after it, since only `finish_*` takes that.
-    pub(super) async fn exclusive_turn(&self) -> OwnedRwLockWriteGuard<()> {
+    /// The exclusive admission turn, checking nothing: [`Self::finish_admitted`] checks
+    /// the caller under it, and waiting for idle work acts on nothing. Work holding one
+    /// never asks for the installation guard after it, since only `finish_*` takes that.
+    async fn unchecked_exclusive_turn(&self) -> OwnedRwLockWriteGuard<()> {
         self.owner.admission_lock().write_owned().await
     }
 
     /// Wait until no admitted work holds a turn.
     pub(super) async fn wait_for_admitted_work(&self) {
-        drop(self.exclusive_turn().await);
+        drop(self.unchecked_exclusive_turn().await);
     }
 
     /// Release the data directory once no admitted work holds a turn, waiting at most
@@ -116,7 +143,7 @@ impl LocalMachine {
         &self,
         within: std::time::Duration,
     ) -> Option<Result<(), crate::machine::RecordOwnerStopped>> {
-        let _turn = tokio::time::timeout(within, self.exclusive_turn())
+        let _turn = tokio::time::timeout(within, self.unchecked_exclusive_turn())
             .await
             .ok()?;
         Some(self.owner.close().await)

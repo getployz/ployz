@@ -25,7 +25,7 @@ use ployz_core::{
 use zeroize::Zeroizing;
 
 use super::reserved::{self, Effects, Gate, Retiree, Step, newest, retirees, usable};
-use super::{Error, LocalMachine, Scope};
+use super::{Error, LocalMachine, Scope, turns::ExclusiveTurn};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
@@ -252,10 +252,10 @@ impl LocalMachine {
                 }
                 None => None,
             };
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
-                .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
+                .converge_router(&turn, &containers, &plan, wanted.as_ref(), Watch::Settle)
                 .await
         })
         .await
@@ -295,10 +295,10 @@ impl LocalMachine {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
-                let _turn = local.exclusive_turn().await;
+                let turn = local.exclusive_turn().await?;
                 let plan = plan_router(&routers, None);
                 return local
-                    .converge_router(&containers, &plan, None, Watch::Skip)
+                    .converge_router(&turn, &containers, &plan, None, Watch::Skip)
                     .await
                     .map(Some);
             }
@@ -334,10 +334,10 @@ impl LocalMachine {
                 .machine_files().write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             let plan = plan_router(&routers, Some(&wanted.spec));
             local
-                .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)
+                .converge_router(&turn, &containers, &plan, Some(&wanted), Watch::Skip)
                 .await
                 .map(Some)
         })
@@ -354,6 +354,7 @@ impl LocalMachine {
     /// retires it.
     async fn converge_router(
         &self,
+        _turn: &ExclusiveTurn,
         containers: &ContainerRuntime,
         plan: &RouterPlan,
         wanted: Option<&Wanted>,
