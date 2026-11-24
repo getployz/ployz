@@ -93,6 +93,10 @@ pub struct RuleView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub version: Option<String>,
+    /// For a staged read, whether the Environment is Protected, read with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub protected: Option<bool>,
 }
 
 impl RuleView {
@@ -246,14 +250,16 @@ fn view_of(
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
     let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
-    let (saved, version) = match staged {
+    let (saved, version, protected) = match staged {
         true => {
             let version = crate::review::review(tx, environment)?.view.version;
             let working = canonicalize_environment_intent(environment.working.clone());
-            (Some(working), Some(version))
+            let protected = scope::protected(tx, id)?;
+            (Some(working), Some(version), Some(protected))
         }
         false => (
             crate::review::latest_saved(tx, id)?.map(|saved| saved.intent),
+            None,
             None,
         ),
     };
@@ -293,6 +299,7 @@ fn view_of(
         changed,
         volumes,
         version,
+        protected,
     })
 }
 

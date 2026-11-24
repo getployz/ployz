@@ -96,32 +96,36 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
 
-/** What a Save's tap reads: the rule view of what the Save saves, and what asking for a passkey needs. */
+/** What a Save's tap reads: the rule view of what the Save saves and, once asked, what asking for a passkey needs. */
 export type SaveTap =
   | { readonly kind: "off" }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "ready"; readonly view: RuleView; readonly tap: Extract<DeployTap, { kind: "ready" }> };
+  | { readonly kind: "view"; readonly view: RuleView; readonly tap: DeployTap | null };
 
 /**
- * What a person's Save of `environment` needs before it can sign the automatic deploy rule for what it saves: nothing
- * when no Server enforces device approval or a protector decides the person's writes here, else the staged rule view
- * and what the Deploy tap reads for a passkey.
+ * What a person's Save of `environment` reads before it can sign the automatic deploy rule for what it saves: nothing
+ * when they can't deploy here or a protector decides their writes here, else the staged rule view and, with `gate`,
+ * what the Deploy tap reads for a passkey. Only a failed staged read refuses.
  */
-export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Actor, input: { readonly organizationSlug: string; readonly environment: EnvironmentRef }) {
+export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Actor, input: {
+  readonly organizationSlug: string;
+  readonly environment: EnvironmentRef;
+  readonly gate: boolean;
+}) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:stage");
-  if (access.kind !== "member") return { kind: "off" } satisfies SaveTap;
+  // The Store keeps a Save's rule only for someone who may deploy.
+  if (access.kind !== "member" || !access.permissions.includes("changes:deploy")) return { kind: "off" } satisfies SaveTap;
   const read = yield* callStore(access.organization.id, actor.userId, {
     operation: "read", query: { query: "rule", environment: input.environment, staged: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
   if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies SaveTap;
   const view = read.value;
-  const nothing = view.sources.length === 0 || (!mayProtect(access, view.environment.name)
-    && (yield* environmentProtected(access.organization.id, view.environment.project, view.environment.id).pipe(
-      Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
-    )));
-  if (nothing) return { kind: "off" } satisfies SaveTap;
-  const tap = yield* gate(actor.userId, access.organization.id, [], { namespace: view.namespace, parents: Effect.succeed({}), needs: SIGNS_RULE });
-  return tap.kind === "ready" ? { kind: "ready", view, tap } satisfies SaveTap : tap;
+  // Read with the view: a protection Cloud couldn't read never reads as none.
+  if (view.sources.length === 0 || (view.protected !== false && !mayProtect(access, view.environment.name))) {
+    return { kind: "off" } satisfies SaveTap;
+  }
+  const tap = input.gate ? yield* gate(actor.userId, access.organization.id, [], { namespace: view.namespace, parents: Effect.succeed({}), needs: SIGNS_RULE }) : null;
+  return { kind: "view", view, tap } satisfies SaveTap;
 });
 
 const mayProtect = (access: { readonly permissions: readonly string[]; readonly environments: readonly string[] | undefined }, environment: string) =>

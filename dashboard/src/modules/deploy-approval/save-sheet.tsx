@@ -12,7 +12,7 @@ import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
 import { SignedLines } from "./deploy-sheet";
 import { prepareSaveTapServerFn } from "./deploy-tap.functions";
 import { RuleSummaryList } from "./rule-summary";
-import { type OwnerOf, prepareSave, type Publish, type SaveAsk, signRule } from "./save-tap";
+import { type Answered, type OwnerOf, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule } from "./save-tap";
 
 /** A Save that was not sent: refused before any prompt, or cancelled. Whoever said why already showed it. */
 class SaveNotSent extends Error {}
@@ -22,14 +22,14 @@ type Open = { ask: SaveAsk; handles: readonly string[]; settle: (failed: Error |
 /**
  * Saves from this tab. When what the Save saves isn't what the kept automatic deploy rule approves, the sheet shows the
  * rule and one passkey tap signs it with the Save. A caller's accepted retry of the same review, after the Store asked
- * to confirm a Volume loss, reuses that answer. `drop` forgets it when the caller cancels.
+ * to confirm a Volume loss, sends that answer again. `drop` forgets it when the caller cancels.
  */
 export function useSaveTap(organizationSlug: string) {
   const writer = useStoreWriter(organizationSlug);
   const { queryClient } = useCollectionScope();
   const [open, setOpen] = useState<Open | null>(null);
   const [busy, setBusy] = useState<"passkey" | "saving" | null>(null);
-  const pending = useRef<{ review: string; rule: SavedRule } | null>(null);
+  const answered = useRef<Answered | null>(null);
 
   const ownerOf: OwnerOf = async (repository, repositoryId) => {
     try {
@@ -37,38 +37,27 @@ export function useSaveTap(organizationSlug: string) {
       return owner.repositoryId === repositoryId ? { ownerId: owner.ownerId }
         : { problem: `${repository} now names another repository. Connect your services to it again, then save.` };
     } catch {
-      return { problem: `Couldn't read ${repository} on GitHub. Try again.` };
+      return { problem: `Couldn't read ${repository} on GitHub.` };
     }
   };
 
-  async function save(command: Publish, handles: readonly string[] = []): Promise<void> {
-    const held = pending.current;
-    pending.current = null;
-    const prepared = await prepareSave(command, () => prepareSaveTapServerFn({ data: { organizationSlug, environment: command.environment } }), ownerOf)
-      .catch(() => ({ kind: "refused", message: "Couldn't check automatic deploys. Try again." }) as const);
-    if (prepared.kind === "save") return void await writer.commit(prepared.command, handles);
-    if (prepared.kind === "refused") {
-      toast.error(`${prepared.message} Nothing saved.`);
-      throw new SaveNotSent();
-    }
-    const { ask } = prepared;
-    if (held?.review === ask.review) {
-      await send(ask, held.rule, handles);
-      return;
-    }
-    const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null }));
-    if (failed !== null) throw failed;
-  }
+  const steps: SaveSteps = {
+    answered,
+    commit: (command, handles) => writer.commit(command, handles).then(() => undefined),
+    prepare: (command) => prepareSave(command, (gate) => prepareSaveTapServerFn({ data: { organizationSlug, environment: command.environment, gate } }), ownerOf)
+      .catch(() => ({ kind: "refused", message: "Couldn't check automatic deploys. Try again." }) as const),
+    ask: async (ask, handles) => {
+      const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null }));
+      if (failed !== null) throw failed;
+    },
+    held: (reason) => toast.warning("Saved. Pushes wait for approval.", { description: reason }),
+    refused: (message) => {
+      toast.error(`${message} Nothing saved.`);
+      return new SaveNotSent();
+    },
+  };
 
-  async function send(ask: SaveAsk, rule: SavedRule, handles: readonly string[]) {
-    try {
-      await writer.commit({ ...ask.command, rule }, handles);
-    } catch (error) {
-      // The Store asks again (Servers hold more by now): the caller's next accepted retry still needs no tap.
-      if (error instanceof StoreRefused && handles.includes(error.code)) pending.current = { review: ask.review, rule };
-      throw error;
-    }
-  }
+  const save = (command: Publish, handles: readonly string[] = []) => saveWith(steps, command, handles);
 
   function close(sheet: Open, failed: Error | null) {
     sheet.settle(failed);
@@ -90,7 +79,7 @@ export function useSaveTap(organizationSlug: string) {
         }
       }
       setBusy("saving");
-      await send(current.ask, rule, current.handles);
+      await sendRule(steps, current.ask.command, { review: current.ask.review, rule }, current.handles);
       close(current, null);
     } catch (error) {
       // The Store refused it: the caller asks its own question, or the writer already said why.
@@ -128,5 +117,5 @@ export function useSaveTap(organizationSlug: string) {
     </Dialog>
   );
 
-  return { save, drop: () => { pending.current = null; }, sheet };
+  return { save, drop: () => { answered.current = null; }, sheet };
 }

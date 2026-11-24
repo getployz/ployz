@@ -277,6 +277,79 @@ fn an_ended_rule_stays_ended() {
     );
 }
 
+/// What a Save of `sources` beside `rule` needs, read from the view alone.
+fn need(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> SourceNeed {
+    let asked = saving(rule, sources).source.unwrap();
+    source_need(&RuleBasis {
+        namespace: Namespace::parse("shop").unwrap(),
+        rule: asked.rule,
+        sources: asked.sources,
+        target: asked.target,
+        volumes: PlannedVolumes::new(),
+        minted: Births::new(),
+    })
+}
+
+#[test]
+fn a_save_knows_from_the_view_alone_whether_its_tap_signs_a_rule() {
+    let sources = view_json()["sources"].clone();
+    let (_, kept) = first_rule();
+    let mut changed = kept.clone();
+    changed.services[0].policy.context = "elsewhere".to_owned();
+    let mut ended = changed.clone();
+    ended.ended = true;
+
+    for (rule, wanted) in [
+        (None, SourceNeed::Rule),
+        (Some(&kept), SourceNeed::None),
+        (Some(&changed), SourceNeed::Rule),
+        (Some(&ended), SourceNeed::None),
+    ] {
+        assert_eq!(need(rule, sources.clone()), wanted, "{rule:?}");
+        let signs = saving(rule, sources.clone()).draft().unwrap().is_some();
+        assert_eq!(
+            signs,
+            wanted == SourceNeed::Rule,
+            "the tap agrees: {rule:?}"
+        );
+    }
+}
+
+#[test]
+fn services_that_moved_off_the_kept_branch_onto_two_others_sign_nothing() {
+    let (_, kept) = first_rule();
+    let mut sources = view_json()["sources"].clone();
+    sources[0]["branch"] = json!("dev");
+    let mut cache = sources[0].clone();
+    cache["service"] = json!("cache");
+    cache["branch"] = json!("release");
+    sources.as_array_mut().unwrap().push(cache);
+
+    assert_eq!(saving(Some(&kept), sources.clone()).draft().unwrap(), None);
+    assert_eq!(need(Some(&kept), sources), SourceNeed::None);
+}
+
+#[test]
+fn a_service_whose_pushes_dont_deploy_leaves_the_rule_to_the_others() {
+    let mut sources = view_json()["sources"].clone();
+    let mut cache = sources[0].clone();
+    cache["service"] = json!("cache");
+    cache["branch"] = json!("dev");
+    cache["on_push"] = json!(false);
+    sources.as_array_mut().unwrap().push(cache);
+    let mut view = view_json();
+    view["sources"] = sources.clone();
+    let basis: RuleBasis = serde_json::from_value(view).unwrap();
+
+    assert_eq!(
+        basis.branch_services(),
+        vec![ServiceName::parse("web").unwrap()]
+    );
+    let draft = saving(None, sources).draft().unwrap().unwrap();
+    let rule: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(rule.source.branch, "main");
+}
+
 #[test]
 fn a_builder_other_than_ployzs_release_needs_a_yes() {
     let mut asked = saving(None, view_json()["sources"].clone());

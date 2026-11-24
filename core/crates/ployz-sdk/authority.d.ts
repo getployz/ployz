@@ -23,6 +23,7 @@ export type {
   RuleTerms,
   Signed,
   SignerKey,
+  SourceNeed,
   StepDigest,
   StepKind,
   VersionsDraft,
@@ -44,6 +45,7 @@ import type {
   RuleTerms,
   RuleView,
   Signed,
+  SourceNeed,
   VersionsDraft,
 } from "./generated/payloads";
 
@@ -95,6 +97,14 @@ export function versionSteps(asked: {
   against: Against;
   source?: SourceAsked;
 }): VersionsDraft | null;
+
+/**
+ * What a Save of the Store's staged rule `view` needs for its Source step, read from the view alone before any Server or
+ * passkey is reached: `"none"` when the rule was ended, no pushed Service builds from one branch, or the kept rule
+ * approves what a push deploys wherever it may place it; `"servers"` when the kept rule approves the settings and only
+ * the Servers it names may be out of date; `"rule"` otherwise. Throws an Error for a malformed view.
+ */
+export function sourceNeed(view: RuleView): SourceNeed;
 
 /**
  * What a Source step drafts the rule from, as the Store's rule view gives it: the kept rule, where each Service builds

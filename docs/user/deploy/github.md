@@ -114,9 +114,13 @@ changes something the rule covers. The rule covers every service that builds fro
 **Auto-deploy** on. If they build from different branches, it keeps the branch the rule already
 covers, and the other services save without it.
 
-With no rule yet and services on several branches, Save signs nothing. Turn on **Deploy every
-push** under **Automatic deploys** in the environment's **Settings** to approve one. After you turn
-it off, Save never turns it back on: only the switch does.
+When the services build from several branches and none of them is the rule's, Save signs nothing.
+Turn on **Deploy every push** under **Automatic deploys** in the environment's **Settings** to
+approve one. After you turn it off, Save never turns it back on: only the switch does.
+
+When Save can't ask your passkey, for example because a server is offline or your servers don't
+trust your passkey, it saves without the rule and tells you why. Pushes then hold until you
+approve the rule.
 
 From the CLI, approve it for the services that build from one branch:
 
@@ -201,7 +205,7 @@ A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
 deploy of another environment from it builds on your servers.
 
 - **A saved change waits for you.** A Save in the dashboard signs the change with the rule. A
-  change saved another way, such as from the CLI, to a service the rule covers, its settings or
+  change saved without it, such as from the CLI, to a service the rule covers, its settings or
   how it builds, or a new service that builds from the rule's branch, holds pushes until you
   approve the rule again. Settings shows **Pushes to main are on hold** with what changed;
   **Review and approve** names each changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`

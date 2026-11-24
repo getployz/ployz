@@ -85,28 +85,10 @@ impl SourceAsked {
             volumes: volumes.clone(),
             minted: Births::new(),
         };
+        let Some(names) = eligible(&basis) else {
+            return Ok(None);
+        };
         let kept = basis.kept();
-        if kept.as_ref().is_some_and(|kept| kept.ended) {
-            return Ok(None);
-        }
-        let names: Vec<ServiceName> = basis
-            .branch_services()
-            .into_iter()
-            .filter(|name| {
-                (basis.sources.iter()).any(|source| {
-                    source.service == *name && source.on_push && source.branch.is_some()
-                })
-            })
-            .collect();
-        let branches: BTreeSet<_> = (basis.sources.iter())
-            .filter(|source| names.contains(&source.service))
-            .map(|source| (source.repository_id, source.branch.clone()))
-            .collect();
-        // With no rule kept, a person picks which branch deploys on push when they turn
-        // automatic deploys on.
-        if names.is_empty() || (kept.is_none() && branches.len() > 1) {
-            return Ok(None);
-        }
         let builder = (self.builder)
             .or_else(|| kept.as_ref().map(|kept| kept.source.builder.clone()))
             .unwrap_or_else(Builder::pinned);
@@ -131,14 +113,75 @@ impl SourceAsked {
     }
 }
 
+/// What a Save needs to keep pushes deploying, read from the Store's rule view alone,
+/// before any Server or passkey is reached.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceNeed {
+    /// No Source step: the rule was ended, no Service's push deploys from one branch, or
+    /// the kept rule approves what a push deploys wherever it may place it.
+    None,
+    /// The kept rule approves the settings, and only the Servers it names may be out of
+    /// date: a placed Service may land on a Server it doesn't name.
+    Servers,
+    /// A new rule, or a generation for settings the kept rule doesn't approve.
+    Rule,
+}
+
+/// What a Save of what `basis` reads needs for its Source step, as
+/// [`VersionsAsked::draft`] decides it, from the view alone. Every Server the kept rule
+/// names stands in for the Cluster's, which only a Server reports.
+#[must_use]
+pub fn source_need(basis: &RuleBasis) -> SourceNeed {
+    let Some(names) = eligible(basis) else {
+        return SourceNeed::None;
+    };
+    let Some(kept) = basis.kept() else {
+        return SourceNeed::Rule;
+    };
+    let terms = RuleTerms {
+        cluster: kept.cluster,
+        machines: kept.machines.clone(),
+        owner_id: kept.source.owner_id,
+        builder: kept.source.builder.clone(),
+        platform: super::rule_draft::default_platform(),
+        new_rule: kept.rule,
+        issued_at: kept.issued_at,
+        signer: SignerKey::Passkey(super::OwnPrompt::Passkey),
+    };
+    let mut basis = basis.clone();
+    match AutoDeployRule::draft(&mut basis, &names, terms) {
+        Ok(next) if approves(&kept, &next, &basis.target) => match placed(&next, &basis.target) {
+            true => SourceNeed::Servers,
+            false => SourceNeed::None,
+        },
+        _ => SourceNeed::Rule,
+    }
+}
+
+/// The Services a Save's Source step covers: those whose push deploys, on the one branch
+/// they build from. None when the person ended the rule, which stays ended until they turn
+/// it on again, or when they build from several branches, where a person picks the one
+/// that deploys on push.
+fn eligible(basis: &RuleBasis) -> Option<Vec<ServiceName>> {
+    if basis.kept().is_some_and(|kept| kept.ended) {
+        return None;
+    }
+    let names: Vec<ServiceName> = (basis.branch_services().into_iter())
+        .filter(|name| {
+            (basis.sources.iter()).any(|source| source.service == *name && source.branch.is_some())
+        })
+        .collect();
+    let branches: BTreeSet<_> = (basis.sources.iter())
+        .filter(|source| names.contains(&source.service))
+        .map(|source| (source.repository_id, source.branch.as_deref()))
+        .collect();
+    (!names.is_empty() && branches.len() == 1).then_some(names)
+}
+
 /// Whether `kept` approves what `next` would: the same rule, branch, builder and Services,
 /// and every Server `next` names unless no Service it covers is placed by its spec.
 fn approves(kept: &AutoDeployRule, next: &AutoDeployRule, target: &[RequestedServiceSpec]) -> bool {
-    let placed = || {
-        (next.services.iter())
-            .filter_map(|service| target.iter().find(|spec| spec.name == service.name))
-            .any(placement_signed)
-    };
     kept.rule == next.rule
         && kept.namespace == next.namespace
         && kept.source.repository_id == next.source.repository_id
@@ -149,7 +192,14 @@ fn approves(kept: &AutoDeployRule, next: &AutoDeployRule, target: &[RequestedSer
             .machines
             .iter()
             .all(|machine| kept.machines.contains(machine))
-            || !placed())
+            || !placed(next, target))
+}
+
+/// Whether a spec places a Service `rule` covers, so the Servers it names matter.
+fn placed(rule: &AutoDeployRule, target: &[RequestedServiceSpec]) -> bool {
+    (rule.services.iter())
+        .filter_map(|service| target.iter().find(|spec| spec.name == service.name))
+        .any(placement_signed)
 }
 
 /// What Ployz Cloud relays to compare each mount with: each Service's last approved

@@ -102,6 +102,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
     declarations.add::<ployz_core::authority::version_draft::VersionsDraft>();
+    declarations.add::<ployz_core::authority::version_draft::SourceNeed>();
     declarations.add::<ployz_core::authority::HeldContainer>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();

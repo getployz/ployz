@@ -5,7 +5,7 @@
 use ployz_core::OperationId;
 use ployz_core::authority::{
     AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
-    RuleTerms, SignerKey, Timestamp, version_draft::VersionsAsked,
+    RuleTerms, SignerKey, Timestamp, version_draft, version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
@@ -208,6 +208,20 @@ pub fn version_steps(input: &str) -> Result<String, JsError> {
         .draft()
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// What a Save of the Store's staged rule `view` needs for its Source step, as
+/// [`version_draft::source_need`] reads it from the view alone: `"none"`, `"servers"` when
+/// only the Servers the kept rule names may be out of date, or `"rule"`.
+///
+/// # Errors
+/// Rejects a malformed view.
+#[wasm_bindgen]
+pub fn source_need(view: &str) -> Result<String, JsError> {
+    let view: RuleBasis =
+        serde_json::from_str(view).map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&version_draft::source_need(&view))
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// The key an install line carries for `passkey`, as `ployz key add` and the installer read

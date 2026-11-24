@@ -2147,14 +2147,25 @@ fn save_with_rule(
     store: &ConfigStore,
     who: &Actor,
     version: &str,
-    (rule, prior): (SignedRule, Option<(u8, u64)>),
+    rule: (SignedRule, Option<(u8, u64)>),
 ) -> Result<Written, ployz_core::RpcError> {
-    store.write(
+    save_with_rule_as(store, who, Some(version), rule, &Trusted::default())
+}
+
+/// As [`save_with_rule`], at review `version` if any, by a caller `trusted` describes.
+fn save_with_rule_as(
+    store: &ConfigStore,
+    who: &Actor,
+    version: Option<&str>,
+    (rule, prior): (SignedRule, Option<(u8, u64)>),
+    trusted: &Trusted,
+) -> Result<Written, ployz_core::RpcError> {
+    store.write_trusted(
         who,
         &Command::Publish(Publish {
             id: None,
             environment: EnvironmentRef::default(),
-            version: Some(version.to_owned()),
+            version: version.map(str::to_owned),
             message: None,
             accept_volume_loss: Vec::new(),
             rule: Some(ployz_store::SavedRule {
@@ -2166,6 +2177,7 @@ fn save_with_rule(
                 }),
             }),
         }),
+        trusted,
     )
 }
 
@@ -2232,6 +2244,49 @@ fn a_save_whose_rule_moved_since_its_tap_saves_nothing() {
         version,
         "the staged change is still waiting to be saved"
     );
+}
+
+#[test]
+fn a_saver_who_cant_deploy_keeps_no_rule_and_saves_nothing() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let no_deploy = Trusted {
+        permissions: Some(
+            (ployz_store::Permission::ALL.iter().copied())
+                .filter(|held| *held != ployz_store::Permission::ChangesDeploy)
+                .collect(),
+        ),
+        ..Trusted::default()
+    };
+
+    let refused =
+        save_with_rule_as(&store, &who, Some(&version), (rule, None), &no_deploy).unwrap_err();
+
+    assert_eq!(
+        refused.code,
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        "{refused:?}"
+    );
+    assert_eq!(kept_rule(&store, &who), None);
+    assert_eq!(staged_version(&store, &who), version, "nothing was saved");
+}
+
+#[test]
+fn a_save_that_keeps_a_rule_without_its_review_saves_nothing_staged_after_the_tap() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    set(&store, &who, "web.env.GREETING", json!("goodbye"));
+    let moved = staged_version(&store, &who);
+
+    let refused =
+        save_with_rule_as(&store, &who, None, (rule, None), &Trusted::default()).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert_eq!(kept_rule(&store, &who), None);
+    assert_eq!(staged_version(&store, &who), moved, "nothing was saved");
 }
 
 /// What the plan says a person's Deploy needs for each built Service that reaches data.

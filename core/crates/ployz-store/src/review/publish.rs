@@ -309,6 +309,18 @@ pub(crate) fn publish(
     publish: &Publish,
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
+    if publish.rule.is_some() {
+        // The rule deploys every push of its branch, as the command that keeps one alone
+        // does. Without the review the tap read, a Save could keep the rule beside settings
+        // nobody read.
+        trusted.admit(crate::Permission::ChangesDeploy)?;
+        if publish.version.is_none() {
+            return Err(crate::error::invalid(
+                "A Save that keeps an automatic deploy rule names the review it read.",
+                serde_json::json!({}),
+            ));
+        }
+    }
     let environment = scope::lock(tx, who, &publish.environment)?;
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;

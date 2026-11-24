@@ -21,9 +21,10 @@ export const prepareDeployTapServerFn = createServerFn({ method: "POST" })
 const SaveInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty()),
   environment: EnvironmentRef,
+  gate: Schema.Boolean,
 });
 
-/** What a Save saves, as the automatic deploy rule reads it, with who enforces and which passkeys they trust. */
+/** What a Save saves, as the automatic deploy rule reads it, and with `gate` who enforces and which passkeys they trust. */
 export const prepareSaveTapServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
   .validator(strictValidator(SaveInput))
