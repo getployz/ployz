@@ -892,28 +892,7 @@ pub(crate) fn unsigned(
         .and_then(crate::auto_rule::opened);
     let ended = kept.as_ref().is_some_and(|rule| rule.ended);
     let approved: Vec<ServiceName> = match kept.filter(|rule| !rule.ended) {
-        Some(rule) => {
-            let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
-                saved
-                    .services
-                    .iter()
-                    .filter(|service| crate::git::tracks(service, repository, &branch))
-                    .map(|service| service.config.private_dns.clone())
-                    .collect::<Vec<_>>()
-            });
-            let sources = crate::auto_rule::sources(saved);
-            let changed = crate::auto_rule::changed(&rule, namespace, target, &sources, &[]);
-            rule.services
-                .into_iter()
-                .map(|service| service.name)
-                .filter(|service| {
-                    !changed.contains(service)
-                        && tracking
-                            .as_ref()
-                            .is_some_and(|names| names.contains(service))
-                })
-                .collect()
-        }
+        Some(rule) => crate::auto_rule::approved(&rule, namespace, saved, target),
         None => Vec::new(),
     };
     let mut unsigned = Vec::new();

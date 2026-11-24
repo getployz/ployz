@@ -48,6 +48,18 @@ describe("prepareDeploy", () => {
     });
   });
 
+  it("refuses a new Git Service before any prompt when the tap signs no rule over it", async () => {
+    const read = async () => ({
+      kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [{ service: "web", needs: "rule" }] }),
+      tap: ready, source: { kind: "held" as const, reason: "An owner or admin approves this Deploy.", unchecked: false },
+    });
+
+    expect(await prepareDeploy(admitDeploy(here, "d9"), read, async () => ({ ownerId: 7 }))).toEqual({
+      kind: "refused",
+      message: "No automatic deploy rule covers web as it stands, so your servers won't build it. An owner or admin approves this Deploy.",
+    });
+  });
+
   it("deploys a Git Service its kept rule approves with no tap, and refuses one whose rule was ended", async () => {
     const read = (unsigned: PlanView["unsigned"]) => async () => ({
       kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned }), tap: ready,

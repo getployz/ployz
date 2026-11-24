@@ -1,6 +1,6 @@
 //! Builds handed to a GitHub Actions run, from its dispatch through its check-in and reports to its end.
 
-use ployz_core::authority::{AutoDeployRule, CommitAuthority, Signed};
+use ployz_core::authority::{AutoDeployRule, BuiltImageDigest, CommitAuthority, Signed};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
 use serde::{Deserialize, Serialize};
@@ -451,27 +451,83 @@ impl GithubRule {
 }
 
 /// The automatic deploy rule GitHub build `id` builds under, when the rule covers the
-/// Service. A person's Deploy builds under it only while it is on, so a Deploy after the
-/// person ended it builds as any other.
+/// Service.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
 ) -> Result<Option<GithubRule>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
+    rule_of(tx, &stored, &id.service)
+}
+
+/// The automatic deploy rule `stored`'s build of `service` builds under. A push's build
+/// does whenever the rule covers the Service. A person's Deploy builds under it only
+/// while it is on and approves the Service as the Deployment froze it: its repository,
+/// branch, settings and build policy. Any other builds as it would without a rule.
+pub(crate) fn rule_of(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    service: &ServiceName,
+) -> Result<Option<GithubRule>, RpcError> {
     let Some(signed) = crate::auto_rule::stored(tx, &stored.summary.environment_id)? else {
         return Ok(None);
     };
     let Some(rule) = crate::auto_rule::opened(&signed) else {
         return Ok(None);
     };
-    if rule.service(&id.service).is_none() {
+    if rule.service(service).is_none() {
         return Ok(None);
     }
-    Ok(match stored.summary.admitted_by {
-        None => Some(GithubRule::Push(signed)),
-        Some(_) if rule.ended => None,
-        Some(_) => Some(GithubRule::Dispatch(signed)),
-    })
+    if stored.summary.admitted_by.is_none() {
+        return Ok(Some(GithubRule::Push(signed)));
+    }
+    if rule.ended {
+        return Ok(None);
+    }
+    let saved = deployment::held_revision(tx, stored)?;
+    let lowered = deployment::lowered(tx, stored, &saved)?;
+    let approved =
+        crate::auto_rule::approved(&rule, stored.namespace(), &saved, &lowered.intent.target);
+    Ok(approved
+        .contains(service)
+        .then_some(GithubRule::Dispatch(signed)))
+}
+
+/// Whether `image`, which a person's Deploy under the rule would reuse for GitHub build
+/// `id`, carries proof a Server takes under the rule's current generation: the image
+/// token copied with it, or a build a Server verified. An image without one dispatches
+/// a build under the rule instead, which every enforcing Server would otherwise refuse.
+pub(crate) fn github_proven(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+    image: &str,
+) -> Result<bool, RpcError> {
+    let stored = deployment::load(tx, &id.deployment)?;
+    let Some(rule) = rule_of(tx, &stored, &id.service)?
+        .as_ref()
+        .and_then(|rule| crate::auto_rule::opened(rule.signed()))
+    else {
+        return Ok(false);
+    };
+    let row = github_row(tx, &stored, id)?;
+    if row
+        .image_token
+        .as_ref()
+        .is_some_and(|token| token.image == image && token.generation == rule.generation)
+    {
+        return Ok(true);
+    }
+    let Ok(digest) = BuiltImageDigest::parse(image) else {
+        return Ok(false);
+    };
+    let organization = deployment::organization(tx, &id.deployment)?;
+    Ok(crate::build::verified_proof(
+        tx,
+        organization.as_str(),
+        (stored.namespace(), &id.service),
+        digest,
+    )?
+    .is_some())
 }
 
 /// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner

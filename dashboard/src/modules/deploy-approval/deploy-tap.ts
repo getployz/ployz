@@ -52,15 +52,21 @@ export function namesReview(current: string, given: string) {
 }
 
 /**
- * Whether `entry`'s Service builds under the automatic deploy rule: the kept rule, or the one the Deploy's tap signs.
- * No passkey signs a version of it, and no Server is asked before the build, whose grant Server checks the rule.
+ * Whether `entry`'s Service builds from source under an automatic deploy rule: the kept one, or the one the Deploy's tap
+ * signs. No passkey signs a version of it, and no Server is asked before the build, whose grant Server checks the rule.
  */
-export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
+export const fromSource = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
+
+/** Whether the kept automatic deploy rule approves `entry`'s Service as it stands, so the Deploy builds it under that rule. */
+export const keptRule = ({ needs, ended }: Unsigned) => needs === "rebuild" && ended !== true;
+
+const uncovered = (service: string) => `No automatic deploy rule covers ${service} as it stands, so your servers won't build it.`;
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when each of `unsigned` can go. */
 export function blocked(unsigned: readonly Unsigned[]) {
   for (const { service, needs, ended } of unsigned) {
     if (ended === true) return `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`;
+    if (needs === "rule") return `${uncovered(service)} Turn on Deploy every push, or run ployz deploy.`;
     if (needs === "digest") return `${service} pulls a private tag. Write its image by digest (image@sha256:…).`;
   }
   return null;
@@ -112,10 +118,12 @@ export async function prepareDeploy(
   const admit = (): Prepared => ({ kind: "admit", command: bound, held });
   // A version the Deploy already carries, such as one a CLI's device key signed, covers its Service: only the rest ask.
   const covered = new Set((command.versions ?? []).map(versionService));
-  // A Git Service builds under the rule: only a version of each other Service asks.
-  const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
+  // A Git Service the kept rule approves builds under it. One it doesn't builds only under the rule this tap signs.
+  const open = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !keptRule(entry));
+  const ruled = open.filter(fromSource).map((entry) => entry.service);
+  const unsigned = open.filter((entry) => !fromSource(entry));
   const rule = source?.kind === "sign" && gate.kind === "ready" && ownerOf !== undefined ? source : null;
-  if (gate.kind === "off" || (unsigned.length === 0 && rule === null)) return admit();
+  if (gate.kind === "off" || (open.length === 0 && rule === null)) return admit();
   if (gate.kind === "refused") return gate;
   const refused = blocked(unsigned);
   if (refused !== null) return { kind: "refused", message: refused };
@@ -138,6 +146,10 @@ export async function prepareDeploy(
   } catch (error) {
     return { kind: "refused", message: error instanceof Error ? error.message : "This browser couldn't draft the deploy." };
   }
+  // Refused before any prompt: no Server would build a Git Service the rule this tap signs leaves out.
+  const summary = draft?.source?.summary;
+  const left = ruled.find((service) => summary === undefined || summary.ended || !summary.services.some(({ name }) => name === service));
+  if (left !== undefined) return { kind: "refused", message: [uncovered(left), held?.reason].filter(Boolean).join(" ") };
   if (draft === null) return admit();
   return {
     kind: "ask",

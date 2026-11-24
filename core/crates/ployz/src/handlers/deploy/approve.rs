@@ -12,7 +12,7 @@ use ployz_core::authority::{
     RuleSummary, RuleTerms, ServiceVersion, SignerKey, Timestamp, Unknown, birth,
     deploy::{ChangeError, content_addressed},
     rule::Builder,
-    rule_draft::renewed_platform,
+    rule_draft::{RuleSourceView, renewed_platform},
     version_draft::{SourceNeed, source_need, source_rule},
 };
 use ployz_core::{
@@ -23,7 +23,7 @@ use ployz_core::{
 };
 use ployz_store::{
     EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, RulePrior, RuleQuery,
-    SavedRule, TagPin, Unsigned,
+    SavedRule, TagPin,
 };
 use serde_json::json;
 
@@ -199,7 +199,7 @@ pub(in crate::handlers) fn sign(
         &enforcing,
         (signer, &seed, now),
     );
-    let mut target = signable(ruled.building(plan.target, &plan.unsigned)?)?;
+    let mut target = signable(ruled.building(plan.target)?)?;
     let pins = pin_tags(matches, &target)?;
     let namespace = plan.namespace;
     let minted = birth::mint(&mut target, (&namespace, &plan.volumes), now, |name| {
@@ -331,59 +331,74 @@ struct Drafted {
     summary: RuleSummary,
 }
 
-/// The automatic deploy rule a Deploy's Git Services build under: the one the Environment
-/// keeps, and the one this Device signs with the versions, which replaces it.
+/// The automatic deploy rule a Deploy's Git Services build under, as this review reads it:
+/// the one the Environment keeps, and the one this Device signs with the versions, which
+/// replaces it.
 #[derive(Default)]
 struct Ruled {
     kept: Option<AutoDeployRule>,
     drafted: Option<Drafted>,
+    /// Where each Saved Git Service builds from, as this review stands.
+    sources: Vec<RuleSourceView>,
+    /// The Services the kept rule covers whose settings it no longer approves.
+    changed: Vec<ServiceName>,
+    /// Why the rule couldn't be read for this review, when it couldn't.
+    unread: Option<&'static str>,
 }
 
 impl Ruled {
     /// The specs of `target` this Device signs a version of: all but the Git Services that
-    /// build under the rule. A Git Service builds under the rule this Device signs, or under
-    /// the kept one while it is on and, as `unsigned` says, approves what the Service runs.
-    /// Any other is refused before anything is signed: no Server would build it.
+    /// build under the rule that stands once the Deploy is admitted. Any other Git Service
+    /// is refused before anything is signed: no Server would build it.
     fn building(
         &self,
         target: Option<Vec<RequestedServiceSpec>>,
-        unsigned: &[Unsigned],
     ) -> Result<Option<Vec<RequestedServiceSpec>>, Error> {
         let Some(target) = target else {
             return Ok(None);
         };
         let (built, signed): (Vec<_>, Vec<_>) = target.into_iter().partition(built);
+        let standing = match &self.drafted {
+            Some(drafted) => Some((&drafted.rule, true)),
+            None => self.kept.as_ref().map(|kept| (kept, false)),
+        };
         for spec in &built {
-            let drafted = (self.drafted.as_ref())
-                .is_some_and(|drafted| drafted.rule.service(&spec.name).is_some());
-            let kept = self
-                .kept
-                .as_ref()
-                .filter(|kept| kept.service(&spec.name).is_some());
-            let approved = !unsigned
-                .iter()
-                .any(|entry| entry.service == spec.name && entry.needs == ployz_store::Needs::Rule);
-            if drafted || kept.is_some_and(|kept| !kept.ended && approved) {
-                continue;
-            }
-            let message = match kept {
-                Some(kept) if kept.ended => format!(
-                    "Automatic deploys are off for {}. Turn on Deploy every push to deploy it.",
-                    spec.name
+            let name = &spec.name;
+            let message = match (self.unread, standing) {
+                (Some(why), _) => {
+                    format!("{why}, so {name} can't build under it. Nothing deployed.")
+                }
+                (None, Some((rule, drafted))) if self.approves(rule, drafted, name) => continue,
+                (None, Some((rule, _))) if rule.ended => format!(
+                    "Automatic deploys are off for {name}. Turn on Deploy every push to deploy it."
                 ),
-                Some(_) | None => format!(
-                    "No automatic deploy rule covers {} as it stands, so your servers won't \
-                     build it. Turn on Deploy every push, then deploy again.",
-                    spec.name
+                (None, _) => format!(
+                    "No automatic deploy rule covers {name} as it stands, so your servers won't \
+                     build it. Turn on Deploy every push, then deploy again."
                 ),
             };
             return Err(Error::detailed(
                 RpcErrorCode::InvalidArgument,
                 message,
-                json!({ "service": spec.name }),
+                json!({ "service": name }),
             ));
         }
         Ok(Some(signed))
+    }
+
+    /// Whether `rule` builds `name` as this review stands: it is on, covers the Service, and
+    /// the Service still builds from its repository and branch. A `drafted` rule is drafted
+    /// from this review; the kept one must also still approve the Service's settings.
+    fn approves(&self, rule: &AutoDeployRule, drafted: bool, name: &ServiceName) -> bool {
+        let tracks = self.sources.iter().any(|source| {
+            source.service == *name
+                && source.repository_id == rule.source.repository_id
+                && source.branch.as_deref() == Some(rule.source.branch.as_str())
+        });
+        !rule.ended
+            && rule.service(name).is_some()
+            && tracks
+            && (drafted || !self.changed.contains(name))
     }
 }
 
@@ -412,18 +427,27 @@ fn source(
         Ok(view) => view,
         Err(error) => {
             without(&error);
-            return Ruled::default();
+            return Ruled {
+                unread: Some("Couldn't read the automatic deploy rule"),
+                ..Ruled::default()
+            };
         }
     };
     // Another review: the Store refuses this Deploy as stale.
     if view.version.as_deref() != Some(version) {
-        return Ruled::default();
+        return Ruled {
+            unread: Some("Your changes moved since this review"),
+            ..Ruled::default()
+        };
     }
     let mut basis = view.basis();
     let kept = basis.kept();
     let ruled = |drafted| Ruled {
         kept: kept.clone(),
         drafted,
+        sources: view.sources.clone(),
+        changed: view.changed.clone(),
+        unread: None,
     };
     // An owner or admin decides this Deploy and approves no rule with it, so this Device
     // signs none. An older Store says only whether the Environment is Protected.

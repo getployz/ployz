@@ -119,8 +119,12 @@ signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule afte
 signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
 for.
 
-A deploy builds each service the rule covers on GitHub Actions, as a push does. A new service
-from a repository deploys in one prompt, and one the rule already approves asks nothing.
+A deploy builds each service the rule covers on GitHub Actions, as a push does, even when your
+Build Order tries your servers first. A new service from a repository deploys in one prompt, and one
+the rule already approves asks nothing. A deploy reuses an image only when your servers verified it
+under the rule as it stands now. After you approve the rule again, the next deploy builds afresh.
+When the servers a service may run on need platforms other than the ones the rule was approved
+for, GitHub skips the build and the deployment says why.
 
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.

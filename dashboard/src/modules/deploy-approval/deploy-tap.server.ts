@@ -15,7 +15,7 @@ import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
-import { underRule } from "#/modules/deploy-approval/deploy-tap";
+import { fromSource } from "#/modules/deploy-approval/deploy-tap";
 import { Database } from "#/server/database.server";
 
 /** What a Server that enforces device approval needs to check a passkey's versions. */
@@ -82,7 +82,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
   // A Git Service builds under the automatic deploy rule, and the grant Server checks it: it asks no Server here.
-  const unsigned = (plan.unsigned ?? []).filter((entry) => !underRule(entry));
+  const unsigned = (plan.unsigned ?? []).filter((entry) => !fromSource(entry));
   const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
   // A Service only a digest or the switch can cover refuses before any lookup, unless nothing enforces.
   const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))

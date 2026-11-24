@@ -322,8 +322,9 @@ that builds from source builds under its
 [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push), which `ployz deploy` signs
 with the deploy when it needs to. When no rule can cover it, `ployz deploy` stops before it signs:
 `No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`
-A deploy through Ployz Cloud that builds from source with no rule, or under one you turned off,
-fails at its build: your servers refuse it with `This server runs only builds an approved device starts.`
+It also stops when you turned automatic deploys off, and when it can't read the rule, saying so.
+A Git push that builds from source with no rule, or under one you turned off, fails at its build:
+your servers refuse it with `This server runs only builds an approved device starts.`
 
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
@@ -469,6 +470,9 @@ Your servers must trust your passkey. Add it under **Account**, **Passkeys**. Be
 Deploy stops and says why, and deploys nothing, when:
 
 - you turned automatic deploys off: `Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
+- a service builds from source and the rule this Deploy signs doesn't cover it:
+  `No automatic deploy rule covers web as it stands, so your servers won't build it.`, followed by
+  why Deploy couldn't sign one, such as an owner or admin deciding the Deploy
 - a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
 - a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`
 - Ployz Cloud can't read your servers: `Couldn't reach your servers. Try again.` A server that

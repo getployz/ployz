@@ -607,6 +607,16 @@ impl ConfigStore {
         self.storage.read(|tx| build::github_rule(tx, id))
     }
 
+    /// Whether `image`, which a person's Deploy under the automatic deploy rule would
+    /// reuse for GitHub build `id`, carries proof a Server takes under the rule's
+    /// current generation. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_proven(&self, id: &GithubBuildId, image: &str) -> Result<bool, RpcError> {
+        self.storage.read(|tx| build::github_proven(tx, id, image))
+    }
+
     /// The GitHub build run `run_id` holds while it builds, if any.
     ///
     /// # Errors

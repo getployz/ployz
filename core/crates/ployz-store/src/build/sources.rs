@@ -181,7 +181,8 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
     routed(tx, stored, &saved)
 }
 
-/// The Git Services `stored` builds from `saved`, each with the Builders it tries.
+/// The Git Services `stored` builds from `saved`, each with the Builders it tries: GitHub
+/// first for one that builds under the automatic deploy rule.
 pub(crate) fn routed(
     tx: &mut dyn Tx,
     stored: &Stored,
@@ -196,6 +197,16 @@ pub(crate) fn routed(
             &stored.summary.environment_id,
             &id,
         )?;
+        // A build under the automatic deploy rule runs only on the rule's builder, which
+        // GitHub runs: a Server would build it with no approval of its own to show.
+        if source.builders.contains(&Builder::Github)
+            && super::github::rule_of(tx, stored, &source.service)?.is_some()
+        {
+            source
+                .builders
+                .retain(|builder| *builder != Builder::Github);
+            source.builders.insert(0, Builder::Github);
+        }
         sources.push(source);
     }
     Ok(sources)
