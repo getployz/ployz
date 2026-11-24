@@ -777,14 +777,20 @@ fn refused_with(now: ContainerObservation, refusal: ContainerRefusal) -> RpcResp
 struct OverMatching {
     result: Result<(), CatchUpError>,
     calls: Vec<&'static str>,
+    /// Each Gone the owner was sent, with what it asked done with the anonymous Volumes.
+    gones: Vec<(ContainerId, ployz_core::AnonymousVolumes)>,
     local: Vec<ContainerObservation>,
     old: ContainerObservation,
     joiner: Machine,
 }
 
 /// Catches up a joiner that already holds a copy matching the founder's In
-/// copy, rotated `rotation`, against an owner that decides like the real one.
-async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
+/// copy, rotated `rotation`, against an owner that decides like the real one, except
+/// that it refuses every In for `in_refused` when one is given.
+async fn catch_up_over_matching_copy(
+    rotation: CopyRotation,
+    in_refused: Option<ContainerRefusalReason>,
+) -> OverMatching {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
         MachineList, MachineObservation, MembershipObservation, OpaquePayload, RotationTarget,
@@ -830,12 +836,15 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
         .into_observation();
     let local = Arc::new(Mutex::new(vec![old.clone()]));
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let gones = Arc::new(Mutex::new(Vec::new()));
     let (current, recorded, target) = (local.clone(), calls.clone(), joiner.clone());
+    let sent_gone = gones.clone();
     let (mut client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let (target, founder, peer, fresh) =
                 (target.clone(), founder.clone(), peer.clone(), fresh.clone());
-            let (current, recorded) = (current.clone(), recorded.clone());
+            let (current, recorded, sent_gone) =
+                (current.clone(), recorded.clone(), sent_gone.clone());
             let selected = rpc
                 .metadata()
                 .get(ployz_core::ONE_TARGET_HEADER)
@@ -926,12 +935,19 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                                     }
                                     RunRotation::In { run, expect } => {
                                         recorded.lock().unwrap().push("in");
-                                        owner_decides(
-                                            copy,
-                                            &RotationWant::In { run },
-                                            expect.as_ref(),
-                                            false,
-                                        )
+                                        match in_refused {
+                                            Some(reason) => Some(ContainerRefusal {
+                                                reason,
+                                                message: format!("owner refused In: {reason:?}"),
+                                                capability: None,
+                                            }),
+                                            None => owner_decides(
+                                                copy,
+                                                &RotationWant::In { run },
+                                                expect.as_ref(),
+                                                false,
+                                            ),
+                                        }
                                     }
                                 };
                                 match refusal {
@@ -949,9 +965,11 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                             }
                             ContainerWant::Gone {
                                 container: ContainerLocator::Id(id),
+                                anonymous_volumes,
                                 ..
                             } => {
                                 recorded.lock().unwrap().push("gone");
+                                sent_gone.lock().unwrap().push((id, anonymous_volumes));
                                 let at = current
                                     .iter()
                                     .position(|copy| copy.container_id == id)
@@ -987,11 +1005,13 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
     )
     .await;
     let calls = calls.lock().unwrap().clone();
+    let gones = gones.lock().unwrap().clone();
     let local = local.lock().unwrap().clone();
     server.abort();
     OverMatching {
         result,
         calls,
+        gones,
         local,
         old,
         joiner,
@@ -1000,12 +1020,18 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
 
 #[tokio::test]
 async fn a_matching_out_copy_is_retired_before_a_new_copy_comes_in() {
-    let run = catch_up_over_matching_copy(CopyRotation::Out).await;
+    let run = catch_up_over_matching_copy(CopyRotation::Out, None).await;
     run.result.unwrap();
     assert_eq!(
         run.calls,
         ["routes", "gone", "create", "in"],
         "the Out copy leaves the routes and goes before a new copy is made"
+    );
+    assert_eq!(
+        run.gones,
+        [(container_id('b'), RemoveContainerPurpose::Retire.into())],
+        "the create, its health or its In can still fail and leave the slot empty, so \
+         the Out copy's anonymous Volumes stay"
     );
     let local = run
         .local
@@ -1018,7 +1044,7 @@ async fn a_matching_out_copy_is_retired_before_a_new_copy_comes_in() {
 #[tokio::test]
 async fn a_matching_held_copy_is_left_as_the_user_stopped_it() {
     let held = CopyRotation::Held(ployz_core::DeploymentLogId::parse("dep-stop").unwrap());
-    let run = catch_up_over_matching_copy(held).await;
+    let run = catch_up_over_matching_copy(held, None).await;
     let error = run.result.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
     let message = message(error, &run.joiner);
@@ -1038,6 +1064,24 @@ async fn a_matching_held_copy_is_left_as_the_user_stopped_it() {
         run.local,
         [run.old],
         "the user's stopped copy stays as it is"
+    );
+}
+
+/// A Pending copy of the spec an earlier attempt left in the slot is adopted. When a
+/// newer copy keeps it from coming In, catch-up removes it, but it may hold data, so the
+/// Gone it sends keeps its anonymous Volumes.
+#[tokio::test]
+async fn an_adopted_copy_kept_from_coming_in_keeps_its_anonymous_volumes() {
+    let run = catch_up_over_matching_copy(
+        CopyRotation::Pending,
+        Some(ContainerRefusalReason::OlderThanIn),
+    )
+    .await;
+    assert!(run.result.is_err());
+    assert_eq!(run.calls, ["start", "in", "gone"]);
+    assert_eq!(
+        run.gones,
+        [(container_id('b'), RemoveContainerPurpose::Retire.into())]
     );
 }
 

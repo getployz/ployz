@@ -91,9 +91,12 @@ pub(crate) trait SlotIo {
         new: &NewContainer,
         cancel: &CancellationToken,
     ) -> Result<bool, RpcError>;
+    /// Take `copy` out of routing and remove it, its anonymous Volumes as `purpose`
+    /// says.
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        purpose: RemoveContainerPurpose,
         cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError>;
     /// Ask `container` run Pending on `target`, resending until it answers.
@@ -189,16 +192,10 @@ impl SlotIo for Client {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        purpose: RemoveContainerPurpose,
         cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError> {
-        cleanup::retire(
-            &*self,
-            copy,
-            EmptyPolicy::RequireOtherIn,
-            RemoveContainerPurpose::Rollout,
-            cancel,
-        )
-        .await
+        cleanup::retire(&*self, copy, EmptyPolicy::RequireOtherIn, purpose, cancel).await
     }
 
     async fn ensure_pending(
@@ -251,7 +248,8 @@ async fn place_slot<C: SlotIo>(
                 && observed.resolved_spec == new.resolved_spec
         });
     // The keyed create below answers with a Container that already holds the
-    // creation key's name, so an Out copy must go before a new one is made.
+    // creation key's name, so an Out copy must go before a new one is made. That one
+    // may still fail, so nothing is known to take the Out copy's slot.
     let existing = match existing {
         Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
             return Err(RpcError::conflict(format!(
@@ -262,7 +260,11 @@ async fn place_slot<C: SlotIo>(
         Some(existing) if *existing.rotation() == CopyRotation::Out => {
             step_error(
                 client
-                    .retire_copy(&Copy::observed(&existing), cancel)
+                    .retire_copy(
+                        &Copy::observed(&existing),
+                        RemoveContainerPurpose::Retire,
+                        cancel,
+                    )
                     .await?,
             )?;
             None
@@ -854,8 +856,13 @@ async fn settle<C: CatchUpClient>(
         if cancel.is_cancelled() {
             break;
         }
+        // The started copy runs In in this slot on this Machine, so it replaces `old`.
         let left = match client
-            .retire_copy(&Copy::observed(old), cancel)
+            .retire_copy(
+                &Copy::observed(old),
+                RemoveContainerPurpose::Rollout,
+                cancel,
+            )
             .await
             .map(Rotated::failure)
         {

@@ -1232,6 +1232,7 @@ impl SlotIo for FakeCatchUpClient {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        _purpose: RemoveContainerPurpose,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.clone());
@@ -1463,6 +1464,7 @@ impl SlotIo for FakeSlot {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        _purpose: RemoveContainerPurpose,
         _cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.container_id);
