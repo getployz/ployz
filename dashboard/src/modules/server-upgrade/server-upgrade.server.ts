@@ -256,7 +256,6 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   // An unreadable pointer leaves the target to the Server's answer.
   const expected = line === null ? null : yield* channelRelease(input.channel, line).pipe(Effect.orElseSucceed(() => null));
   const { drizzle } = yield* Database;
-  const startedAt = new Date();
   yield* drizzle.insert(serverUpgradeAttempt).values({
     organizationId: input.request.organizationId,
     machineId: input.request.machineId,
@@ -268,10 +267,10 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
     fromVersion: input.fromVersion,
     targetVersion: expected,
     inngestRunId: input.inngestRunId,
-    startedAt,
+    startedAt: sql`now()`,
   }).onConflictDoUpdate({
     target: [serverUpgradeAttempt.organizationId, serverUpgradeAttempt.machineId, serverUpgradeAttempt.attemptId],
-    set: { inngestRunId: input.inngestRunId, startedAt },
+    set: { inngestRunId: input.inngestRunId, startedAt: sql`now()` },
     setWhere: and(eq(serverUpgradeAttempt.outcome, "running"), ne(serverUpgradeAttempt.inngestRunId, input.inngestRunId)),
   });
 });
@@ -390,12 +389,11 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
   readonly error: string | null;
 }) {
   const { drizzle } = yield* Database;
-  const endedAt = new Date();
   const [row] = yield* drizzle.update(serverUpgradeAttempt).set({
     outcome: input.outcome,
     stage: input.outcome === "succeeded" ? null : sql`coalesce(${input.stage}, ${serverUpgradeAttempt.stage})`,
     error: input.error,
-    endedAt,
+    endedAt: sql`now()`,
   }).where(and(attemptWhere(input.organizationId, input.attemptId), eq(serverUpgradeAttempt.outcome, "running"))).returning();
   if (row === undefined) return false;
   const properties: UpgradeEventProperties = {
@@ -403,7 +401,7 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
     channel: row.channel,
     from_version: row.fromVersion,
     to_version: row.targetVersion,
-    total_seconds: Math.round((endedAt.getTime() - row.startedAt.getTime()) / 1000),
+    total_seconds: Math.round(((row.endedAt ?? row.startedAt).getTime() - row.startedAt.getTime()) / 1000),
   };
   const { stage, error } = endEvidence(input.outcome, row.stage, row.error);
   // PostHog gets only the evidence there is.
@@ -520,7 +518,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
 ) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
-    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: sql`now()` } })
     .returning({
       id: organizationServerUpgrades.organizationId,
       automatic: organizationServerUpgrades.automatic,
