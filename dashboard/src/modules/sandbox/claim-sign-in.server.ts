@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { verification } from "#/modules/identity/tables";
@@ -43,7 +43,7 @@ export const bindClaimSignInOrganization = Effect.fn("Identity.bindClaimSignInOr
     yield* drizzle.insert(verification).values({
       identifier: bindingIdentifier(userId, claimSecretHash),
       value: organizationId,
-      expiresAt: new Date(Date.now() + MAX_AGE_SECONDS * 1000),
+      expiresAt: sql`now() + make_interval(secs => ${MAX_AGE_SECONDS * 1000 / 1000})`,
     });
   },
 );
