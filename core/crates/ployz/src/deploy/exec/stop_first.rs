@@ -115,11 +115,12 @@ pub(super) async fn restore_group<C: MachineOperations>(
                 RestoreAttempt::Failed { error } => Some(error.to_string()),
             }
         };
+        // No new copy took its slot, so the cleanup that retries it keeps its data.
         if let Some(why) = why {
             shared.report.leave_running(
                 progress,
                 old,
-                RemoveContainerPurpose::Rollout,
+                RemoveContainerPurpose::Retire,
                 Left::NotRestored(Box::new(Left::DeployFailed), why),
             );
         }
@@ -470,7 +471,9 @@ pub(super) async fn stop_withdrawn<C: MachineOperations>(
     .await
 }
 
-/// A copy this run Held goes back In, so a Service it was serving keeps serving.
+/// A copy this run Held goes back In, so a Service it was serving keeps serving. It
+/// may be the copy that serves, so the cleanup that retries it keeps its anonymous
+/// Volumes.
 pub(super) async fn leave_unstopped<C: MachineOperations>(
     client: &C,
     progress: &Progress,
@@ -479,10 +482,9 @@ pub(super) async fn leave_unstopped<C: MachineOperations>(
     shared: &Shared<'_>,
     left: Left,
 ) {
+    let retire = RemoveContainerPurpose::Retire;
     if copy.rotation != CopyRotation::Held(shared.plan.run().clone()) {
-        shared
-            .report
-            .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left);
+        shared.report.leave_running(progress, copy, retire, left);
         return;
     }
     let not_restored =
@@ -498,13 +500,11 @@ pub(super) async fn leave_unstopped<C: MachineOperations>(
             Err(error) => Some(error.message),
         };
     match not_restored {
-        None => shared
-            .report
-            .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left),
+        None => shared.report.leave_running(progress, copy, retire, left),
         Some(why) => shared.report.leave_running(
             progress,
             copy,
-            RemoveContainerPurpose::Rollout,
+            retire,
             Left::NotRestored(Box::new(left), why),
         ),
     }

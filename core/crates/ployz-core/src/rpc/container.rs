@@ -96,7 +96,7 @@ pub enum ContainerWant {
     Gone {
         container: ContainerLocator,
         drain: crate::Drain,
-        #[serde(default)]
+        #[serde(default = "AnonymousVolumes::when_omitted")]
         anonymous_volumes: AnonymousVolumes,
     },
     /// Take the copy out of routing for good. The Container keeps running.
@@ -135,23 +135,27 @@ pub enum RunRotation {
 /// What `Gone` does with the Container's anonymous Volumes. Only a
 /// [`crate::RemoveContainerPurpose`] makes one, so a caller says why it removes the
 /// Container and never picks what happens to the data.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct AnonymousVolumes(#[ts(inline)] Disposal);
 
 /// The wire values are frozen with `ployz.container.ensure.v1`, whose `Gone` without
 /// the field removes them. Only the type, not the wire, ties the value to a purpose.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 enum Disposal {
     /// They go with the Container.
-    #[default]
     Remove,
     /// They stay, since deleting data is a Volume decision.
     Keep,
 }
 
 impl AnonymousVolumes {
+    /// What a `Gone` that omits the field asks, as `ployz.container.ensure.v1` froze it.
+    fn when_omitted() -> Self {
+        Self(Disposal::Remove)
+    }
+
     /// Whether they go with the Container.
     #[must_use]
     pub fn go_with_container(self) -> bool {
