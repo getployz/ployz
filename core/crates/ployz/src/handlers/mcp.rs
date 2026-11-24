@@ -1,7 +1,6 @@
 //! `ployz mcp`: the agent tools over stdio. Each call steps the registry's plan,
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
-use ployz_core::error_chain;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,16 +10,14 @@ use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
 use ployz_agent_tools as tools;
 use ployz_agent_tools::{
-    Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt, ToolResult,
-    Write,
+    Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt, ToolResult, Write,
 };
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{Actor, ConfigStore, OrganizationId};
 use rmcp::model::{
-    BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Icon, Implementation,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Icon, Implementation,
     InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
-    RequestId, ServerCapabilities, ServerConfig, StringSchema, Tool, ToolAnnotations,
+    RequestId, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -34,7 +31,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::agent_call::{self, Started};
-use crate::approval::{self, Asked, Verb};
 use crate::cloud;
 use crate::cloud::account::{CloudCall, Credential, StoreCallError, StoreClient};
 use crate::cloud::http::{CALL_DEADLINE, Via};
@@ -45,10 +41,7 @@ use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 mod gated;
 mod login;
 
-use gated::{
-    APPROVAL, GatedInput, Raced, approval_required, approve_at, raced, with_approval,
-    writes_unknown,
-};
+use gated::{Raced, raced, writes_unknown};
 use login::ActingAs;
 pub(super) use login::{login, login_command};
 
@@ -86,9 +79,9 @@ fn located(config: PathBuf) -> Locate {
 }
 
 /// The first line on stderr. `ployz mcp` never opens the Device key beside the config, so
-/// an agent on a trusted computer can't borrow it: a person answers every approval.
-const CLOUD_CREDENTIAL: &str = "ployz mcp: tools run with your Cloud credential, never this \
-     computer's Device key. You approve in the dashboard or your agent's prompt.";
+/// an agent on a trusted computer can't borrow it for a call that needs a person.
+const CLOUD_CREDENTIAL: &str =
+    "ployz mcp: tools run with your Cloud credential, never this computer's Device key.";
 
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
@@ -289,19 +282,13 @@ impl Backend<'_> {
         }
     }
 
-    async fn write(&self, write: &Write, approval: Option<&str>) -> Result<Value, RpcError> {
+    async fn write(&self, write: &Write) -> Result<Value, RpcError> {
         match (self, write) {
-            (_, Write::Store(command)) => {
-                written(self.client().write_json(command, approval).await)
-            }
+            (_, Write::Store(command)) => written(self.client().write_json(command, None).await),
             (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
             (Self::Cloud(cloud), Write::Act(act)) => written(
-                cloud::account::agent_call(
-                    &cloud.credential,
-                    &CloudCall::Act(act.clone()),
-                    approval,
-                )
-                .await,
+                cloud::account::agent_call(&cloud.credential, &CloudCall::Act(act.clone()), None)
+                    .await,
             ),
         }
     }
@@ -552,7 +539,7 @@ impl Server {
         let command = self
             .published_named(tool)
             .ok_or_else(|| McpError::invalid_params(format!("no tool named {tool}"), None))?;
-        let GatedInput { input, approval } = GatedInput::take(arguments, command.asks())?;
+        let input = arguments.unwrap_or_default();
         let credential = match self.agent().await {
             Ok(credential) => credential,
             Err(text) => return Ok(refused(text).into()),
@@ -571,16 +558,13 @@ impl Server {
             .into());
         }
         let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
-        let retry = tools::Call::new(
-            tool,
-            Value::Object(repeat(&command, &input, approval.as_deref())),
-        );
+        let retry = tools::Call::new(tool, Value::Object(repeat(&command, &input)));
         let run = published::run_on(
             &credential,
             Via::Agent,
             tool,
             Value::Object(input),
-            approval.as_deref(),
+            None,
             key.as_str(),
         );
         let until = Instant::now() + self.deadline;
@@ -594,18 +578,7 @@ impl Server {
                 if error.code.as_str() == published::UNKNOWN_COMMAND {
                     self.forget(tool, context).await;
                 }
-                match error.details.get("approval_id").and_then(Value::as_str) {
-                    Some(id) if error.code.as_str() == ployz_core::APPROVAL_REQUIRED_CODE => {
-                        let url = waiting_on_you(&credential).await;
-                        let text = format!(
-                            "{message} Nothing ran; the approval stays pending. Ask a human to {}",
-                            approve_at(&url, id),
-                            message = error.message,
-                        );
-                        approval_required(text, id, &error.message, &url)
-                    }
-                    _ => CallToolResult::structured_error(json!(command_refusal(error, retry))),
-                }
+                CallToolResult::structured_error(json!(command_refusal(error, retry)))
             }
             Err(error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_))) => {
                 refused(Error::from(error).to_string())
@@ -647,58 +620,6 @@ impl Server {
         )
         .await
         .map_err(|error| Error::from(error).to_string())
-    }
-
-    /// The human who answers an approval `agent` asked for in `acting`, the
-    /// Organization the call acts in: this device's sign-in, else `PLOYZ_TOKEN`. The
-    /// sign-in must be in `agent`'s Cloud and, by Cloud's account, in `acting`, since
-    /// Cloud finds the approval only there. Making an Organization in the browser moves
-    /// the device there without telling `cloud.json`.
-    async fn decider(
-        &self,
-        agent: &Credential,
-        acting: &OrganizationId,
-        verb: Verb,
-        asked: &Asked,
-    ) -> Result<Credential, String> {
-        let signed_in =
-            match cloud::login::signed_in(&CredentialStore::beside(&self.account.config)).await {
-                Ok(signed_in) => signed_in,
-                Err(LoginError::SignedOut) => return self.person().await,
-                Err(error) => return Err(Error::from(error).to_string()),
-            };
-        let what = asked.what(verb);
-        let past = verb.past();
-        if signed_in.cloud != agent.cloud() {
-            return Err(format!(
-                "The approval of {what} is in Ployz Cloud at {cloud}, but this device signed in \
-                 to {device}, so the answer was not recorded and nothing was {past}. It stays \
-                 pending; approve it in Ployz Cloud at {cloud}.",
-                cloud = agent.cloud(),
-                device = signed_in.cloud,
-            ));
-        }
-        let device = Credential::Device(signed_in);
-        let current = cloud::account::organizations(&device)
-            .await
-            .map_err(|error| Error::from(error).to_string())?
-            .into_iter()
-            .find(|entry| entry.current)
-            .ok_or_else(|| Error::from(LoginError::TokenRefused).to_string())?;
-        if current.id != acting.as_str() {
-            let organization = cloud::account::acting_in(agent)
-                .await
-                .map_err(|error| Error::from(error).to_string())?
-                .slug;
-            return Err(format!(
-                "The approval of {what} is in Organization {organization}, but this device acts \
-                 in {acting}, so the answer was not recorded and nothing was {past}. It stays \
-                 pending; run `ployz org use {organization}` and call the tool again, or \
-                 approve it in Ployz Cloud.",
-                acting = current.slug,
-            ));
-        }
-        Ok(device)
     }
 
     /// The Organization a new call acts in. A device can switch Organizations
@@ -750,7 +671,6 @@ fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
 
 fn tool(def: tools::ToolDef) -> Tool {
     let mut input = object(def.input_schema);
-    with_approval(&mut input, def.gate != Gate::Never);
     agent_call::mcp::with_intent(&mut input);
     let mut tool = Tool::new(def.name, def.description, Arc::new(input))
         .with_title(def.title)
@@ -765,11 +685,9 @@ fn tool(def: tools::ToolDef) -> Tool {
     tool
 }
 
-/// A published command as the host sees it: its input schema as published, plus
-/// `approval` when Cloud may ask for one.
+/// A published command as the host sees it: its input schema as published.
 fn published_tool(command: &PublishedCommand) -> Tool {
     let mut input = object(command.input.clone());
-    with_approval(&mut input, command.asks());
     agent_call::mcp::with_intent(&mut input);
     // Cloud's `about` is the CLI's help; an agent also reads whether the call can wait on a human,
     // in the words the catalog's own gated tools end with.
@@ -927,10 +845,10 @@ impl Server {
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let tool: &str = &request.name;
-        let Some(gate) = self.gates.get(tool).copied() else {
+        if !self.gates.contains_key(tool) {
             return self.call_published(tool, request.arguments, context).await;
-        };
-        let result = self.call_compiled(gate, request, context).await;
+        }
+        let result = self.call_compiled(request, context).await;
         // A compiled tool that reached Cloud kept the revision Cloud named.
         let revision =
             (self.setup.as_ref()).and_then(|setup| cloud::http::revision_seen(&setup.cloud));
@@ -940,14 +858,11 @@ impl Server {
 
     async fn call_compiled(
         &self,
-        gate: Gate,
         request: CallToolRequestParams,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let tool: &str = &request.name;
-        let GatedInput { input, approval } =
-            GatedInput::take(request.arguments, gate != Gate::Never)?;
-        let input = Value::Object(input);
+        let input = Value::Object(request.arguments.unwrap_or_default());
         let backend = match self.backend().await {
             Ok(backend) => backend,
             Err(text) => return Ok(refused(text).into()),
@@ -964,25 +879,12 @@ impl Server {
             backend: &backend,
             until,
         };
-        let settled = self.settle(&call, step, state, approval, context);
+        let settled = self.settle(&call, step, state);
         match raced(context, until, settled).await? {
             Raced::Ran(result) => result,
             Raced::Overdue => Ok(refused(overdue(tool, self.deadline)).into()),
         }
     }
-}
-
-/// Whether the host can show a person a form and hand back their answer mid-call. A host
-/// that cannot gets no form: the call returns at once naming the approval and where it
-/// waits in Ployz Cloud, and the agent calls again with it once approved.
-fn can_ask(context: &RequestContext<RoleServer>) -> bool {
-    let form = context
-        .client_capabilities()
-        .and_then(|capabilities| capabilities.elicitation)
-        .is_some_and(|elicitation| elicitation.form.is_some() || elicitation.url.is_none());
-    form && context
-        .protocol_version()
-        .is_none_or(|version| version.has_initialize())
 }
 
 struct Call<'a> {
@@ -991,39 +893,13 @@ struct Call<'a> {
     until: Instant,
 }
 
-fn stored(write: &Write) -> Option<&ployz_store::Command> {
-    match write {
-        Write::Store(command) => Some(command),
-        Write::Act(_) => None,
-    }
-}
-
-/// The name a human types to approve a removal: the Environment as `project/environment`,
-/// the Project, or the Server.
-fn typed(write: &Write) -> Option<String> {
-    match write {
-        Write::Store(ployz_store::Command::Remove(remove)) => Some(match &remove.environment {
-            Some(environment) => format!("{}/{environment}", remove.project),
-            None => remove.project.to_string(),
-        }),
-        Write::Act(Act {
-            action: Action::RemoveServer { server, .. } | Action::ForgetServer { server },
-            ..
-        }) => Some(server.name.to_string()),
-        Write::Store(_) | Write::Act(_) => None,
-    }
-}
-
 impl Server {
     async fn settle(
         &self,
         call: &Call<'_>,
         mut step: Step,
         mut state: State,
-        mut approval: Option<String>,
-        context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let mut answered: Option<(&Cloud, Asked, ElicitResult)> = None;
         loop {
             let answers = match step {
                 Step::Done { result } => return Ok(rendered(result).into()),
@@ -1033,119 +909,24 @@ impl Server {
                     call.backend.asks(&then).await
                 }
                 Step::Write { write } => {
-                    if let Some((cloud, asked, answer)) = answered.take() {
-                        let verb = asked.verb(stored(&write));
-                        let person = match self
-                            .decider(&cloud.credential, &cloud.organization, verb, &asked)
-                            .await
-                        {
-                            Ok(person) => person,
-                            Err(text) => return Ok(refused(text).into()),
-                        };
-                        let typed = typed(&write);
-                        match self
-                            .decide(&person, verb, &asked, typed.as_deref(), answer)
-                            .await?
-                        {
-                            Answer::Approved => approval = Some(asked.id),
-                            Answer::Refused(refused) => return Ok(refused.into()),
-                        }
-                    }
                     // Stopped once the write is sent, Cloud may still take it: the
                     // refusal says so, and its retry repeats the call's key.
                     let written = tokio::select! {
                         biased;
-                        written = call.backend.write(&write, approval.as_deref()) => written,
+                        written = call.backend.write(&write) => written,
                         () = tokio::time::sleep_until(call.until) => {
                             Err(cut_off(call.tool, self.deadline))
                         }
                     };
-                    let asked = match (&written, call.backend) {
-                        (Err(error), Backend::Cloud(cloud)) => {
-                            Asked::of(error).map(|asked| (cloud, asked, error.message.clone()))
-                        }
-                        _ => None,
-                    };
-                    let Some((cloud, asked, message)) = asked else {
-                        if written.is_ok() {
-                            self.move_links_after_project_rename(call, &write).await;
-                        }
-                        (step, state) = tools::resume(state, vec![written]);
-                        continue;
-                    };
-                    let verb = asked.verb(stored(&write));
-                    if can_ask(context) {
-                        let form = form(verb, &asked, typed(&write).as_deref());
-                        let answer = context
-                            .peer
-                            .create_elicitation(form)
-                            .await
-                            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                        answered = Some((cloud, asked, answer));
-                    } else {
-                        let url = waiting_on_you(&cloud.credential).await;
-                        return Ok(pending(verb, &asked, &message, &url).into());
+                    if written.is_ok() {
+                        self.move_links_after_project_rename(call, &write).await;
                     }
-                    step = Step::Write { write };
+                    (step, state) = tools::resume(state, vec![written]);
                     continue;
                 }
             };
             (step, state) = tools::resume(state, answers);
         }
-    }
-
-    async fn decide(
-        &self,
-        credential: &Credential,
-        verb: Verb,
-        asked: &Asked,
-        typed: Option<&str>,
-        answer: ElicitResult,
-    ) -> Result<Answer, McpError> {
-        let content = answer.content.unwrap_or_default();
-        let accepted = matches!(answer.action, ElicitationAction::Accept);
-        let approved = accepted && content.get("approve") == Some(&Value::Bool(true));
-        if let (true, Some(name)) = (approved, typed)
-            && content.get("name").and_then(Value::as_str).map(str::trim) != Some(name)
-        {
-            return Ok(Answer::Refused(refused(format!(
-                "The human did not type `{name}`, so the answer was not recorded and nothing \
-                 was {past}. The approval of {what} stays pending in Ployz Cloud; call the \
-                 tool again to ask again.",
-                past = verb.past(),
-                what = asked.what(verb),
-            ))));
-        }
-        let reason = if accepted { reason(&content) } else { None };
-        let decision = match (approved, &reason) {
-            (true, _) => json!({ "approve": { "digest": asked.required.digest } }),
-            (false, Some(reason)) => json!({ "reject": { "reason": reason } }),
-            (false, None) => json!({ "reject": {} }),
-        };
-        match approval::decide(credential, &asked.id, &decision).await {
-            Ok(()) => {}
-            Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
-                return Ok(Answer::Refused(refused(format!(
-                    "{} This answer was not recorded, and nothing was {} by this call.",
-                    error.message,
-                    verb.past()
-                ))));
-            }
-            Err(error) => return Ok(Answer::Refused(refused(Error::from(error).to_string()))),
-        }
-        if approved {
-            return Ok(Answer::Approved);
-        }
-        Ok(Answer::Refused(refused(error_chain::then_sentence(
-            &error_chain::with_reason(
-                format_args!("The human denied this {}", verb.noun()),
-                reason.as_deref().unwrap_or_default(),
-            ),
-            &format!(
-                "Nothing was {}; do not retry it unless they ask.",
-                verb.past()
-            ),
-        ))))
     }
 }
 
@@ -1156,99 +937,15 @@ fn rendered(result: ToolResult) -> CallToolResult {
     }
 }
 
-/// Cloud keeps a denial's reason up to this many UTF-16 code units.
-const REASON_LIMIT: u16 = 1024;
-
-fn reason(content: &Value) -> Option<String> {
-    let mut units = 0;
-    let reason: String = content
-        .get("reason")?
-        .as_str()?
-        .trim()
-        .chars()
-        .take_while(|character| {
-            units += character.len_utf16();
-            units <= usize::from(REASON_LIMIT)
-        })
-        .collect();
-    (!reason.is_empty()).then_some(reason)
-}
-
-fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
-    let schema = ElicitationSchema::builder()
-        .required_bool_property("approve", |schema: BooleanSchema| {
-            schema
-                .title("Approve")
-                .description(format!("Go ahead with this {}", verb.noun()))
-        })
-        .string_property("reason", |schema: StringSchema| {
-            schema
-                .title("Reason")
-                .description("Why not, if you leave Approve unticked")
-                .max_length(u32::from(REASON_LIMIT))
-        });
-    let schema = match typed {
-        Some(name) => schema.string_property("name", |schema: StringSchema| {
-            schema
-                .title("Name")
-                .description(format!("Type {name} to approve"))
-        }),
-        None => schema,
-    };
-    ElicitRequestParams::FormElicitationParams {
-        meta: None,
-        message: format!(
-            "Approve {}?\n{}",
-            asked.what(verb),
-            asked.review(verb).join("\n")
-        ),
-        requested_schema: schema.build_unchecked(),
-    }
-}
-
-/// Where a person approves a call in Ployz Cloud: the agent sidebar of the Organization
-/// `credential` acts in, which lists the approval under Waiting on you. Cloud itself when
-/// the Organization can't be read.
-async fn waiting_on_you(credential: &Credential) -> String {
-    let origin = credential.origin();
-    let cloud = origin.as_str();
-    match cloud::account::acting_in(credential).await {
-        Ok(organization) => format!(
-            "{cloud}/cloud/{}?chat={}",
-            organization.slug,
-            uuid::Uuid::new_v4()
-        ),
-        Err(_) => cloud.to_owned(),
-    }
-}
-
-/// The refusal a host that can't show a form gets.
-fn pending(verb: Verb, asked: &Asked, message: &str, url: &str) -> CallToolResult {
-    let text = format!(
-        "A human must approve {what} in Ployz Cloud. Nothing was {past}; the approval stays \
-         pending. Show them what it destroys, then ask them to {approve}\n{review}",
-        what = asked.what(verb),
-        past = verb.past(),
-        approve = approve_at(url, &asked.id),
-        review = asked.review(verb).join("\n"),
-    );
-    approval_required(text, &asked.id, message, url)
-}
-
 /// The call to repeat after `command` refused: the fields it takes, so a key the caller
-/// made up is not echoed, and the approval the call carried, which stays good while the
-/// plan it approved does.
-fn repeat(command: &PublishedCommand, input: &JsonObject, approval: Option<&str>) -> JsonObject {
+/// made up is not echoed.
+fn repeat(command: &PublishedCommand, input: &JsonObject) -> JsonObject {
     let takes = command.input.get("properties").and_then(Value::as_object);
-    let mut asked: JsonObject = input
+    input
         .iter()
         .filter(|(key, _)| takes.is_some_and(|takes| takes.contains_key(*key)))
         .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    if let Some(id) = approval {
-        asked.insert(APPROVAL.to_owned(), Value::String(id.to_owned()));
-    }
-    asked
+        .collect()
 }
 
 /// A Cloud command's refusal in the shape a compiled tool refuses, with the call to
@@ -1290,11 +987,6 @@ fn command_refusal(mut error: RpcError, retry: tools::Call) -> tools::Refusal {
 
 fn refused(text: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text)])
-}
-
-enum Answer {
-    Approved,
-    Refused(CallToolResult),
 }
 
 /// A compiled tool names its own status read. A published command is no tool: the word

@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { endClusterIngress } from "#/modules/ingress/cloudflare.cluster-gone.server";
-import { closeDoorsRun, closedFounding, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
+import { closeDoorsRun, closedFounding, closeStaleDoors, bindDoorsRun, executeDoorsOnce, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
@@ -381,23 +381,6 @@ it("sweeps a request nobody picked up and a switch that outlived its run", async
   await harness.pool.query("update ingress_doors_attempt set state = 'running', started_at = now() - interval '1 hour'");
   expect(await run(closeStaleDoors())).toEqual({ unstarted: 0, lost: 1 });
   expect(await attempts()).toMatchObject([{ state: "failed" }]);
-});
-
-it("drops a pending approval for a switch the Cluster has already made", async () => {
-  await setup("active");
-  const stored = "digest";
-  expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBeNull();
-  expect(await run(freshSwitchDigest(ORG, stored, { unrelated: true }))).toBe(stored);
-  await harness.pool.query("update organization_cloudflare_ingress set state = 'left'");
-  expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBeNull();
-});
-
-it("keeps a pending approval for a switch refused only for now, while Cloudflare is being set up or until it is", async () => {
-  const stored = "digest";
-  expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
-  await setup("setting_up");
-  expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
-  expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBe(stored);
 });
 
 it.each(["public", "tunnel"] as const)("never lets a %s switch still running at removal flip the row of the Cluster set up after it", async (to) => {

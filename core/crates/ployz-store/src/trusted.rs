@@ -133,6 +133,16 @@ pub enum Approval {
     Approved(ApprovalDigest),
 }
 
+impl Approval {
+    /// Whether the caller carried a person's yes. Every check that would let a write
+    /// through unasked weighs a carried yes against the plan as it stands instead, so a
+    /// yes to a plan that has since changed asks again, even when the plan now
+    /// destroys nothing.
+    pub(crate) const fn carried(&self) -> bool {
+        matches!(self, Self::Approved(_))
+    }
+}
+
 /// Which Deploys wait on a human when `approval` is required. Cloud's evidence of who
 /// called, never caller testimony.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]

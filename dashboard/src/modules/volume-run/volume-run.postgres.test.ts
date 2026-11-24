@@ -50,8 +50,6 @@ import { appliedMirrors, observePlacement } from "#/modules/volume-placement/vol
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
-import { decideApproval } from "#/modules/approvals/approvals.server";
-import { decideAndApply } from "#/modules/approvals/apply.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
@@ -3409,6 +3407,23 @@ describe("volume runs", () => {
       }]);
     });
 
+    // Catches an agent promoting a stale copy, losing the writes since its last sync, with no person asked.
+    it("an agent's restore is refused with where a person does it, and a person's goes ahead", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: null },
+        { name: "fsn-2", pool: true, copy: slotCopy(base) },
+      ];
+      containers = [];
+      const restore = (via: Caller["via"]) =>
+        runEffect(runVolume({ ...caller, via }, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { key: null, approved: null }));
+
+      expect(await restore("agent")).toEqual({ ok: false, refusal: {
+        code: "forbidden", message: "This restore of data needs a person. Do it in Ployz Cloud (or run `ployz volume restore data --from fsn-2`).", details: null,
+      } });
+      expect(await rows()).toEqual([]);
+      expect(await restore("cli")).toMatchObject({ ok: true });
+    });
+
     it("an old root beside a newer writer is cut read-only and the run asks to be run again", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: writerCopy(base, 3) },
@@ -3613,9 +3628,9 @@ describe("volume runs", () => {
     });
   });
 
-  const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
+  const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "cli" };
   /** A run as the CLI asks for it, planned on the Cluster before any row. */
-  const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
+  const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approved: null }));
 
   describe("resize", () => {
     const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
@@ -4129,39 +4144,23 @@ describe("volume runs", () => {
   });
 
   describe("in a Protected Environment", () => {
-    const protectorId = "00000000-0000-4000-8000-000000000e03";
-    const protector: Caller = { ...caller, userId: protectorId, via: "dashboard" };
-    const member: Caller = { ...caller, role: "member", via: "cli" };
+    const member: Caller = { ...caller, role: "member" };
     const askers: ReadonlyArray<[string, Caller]> = [
       ["a member", member],
       ["a member's token", { ...member, credential: { kind: "token", id: "token-1", grant: FULL_GRANT } }],
       ["a member's agent", { ...member, via: "agent" }],
+      ["a member in the dashboard", { ...member, via: "dashboard" }],
     ];
-    const as = (who: Caller, input: VolumeRunInput, approvalId: string | null = null) =>
-      runEffect(runVolume(who, { volumeId, environment, ...input }, { key: null, approvalId }));
-    const askedOf = (admitted: Awaited<ReturnType<typeof as>>) => {
-      if (admitted.ok || admitted.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(admitted)}`);
-      // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
-      return admitted.refusal.details as { approval: string; approval_id: string };
-    };
-    const review = async (id: string) =>
-      (await harness.pool.query<{ review: unknown }>("select review from operation_approvals where id = $1", [id])).rows[0]?.review;
-    beforeEach(async () => {
+    const as = (who: Caller, input: VolumeRunInput, approved: string | null = null) =>
+      runEffect(runVolume(who, { volumeId, environment, ...input }, { key: null, approved }));
+    const ownerOrAdmin = { ok: false, refusal: { code: "forbidden", message: "An owner or admin does this." } };
+    beforeEach(() => {
       storeProtected = true;
-      await harness.pool.query(`insert into "user" (id, email, name) values ('${protectorId}', 'owner@example.com', 'Owner')`);
     });
 
-    it("a Release asks someone who can protect it, not any approver", async () => {
-      const { approval_id } = askedOf(await as(member, { kind: "release", args: {} }));
-
-      expect(await review(approval_id)).toMatchObject({ protected: { environment: "production" } });
-    });
-
-    it("a member can't decide another member's Release", async () => {
-      const { approval, approval_id } = askedOf(await as(member, { kind: "release", args: {} }));
-      const peer: Caller = { ...member, userId: protectorId, via: "dashboard" };
-
-      expect(await runEffect(decideApproval(peer, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: false });
+    it.each(askers)("%s's Release is refused: an owner or admin does it", async (_, asker) => {
+      expect(await as(asker, { kind: "release", args: {} })).toMatchObject(ownerOrAdmin);
+      expect(await rows()).toEqual([]);
     });
 
     it("a member seals an older second primary unasked, as Ployz's own sync would", async () => {
@@ -4181,47 +4180,10 @@ describe("volume runs", () => {
         machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), capabilities: serves, bound: 10 * GB }];
       });
 
-      it.each(askers)("%s's grow asks someone who can protect it, for that size only", async (_, asker) => {
-        const admitted = await as(asker, grow(20));
-        const { approval, approval_id } = askedOf(admitted);
-
-        expect(admitted).toMatchObject({ refusal: { details: { protected: { environment: "production" } } } });
-        expect(await review(approval_id)).toMatchObject({ operation: { verb: "resize", name: "data from 10 GB to 20 GB", preview: { recorded_bytes: 10 * GB, maximum_bytes: 20 * GB } } });
-        expect(await rows()).toEqual([]);
-        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
-        expect(await as(asker, grow(30), approval_id)).toMatchObject({ ok: false });
-        expect(await as(asker, grow(20), approval_id)).toMatchObject({ ok: true });
-        expect(await rows()).toMatchObject([{ kind: "resize" }]);
-      });
-
-      it("a member's grow from the dashboard runs as they asked once someone who can protect it approves", async () => {
-        await harness.pool.query("insert into member (user_id, organization_id, role) values ($1, $2, 'member')", [userId, organizationId]);
-        const { approval, approval_id } = askedOf(await as({ ...member, via: "dashboard" }, grow(20)));
-
-        expect(await runEffect(decideAndApply(protector, approval_id, { approve: { digest: approval } }))).toMatchObject({ ok: true });
-        const ran = await harness.pool.query<{ args: unknown; requested_by_user_id: string }>("select args, requested_by_user_id from volume_run");
-        expect(ran.rows).toEqual([{ args: { maximum_bytes: 20 * GB }, requested_by_user_id: userId }]);
-      });
-
-      it("an approved grow is refused once the Volume's size moved, so it never runs as a shrink", async () => {
-        const { approval, approval_id } = askedOf(await as(member, grow(20)));
-        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 30 * GB }, recorded_storage: 30 * GB }];
-        await runEffect(decideApproval(protector, approval_id, { approve: { digest: approval } }));
-
-        expect(await as(member, grow(20), approval_id)).toMatchObject({ ok: false });
+      it.each(askers)("%s's grow is refused: an owner or admin does it", async (_, asker) => {
+        expect(await as(asker, grow(20))).toMatchObject(ownerOrAdmin);
         expect(await rows()).toEqual([]);
       });
-
-      it("a grow asks even when its first step seals an older second primary", async () => {
-        machines = [
-          { name: "fsn-1", pool: true, copy: writerCopy(base, 3), capabilities: serves, bound: 10 * GB },
-          { name: "fsn-2", pool: true, copy: writerCopy(snap("20"), 5), capabilities: serves, bound: 10 * GB },
-        ];
-
-        expect(await as(member, grow(20))).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-        expect(await rows()).toEqual([]);
-      });
-
     });
   });
 
@@ -4338,14 +4300,13 @@ describe("volume runs", () => {
         ];
         containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
       };
-      const release = (approvalId: string | null = null) =>
-        runEffect(runVolume(caller, { volumeId, environment, kind: "release", args: {} }, { key: null, approvalId }));
+      const release = (approved: string | null = null) =>
+        runEffect(runVolume(caller, { volumeId, environment, kind: "release", args: {} }, { key: null, approved }));
       const approve = async (asked: Awaited<ReturnType<typeof release>>) => {
         if (asked.ok || asked.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(asked)}`);
-        // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
-        const { approval, approval_id } = asked.refusal.details as { approval: string; approval_id: string };
-        await runEffect(decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
-        return release(approval_id);
+        // SAFETY: an approval_required refusal carries the digest the person says yes to.
+        const { approval } = asked.refusal.details as { approval: string };
+        return release(approval);
       };
       const admittedId = (admitted: Awaited<ReturnType<typeof release>>) => {
         if (!admitted.ok) throw new Error(admitted.refusal.message);

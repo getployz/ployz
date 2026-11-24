@@ -81,7 +81,7 @@ An accepted deployment and its redeploys keep their original snapshot while you 
   Cancel deployment…** takes it out of the queue. With no server in your organization, it refuses
   and says to add one, as a deploy does.
 
-[The agent](../account/agent-sidebar.md) can do the same, and its redeploys wait for you to approve.
+[The agent](../account/agent-sidebar.md) can't redeploy: it tells you to do it in Ployz Cloud.
 
 ## Roll back a service a rule built
 

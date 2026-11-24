@@ -1,10 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { APPROVAL_STATUSES, approvalTarget, destroyedLines } from "#/modules/approvals/approvals";
-import { decideAndApply } from "#/modules/approvals/apply.server";
-import type { ApprovalView } from "#/modules/approvals/approvals.server";
+import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { defineCommand, type Ran } from "#/modules/commands/define";
-import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/approvals/approvals.fresh.server";
 
 const ApprovalId = Schema.String.annotate({ description: "The Approval's ID, from a list of Approvals or from the call that had to ask" });
 
@@ -62,7 +60,7 @@ export const orgApprovalLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Waiting),
   render: "table",
-  run: (caller) => freshPendingApprovals(caller.organization.id).pipe(
+  run: (caller) => pendingApprovals(caller.organization.id).pipe(
     Effect.map((approvals) => ({ ok: true, output: approvals.map(waiting) }) as const),
   ),
 });
@@ -82,7 +80,7 @@ export const orgApprovalShow = defineCommand({
   input: Schema.Struct({ id: ApprovalId }),
   output: Answered,
   render: "record",
-  run: (caller, { id }) => freshApproval(caller.organization.id, id).pipe(
+  run: (caller, { id }) => getApproval(caller.organization.id, id).pipe(
     Effect.map((approval) => ({ ok: true, output: answered(approval) }) as const),
   ),
 });
@@ -111,8 +109,8 @@ export const orgApprovalApprove = defineCommand({
   output: Answered,
   render: "message",
   run: (caller, { id }) => Effect.gen(function* () {
-    const { digest } = yield* freshApproval(caller.organization.id, id);
-    const decided = yield* decideAndApply(caller, id, { approve: { digest } }, freshOperationDigest);
+    const { digest } = yield* getApproval(caller.organization.id, id);
+    const decided = yield* decideApproval(caller, id, { approve: { digest } });
     return told(decided, (subject) => `Approved: ${subject}. The command waiting on it goes ahead.`);
   }),
 });
@@ -139,7 +137,7 @@ export const orgApprovalDeny = defineCommand({
   }),
   output: Answered,
   render: "message",
-  run: (caller, { id, reason }) => decideAndApply(caller, id, { reject: reason === undefined ? {} : { reason } }, freshOperationDigest).pipe(
+  run: (caller, { id, reason }) => decideApproval(caller, id, { reject: reason === undefined ? {} : { reason } }).pipe(
     Effect.map((decided) => told(decided, (subject) => `Denied: ${subject}.`)),
   ),
 });

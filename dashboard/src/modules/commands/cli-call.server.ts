@@ -1,9 +1,9 @@
 import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/lib/schema";
-import { carriedInto, type Gate, gateOperation } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { resolveCaller } from "#/modules/identity/caller.server";
 import { lacks } from "#/modules/organization/access.server";
+import { APPROVAL_HEADER, type Gate, gateOperation, olderApproval } from "#/modules/operations/gate.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import type { OperationCall } from "#/modules/operations/operations.server";
 import { decodeJsonBody } from "#/server/api-route";
@@ -61,24 +61,23 @@ export const shellPersonOnly = (caller: Caller, message: string) => {
   return lacking === null ? null : cliRefusalResponse({ code: "forbidden", message: lacking, details: null });
 };
 
-export const approvalHeader = (request: Request) => request.headers.get("x-ployz-approval");
+export const approvalHeader = (request: Request) => request.headers.get(APPROVAL_HEADER);
 
-/** Asks a human before the operation runs, unless the request carries the approval they gave. */
+/** Asks a person before the operation runs, unless the request carries the digest they said yes to. */
 export const gated = (caller: Caller, request: Request): Gate => (asked) => gateOperation(caller, approvalHeader(request), asked);
 
-/**
- * Refuses an approval the request carries that isn't for exactly `asked`, for an operation that may ask no one (so
- * nothing else would look at it). Null when it carries none, or the right one.
- */
-export const approvalCarried = (caller: Caller, request: Request, asked: { readonly command: string; readonly subject: string }) =>
-  Effect.map(carriedInto(caller, approvalHeader(request), asked), (refusal) => (refusal === null ? null : cliRefusalResponse(refusal)));
+/** The refusal for an approval ID an older `ployz` carries, checked before anything that might skip the gate. */
+export const approvalCarried = (request: Request) => {
+  const older = olderApproval(approvalHeader(request));
+  return older === null ? null : cliRefusalResponse(older);
+};
 
 export const accepted = (id: string) => Response.json({ id }, { status: 202 });
 
 /** Runs `run` with the request key and approval an operation call carries, or answers the refusal for a malformed key. */
 export const keyedCall = <A, E, R>(request: Request, run: (call: OperationCall) => Effect.Effect<A, E, R>) => {
   const key = requestKeyOf(request.headers.get(REQUEST_KEY_HEADER));
-  return key.ok ? run({ key: key.key, approvalId: approvalHeader(request) }) : Effect.succeed(cliRefusalResponse(key.refusal));
+  return key.ok ? run({ key: key.key, approved: approvalHeader(request) }) : Effect.succeed(cliRefusalResponse(key.refusal));
 };
 
 /** An operation's admission as the CLI reads it: `reply` for the attempt, the refusal, or no such Server when nothing was found. */

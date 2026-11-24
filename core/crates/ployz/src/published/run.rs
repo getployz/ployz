@@ -73,8 +73,10 @@ pub(crate) fn run(
         )?;
     }
     let mut approval = approval;
+    let mut said_yes = approval.is_some();
+    // One key for the command, so the resend after a yes is the same request.
+    let key = uuid::Uuid::new_v4().to_string();
     let ran = loop {
-        let key = uuid::Uuid::new_v4().to_string();
         let ran = runtime
             .block_on(run_on(
                 &credential,
@@ -85,20 +87,29 @@ pub(crate) fn run(
                 &key,
             ))
             .0;
-        let asked = match &ran {
+        let (asked, refusal) = match ran {
             Err(StoreCallError::Refused(refusal)) if !ui::json() => {
-                crate::approval::Asked::of(refusal)
+                match crate::approval::Asked::of(&refusal) {
+                    Some(asked) => (asked, refusal),
+                    None => {
+                        return Err(refused(
+                            StoreCallError::Refused(refusal),
+                            root,
+                            command,
+                            setup,
+                        ));
+                    }
+                }
             }
-            _ => None,
+            ran => break ran.map_err(|error| refused(error, root, command, setup))?,
         };
-        let Some(asked) = asked else {
-            break ran.map_err(|error| refused(error, root, command, setup))?;
-        };
-        let retry = retry(root, command, &asked.id);
-        approval = Some(
-            crate::approval::settle(&runtime, &credential, asked.verb(None), &asked, retry)
-                .map_err(Failure::from)?,
-        );
+        if said_yes {
+            return Err(crate::approval::moved(asked.verb(None), refusal));
+        }
+        let retry = retry(root, command, asked.digest());
+        approval =
+            Some(crate::approval::settle(asked.verb(None), &asked, retry).map_err(Failure::from)?);
+        said_yes = true;
     };
     print(command, ran.output, ran.message)
 }
@@ -147,7 +158,7 @@ fn refused(
         }
         StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
             Some(asked) => {
-                let retry = retry(root, command, &asked.id);
+                let retry = retry(root, command, asked.digest());
                 Failure::from(refusal).hint(Hint::Retry(retry))
             }
             None => StoreCallError::Refused(refusal).into(),
@@ -156,7 +167,7 @@ fn refused(
     }
 }
 
-/// This command again as typed, carrying approval `id`, in the same output mode. A
+/// This command again as typed, carrying `id`, the digest of the yes it needs, in the same output mode. A
 /// value that starts with `-` still reads as a value: a flag's joins it with `=`,
 /// and positionals move behind `--`.
 fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {

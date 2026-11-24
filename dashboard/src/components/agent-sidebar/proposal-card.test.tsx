@@ -26,6 +26,9 @@ const proposal: ProposalView = {
   halt: null,
   reason: null,
   requested_by: "u1",
+  withdrawn: false,
+  mine: false,
+  decides: true,
   asker: "Ada",
   created_at: "2026-11-08T12:00:00.000Z",
   decided_at: null,
@@ -115,4 +118,16 @@ it("shows Cloud's refusal and keeps waiting", async () => {
   fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
   expect((await within(card).findByRole("alert")).textContent).toBe("It didn't run: fra-1 needs a newer Ployz to stop it. It's still waiting for approval.");
   expect(within(card).getByRole("button", { name: "Approve all" })).toBeTruthy();
+});
+
+// Catches the member who asked, waiting on an owner or admin, being offered only buttons Cloud refuses them.
+it("lets the one who asked withdraw a request waiting on an owner or admin, and nothing else", async () => {
+  const mine = { ...proposal, mine: true, decides: false };
+  decide.mockResolvedValueOnce({ ok: true, proposal: { ...mine, status: "denied", withdrawn: true, decided_at: "2026-11-08T12:01:00.000Z" } } as never);
+  const card = show(mine);
+  expect(within(card).getAllByRole("button").map((button) => button.textContent)).toEqual(["Withdraw"]);
+  fireEvent.click(within(card).getByRole("button", { name: "Withdraw" }));
+  await waitFor(() => expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "p1", decision: { reject: {} } } }));
+  const withdrawn = await screen.findByLabelText("3 steps in shop/production withdrawn");
+  expect(within(withdrawn).getByText("Withdrawn")).toBeTruthy();
 });

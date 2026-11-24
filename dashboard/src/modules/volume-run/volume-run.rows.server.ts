@@ -3,8 +3,7 @@ import type { ContainerId, DestructiveEffect, EnvironmentRef, MachineId, Snapsho
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
-import type { OperationAsked } from "#/modules/approvals/approvals.server";
-import type { OperationVerb } from "#/modules/approvals/approvals";
+import type { OperationAsked, OperationVerb } from "#/modules/operations/asked";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { serversUnanswered, type StoreRefusal } from "#/lib/refusal";

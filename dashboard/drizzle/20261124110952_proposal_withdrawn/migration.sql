@@ -1,0 +1,1 @@
+ALTER TABLE "operation_proposals" ADD COLUMN "withdrawn" boolean DEFAULT false NOT NULL;

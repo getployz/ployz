@@ -1,7 +1,7 @@
-//! `org rm` and `server forget` of every Server against a fake Cloud that asks a human
-//! first: under `--json` each answers `approval_required` naming the retry, and the
-//! retry carries the approval. An `org rm` a Server leaves partial names a retry that
-//! carries the approval it ran with.
+//! `org rm`, `server forget` of every Server and `cluster name` against a fake Cloud that
+//! asks a person first. Under `--json` each answers `approval_required` naming the retry,
+//! the retry carries the digest, and a digest of a plan that moved since runs nothing.
+//! An `org rm` a Server leaves partial names a retry that carries the digest it ran with.
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -19,37 +19,41 @@ const FENCE_WARNING: &str = "A forgotten Server doesn't know it was forgotten. I
      every Volume copy on its disk. Adding it back with ployz server add --reset keeps its \
      writer copies read-only but can delete its mirrors, so don't while one may be a \
      Volume's last copy. Wipe its disk only if you need nothing on it.";
-const ASKED_REMOVE: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this remove of acme before it runs.","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_organization","name":"acme","node":"o1","path":"organizations/o1"}],"operation":{"verb":"remove","name":"acme"},"organization":"acme"}}}"#;
-const ASKED_RENAME: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this rename to beta before it runs.","details":{"approval_id":"apr_9","approval":"set_cluster_name:abc","effects":[],"operation":{"verb":"set_cluster_name","name":"beta"},"organization":"acme"}}}"#;
-const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this forget of acme before it runs.","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"web-1","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"acme"},"organization":"acme"}}}"#;
 
-/// Each approval-gated request's route, with the approval it carried.
+/// Cloud's ask before `verb`, naming `digest` as what it would do.
+fn asked(verb: &str, name: &str, digest: &str, effects: &Value) -> String {
+    json!({ "error": {
+        "code": "approval_required",
+        "message": format!("This {verb} of {name} needs a yes."),
+        "details": {
+            "approval": digest,
+            "effects": effects,
+            "operation": { "verb": verb, "name": name },
+            "organization": "acme",
+        },
+    }})
+    .to_string()
+}
+
+/// Each gated request's route, with the digest it carried.
 type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
-/// How Cloud answers a read of approval `apr_9`.
-#[derive(Clone, Copy)]
-enum Answer {
-    Approved,
-    /// Drops the connection unanswered, as a Cloud gone mid-wait does.
-    Gone,
-    /// Answers `404 {}`, as a Cloud without the approvals route does.
-    Missing,
-    /// Answers `503` with a body, as a Cloud failing for the moment does.
-    Failing,
-    /// Answers `401`, as Cloud does to a refused token or an ended sign-in.
-    Unauthorized,
-    /// Answers a bare `403`, as Cloud does to a sign-in that left its Organization.
-    Forbidden,
-}
-
-/// Cloud that asks for approval `apr_9` before it removes Organization acme or forgets
-/// its Servers, recording each such request in `seen`. Unless `confirms`, a Server
-/// never confirms unpairing, so the approved removal stays partial.
+/// Cloud that asks a yes before it removes Organization acme, forgets its Servers or
+/// renames its Cluster, recording each such request in `seen`. Unless `confirms`, a Server
+/// never confirms unpairing, so the removal stays partial.
 fn fake_cloud(seen: Seen, confirms: bool) -> String {
-    fake_cloud_answering(seen, confirms, Answer::Approved)
+    fake_cloud_planning(seen, confirms, "abc", false)
 }
 
-fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
+/// [`fake_cloud`] whose plans have digests ending in `plan`, as `verb:plan`. With
+/// `refuses_logout`, it answers a bare `403` to a sign-out, as Cloud does to a sign-in that
+/// left its Organization.
+fn fake_cloud_planning(
+    seen: Seen,
+    confirms: bool,
+    plan: &'static str,
+    refuses_logout: bool,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -76,12 +80,10 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             let route = line.rsplit_once(' ').unwrap().0.to_owned();
-            if matches!(answer, Answer::Gone) && route == "GET /api/cli/approvals/apr_9" {
-                continue;
-            }
-            let approved = approval.as_deref() == Some("apr_9");
+            let said_yes =
+                |verb: &str| approval.as_deref() == Some(format!("{verb}:{plan}").as_str());
             let (status, reply) = match route.as_str() {
-                "DELETE /api/cli/organizations/o1" if approved => (
+                "DELETE /api/cli/organizations/o1" if said_yes("remove") => (
                     "200 OK",
                     json!({
                         "organization": "acme",
@@ -93,36 +95,38 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     })
                     .to_string(),
                 ),
-                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Missing) => {
-                    ("404 Not Found", "{}".to_owned())
-                }
-                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Failing) => {
-                    ("503 Service Unavailable", "upstream down".to_owned())
-                }
-                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Unauthorized) => {
-                    ("401 Unauthorized", "{}".to_owned())
-                }
-                "GET /api/cli/approvals/apr_9" | "POST /api/cli/logout"
-                    if matches!(answer, Answer::Forbidden) =>
-                {
-                    ("403 Forbidden", "{}".to_owned())
-                }
-                "GET /api/cli/approvals/apr_9" => (
-                    "200 OK",
-                    json!({ "approval": { "status": "approved" } }).to_string(),
+                "POST /api/cli/logout" if refuses_logout => ("403 Forbidden", "{}".to_owned()),
+                "DELETE /api/cli/organizations/o1" => (
+                    "409 Conflict",
+                    asked(
+                        "remove",
+                        "acme",
+                        &format!("remove:{plan}"),
+                        &json!([{ "kind": "removes_organization", "name": "acme", "node": "o1", "path": "organizations/o1" }]),
+                    ),
                 ),
-                "DELETE /api/cli/organizations/o1" => ("409 Conflict", ASKED_REMOVE.to_owned()),
-                "POST /api/cli/forget-servers" if approved => (
+                "POST /api/cli/forget-servers" if said_yes("forget") => (
                     "200 OK",
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
-                "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
-                "POST /api/cli/run/cluster_rename" if approved => (
+                "POST /api/cli/forget-servers" => (
+                    "409 Conflict",
+                    asked(
+                        "forget",
+                        "acme",
+                        &format!("forget:{plan}"),
+                        &json!([{ "kind": "removes_server", "name": "web-1", "node": "b", "path": "servers/b" }]),
+                    ),
+                ),
+                "POST /api/cli/run/cluster_rename" if said_yes("set_cluster_name") => (
                     "200 OK",
                     json!({ "output": { "name": "beta" }, "message": "Saved beta as the Cluster's name. It applies when a Server is online." })
                         .to_string(),
                 ),
-                "POST /api/cli/run/cluster_rename" => ("409 Conflict", ASKED_RENAME.to_owned()),
+                "POST /api/cli/run/cluster_rename" => (
+                    "409 Conflict",
+                    asked("set_cluster_name", "beta", &format!("set_cluster_name:{plan}"), &json!([])),
+                ),
                 "POST /api/cli/server-access" => (
                     "200 OK",
                     json!({ "connections": [], "unreachable": ["a".repeat(32)] }).to_string(),
@@ -235,27 +239,27 @@ fn json_of(output: &Output) -> Value {
 }
 
 #[test]
-fn org_rm_forgetting_every_server_and_a_cluster_rename_wait_on_an_approval_their_retry_carries() {
+fn org_rm_forgetting_every_server_and_a_cluster_rename_ask_and_their_retry_carries_the_digest() {
     let seen = Arc::default();
     let cloud = fake_cloud(Arc::clone(&seen), true);
     let cases: [(&[&str], &str, &str); 3] = [
         (
             &["org", "rm", "acme", "--confirm", "acme"],
             "DELETE /api/cli/organizations/o1",
-            "org rm acme --confirm acme --approval apr_9",
+            "remove:abc",
         ),
         (
             &["server", "forget", "--confirm", "acme"],
             "POST /api/cli/forget-servers",
-            "server forget --confirm acme --approval apr_9",
+            "forget:abc",
         ),
         (
             &["cluster", "name", "beta"],
             "POST /api/cli/run/cluster_rename",
-            "cluster name beta --approval apr_9",
+            "set_cluster_name:abc",
         ),
     ];
-    for (args, route, retry) in cases {
+    for (args, route, digest) in cases {
         let asked = json_of(&ployz(&cloud, &[&["--json"], args].concat()));
         assert_eq!(
             asked.pointer("/error/code"),
@@ -266,22 +270,78 @@ fn org_rm_forgetting_every_server_and_a_cluster_rename_wait_on_an_approval_their
             .pointer("/error/details/retry")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        assert!(named.ends_with(retry), "{named}");
+        assert!(
+            named.ends_with(&format!("{} --approval {digest}", args.join(" "))),
+            "{named}"
+        );
         assert!(named.starts_with("ployz --ployz-config "), "{named}");
 
         let approved = ployz(
             &cloud,
-            &[&["--json"], args, &["--approval", "apr_9"]].concat(),
+            &[&["--json"], args, &["--approval", digest]].concat(),
         );
         assert!(approved.status.success(), "{}", json_of(&approved));
         assert_eq!(
             seen.lock().unwrap().drain(..).collect::<Vec<_>>(),
             [
                 (route.to_owned(), None),
-                (route.to_owned(), Some("apr_9".to_owned()))
+                (route.to_owned(), Some(digest.to_owned()))
             ],
         );
     }
+}
+
+/// A yes names what was shown. Once the plan moved, Cloud asks again, and the CLI runs
+/// nothing and asks for no second yes on its own.
+#[test]
+fn a_yes_to_a_plan_that_moved_runs_nothing() {
+    let seen: Seen = Arc::default();
+    let cloud = fake_cloud_planning(Arc::clone(&seen), true, "moved", false);
+    let args = [
+        "org",
+        "rm",
+        "acme",
+        "--confirm",
+        "acme",
+        "--approval",
+        "remove:abc",
+    ];
+
+    let stale = ployz(&cloud, &args);
+    assert_eq!(stale.status.code(), Some(1), "{stale:?}");
+    let stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(
+        stderr.contains(
+            "It changed after your yes, so nothing removed. Run it again to see what it does now."
+        ),
+        "{stderr}"
+    );
+
+    let json = json_of(&ployz(&cloud, &[&["--json"], &args[..]].concat()));
+    assert_eq!(
+        json.pointer("/error/code"),
+        Some(&json!("approval_required")),
+        "{json}"
+    );
+    let retry = json
+        .pointer("/error/details/retry")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(retry.ends_with("--approval remove:moved"), "{retry}");
+    assert_eq!(
+        seen.lock().unwrap().drain(..).collect::<Vec<_>>(),
+        [
+            (
+                "DELETE /api/cli/organizations/o1".to_owned(),
+                Some("remove:abc".to_owned())
+            ),
+            (
+                "DELETE /api/cli/organizations/o1".to_owned(),
+                Some("remove:abc".to_owned())
+            ),
+        ],
+        "nothing ran past the first ask"
+    );
 }
 
 #[test]
@@ -322,7 +382,18 @@ fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
     );
     assert!(stderr.contains("It needs dead typed"), "{stderr}");
 
-    let forgot = ployz(&cloud, &["server", "forget", "web-1", "--confirm", "dead"]);
+    let forgot = ployz(
+        &cloud,
+        &[
+            "server",
+            "forget",
+            "web-1",
+            "--confirm",
+            "dead",
+            "--approval",
+            "forget:abc",
+        ],
+    );
     assert!(forgot.status.success(), "{forgot:?}");
     let stderr = String::from_utf8_lossy(&forgot.stderr);
     assert_eq!(
@@ -332,35 +403,6 @@ fn forgetting_a_lone_server_that_does_not_answer_says_it_is_asking_cloud() {
         1,
         "{stderr}"
     );
-    asks_to_forget_around_the_approval(&stderr);
-    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
-}
-
-#[test]
-fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_except_under_json() {
-    let seen = Arc::default();
-    let cloud = fake_cloud(Arc::clone(&seen), true);
-
-    let forgot = ployz(&cloud, &["server", "forget", "--confirm", "acme"]);
-    assert!(forgot.status.success(), "{forgot:?}");
-    let stderr = String::from_utf8_lossy(&forgot.stderr);
-    asks_to_forget_around_the_approval(&stderr);
-    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
-    assert_eq!(seen.lock().unwrap().drain(..).count(), 2);
-
-    let approved = ployz(
-        &cloud,
-        &[
-            "server",
-            "forget",
-            "--confirm",
-            "acme",
-            "--approval",
-            "apr_9",
-        ],
-    );
-    assert!(approved.status.success(), "{approved:?}");
-    let stderr = String::from_utf8_lossy(&approved.stderr);
     assert_eq!(
         stderr
             .matches("Asking Cloud to forget the Servers…")
@@ -368,6 +410,40 @@ fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_ex
         1,
         "{stderr}"
     );
+    assert!(stderr.contains(&format!("! {FENCE_WARNING}\n")), "{stderr}");
+}
+
+/// Without a terminal nothing says yes: the forget shows what it destroys, runs nothing,
+/// and names the retry that carries the digest.
+#[test]
+fn forgetting_every_server_without_a_terminal_shows_what_it_destroys_and_names_the_retry() {
+    let seen = Arc::default();
+    let cloud = fake_cloud(Arc::clone(&seen), true);
+
+    let asked = ployz(&cloud, &["server", "forget", "--confirm", "acme"]);
+    assert_eq!(asked.status.code(), Some(2), "{asked:?}");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert_eq!(
+        stderr
+            .matches("Asking Cloud to forget the Servers…")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("removes Server web-1"), "{stderr}");
+    assert!(
+        stderr.contains("Nothing forgotten. Saying yes needs a terminal."),
+        "{stderr}"
+    );
+    let retry = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("retry: "))
+        .unwrap_or_default();
+    assert!(
+        retry.ends_with("server forget --confirm acme --approval forget:abc"),
+        "{stderr}"
+    );
+    assert_eq!(seen.lock().unwrap().drain(..).count(), 1);
 
     let json = ployz(
         &cloud,
@@ -378,7 +454,7 @@ fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_ex
             "--confirm",
             "acme",
             "--approval",
-            "apr_9",
+            "forget:abc",
         ],
     );
     assert!(json.status.success(), "{}", json_of(&json));
@@ -386,26 +462,15 @@ fn forgetting_every_server_says_it_asks_cloud_to_forget_them_before_each_send_ex
     assert!(!stderr.contains("Asking Cloud"), "{stderr}");
 }
 
-/// The forget note before the first send, then the approval line, then the note again
-/// before the send that carries the approval.
-fn asks_to_forget_around_the_approval(stderr: &str) {
-    let note = "Asking Cloud to forget the Servers…";
-    let (before, after) = stderr
-        .split_once("Waiting for approval in Ployz Cloud… approved.")
-        .unwrap_or_else(|| panic!("no approval line: {stderr}"));
-    assert_eq!(before.matches(note).count(), 1, "{stderr}");
-    assert_eq!(after.matches(note).count(), 1, "{stderr}");
-}
-
 #[test]
-fn a_partial_org_rm_names_a_retry_that_carries_its_approval() {
+fn a_partial_org_rm_names_a_retry_that_carries_its_digest() {
     let seen = Arc::default();
     let cloud = fake_cloud(Arc::clone(&seen), false);
     let args = ["org", "rm", "acme", "--confirm", "acme"];
 
     let passed = ployz(
         &cloud,
-        &[&["--json"], &args[..], &["--approval", "apr_9"]].concat(),
+        &[&["--json"], &args[..], &["--approval", "remove:abc"]].concat(),
     );
     assert_eq!(passed.status.code(), Some(3), "{}", json_of(&passed));
     let next = json_of(&passed);
@@ -414,170 +479,23 @@ fn a_partial_org_rm_names_a_retry_that_carries_its_approval() {
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(
-        next.ends_with("org rm acme --confirm acme --approval apr_9"),
+        next.ends_with("org rm acme --confirm acme --approval remove:abc"),
         "{next}"
-    );
-
-    let settled = ployz(&cloud, &args);
-    assert_eq!(settled.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&settled.stderr);
-    assert!(
-        stderr.contains("org rm acme --confirm acme --approval apr_9"),
-        "{stderr}"
     );
     assert_eq!(
         seen.lock().unwrap().drain(..).collect::<Vec<_>>(),
-        [
-            (
-                "DELETE /api/cli/organizations/o1".to_owned(),
-                Some("apr_9".to_owned())
-            ),
-            ("DELETE /api/cli/organizations/o1".to_owned(), None),
-            (
-                "DELETE /api/cli/organizations/o1".to_owned(),
-                Some("apr_9".to_owned())
-            ),
-        ],
+        [(
+            "DELETE /api/cli/organizations/o1".to_owned(),
+            Some("remove:abc".to_owned())
+        )],
     );
 }
 
 #[test]
-fn waiting_for_an_approval_names_it_and_where_to_answer_it() {
-    let cloud = fake_cloud(Arc::default(), true);
-    let waited = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
-    assert!(waited.status.success(), "{waited:?}");
-    let stderr = String::from_utf8_lossy(&waited.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "Approve apr_9 under Waiting on you in the Ployz agent at {cloud}/cloud/acme?chat="
-        )),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("next: ployz org approval approve apr_9"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud… approved."),
-        "{stderr}"
-    );
-}
-
-#[test]
-fn losing_cloud_while_waiting_leaves_the_approval_pending_and_names_the_retry() {
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Gone);
-    let lost = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
-    assert_eq!(lost.status.code(), Some(1), "{lost:?}");
-    let stderr = String::from_utf8_lossy(&lost.stderr);
-    assert!(
-        stderr.contains("Stopped waiting for approval apr_9; it stays pending in Ployz Cloud."),
-        "{stderr}"
-    );
-    assert!(stderr.contains("\n  cause: "), "{stderr}");
-    let retry = stderr
-        .lines()
-        .find_map(|line| line.strip_prefix("retry: "))
-        .unwrap_or_default();
-    assert!(
-        retry.ends_with("org rm acme --confirm acme --approval apr_9"),
-        "{stderr}"
-    );
-
-    let json = json_of(&ployz(
-        &cloud,
-        &["--json", "org", "rm", "acme", "--confirm", "acme"],
-    ));
-    assert_eq!(
-        json.pointer("/error/code"),
-        Some(&json!("approval_required")),
-        "{json}"
-    );
-}
-
-#[test]
-fn an_answered_error_while_waiting_names_the_approval_without_calling_it_pending() {
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Missing);
-    let missing = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
-    assert_eq!(missing.status.code(), Some(1), "{missing:?}");
-    let stderr = String::from_utf8_lossy(&missing.stderr);
-    assert!(
-        stderr.contains("error: Couldn't check approval apr_9."),
-        "{stderr}"
-    );
-    assert!(stderr.contains("does not offer CLI access"), "{stderr}");
-    assert!(!stderr.contains("stays pending"), "{stderr}");
-    assert!(!stderr.contains("retry: "), "{stderr}");
-
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Failing);
-    let failing = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
-    assert_eq!(failing.status.code(), Some(1), "{failing:?}");
-    let stderr = String::from_utf8_lossy(&failing.stderr);
-    assert!(
-        stderr.contains("error: Couldn't check approval apr_9."),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("stays pending"), "{stderr}");
-    let retry = stderr
-        .lines()
-        .find_map(|line| line.strip_prefix("retry: "))
-        .unwrap_or_default();
-    assert!(
-        retry.ends_with("org rm acme --confirm acme --approval apr_9"),
-        "{stderr}"
-    );
-}
-
-/// Cloud refused the credential reading approval `apr_9`: that answers nothing about the
-/// approval, and the same credential can't retry it.
-fn assert_unchecked(refused: &Output, cause: &str, next: &str) {
-    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(
-        stderr.contains("error: Couldn't check approval apr_9."),
-        "{stderr}"
-    );
-    assert!(stderr.contains(cause), "{stderr}");
-    assert!(stderr.lines().any(|line| line == next), "{stderr}");
-    assert!(!stderr.contains("stays pending"), "{stderr}");
-    assert!(!stderr.contains("retry: "), "{stderr}");
-}
-
-const ORG_RM: [&str; 5] = ["org", "rm", "acme", "--confirm", "acme"];
-
-#[test]
-fn a_refused_token_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Unauthorized);
-    assert_unchecked(
-        &ployz(&cloud, &ORG_RM),
-        "Cloud refused PLOYZ_TOKEN",
-        "next: unset PLOYZ_TOKEN && ployz login",
-    );
-}
-
-#[test]
-fn an_ended_sign_in_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Unauthorized);
+fn logging_out_works_though_cloud_refuses_a_sign_in_that_left_its_organization() {
+    let cloud = fake_cloud_planning(Arc::default(), true, "abc", true);
     let dir = tempfile::tempdir().unwrap();
-    assert_unchecked(
-        &signed_in(&cloud, dir.path(), &ORG_RM),
-        "Cloud ended this device's sign-in",
-        "next: ployz login",
-    );
-}
-
-#[test]
-fn leaving_the_organization_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
-    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Forbidden);
-    let dir = tempfile::tempdir().unwrap();
-    assert_unchecked(
-        &signed_in(&cloud, dir.path(), &ORG_RM),
-        "Organization acme is no longer one of yours",
-        "next: ployz logout",
-    );
-
-    // The `next:` step works though Cloud refuses this sign-in's logout too.
-    let config = dir.path().join("config.yaml");
-    let logout = run(&config, &["logout"]).output().unwrap();
+    let logout = signed_in(&cloud, dir.path(), &["logout"]);
     assert!(logout.status.success(), "{logout:?}");
     let stderr = String::from_utf8_lossy(&logout.stderr);
     assert!(
@@ -587,7 +505,10 @@ fn leaving_the_organization_while_waiting_leaves_the_approval_unchecked_without_
     assert!(!stderr.contains("Could not reach"), "{stderr}");
     assert!(!dir.path().join("cloud.json").exists());
 
-    let again = run(&config, &ORG_RM).output().unwrap();
+    let config = dir.path().join("config.yaml");
+    let again = run(&config, &["org", "rm", "acme", "--confirm", "acme"])
+        .output()
+        .unwrap();
     assert_eq!(again.status.code(), Some(1), "{again:?}");
     let stderr = String::from_utf8_lossy(&again.stderr);
     assert!(!stderr.contains("no longer one of yours"), "{stderr}");

@@ -240,12 +240,15 @@ pub(crate) fn admit(
             match asked {
                 Asked::Removal(environment, review, asks) => {
                     trusted.writes(&environment.summary.name)?;
-                    if forget.is_none() || asks {
+                    if forget.is_none() || asks || trusted.approval.carried() {
                         crate::removal::ask_taking_off(
                             tx,
                             who,
                             (&environment, &review),
-                            review::TakingOff::Retry(&retry.deployment),
+                            (
+                                review::TakingOff::Retry(&retry.deployment),
+                                forget == Some(crate::Outcome::Forgotten),
+                            ),
                             trusted,
                         )?;
                     }

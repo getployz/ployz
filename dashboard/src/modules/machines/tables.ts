@@ -162,6 +162,8 @@ export const serverDrainAttempt = pgTable(
     approvalId: uuid("approval_id"),
     /** The digest of the plan its gate admitted: it runs only while it would destroy exactly that, or nothing. */
     planDigest: text("plan_digest"),
+    /** A person said yes to the plan's digest: it runs only while its plan is exactly that one, even one that now destroys nothing. */
+    approved: boolean("approved").default(false).notNull(),
     /** A try found the servers silent, so the pending row waits for them rather than for another Drain. */
     serversSilent: boolean("servers_silent").default(false).notNull(),
   },

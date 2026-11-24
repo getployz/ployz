@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { carriedInto } from "#/modules/approvals/approvals.server";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, OwnedNamespace, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Clock, Data, Effect } from "effect";
 import { type StoreResult } from "#/modules/config-store/store.contract";
+import { olderApproval } from "#/modules/operations/gate.server";
 import { refused, SERVERS_UNANSWERED_MESSAGE, StoreRefused } from "#/lib/refusal";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners, sealedNames, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
@@ -290,9 +290,9 @@ const policyChangeOf = (set: Extract<Act["action"], { action: "set_server" }>): 
   ...(set.build_concurrency.action === "set" && { buildConcurrency: set.build_concurrency.value }),
 });
 
-const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
+const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approved: string | null) {
   const organizationId = caller.organization.id;
-  const call: OperationCall = { key: attempt, approvalId, loss: lossOf(action) };
+  const call: OperationCall = { key: attempt, approved, loss: lossOf(action) };
   const admitted = (admission: Admission | null, subject: Subject, what: string, serverName: string | null = null) => Effect.gen(function* () {
     if (admission === null) return noSuch(what);
     if (!admission.ok) return { ok: false, refusal: admission.refusal } as const;
@@ -358,8 +358,7 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       const quickSync = action.run.run === "sync" && !action.run.full;
       const lacking = unpermitted(caller, quickSync ? OPERATIONS["volume.sync"].requires : VOLUME_OPERATIONS[volumeRunInput(action.run, "").kind].requires);
       if (lacking !== null) return lacking;
-      // A quick sync asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
-      const carried = quickSync ? yield* carriedInto(caller, approvalId, { command: "sync", subject: `volume:${action.volume}` }) : null;
+      const carried = quickSync ? olderApproval(approved) : null;
       if (carried !== null) return { ok: false, refusal: carried } as const;
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
@@ -395,9 +394,9 @@ const refusalOf = (error: Failure, acting: boolean) => {
     : refused("unavailable", "Cloud couldn't answer this. Try again.");
 };
 
-export const callCloud = (caller: Caller, call: CloudCall, approvalId: string | null = null) =>
+export const callCloud = (caller: Caller, call: CloudCall, approved: string | null = null) =>
   Effect.gen(function* (): Effect.fn.Return<StoreResult<unknown>, CloudError, CloudServices> {
-    return "act" in call ? yield* act(caller, call.act, approvalId) : yield* ask(caller, call.ask);
+    return "act" in call ? yield* act(caller, call.act, approved) : yield* ask(caller, call.ask);
   }).pipe(
     Effect.catch((error) => Effect.succeed(error instanceof BeforeWrite ? refusalOf(error.error, false) : refusalOf(error, "act" in call))),
     Effect.withSpan("CallCloud", { attributes: { call: "act" in call ? call.act.action.action : call.ask.query } }),

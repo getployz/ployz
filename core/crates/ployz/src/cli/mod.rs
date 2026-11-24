@@ -321,9 +321,9 @@ const MALFORMED_VERSION: &str =
     "Use the version ployz diff --json or a refusal gave, such as 3:1:0.1";
 
 pub(crate) fn approval() -> Arg {
-    value("approval", None).value_name("ID").help(
-        "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it",
-    )
+    value("approval", None)
+        .value_name("DIGEST")
+        .help("Go ahead with what you said yes to; the refusal that asks names it")
 }
 
 pub(crate) const VOLUME_ACCEPTANCE: &str =

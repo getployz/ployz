@@ -78,7 +78,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
   ["deleteCopy", (actor) =>
     deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE }).pipe(
       Effect.provideService(OrganizationRuntime, silentCluster)) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
-  ["server_upgrade_policy_set", (actor) => runCommand(caller(actor.userId), "server_upgrade_policy_set", { automatic: true }, { approvalId: null, key: null }) as never, JSON.stringify({ ok: true, output: { channel: "stable", automatic: true } }), ["server/upgrade.requested"]],
+  ["server_upgrade_policy_set", (actor) => runCommand(caller(actor.userId), "server_upgrade_policy_set", { automatic: true }, { approved: null, key: null }) as never, JSON.stringify({ ok: true, output: { channel: "stable", automatic: true } }), ["server/upgrade.requested"]],
 ];
 
 const outcomeOf = async (gate: Gated, userId: string) => {
@@ -134,14 +134,14 @@ describe("Server management and copy deletion", () => {
   it("lets support set the upgrade policy, as an admin can", async () => {
     sent.length = 0;
     const support: Caller = { ...caller(ids.member), role: null, support: { variables: false, configs: false, logs: false } };
-    const outcome = await outcomeOf(() => runCommand(support, "server_upgrade_policy_set", { automatic: false }, { approvalId: null, key: null }) as never, ids.member);
+    const outcome = await outcomeOf(() => runCommand(support, "server_upgrade_policy_set", { automatic: false }, { approved: null, key: null }) as never, ids.member);
     expect([outcome, sent]).toEqual([JSON.stringify({ ok: true, output: { channel: "stable", automatic: false } }), []]);
   });
 
   it("refuses support Server access and member management, as trunk did", async () => {
     const support: Caller = { ...caller(ids.admin), role: null, support: { variables: true, configs: true, logs: true } };
     const access = await outcomeOf(() => provideServerAccess(support as never) as never, ids.admin);
-    const invite = await outcomeOf(() => runCommand(support, "org_member_invite", {}, { approvalId: null, key: null }) as never, ids.admin);
+    const invite = await outcomeOf(() => runCommand(support, "org_member_invite", {}, { approved: null, key: null }) as never, ids.admin);
     expect([JSON.parse(access).refusal.code, JSON.parse(invite).refusal.code]).toEqual(["forbidden", "forbidden"]);
   });
 });

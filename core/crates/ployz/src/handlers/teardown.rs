@@ -872,13 +872,18 @@ mod tests {
             ],
         ] {
             let parsed = crate::cli::command()
-                .try_get_matches_from(["ployz"].iter().chain(args).chain(&["--approval", "apr_1"]))
+                .try_get_matches_from(
+                    ["ployz"]
+                        .iter()
+                        .chain(args)
+                        .chain(&["--approval", "remove:abc"]),
+                )
                 .unwrap_or_else(|error| panic!("{args:?}: {error}"));
             assert_eq!(
                 crate::handlers::leaf_matches(&parsed)
                     .get_one::<String>("approval")
                     .map(String::as_str),
-                Some("apr_1"),
+                Some("remove:abc"),
                 "{args:?}"
             );
         }

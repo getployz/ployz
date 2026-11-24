@@ -385,7 +385,7 @@ it("moves a proposal to Recent once it leaves the waiting list, even before this
   const proposal: ProposalView = {
     id: "p1", status: "presented", project: "shop", environment: "production", environment_id: "e1", steps: [stop],
     progress: [{ index: 1, verb: "stop", service: "web", state: "not_run", reason: null }], halt: null, reason: null,
-    requested_by: "u1", asker: "Ada", created_at: "2026-11-08T12:00:00.000Z", decided_at: null,
+    requested_by: "u1", withdrawn: false, mine: false, decides: true, asker: "Ada", created_at: "2026-11-08T12:00:00.000Z", decided_at: null,
   };
   client.setQueryData(pendingProposalsOptions("acme").queryKey, [proposal]);
   client.setQueryData(proposalOptions("acme", "p1").queryKey, proposal);

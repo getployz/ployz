@@ -380,6 +380,15 @@ pub(crate) fn remove(
     if !held {
         confirm(remove, &reviews, &version)?;
     }
+    // A carried yes is weighed even when nothing is left to take off; its ask still
+    // carries the Environment's diff, as every other removal ask does.
+    let unreviewed = match (&target, reviews.is_empty() && trusted.approval.carried()) {
+        (Target::Environment(id), true) => {
+            let environment = scope::load_by_id(tx, id)?;
+            Some(crate::review::review(tx, &environment)?.view)
+        }
+        _ => None,
+    };
     gate(
         who,
         "remove",
@@ -396,7 +405,9 @@ pub(crate) fn remove(
                 .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
                 .collect();
             match &target {
-                Target::Environment(_) => json!(diffs.values().next()),
+                Target::Environment(_) => {
+                    json!(diffs.values().next().copied().or(unreviewed.as_ref()))
+                }
                 Target::Project(_) => json!(diffs),
             }
         },
@@ -748,7 +759,7 @@ pub(crate) fn gate(
     approval: &Approval,
     diff: impl FnOnce() -> Value,
 ) -> Result<(), RpcError> {
-    if matches!(approval, Approval::NotRequired) || effects.is_empty() {
+    if matches!(approval, Approval::NotRequired) || (effects.is_empty() && !approval.carried()) {
         return Ok(());
     }
     let digest = match target {
@@ -763,8 +774,12 @@ pub(crate) fn gate(
         .map(DestructiveEffect::describe)
         .collect::<Vec<_>>()
         .join(", ");
+    let message = match asked.is_empty() {
+        true => "A human must approve this removal first.".to_owned(),
+        false => format!("A human must approve this first: {asked}"),
+    };
     Err(error::approval_required(
-        format!("A human must approve this first: {asked}"),
+        message,
         &ApprovalRequired {
             id: None,
             digest: digest.to_string(),
@@ -867,8 +882,8 @@ pub(crate) fn cancel(
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running
     );
     // Cancelling a removal keeps what runs, as `cancel_removal` does, so only a
-    // Deployment that ships asks.
-    if theirs && stops && !summary.remove {
+    // Deployment that ships asks. A carried yes must match this cancel whatever it stops.
+    if stops && ((theirs && !summary.remove) || trusted.approval.carried()) {
         approval::approve_cancel(tx, who, &summary, trusted)?;
     }
     let cancelled = deployment::cancel(tx, who, id)?;

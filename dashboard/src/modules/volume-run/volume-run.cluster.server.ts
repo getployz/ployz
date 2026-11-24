@@ -3,8 +3,7 @@ import type { ContainerId, ContainerObservation, CopyRefusal, CopyStart, DockerV
 import { and, eq, inArray, notInArray, or } from "drizzle-orm";
 import { Context, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
-import type { OperationAsked } from "#/modules/approvals/approvals.server";
-import type { OperationVerb } from "#/modules/approvals/approvals";
+import type { OperationAsked, OperationVerb } from "#/modules/operations/asked";
 import { volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";

@@ -46,12 +46,12 @@ impl Store<'_> {
             if self.secrets {
                 refused.message = format!(
                     "{}. --approval can't go with --value, so the retry reads each --value \
-                     from stdin again and asks for a new approval. To finish in one run, run \
-                     it without --json: it waits for the approval.",
+                     from stdin again. To finish in one run, run it without --json: it asks \
+                     yes or no.",
                     refused.message.trim_end_matches('.')
                 );
             }
-            hint = Some(Hint::Retry(self.approving(&asked.id)));
+            hint = Some(Hint::Retry(self.approving(asked.digest())));
         }
         Error::from(error).hint(hint)
     }
@@ -175,14 +175,14 @@ impl Store<'_> {
         }
     }
 
-    /// This command again with approval `id`; a run that gives secrets on stdin asks
-    /// for a new approval instead, so its retry names each `--value` row and no approval.
-    pub(super) fn approving(&self, id: &str) -> String {
+    /// This command again carrying `digest`, the yes it needs; a run that gives secrets
+    /// on stdin asks again instead, so its retry names each `--value` row and no digest.
+    pub(super) fn approving(&self, digest: &str) -> String {
         if self.secrets {
             return self.retry(self.carried());
         }
         self.retry(Carried {
-            approval: Some(id.to_owned()),
+            approval: Some(digest.to_owned()),
             ..self.carried()
         })
     }

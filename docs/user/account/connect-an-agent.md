@@ -9,8 +9,8 @@ your computer, and no token to copy.
 
 This works on [ployz.dev](https://ployz.dev). A [Self-hosted Cloud](../self-hosting.md) doesn't
 serve it; use [`ployz mcp`](../cli/overview.md#give-the-agent-ployz-tools) there. `ployz mcp`
-has its own credential. Run `ployz mcp login` once to give it an agent token, which can't answer
-an approval.
+has its own credential. Run `ployz mcp login` once to give it an agent token, which can't approve
+anything.
 
 ## Connect
 
@@ -65,30 +65,22 @@ in your organization.
 
 ## Approve a deploy
 
-Every deploy or redeploy the agent asks for waits for you, even one that destroys nothing. A save waits
-only when it would remove something. See
-[Destructive actions ask first](organizations.md#destructive-actions-ask-first). The call fails
-with `approval_required`, anything it would remove, and a link to your organization.
+Every deploy the agent asks for waits for you, even one that destroys nothing. The agent gets a
+link to the deploy and passes it to you.
 
-1. Open the link. The approval waits at the top of the [Ployz agent](agent-sidebar.md) under
-   **Waiting on you**.
-2. Read what the deploy does, and click **Approve** or **Deny**.
-3. Tell your agent to try again. It sends the call with the approval, and the deploy goes ahead.
+1. Open the link.
+2. Read what the deploy does, and approve it with your passkey, or deny it.
+3. The agent follows the deploy with `proposal_status` and carries on.
 
-A service stop or restart, and removing or forgetting a server, wait the same way. A server
-drain, removing a project or environment, and releasing a volume wait when they would take
-something off your servers. None of this waits in an [Agent sandbox](try-without-an-account.md)
-nobody has claimed yet.
-
-Until you answer, trying again only asks again, and nothing changes. A denied approval stays
-denied. Only you approve, in the dashboard. The agent can't approve its own request, and
-`ployz org approval approve` refuses it too with `forbidden`, before it asks for the
-organization's slug, with or without a terminal and in `--json`.
+A service stop or restart waits on a link the same way. Anything else that removes something,
+such as a save that removes a service, a redeploy, removing or draining a server, removing a
+project or environment, or releasing a volume, is refused. The agent tells you it needs a person
+and where to do it: in Ployz Cloud, or the `ployz` command when there is one. None of this waits in
+an [Agent sandbox](try-without-an-account.md) nobody has claimed yet.
 
 ## Restart several services at once
 
-Instead of one approval per call, the agent can plan service restarts, stops and starts as a
-proposal. You approve it once in the dashboard, and the steps run in order. The agent gets a link
+The agent can also plan several service restarts, stops and starts as one proposal. You approve it once in the dashboard, and the steps run in order. The agent gets a link
 to the proposal and follows it with `proposal_status`. See
 [Ployz agent](agent-sidebar.md#approve-several-steps-at-once) for the card.
 

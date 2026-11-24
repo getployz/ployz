@@ -1,0 +1,1 @@
+ALTER TABLE "server_drain_attempt" ADD COLUMN "approved" boolean DEFAULT false NOT NULL;

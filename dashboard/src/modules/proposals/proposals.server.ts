@@ -1,16 +1,15 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { Change, ConfigTrusted, DeploymentStatus, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { Change, ConfigTrusted, DeploymentStatus, DestructiveEffect, DiffView, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type AgentCaller, type Actor, type Caller, type Credential, callerEnvironments } from "#/modules/identity/actor";
-import { askerCaller } from "#/modules/approvals/apply.server";
-import { RefusedReview } from "#/modules/approvals/approvals.server";
 import { callStore, readStore, writeStoreAsMember } from "#/modules/config-store/config-store.server";
-import { protector, protectorOnly } from "#/modules/config-store/protected.server";
+import { protector } from "#/modules/config-store/protected.server";
+import { OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
 import { isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
@@ -18,11 +17,11 @@ import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import { oauthCaller } from "#/modules/identity/caller.server";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
-import { organizationToken, session } from "#/modules/identity/tables";
+import { organizationToken, session, user } from "#/modules/identity/tables";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { actService, unheld } from "#/modules/operations/operations.server";
-import { beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
+import { type Access, beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
 import { member } from "#/modules/organization/tables";
 import {
   DEPLOY_MOVED,
@@ -44,6 +43,42 @@ import { Database } from "#/server/database.server";
 import { Forbidden, NotFound } from "#/server/public-error";
 
 type ProposalRow = typeof operationProposals.$inferSelect;
+
+/** The member who asked, acting from the dashboard with what they hold now, through the credential that asked. */
+export const askerCaller = (access: Access, credentialId: string): Caller => ({
+  userId: access.userId,
+  organization: access.organization,
+  credential: { kind: "session", id: credentialId },
+  role: access.kind === "member" ? access.role : null,
+  support: access.kind === "support" ? access.shows : null,
+  via: "dashboard",
+});
+
+/** The names of the people who asked, keyed by their user id, so a card says whom it waits for. */
+export const askerNames = Effect.fn("Proposals.askerNames")(function* (asked: readonly { readonly requested_by: string | null }[]) {
+  const ids = [...new Set(asked.flatMap((row) => row.requested_by ?? []))];
+  if (ids.length === 0) return new Map<string, string>();
+  const { drizzle } = yield* Database;
+  const people = yield* drizzle.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, ids));
+  return new Map(people.map((person) => [person.id, person.name]));
+});
+
+const isEffect = Schema.is(Schema.Struct({ kind: Schema.String, node: Schema.String, path: Schema.String }));
+const isDiff = Schema.is(Schema.Struct({
+  version: Schema.String,
+  environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String }),
+}));
+
+/** The review an `approval_required` refusal carries: the Store's `DestructiveEffect[]` and `DiffView`, by the fields Cloud reads. */
+export const RefusedReview = Schema.Struct({
+  approval: Schema.String,
+  effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
+  diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
+  protected: Schema.optional(Schema.Literal(true)),
+  redeploy: Schema.optional(Schema.Struct({ deployment: Schema.Number, rolls_back: Schema.mutable(Schema.Array(Schema.Number)) })),
+  prunes: Schema.optional(Schema.Literal(true)),
+  dropped: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+});
 
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
 
@@ -68,6 +103,7 @@ function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
     halt: row.halt,
     reason: row.reason,
     requested_by: row.requestedByUserId,
+    withdrawn: row.withdrawn,
     created_at: row.createdAt.toISOString(),
     decided_at: row.decidedAt?.toISOString() ?? null,
   };
@@ -172,14 +208,6 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   if (!draft.ok) return draft;
   const { row } = draft;
   if (row.steps.length === 0) return refused("invalid_argument", "This proposal has no steps. Stage one first.");
-  // Each step runs as the asker once approved, so a Protected Environment takes a proposal only from someone who can protect it.
-  if (row.steps.some((step) => step.verb !== "start")) {
-    const isProtected = yield* environmentProtected(caller.organization.id, row.project, row.environmentId).pipe(
-      Effect.catchTag("StoreRefused", () => Effect.succeed(true)),
-    );
-    const guarded = isProtected ? protectorOnly(caller, row.environment) : null;
-    if (guarded !== null) return { ok: false, refusal: guarded } satisfies Refused;
-  }
   const { drizzle } = yield* Database;
   const [presented] = yield* drizzle.update(operationProposals).set({ status: "presented", updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"))).returning({ id: operationProposals.id });
@@ -448,6 +476,53 @@ type StepStart = { readonly started: true } | { readonly later: true } | { reado
 const started: StepStart = { started: true };
 const later: StepStart = { later: true };
 
+/** Whether `userId` is an owner or admin of the Organization now, who may decide in a Protected Environment. */
+const protectorNow = Effect.fn("Proposals.protectorNow")(function* (userId: string | null, organizationId: string) {
+  if (userId === null) return false;
+  return yield* requireAccessById({ userId }, organizationId, "changes:deploy").pipe(
+    Effect.map((access) => access.kind === "member" && protector(access)),
+    Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, () => Effect.succeed(false)),
+  );
+});
+
+/** Whether `userId` may decide `row` as its Environment stands now: anyone outside a Protected one, else an owner or admin. */
+const protects = Effect.fn("Proposals.protects")(function* (userId: string | null, row: ProposalRow) {
+  const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
+  return !isProtected || (yield* protectorNow(userId, row.organizationId));
+});
+
+/** Whether `steps` hold a Deploy, stop or restart, which a Protected Environment leaves to an owner or admin. */
+const guarded = (steps: readonly ProposalStep[]) => steps.some((step) => isDeploy(step) || step.verb !== "start");
+
+/** Whether `userId` may approve `row`: anyone who answers, unless a Deploy, stop or restart waits in a Protected Environment. */
+const decides = Effect.fn("Proposals.decides")(function* (userId: string | null, row: ProposalRow) {
+  return !guarded(row.steps) || (yield* protects(userId, row));
+});
+
+/** The Environments of `project` that are Protected now, by id; null when the Store can't say, which reads as every one. */
+const protectedIn = Effect.fn("Proposals.protectedIn")(function* (organizationId: string, project: string) {
+  return yield* readStore(organizationId, { query: "environments", project }).pipe(
+    Effect.map(({ environments }) => new Set(environments.flatMap(({ id, protected: isProtected }) => isProtected ? [id] : []))),
+    Effect.catchTag("StoreRefused", () => Effect.succeed(null)),
+  );
+});
+
+/**
+ * `views` as `userId` sees them: which they asked for, and which they may approve. The sidebar polls this, so it reads
+ * each Project's Environments once and the viewer once, however many proposals wait. Deciding checks again, live.
+ */
+export const asSeenBy = Effect.fn("Proposals.asSeenBy")(function* (organizationId: string, userId: string, views: readonly ProposalView[]) {
+  const projects = [...new Set(views.filter((view) => guarded(view.steps)).map((view) => view.project))];
+  const held = new Map(yield* Effect.forEach(projects, (project) => Effect.map(protectedIn(organizationId, project), (ids) => [project, ids] as const)));
+  const isProtected = (view: ProposalView) => {
+    const ids = held.get(view.project);
+    return ids === undefined || ids === null || ids.has(view.environment_id);
+  };
+  const asksProtector = views.some((view) => guarded(view.steps) && isProtected(view));
+  const protects = asksProtector && (yield* protectorNow(userId, organizationId));
+  return views.map((view) => ({ ...view, mine: view.requested_by === userId, decides: !guarded(view.steps) || !isProtected(view) || protects }));
+});
+
 /**
  * Start step `index` as the asker. Started once it is admitted,
  * which a rerun replays; halted, recorded on the proposal, when it can't go, which stops the steps after it; later
@@ -464,6 +539,8 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
       const ran = yield* runDeploy(row, step, asker);
       return "refusal" in ran ? yield* halt(ran.refusal) : ran;
     }
+    // An Environment protected since the approval takes an owner's or admin's: a stop or restart runs only while whoever approved it still could.
+    if (step.verb !== "start" && !(yield* protects(row.decidedByUserId, row))) return yield* halt(`${row.environment} is Protected now. An owner or admin must approve it.`);
     const checked = yield* checkedService(row, step);
     if (checked.found === undefined) return yield* halt(checked.refusal);
     const { found } = checked;
@@ -472,7 +549,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
     const admission = yield* actService(
       askerCaller(access, row.credentialId),
       { ...body, ...found, verb: step.verb, digest: bodyDigest(`service_${step.verb}`, body), proposal: { id: row.id, step: index } },
-      { key: stepKey(row, index), approvalId: null },
+      { key: stepKey(row, index), approved: null },
     );
     return admission.ok ? started : yield* halt(admission.refusal.message);
   }).pipe(
@@ -568,10 +645,19 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const { drizzle } = yield* Database;
   const now = new Date();
   const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
-  const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
+  const deny = (reason: string | null, withdrawn = false) => drizzle.update(operationProposals).set({ status: "denied", reason, withdrawn, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
+  // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
+  // or restart: approves it, or rejects another member's request, which ends the ask for good. The one who asked may
+  // always withdraw it: their rejection of their own request runs nothing.
+  const withdraws = "reject" in decision && row.requestedByUserId !== null && row.requestedByUserId === decider.userId;
+  if (!withdraws && !(yield* decides(decider.userId, row))) {
+    // A Deploy's approval says it in the Deploy's own words.
+    const [first] = row.steps;
+    if ("reject" in decision || first === undefined || !isDeploy(first)) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;
+  }
   if ("reject" in decision) {
-    const [denied] = yield* deny(decision.reject.reason?.trim() || null);
+    const [denied] = yield* deny(decision.reject.reason?.trim() || null, withdraws);
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
   const [first] = row.steps;

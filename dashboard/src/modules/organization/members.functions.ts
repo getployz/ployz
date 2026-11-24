@@ -14,7 +14,7 @@ import { authenticated, callerMiddleware, OrganizationSlugInput, publicErrorMidd
 const Slug = Schema.NonEmptyString;
 
 const ranResult = <N extends CommandName>(caller: Caller, name: N, input: JsonValue) => Effect.gen(function* () {
-  const result = yield* runCommand(caller, name, input, { approvalId: null, key: null });
+  const result = yield* runCommand(caller, name, input, { approved: null, key: null });
   if (!result.ok) return yield* new Validation({ message: result.refusal.message, userFacing: true });
   return result;
 });

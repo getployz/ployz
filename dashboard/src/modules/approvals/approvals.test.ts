@@ -1,6 +1,7 @@
 import type { ConfigCommand, DestructiveEffect } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { type ApprovalReview, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine, destroyedLines, renamedAddresses } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalCommand, approvalSubject, approvalTarget, destroyedLine, destroyedLines, renamedAddresses } from "#/modules/approvals/approvals";
+import { asksApproval } from "#/modules/config-store/store-asks";
 import { approvalBadge } from "#/components/agent-sidebar/approval-copy";
 import { asTestDouble } from "#/lib/test-double";
 

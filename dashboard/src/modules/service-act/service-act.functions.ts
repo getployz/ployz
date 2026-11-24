@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { actService } from "#/modules/operations/operations.server";
@@ -23,6 +23,9 @@ export const latestServiceActServerFn = createServerFn({ method: "GET" })
     return yield* latestServiceAct(organization.id, { environment: data.environmentId, service: data.service });
   })));
 
+/** The refusal that names a presented proposal and where it's approved. */
+const presented = Schema.decodeUnknownOption(Schema.Struct({ proposal_id: Schema.String, url: Schema.String }));
+
 const ActServiceInput = Schema.Struct({
   ...ServiceSubject.fields,
   verb: Schema.Literals(SERVICE_ACT_VERBS),
@@ -40,10 +43,11 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
     const admission = yield* actService(
       caller,
       { ...body, ...found, verb: data.verb, digest: bodyDigest(tool, body) },
-      { key: data.requestId, approvalId: null },
+      { key: data.requestId, approved: null },
     );
-    // A stop or restart in a Protected Environment its asker can't protect waits for someone who can.
-    if (!admission.ok && admission.refusal.code === "approval_required") return { requested: true as const };
+    // A stop or restart in a Protected Environment its asker can't protect waits on the page someone who can approves it on.
+    const proposed = admission.ok ? Option.none() : presented(admission.refusal.details);
+    if (Option.isSome(proposed)) return { requested: true as const, url: proposed.value.url };
     if (!admission.ok) return yield* new Conflict({ message: admission.refusal.message, userFacing: true });
     return { id: admission.id };
   })));

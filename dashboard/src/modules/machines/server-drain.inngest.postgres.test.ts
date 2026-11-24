@@ -322,13 +322,56 @@ describe("drain-server", () => {
       attemptId: requestId,
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
-      approvalId: null,
       planDigest: "",
+      approved: false,
       serverName: null,
     }));
     await drain(attemptId);
 
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api", "shop-production/db"] }]]);
+  });
+
+  // Catches a CLI yes to retiring a Global's last copy draining a plan nobody saw once that copy no longer was the last.
+  it("refuses a CLI Drain a person said yes to once its plan changed, even to one that destroys nothing", async () => {
+    frame = frameOf("replicated");
+    const yesTo = (approved: boolean) => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: approved ? requestId : secondTab, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved, serverName: null,
+    }));
+
+    await drain(await yesTo(true));
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{
+      end_code: "refused", refusal_message: "The drain changed since you said yes. Drain the server again to review it.",
+    }]);
+
+    await drain(await yesTo(false), machineId, "run-unasked");
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
+
+  // Catches a Drain admitted by an approval row before upgrade draining a changed plan, read as nobody's yes.
+  it("reads a Drain row that names an older approval as a yes, so a changed plan runs nothing", async () => {
+    frame = frameOf("replicated");
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved: false, serverName: null,
+    }));
+    await harness.pool.query(`update server_drain_attempt set approval_id = $1`, [crypto.randomUUID()]);
+
+    await drain(attemptId);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: "The drain changed since you said yes. Drain the server again to review it." }]);
+  });
+
+  // Catches a yes to one plan reaching the Store with no plan at all once its Server left the frame.
+  it("runs nothing for a Drain a person said yes to once its Server is gone from the frame", async () => {
+    const replicated = frameOf("replicated");
+    frame = asTestDouble<RuntimeWatchView>()({ ...replicated, machines: replicated.machines.filter(({ machine }) => machine.id !== machineId) });
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved: true, serverName: null,
+    }));
+
+    await drain(attemptId);
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused" }]);
   });
 
   it("a dashboard Drain that destroys nothing records no approval and drains only the services it planned", async () => {
@@ -369,19 +412,6 @@ describe("drain-server", () => {
       refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
       started_at: null,
     }]);
-  });
-
-  it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
-    const approvalId = "00000000-0000-4000-8000-0000000000b1";
-    const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      attemptId, machineId, targets: ["shop-production/api"], approvalId, planDigest: "", serverName: null,
-    }));
-    const attemptId = await cli(requestId);
-    await drain(attemptId);
-
-    expect(await cli(secondTab)).toBe(attemptId);
-    expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
-    expect(drainCalls).toHaveLength(1);
   });
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {

@@ -9,7 +9,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
 import { fillDeployServerFn } from "#/modules/proposals/proposals.functions";
 import { DEPLOY_MOVED, isDeploy } from "#/modules/proposals/proposal";
-import { prunes } from "#/modules/approvals/approvals";
+import { prunes } from "#/modules/deploy-approval/review";
 import { decideProposal, landProposal, proposalOptions } from "#/modules/proposals/proposals.queries";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
@@ -35,7 +35,9 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<"passkey" | "sending" | null>(null);
   const step = proposal?.steps[0];
-  const waiting = proposal?.status === "presented" && step !== undefined && isDeploy(step);
+  // The one who asked, waiting on an owner or admin, plans nothing here: the card lets them withdraw it.
+  const withdrawOnly = proposal?.mine === true && !proposal.decides;
+  const waiting = proposal?.status === "presented" && step !== undefined && isDeploy(step) && !withdrawOnly;
   const command = waiting ? step.deploy.command : null;
   const review = waiting ? step.deploy.review?.review : undefined;
 
@@ -71,12 +73,9 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   }, [organizationSlug, id, command, queryClient]);
 
   if (isPending) return <Skeleton className="h-40 w-full" />;
-  if (proposal === null || proposal === undefined) return <Note title="Nothing to approve here" body="This link doesn't name a deploy in this organization." />;
-  if (!waiting) {
-    return step !== undefined && !isDeploy(step) && proposal.status === "presented"
-      ? <Note title="Not a deploy" body="Approve this one from the agent sidebar." />
-      : <ProposalCard organizationSlug={organizationSlug} id={id} seed={proposal} />;
-  }
+  if (proposal === null || proposal === undefined) return <Note title="Nothing to approve here" body="This link doesn't name anything waiting in this organization." />;
+  // A stop or restart, or a decided proposal: its card approves or shows it.
+  if (!waiting) return <ProposalCard organizationSlug={organizationSlug} id={id} seed={proposal} />;
   if (page.kind === "reading") return <Skeleton aria-label="Checking this deploy" className="h-40 w-full" />;
   if (page.kind === "stopped") return <Note title="Not approved" body={page.message} />;
 

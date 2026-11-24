@@ -251,7 +251,7 @@ fn serve(
     reader.read_line(&mut request)?;
     let method = request.split(' ').next().unwrap_or_default().to_owned();
     let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
-    let (mut length, mut organization, mut approval) = (0, None, None);
+    let (mut length, mut organization, mut approval, mut key) = (0, None, None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header)?;
@@ -264,6 +264,9 @@ fn serve(
         }
         if let Some(value) = header.strip_prefix("x-ployz-approval:") {
             approval = Some(value.trim().to_owned());
+        }
+        if let Some(value) = header.strip_prefix("x-ployz-request-key:") {
+            key = Some(value.trim().to_owned());
         }
         if let Some(value) = header.strip_prefix("authorization: bearer ployz_") {
             // Cloud names who acts: here, the token's Organization.
@@ -291,10 +294,6 @@ fn serve(
             if let Some(refused) = approvals.gate(&mut body, approval.as_deref()) =>
         {
             refused
-        }
-        (Some(_), decide) if decide.starts_with("/api/cli/approvals/") => {
-            let id = decide.trim_start_matches("/api/cli/approvals/");
-            approvals.answer(&method, id, &body)
         }
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
@@ -434,7 +433,7 @@ fn serve(
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), "/api/logs/read") => (200, json!({ "lines": [], "cursor": null })),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
-            approvals.run(&method, route, &body, approval.as_deref())
+            approvals.run(&method, route, &body, approval.as_deref(), key.as_deref())
         }
         (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
     };
@@ -655,15 +654,25 @@ fn github() -> Trusted {
     }
 }
 
+/// What the fake Cloud asks a yes for, and what it ran.
 #[derive(Default)]
 struct Approvals {
-    rows: Vec<(&'static str, &'static str)>,
+    /// Whether a destructive write or operation asks a yes at all.
+    asks: bool,
+    /// Whether the plan moves once Cloud has asked, so a yes to what it showed no longer
+    /// matches its digest.
+    moves: bool,
+    /// Whether Cloud asks even a request that carries the digest, as a plan that moves on
+    /// every read does.
+    asks_every_time: bool,
     deletes_volume: Option<&'static str>,
-    /// Whether staging an edit needs approval too.
+    /// Whether staging an edit asks too.
     edits: bool,
-    asking: std::sync::Mutex<usize>,
-    calls: std::sync::Mutex<Vec<(String, String, Value)>>,
+    /// How many times Cloud asked.
+    asked: std::sync::Mutex<usize>,
     runs: std::sync::Mutex<Vec<String>>,
+    /// The request key each run carried, in the order of `runs`.
+    keys: std::sync::Mutex<Vec<Option<String>>>,
     bodies: std::sync::Mutex<Vec<Value>>,
     /// Each Store command the gate weighed, as Cloud received it.
     gated: std::sync::Mutex<Vec<Value>>,
@@ -671,30 +680,27 @@ struct Approvals {
 }
 
 impl Approvals {
-    fn of(rows: &[(&'static str, &'static str)]) -> Self {
+    fn asking() -> Self {
         Self {
-            rows: rows.to_vec(),
+            asks: true,
             ..Self::default()
         }
     }
 
-    fn calls(&self) -> Vec<(String, String, Value)> {
-        self.calls.lock().unwrap().clone()
+    /// The digest of what `verb` would do now.
+    fn plan(&self, verb: &str) -> String {
+        let moved = self.moves && *self.asked.lock().unwrap() > 0;
+        format!("{verb}:{}", if moved { "moved" } else { "abc" })
     }
 
-    fn status(&self, id: &str) -> &'static str {
-        let calls = self.calls.lock().unwrap();
-        let posted = calls.iter().rev().find_map(|(method, call, decision)| {
-            (method == "POST" && call == id).then(|| match decision.get("approve") {
-                Some(_) => "approved",
-                None => "denied",
-            })
-        });
-        let polled = calls
-            .iter()
-            .any(|(method, call, _)| method == "GET" && call == id);
-        let decided = self.rows.iter().find(|row| row.0 == id).unwrap().1;
-        posted.unwrap_or(if polled { decided } else { "pending" })
+    /// Whether `approval` is a yes to what `verb` would do now; asks when it isn't.
+    fn said_yes(&self, verb: &str, approval: Option<&str>) -> Result<(), String> {
+        let plan = self.plan(verb);
+        if !self.asks || (approval == Some(plan.as_str()) && !self.asks_every_time) {
+            return Ok(());
+        }
+        *self.asked.lock().unwrap() += 1;
+        Err(plan)
     }
 
     fn gate(&self, body: &mut Vec<u8>, approval: Option<&str>) -> Option<(u16, Value)> {
@@ -704,7 +710,7 @@ impl Approvals {
             .iter()
             .any(|asking| command["command"] == *asking)
             || (self.edits && command["command"] == "edit");
-        if self.rows.is_empty() || !(deploy || asks) {
+        if !self.asks || !(deploy || asks) {
             return None;
         }
         self.gated.lock().unwrap().push(command.clone());
@@ -719,24 +725,16 @@ impl Approvals {
             }
             *body = without_accepted_loss(command);
         }
-        let mut asking = self.asking.lock().unwrap();
-        match approval.map(|id| (id, self.status(id))) {
-            Some((_, "approved")) => return None,
-            Some((id, "denied")) => {
-                let error = denied(
-                    id,
-                    "A human denied the request to save production: the worker still drains",
-                );
-                return Some((403, json!({ "error": error })));
-            }
-            Some((_, "superseded")) => *asking += 1,
-            _ => {}
-        }
-        Some((409, json!({ "error": asked(self.rows[*asking].0) })))
+        let digest = self.said_yes("3", approval).err()?;
+        Some((409, json!({ "error": asked(&digest) })))
     }
 
     fn runs(&self) -> Vec<String> {
         self.runs.lock().unwrap().clone()
+    }
+
+    fn keys(&self) -> Vec<Option<String>> {
+        self.keys.lock().unwrap().clone()
     }
 
     fn bodies(&self) -> Vec<Value> {
@@ -754,9 +752,16 @@ impl Approvals {
         assert!(!waited.timed_out(), "never ran {run}: {runs:?}");
     }
 
-    fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
+    fn run(
+        &self,
+        method: &str,
+        route: &str,
+        body: &[u8],
+        approval: Option<&str>,
+        key: Option<&str>,
+    ) -> (u16, Value) {
         let carried = approval
-            .map(|id| format!(" approved by {id}"))
+            .map(|digest| format!(" with {digest}"))
             .unwrap_or_default();
         // Every run reports itself; the runs under test are the command's own.
         if route != "agent/calls" {
@@ -764,6 +769,7 @@ impl Approvals {
                 .lock()
                 .unwrap()
                 .push(format!("{method} {route}{carried}"));
+            self.keys.lock().unwrap().push(key.map(str::to_owned));
         }
         self.ran.notify_all();
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -849,59 +855,29 @@ impl Approvals {
         effect: Value,
         started: &str,
     ) -> (u16, Value) {
-        if let Some(id) = approval.filter(|id| self.status(id) == "denied") {
-            let message = format!(
-                "A human denied the request to {} {}: declined",
-                operation["verb"].as_str().unwrap(),
-                operation["name"].as_str().unwrap()
-            );
-            let error = denied(id, &message);
-            return (403, json!({ "error": error }));
-        }
-        let approved = approval.is_some_and(|id| self.status(id) == "approved");
-        if self.rows.is_empty() || approved {
+        let Err(digest) = self.said_yes(operation["verb"].as_str().unwrap(), approval) else {
             return (202, json!({ "id": started }));
-        }
+        };
         let error = json!({
             "code": "approval_required",
-            "message": format!("A human must approve this first: this {} touches {}", operation["verb"], operation["name"]),
+            "message": format!("This {} of {} needs a yes.", operation["verb"].as_str().unwrap(), operation["name"].as_str().unwrap()),
             "details": {
-                "approval_id": self.rows[0].0,
-                "approval": format!("{}:abc", operation["verb"].as_str().unwrap()),
+                "approval": digest,
                 "effects": [effect],
                 "operation": operation,
             },
         });
         (409, json!({ "error": error }))
     }
-
-    fn answer(&self, method: &str, id: &str, body: &[u8]) -> (u16, Value) {
-        let decision = serde_json::from_slice(body).unwrap_or(Value::Null);
-        let status = self.status(id);
-        self.calls
-            .lock()
-            .unwrap()
-            .push((method.to_owned(), id.to_owned(), decision));
-        (200, json!({ "approval": { "id": id, "status": status } }))
-    }
 }
 
-/// Cloud's `approval_denied` refusal keeps the approval in `details` and out of the message.
-fn denied(id: &str, message: &str) -> Value {
-    json!({
-        "code": "approval_denied",
-        "message": message,
-        "details": { "approval": { "id": id, "status": "denied" } },
-    })
-}
-
-fn asked(id: &str) -> Value {
+/// Cloud's ask before a save, naming `digest` as what it would do.
+fn asked(digest: &str) -> Value {
     json!({
         "code": "approval_required",
-        "message": "A human must approve this first: this publish removes Service worker",
+        "message": "This save removes Service worker.",
         "details": {
-            "approval_id": id,
-            "approval": "3:abc",
+            "approval": digest,
             "effects": [{ "kind": "removes_service", "name": "worker", "node": "svc_1", "path": "worker" }],
             "diff": {
                 "environment": {
@@ -930,8 +906,8 @@ fn without_accepted_loss(mut command: Value) -> Vec<u8> {
     serde_json::to_vec(&command).unwrap()
 }
 
-fn approving(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
-    serving(Approvals::of(rows))
+fn approving() -> (Target, std::sync::Arc<Approvals>) {
+    serving(Approvals::asking())
 }
 
 fn serving(approvals: Approvals) -> (Target, std::sync::Arc<Approvals>) {
@@ -949,24 +925,6 @@ fn serving(approvals: Approvals) -> (Target, std::sync::Arc<Approvals>) {
     ok(&target, &["service", "add", "web", "--image", "nginx:1"]);
     (target, approvals)
 }
-
-fn approve_in_cloud(target: &Target, id: &str) {
-    let Target::Cloud { url, token } = target else {
-        unreachable!("approvals live in Cloud")
-    };
-    let body = json!({ "approve": { "digest": "3:abc" } }).to_string();
-    let mut stream = TcpStream::connect(url.trim_start_matches("http://")).unwrap();
-    write!(
-        stream,
-        "POST /api/cli/approvals/{id} HTTP/1.1\r\nauthorization: Bearer {token}\r\ncontent-length: {}\r\n\r\n{body}",
-        body.len()
-    )
-    .unwrap();
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply).unwrap();
-    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-}
-
 const CLOUD_SERVER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OFFLINE_SERVER: &str = "cccccccccccccccccccccccccccccccc";
 const BUSY_SERVER: &str = "dddddddddddddddddddddddddddddddd";
@@ -1017,8 +975,11 @@ fn cloud_server() -> ployz_core::Machine {
     }
 }
 
-fn running(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
-    let approvals = std::sync::Arc::new(Approvals::of(rows));
+fn running(asks: bool) -> (Target, std::sync::Arc<Approvals>) {
+    let approvals = std::sync::Arc::new(Approvals {
+        asks,
+        ..Approvals::default()
+    });
     let target = Target::Cloud {
         url: cloud(
             dispatch,
@@ -7088,8 +7049,11 @@ fn ployz_fed(target: &Target, args: &[&str], input: &str) -> (Option<i32>, Strin
 }
 
 #[test]
-fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approval() {
-    let (target, approvals) = approving(&[("apr_1", "pending")]);
+fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest() {
+    let (target, approvals) = serving(Approvals {
+        asks_every_time: true,
+        ..Approvals::asking()
+    });
     ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
     for (args, retry) in [
         (
@@ -7105,11 +7069,11 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
                 "web.env.DEBUG",
                 "--close",
             ][..],
-            "ployz env sync --to --only web --skip web.env.DEBUG --close --approval apr_1 --env fix-web",
+            "ployz env sync --to --only web --skip web.env.DEBUG --close --approval 3:abc --env fix-web",
         ),
         (
             &["env", "sync", "--from", "fix-web", "--version", REVIEWED],
-            "ployz env sync --from fix-web --version 3:1:0.1 --approval apr_1",
+            "ployz env sync --from fix-web --version 3:1:0.1 --approval 3:abc",
         ),
         (
             &[
@@ -7122,7 +7086,7 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
                 "--env",
                 "fix-web",
             ],
-            "ployz env sync --take production --only web --approval apr_1 --env fix-web",
+            "ployz env sync --take production --only web --approval 3:abc --env fix-web",
         ),
         (
             &[
@@ -7144,21 +7108,21 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
                 "shop",
             ],
             "ployz env pr acme/web --on --from production --copy web --setup 'web=make seed' \
-             --remove-on-close false --bots true --approval apr_1 --project shop",
+             --remove-on-close false --bots true --approval 3:abc --project shop",
         ),
         (
             &["env", "pr", "acme/web", "--off"],
-            "ployz env pr acme/web --off --approval apr_1",
+            "ployz env pr acme/web --off --approval 3:abc",
         ),
         (
             &["org", "build-order", "servers-only"],
-            "ployz org build-order servers-only --approval apr_1",
+            "ployz org build-order servers-only --approval 3:abc",
         ),
     ] {
         let refused = error(&target, args);
         assert_eq!(refused["code"], json!("approval_required"), "{refused}");
         assert_eq!(refused["details"]["retry"], json!(retry), "{args:?}");
-        // The retry parses and asks again while the approval is pending.
+        // The retry parses, and Cloud weighs it again.
         let words = shell_words::split(retry).unwrap();
         let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
         let again = error(&target, &words);
@@ -7176,16 +7140,12 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_approva
         };
         assert_eq!(receipt(retried), receipt(first), "{args:?}");
     }
-    assert!(
-        approvals.calls().is_empty(),
-        "--json never waits or decides"
-    );
 }
 
 #[test]
 fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     const SECRET: &str = "s3cret-sync-value";
-    let (target, _) = approving(&[("apr_1", "approved")]);
+    let (target, _) = approving();
     ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
     let secret = ["set", "web.env.API_KEY", "--secret", "--env", "fix-web"];
     let (code, set) = ployz_with_stdin(&target, &secret, "branch-key\n");
@@ -7217,15 +7177,13 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     assert!(
         message.ends_with(
             ". --approval can't go with --value, so the retry reads each --value from stdin \
-             again and asks for a new approval. To finish in one run, run it without --json: \
-             it waits for the approval."
+             again. To finish in one run, run it without --json: it asks yes or no."
         ),
         "{message}"
     );
 
-    // Even approved, an approval never rides along with secrets.
-    approve_in_cloud(&target, "apr_1");
-    let approved = [&sync[..], &["--approval", "apr_1"]].concat();
+    // A yes never rides along with secrets.
+    let approved = [&sync[..], &["--approval", "3:abc"]].concat();
     let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &approved].concat(), &fed);
     assert_eq!(code, Some(2), "{stdout}{stderr}");
     assert!(
@@ -7241,9 +7199,8 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     assert_eq!(
         refused["error"]["message"],
         json!(
-            "Expected --approval without --value: an approval can't carry secrets given again \
-             on stdin. Run the sync without --approval and without --json: it waits for a new \
-             approval."
+            "Expected --approval without --value: a yes can't carry secrets given again on \
+             stdin. Run the sync without --approval and without --json: it asks yes or no."
         )
     );
 
@@ -7264,49 +7221,38 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     );
     assert_eq!(again["error"]["details"]["retry"], json!(retry));
 
-    // A person without a terminal waits for the approval, and sees no secret either.
-    let (target, approvals) = approving(&[("apr_1", "approved")]);
-    ok(&target, &["env", "branch", "fix-web", "--copy", "web"]);
-    let (code, set) = ployz_with_stdin(&target, &secret, "branch-key\n");
-    assert_eq!(code, Some(0), "{set}");
+    // A person without a terminal can't say yes, and sees no secret either.
     let (code, stdout, stderr) = ployz_fed(&target, &sync, &fed);
-    assert_eq!(code, Some(0), "{stdout}{stderr}");
-    assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud"),
-        "{stderr}"
-    );
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(stderr.contains("Saying yes needs a terminal."), "{stderr}");
     assert!(
         !stdout.contains(SECRET) && !stderr.contains(SECRET),
         "{stdout}{stderr}"
     );
-    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
 }
 
 #[test]
-fn an_agent_gets_the_approval_a_save_needs_and_retries_with_it() {
-    let (target, approvals) = approving(&[("apr_1", "approved")]);
+fn under_json_a_save_names_its_digest_and_the_retry_saves() {
+    let (target, approvals) = approving();
     let refused = error(&target, &["deploy", "--skip-deploy"]);
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
-    assert_eq!(refused["details"]["approval_id"], json!("apr_1"));
+    assert_eq!(refused["details"]["approval"], json!("3:abc"));
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz deploy --skip-deploy --approval apr_1"),
+        json!("ployz deploy --skip-deploy --approval 3:abc"),
         "{refused}"
     );
-    let pending = error(&target, &["deploy", "--skip-deploy", "--approval", "apr_1"]);
-    assert_eq!(pending["code"], json!("approval_required"), "{pending}");
-    assert!(
-        approvals.calls().is_empty(),
-        "--json never waits or decides"
-    );
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
+    ok(&target, &["deploy", "--skip-deploy", "--approval", "3:abc"]);
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(true));
+    assert_eq!(approvals.gated.lock().unwrap().len(), 2);
 }
 
 #[test]
-fn a_patch_that_needs_approval_retries_as_set() {
+fn a_patch_that_asks_retries_as_set() {
     let (target, _) = serving(Approvals {
-        rows: vec![("apr_1", "pending")],
         edits: true,
-        ..Approvals::default()
+        ..Approvals::asking()
     });
     let refused = error(&target, &["set", "web", "--patch", r#"{"replicas":3}"#]);
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
@@ -7315,110 +7261,33 @@ fn a_patch_that_needs_approval_retries_as_set() {
 }
 
 #[test]
-fn without_a_terminal_a_save_waits_until_a_human_approves_it() {
-    let (target, approvals) = approving(&[("apr_1", "approved")]);
+fn without_a_terminal_a_save_shows_what_it_destroys_and_saves_nothing() {
+    let (target, _) = approving();
     let home = tempfile::tempdir().unwrap();
     let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
-    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(code, Some(2), "{stderr}");
     assert!(
         stderr.contains(
             "The next deploy after this save destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         ),
         "{stderr}"
     );
-    // A token's approval names no Organization, so the CLI can't link the agent's panel.
     assert!(
-        stderr.contains("Approve apr_1 in Ployz Cloud at http://"),
+        stderr.contains("Nothing saved. Saying yes needs a terminal."),
         "{stderr}"
     );
-    assert!(!stderr.contains("Waiting on you"), "{stderr}");
     assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud… approved.\n"),
+        stderr.contains("retry: ployz deploy --skip-deploy --approval 3:abc"),
         "{stderr}"
     );
-    let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
-    assert_eq!(polls, ["GET", "GET"], "pending, then approved");
-}
-
-#[test]
-fn without_a_terminal_a_denied_save_fails_with_the_reason() {
-    let (target, approvals) = approving(&[("apr_1", "denied")]);
-    let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
-    assert_eq!(code, Some(1), "{stderr}");
-    assert!(
-        stderr.contains("A human denied the request to save production: the worker still drains"),
-        "{stderr}"
-    );
-    // The wait names the approval to answer; a denied one has no retry to name it in.
-    let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
-    assert!(!denial.contains("apr_1"), "{stderr}");
-    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
-    let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
-}
-
-#[cfg(unix)]
-#[test]
-fn without_a_terminal_ctrl_c_stops_the_wait_and_saves_nothing() {
-    let (target, approvals) = approving(&[("apr_1", "pending")]);
-    let home = tempfile::tempdir().unwrap();
-    let mut child = target
-        .command(home.path())
-        .args(["deploy", "--skip-deploy"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let mut seen = String::new();
-    let mut chunk = [0; 256];
-    while !seen.contains("Waiting for approval in Ployz Cloud") {
-        let read = stderr.read(&mut chunk).unwrap();
-        assert_ne!(read, 0, "{seen}");
-        seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
-    }
-    let pid = child.id().to_string();
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &pid])
-            .status()
-            .unwrap()
-            .success()
-    );
-    stderr.read_to_string(&mut seen).unwrap();
-    assert_eq!(child.wait().unwrap().code(), Some(130), "{seen}");
-    assert!(
-        seen.contains("Stopped waiting; the approval stays pending in Ployz Cloud."),
-        "{seen}"
-    );
-    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
-    let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
-}
-
-#[test]
-fn without_a_terminal_a_superseded_approval_waits_on_the_new_one() {
-    let (target, approvals) = approving(&[("apr_1", "superseded"), ("apr_2", "approved")]);
-    let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
-    assert_eq!(code, Some(0), "{stderr}");
-    assert_eq!(
-        stderr
-            .matches("The next deploy after this save destroys 1 thing:")
-            .count(),
-        2,
-        "{stderr}"
-    );
-    let polled: Vec<_> = approvals.calls().into_iter().map(|call| call.1).collect();
-    assert_eq!(polled, ["apr_1", "apr_1", "apr_2", "apr_2"]);
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
 }
 
 #[test]
 fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
-    let (target, approvals) = serving(Approvals {
+    let (target, _) = serving(Approvals {
         deletes_volume: Some("data"),
-        ..Approvals::of(&[("apr_1", "pending")])
+        ..Approvals::asking()
     });
     let mut args = vec!["deploy".to_owned(), "--detach".to_owned()];
     let mut refused = Vec::new();
@@ -7431,9 +7300,6 @@ fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
         let error = &json["error"];
         refused.push(error["code"].as_str().unwrap().to_owned());
         assert!(refused.len() <= 2, "{refused:?}, then {json}");
-        if let Some(id) = error["details"]["approval_id"].as_str() {
-            approve_in_cloud(&target, id);
-        }
         let retry = shell_words::split(error["details"]["retry"].as_str().unwrap()).unwrap();
         args = retry[1..].to_vec();
     };
@@ -7448,12 +7314,10 @@ fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
             "--expect-version",
             REVIEWED,
             "--approval",
-            "apr_1"
+            "3:abc"
         ]
     );
     assert_eq!(deployed["number"], json!(1), "admitted: {deployed}");
-    let decided: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
-    assert_eq!(decided, ["POST"], "only the human decided");
 }
 
 /// Undo what makes ployz skip its prompts: CI, or a terminal that can't show them.
@@ -7493,36 +7357,66 @@ fn at_a_terminal(target: &Target, args: &str, typed: &str) -> (Option<i32>, Stri
 
 #[cfg(target_os = "linux")]
 #[test]
-fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
-    let (target, approvals) = approving(&[("apr_1", "approved")]);
-    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "staging\n");
+fn at_a_terminal_a_no_saves_nothing() {
+    let (target, approvals) = approving();
+    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "n\n");
     assert_eq!(code, Some(130), "{screen}");
-    assert!(screen.contains("Type production to continue"), "{screen}");
     assert!(
-        screen.contains("Nothing saved; the approval stays pending in Ployz Cloud."),
+        screen.contains("removes Service worker") && screen.contains("Go ahead with"),
         "{screen}"
     );
-    assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");
+    assert!(screen.contains("Nothing saved."), "{screen}");
+    assert_eq!(approvals.gated.lock().unwrap().len(), 1, "asked once");
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn at_a_terminal_the_environment_name_approves_and_saves() {
-    let (target, approvals) = approving(&[("apr_1", "pending")]);
-    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "production\n");
+fn at_a_terminal_a_yes_saves_once() {
+    let (target, approvals) = approving();
+    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "y\n");
     assert_eq!(code, Some(0), "{screen}");
-    assert!(screen.contains("Type production to continue"), "{screen}");
-    let approve = json!({ "approve": { "digest": "3:abc" } });
+    assert!(screen.contains("Go ahead with"), "{screen}");
     assert_eq!(
-        approvals.calls(),
-        [("POST".to_owned(), "apr_1".to_owned(), approve)]
+        approvals.gated.lock().unwrap().len(),
+        2,
+        "the ask, then the resend with its digest"
     );
+    assert_eq!(*approvals.asked.lock().unwrap(), 1, "{screen}");
     assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(true));
+}
+
+/// The yes names the plan that was shown. Cloud's plan moved before the resend, so
+/// nothing saves, and the CLI asks for no second yes on its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn at_a_terminal_a_yes_to_a_plan_that_moved_saves_nothing() {
+    let (target, approvals) = serving(Approvals {
+        moves: true,
+        ..Approvals::asking()
+    });
+    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "y\ny\n");
+    assert_eq!(code, Some(1), "{screen}");
+    assert!(
+        screen.contains(
+            "It changed after your yes, so nothing saved. Run it again to see what it does now."
+        ),
+        "{screen}"
+    );
+    assert_eq!(
+        screen
+            .matches("The next deploy after this save destroys 1 thing:")
+            .count(),
+        1,
+        "shown once: {screen}"
+    );
+    assert_eq!(approvals.gated.lock().unwrap().len(), 2);
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
 }
 
 #[test]
 fn signed_in_a_drain_runs_in_cloud() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let drained = ok(&target, &["server", "drain", CLOUD_SERVER]);
     assert_eq!(drained["services_role"], json!("turned_off"), "{drained}");
     assert_eq!(drained["server"]["name"], json!("web-1"), "{drained}");
@@ -7538,7 +7432,7 @@ fn signed_in_a_drain_runs_in_cloud() {
 
 #[test]
 fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let upgraded = ok(&target, &["server", "upgrade", "stable", CLOUD_SERVER]);
     assert_eq!(
         upgraded["attempts"][0]["outcome"],
@@ -7579,7 +7473,7 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
 
 #[test]
 fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let (code, upgraded) = ployz(
         Some(&target),
         &[
@@ -7652,7 +7546,7 @@ fn said(output: &std::process::Output) -> String {
 
 #[test]
 fn a_cloud_upgrade_chosen_by_id_names_the_server_not_its_id() {
-    let (target, _) = running(&[]);
+    let (target, _) = running(false);
     let home = tempfile::tempdir().unwrap();
     let output = target
         .command(home.path())
@@ -7669,7 +7563,7 @@ fn a_cloud_upgrade_chosen_by_id_names_the_server_not_its_id() {
 
 #[test]
 fn stopping_a_cloud_drain_chosen_by_id_names_the_server_not_its_id() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let home = tempfile::tempdir().unwrap();
     let child = target
         .command(home.path())
@@ -7693,8 +7587,8 @@ fn stopping_a_cloud_drain_chosen_by_id_names_the_server_not_its_id() {
 }
 
 #[test]
-fn an_agent_gets_the_approval_a_cleanup_needs() {
-    let (target, approvals) = running(&[("apr_1", "approved")]);
+fn under_json_a_cleanup_names_the_retry_that_carries_its_digest() {
+    let (target, approvals) = running(true);
     let refused = error(
         &target,
         &[
@@ -7713,16 +7607,15 @@ fn an_agent_gets_the_approval_a_cleanup_needs() {
     );
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz server clean --namespace stray --confirm stray --approval apr_1"),
+        json!("ployz server clean --namespace stray --confirm stray --approval clean:abc"),
         "{refused}"
     );
     assert_eq!(approvals.runs(), ["POST namespaces/stray/clean"]);
-    assert!(approvals.calls().is_empty(), "--json never waits");
 }
 
 #[test]
-fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
-    let (target, approvals) = running(&[("apr_1", "approved")]);
+fn a_cleanup_resent_with_its_digest_runs_once_and_names_no_docker_volume() {
+    let (target, approvals) = running(true);
     let home = tempfile::tempdir().unwrap();
     let output = target
         .command(home.path())
@@ -7733,28 +7626,23 @@ fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
             "stray",
             "--confirm",
             "stray",
+            "--approval",
+            "clean:abc",
         ])
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud"),
-        "{stderr}"
-    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         stdout, "Removed Namespace stray and the data of its Volume.\n",
         "names no Docker Volume"
     );
-    let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
-    assert_eq!(polls, ["GET", "GET"], "pending, then approved");
     assert_eq!(
         approvals.runs(),
         [
-            "POST namespaces/stray/clean",
-            "POST namespaces/stray/clean approved by apr_1",
+            "POST namespaces/stray/clean with clean:abc",
             "GET namespace-cleanups/cln_1",
         ]
     );
@@ -7762,7 +7650,7 @@ fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
 
 #[test]
 fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let refused = error(&target, &["server", "clean", "--namespace", "stray"]);
     assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
     assert!(
@@ -7803,7 +7691,7 @@ fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve()
 #[cfg(unix)]
 #[test]
 fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
-    let (target, approvals) = running(&[]);
+    let (target, approvals) = running(false);
     let home = tempfile::tempdir().unwrap();
     let mut child = target
         .command(home.path())
@@ -7855,8 +7743,8 @@ fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
 }
 
 #[test]
-fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
-    let (target, approvals) = running(&[("apr_1", "approved")]);
+fn a_drain_asks_and_without_a_terminal_starts_nothing() {
+    let (target, approvals) = running(true);
     let refused = error(&target, &["server", "drain", CLOUD_SERVER]);
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
     assert_eq!(
@@ -7866,17 +7754,17 @@ fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
     assert_eq!(
         refused["details"]["retry"],
         json!(format!(
-            "ployz server drain {CLOUD_SERVER} --approval apr_1"
+            "ployz server drain {CLOUD_SERVER} --approval drain:abc"
         )),
         "{refused}"
     );
-    assert!(approvals.calls().is_empty(), "--json never waits");
 
     let home = tempfile::tempdir().unwrap();
     let (code, stderr) = person(&target, home.path(), &["server", "drain", CLOUD_SERVER]);
-    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud"),
+        stderr.contains("removes Service shop/worker")
+            && stderr.contains("Nothing drained. Saying yes needs a terminal."),
         "{stderr}"
     );
     assert_eq!(
@@ -7884,57 +7772,80 @@ fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
         [
             format!("POST servers/{CLOUD_SERVER}/drain"),
             format!("POST servers/{CLOUD_SERVER}/drain"),
-            format!("POST servers/{CLOUD_SERVER}/drain approved by apr_1"),
-            "GET server-drains/drn_1".to_owned(),
         ]
     );
 }
 
+/// The ask and the yes are one command, so they carry one request key: Cloud starts
+/// at most one run however many times either is sent.
+#[cfg(target_os = "linux")]
 #[test]
-fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
-    for (args, subject) in [
+fn at_a_terminal_the_ask_and_the_yes_carry_one_request_key() {
+    for (args, route) in [
         (
-            &["server", "drain", CLOUD_SERVER][..],
-            format!("drain {CLOUD_SERVER}"),
+            format!("server drain {CLOUD_SERVER}"),
+            format!("POST servers/{CLOUD_SERVER}/drain"),
         ),
         (
-            &[
-                "server",
-                "clean",
-                "--namespace",
-                "stray",
-                "--confirm",
-                "stray",
-            ],
-            "clean stray".to_owned(),
+            "server clean --namespace a --confirm a".to_owned(),
+            "POST namespaces/a/clean".to_owned(),
         ),
     ] {
-        let (target, approvals) = running(&[("apr_1", "denied")]);
-        let home = tempfile::tempdir().unwrap();
-        let (code, stderr) = person(&target, home.path(), args);
-        assert_eq!(code, Some(1), "{args:?}: {stderr}");
-        assert!(
-            stderr.contains(&format!(
-                "A human denied the request to {subject}: declined"
-            )),
-            "{stderr}"
-        );
-        // The wait names the approval to answer; a denied one has no retry to name it in.
-        let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
-        assert!(!denial.contains("apr_1"), "{stderr}");
-        let followed = approvals.runs().into_iter().any(|run| {
-            run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
-        });
-        assert!(!followed, "{:?}", approvals.runs());
-
-        let refused = error(&target, &[args, &["--approval", "apr_1"]].concat());
-        assert_eq!(refused["code"], json!("approval_denied"), "{refused}");
+        let (target, approvals) = running(true);
+        let (code, screen) = at_a_terminal(&target, &args, "y\n");
+        assert_eq!(code, Some(0), "{args}: {screen}");
+        let sent: Vec<_> = approvals
+            .runs()
+            .into_iter()
+            .zip(approvals.keys())
+            .filter(|(run, _)| run.starts_with(&route))
+            .collect();
+        assert_eq!(sent.len(), 2, "{args}: {sent:?}");
+        let (asked, yes) = (&sent[0].1, &sent[1].1);
+        assert!(asked.is_some(), "{args}: {sent:?}");
+        assert_eq!(asked, yes, "{args}: {sent:?}");
     }
+}
+
+/// A yes to a drain whose plan moved since starts nothing and asks no second yes.
+#[test]
+fn a_drain_whose_plan_moved_after_the_yes_starts_nothing() {
+    let approvals = std::sync::Arc::new(Approvals {
+        moves: true,
+        ..Approvals::asking()
+    });
+    let target = Target::Cloud {
+        url: cloud(
+            dispatch,
+            std::sync::Arc::clone(&approvals),
+            |_| evidence(),
+            ready(),
+        ),
+        token: "ployz_alice",
+    };
+    let first = error(&target, &["server", "drain", CLOUD_SERVER]);
+    assert_eq!(first["details"]["approval"], json!("drain:abc"), "{first}");
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(
+        &target,
+        home.path(),
+        &["server", "drain", CLOUD_SERVER, "--approval", "drain:abc"],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("It changed after your yes, so nothing drained."),
+        "{stderr}"
+    );
+    let followed = approvals
+        .runs()
+        .into_iter()
+        .any(|run| run.starts_with("GET server-drains"));
+    assert!(!followed, "{:?}", approvals.runs());
 }
 
 #[test]
 fn with_a_context_a_signed_in_command_dials_directly() {
-    let (target, approvals) = running(&[("apr_1", "approved")]);
+    let (target, approvals) = running(true);
     for args in [
         &["server", "drain", CLOUD_SERVER, "--context", "lab"][..],
         &[

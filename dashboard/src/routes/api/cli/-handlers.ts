@@ -3,6 +3,7 @@ import { asRecord } from "#/lib/json";
 import { runCommand } from "#/modules/commands/commands.server";
 import type { Caller } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { APPROVAL_HEADER } from "#/modules/operations/gate.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { cliRefusalResponse, Forbidden, Validation } from "#/server/public-error";
 
@@ -52,7 +53,7 @@ export const handleRunRequest = Effect.fn("Commands.handleRun")(function* (reque
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const input = asRecord(body)?.["input"] ?? null;
-  const ran = yield* runCommand(caller, name, input, { approvalId: request.headers.get("x-ployz-approval"), key: key.key });
+  const ran = yield* runCommand(caller, name, input, { approved: request.headers.get(APPROVAL_HEADER), key: key.key });
   if (!ran.ok) return cliRefusalResponse(ran.refusal);
   const reply = ran.message === undefined ? { output: ran.output } : { output: ran.output, message: ran.message };
   return Response.json(reply, { headers: { "cache-control": "no-store" } });

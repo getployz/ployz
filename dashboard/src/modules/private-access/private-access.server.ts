@@ -2,13 +2,11 @@ import "@tanstack/react-start/server-only";
 import type { PrivateAccessOn } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
-import { approveKeyed, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { approveKeyed, type Decider } from "#/modules/approvals/approvals.server";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
-import { freshOperationDigest } from "#/modules/approvals/approvals.fresh.server";
-import { type PrivateAccessChanged, type PrivateAccessWant, privateAccessObservation, routerProblem } from "#/modules/private-access/private-access";
+import { type PrivateAccessChanged, privateAccessObservation, routerProblem } from "#/modules/private-access/private-access";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { Database } from "#/server/database.server";
 import { Conflict, Validation } from "#/server/public-error";
 
 const ROUTER_SETTLE_MS = 45_000;
@@ -49,15 +47,6 @@ const send = (session: PloyzSession, on: PrivateAccessOn | null) => session.setP
 export const setPrivateAccess = (organizationId: string, on: PrivateAccessOn | null) =>
   Effect.flatMap(connectedSession(organizationId), (session) => send(session, on)).pipe(Effect.scoped);
 
-export const privateAccessAsked = (organizationId: string, to: PrivateAccessWant) => ({
-  subject: `cluster:${organizationId}`,
-  verb: "set_private_access",
-  name: to,
-  preview: { to },
-  effects: [],
-  alwaysAsks: true,
-}) satisfies OperationAsked;
-
 /** What a Connect that approved its Approval got from the Servers: their answer, or why Cloud has none. */
 export type KeyedSent = PrivateAccessChanged | { readonly problem: string };
 
@@ -67,17 +56,10 @@ export const approvePrivateAccess = Effect.fn("PrivateAccess.approve")(function*
   input: { readonly id: string; readonly digest: string; readonly on: PrivateAccessOn },
 ) {
   const session = yield* connectedSession(decider.organization.id);
-  const decided = yield* approveKeyed(decider, input, freshOperationDigest);
+  const decided = yield* approveKeyed(decider, input);
   if (!decided.ok) return yield* new Conflict({ userFacing: true, message: decided.refusal.message });
   const sent: KeyedSent = yield* send(session, input.on).pipe(
     Effect.catchTag("Validation", (problem) => Effect.succeed({ problem: problem.message })),
   );
   return { approval: decided.approval, sent };
 }, Effect.scoped);
-
-export const runPrivateAccess = Effect.fn("PrivateAccess.run")(function* (organizationId: string, to: PrivateAccessWant): Effect.fn.Return<PrivateAccessChanged, Validation | Error, Database | OrganizationRuntime> {
-  if (to === "off") return yield* setPrivateAccess(organizationId, null);
-  const observed = yield* observePrivateAccess(organizationId);
-  if (observed === null) return yield* refuse(SERVERS_UNANSWERED_MESSAGE);
-  return { servers: observed.servers.map((server) => ({ ...server, router: server.router === "running" })), failures: [] };
-});

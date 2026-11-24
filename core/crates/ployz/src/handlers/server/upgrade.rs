@@ -262,6 +262,7 @@ fn through_cloud(
             &format!("servers/{id}/upgrade"),
             &json!({ "channel": channel, "server_name": name }),
             None,
+            None,
         ));
         let run = match started {
             Ok(run) => run,
