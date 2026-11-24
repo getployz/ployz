@@ -1,6 +1,6 @@
 ---
 title: Permissions
-description: Who can do what in Ployz. Roles, tokens, Protected environments and approvals in one place.
+description: Who can do what in Ployz. Roles, tokens, Protected environments and who says yes, in one place.
 ---
 
 Three things decide what you can do in Ployz: your role, the token you use, and whether the
@@ -10,7 +10,7 @@ role, and a Protected environment holds some changes back even from a token that
 ## Pick a role for each person
 
 Everyone in an organization is an **Owner**, **Admin** or **Member**. Members deploy, stage
-changes and answer approvals. Admins also invite people, manage servers and delete projects.
+changes and approve requests. Admins also invite people, manage servers and delete projects.
 Owners also manage billing. The full table is under
 [Invite people](organizations.md#invite-people).
 
@@ -35,7 +35,7 @@ Give CI a Deploy token for the environment it ships to. To keep one project's CI
 project, give that environment a name no other project uses. An owner's or admin's Deploy token
 deploys into a Protected environment without waiting for another admin. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect
-with `ployz mcp login` gets its own token, and that token can't answer approvals.
+with `ployz mcp login` gets its own token, and that token can't approve anything.
 
 ## Protect production
 
@@ -44,31 +44,28 @@ repository, change the deploy branch, turn protection off, or make a Deploy toke
 project's default environment starts Protected. See
 [Protect an environment](../environments/environments.md#protect-an-environment).
 
-A member can still ask. Their **Deploy** button reads **Request deploy**, and the request waits for
-an owner or admin who didn't ask.
+A member can still deploy, stop and restart there. Each waits for an owner or admin who didn't ask.
+Anything else only an owner or admin can do is refused with **An owner or admin does this.**
 
 A merge into a Protected environment's deploy branch still deploys. Use GitHub branch protection to
 decide who can merge. See [Protected environments](../deploy/github.md#protected-environments).
 
-## Answer approvals
+## Say yes to what removes something
 
-Some changes wait for a person before they run. The most common are:
+A change that would delete a service, volume or domain, remove a server or the organization, take
+a project or environment off your servers, or turn protection off shows what it removes first.
 
-- every deploy an agent starts;
-- anything an agent or the CLI does that would delete a service, volume or domain;
-- a member's request in a Protected environment;
-- removing a server or the organization, taking a project or environment off your servers,
-  turning protection off, and an agent's stop or restart.
+- In a terminal, `ployz` asks yes or no. In a script or with `--json`, it changes nothing and
+  names the command to run again with `--approval`.
+- In the dashboard, confirming the dialog is your yes.
+- An agent's deploy, stop or restart comes back as a link. Open it, read what it does, and approve
+  or deny. Any other removal from an agent is refused with where a person does it.
 
-A delete from the CLI asks in your terminal first.
-[Destructive actions ask first](organizations.md#destructive-actions-ask-first) has the full
-list. The rest wait under **Waiting on you** in the [Ployz agent](agent-sidebar.md#approve-or-deny-a-deploy).
-Read the card, then click **Approve** or **Deny**. An agent you connected to Ployz Cloud waits the
-same way. See [Approve a deploy](connect-an-agent.md#approve-a-deploy).
+[Destructive actions ask first](organizations.md#destructive-actions-ask-first) has the full list.
 
 ## Good to know
 
-- Nobody approves their own request, and an agent can't approve its own deploy.
+- Nobody approves their own request, and an agent can't approve anything.
 - Protected guards what runs through Ployz. An admin with a shell on a server can still reach any
   environment on it.
 - Leaving an organization ends your access and your tokens at once.

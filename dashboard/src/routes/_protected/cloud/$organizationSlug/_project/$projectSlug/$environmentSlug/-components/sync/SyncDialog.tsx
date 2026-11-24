@@ -17,7 +17,7 @@ import { receivingEnvironment, servicesQuery, syncQuery, useCachedStoreView, use
 import { receivingService, receivingValues } from "#/modules/config-store/store-variables";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useSealing } from "#/modules/sealing/use-sealing";
-import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/lib/refusal";
 
@@ -110,8 +110,6 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
       written = await writer.commit(entries.length ? command({}) : command(typed), ["conflict"], entries.length ? prepare : undefined);
     } catch (error) {
-      // Asked for instead: the writer says Requested, and an owner or admin syncs it on approval.
-      if (error instanceof Error && isRequested(error)) return onClose();
       // Only a lost response resends what was sent; after a refusal the next try prepares afresh.
       if (error instanceof StoreRefused) last.sent = undefined;
       // Any other refusal is the writer's toast.
@@ -180,9 +178,10 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
             </Button>
           ) : null}
           {rows.length ? <>
+            {asks ? <p className="text-sm text-muted-foreground">An owner or admin does this.</p> : null}
             <Button variant="outline" onClick={onClose}>Cancel</Button>
-            <Button disabled={picked.length === 0 || pending} onClick={() => void sync()}>
-              {pending ? <><Spinner data-icon="inline-start" />Syncing…</> : asks ? "Request sync" : `Sync ${plural(picked.length, "change")}`}
+            <Button disabled={asks || picked.length === 0 || pending} onClick={() => void sync()}>
+              {pending ? <><Spinner data-icon="inline-start" />Syncing…</> : `Sync ${plural(picked.length, "change")}`}
             </Button>
           </> : <Button variant="outline" onClick={onClose}>Done</Button>}
         </DialogFooter>

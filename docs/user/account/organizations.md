@@ -61,7 +61,7 @@ everything the role below it can, and more:
 
 | Role   | Can do |
 | ------ | ------ |
-| Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, answer approvals, and make their own organization tokens. |
+| Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, and make their own organization tokens. |
 | Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, protect and unprotect environments, delete volume copies, and add, operate, open a shell on and remove servers. |
 | Owner  | Also manage billing, delete the organization, and make or remove an owner. |
 
@@ -84,7 +84,7 @@ Owners and admins change a role with the select beside each person, and click **
 someone out. To leave an organization yourself, click **Leave** on your own row. An organization
 always keeps an owner, so its last owner can't leave or step down until they make someone else
 an owner. `ployz org member rm` refuses to remove the last owner, and `ployz org member role`
-refuses to give them another role. Each refuses at once, before it asks for any approval.
+refuses to give them another role. Each refuses at once, before it asks for a yes.
 
 When someone leaves or is removed, they lose the organization at once: its dashboard, their
 organization tokens, and their signed-in CLIs' access to its servers. If they joined by invite and
@@ -113,134 +113,69 @@ else you can, including a value it can't read, but it can't delete the organizat
 
 ## Destructive actions ask first
 
-A coding agent working through the CLI can save or deploy a change that removes a running
-service, deletes a volume and its data, detaches a volume from a service, or removes a domain. It
-can also drain or remove a server, rename the cluster, or clean up what a deleted environment
-left on your servers.
-It can remove a project, an environment or the whole organization, forget every server, or turn
-an environment's protection off. Ployz refuses that command with `approval_required`, naming what
-it would remove and the approval it opened for you. Every organization works this way, and no
-setting turns it off. The one exception is an [Agent sandbox](try-without-an-account.md) nobody
-has claimed yet: no person could answer there, so nothing asks until someone keeps it.
+Some changes remove things: a save or deploy that removes a running service, deletes a volume and
+its data, detaches a volume or removes a domain. So do draining or removing a server, renaming the
+cluster, cleaning up what a deleted environment left on your servers, removing a project, an
+environment or the organization, forgetting every server, and turning an environment's protection
+off. Before one runs, Ployz shows what it removes and a person says yes. Every organization works
+this way, and no setting turns it off. The one exception is an
+[Agent sandbox](try-without-an-account.md) nobody has claimed yet: no person could answer there,
+so nothing asks until someone keeps it.
 
-How you answer depends on where the command runs:
+How you say yes depends on where the change starts:
 
-- In a terminal, it lists what it would remove and asks you to type the environment's name. A
-  server command asks for the server's name, or for `server clean` the name you passed it.
-  `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
-  slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval
-  pending and changes nothing.
-- Without a terminal, such as in a script, it prints the same list, the approval's ID, a link to
-  the [Ployz agent](agent-sidebar.md) where it waits, and `ployz org approval approve ID`. With
-  `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. A
-  redeploy's list names the deploy it ships again, such as `This redeploy of #4:`, the later
-  deploys it rolls back, and what it removes again that its deploy removed, such as
-  `✕ removes Service extra`. When a [Protected environment](../environments/environments.md#protect-an-environment)
-  asks, it prints Ployz Cloud's reason, that an owner or admin who didn't ask approves it in
-  Ployz Cloud or with `ployz org approval approve ID`, and `ployz org approval show ID` to follow
-  it, then waits for them. It
-  waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
-  was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
-  approval pending, and the error names the command to run again with `--approval ID`, except
-  for `ployz env sync --value ROW` (see `--json` below), whose rerun asks again. If Ployz
-  Cloud answers with an error instead, the command fails saying it couldn't check the approval,
-  and names the command to run again only when the error is on Cloud's side. If Cloud refuses
-  your sign-in or token, or you've left the organization, it names no command to run again;
-  it says what to do instead, such as `ployz login`, a new token or `ployz logout`. Once you've
-  left, `ployz logout` forgets the sign-in here though Cloud refuses to sign it out, and warns
-  that Cloud didn't revoke it.
-- With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
-  is the same command with `--approval ID`. Run that once the approval is approved. The one
-  exception is `ployz env sync --value ROW`, which refuses `--approval`, since an approval can't
-  carry secrets given again on stdin. Its retry names each `--value ROW` but never the secret and
-  no approval, so pipe the values on stdin again and it asks for a new approval. To finish such a
-  sync, run it without `--json` so it waits for the approval.
-- In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
-  call fails with a link, as for a connected agent below. See
-  [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
-- In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
-  panel, and the agent waits for you.
-- In an agent you [connected to Ployz Cloud](connect-an-agent.md), the call fails with a link.
-  Approve or deny under **Waiting on you** in the Ployz agent, then have the agent try again.
+- **In a terminal**, the command lists what it removes and asks `Go ahead with …? [y/N]`. Say yes
+  and it runs. Anything else, or Ctrl-C, changes nothing. A redeploy's list names the deploy it
+  ships again, such as `This redeploy of #4:`, and the later deploys it rolls back.
+- **Without a terminal**, such as in a script, it prints the same list, changes nothing, and names
+  the command to run again with `--approval DIGEST`.
+- **With `--json`**, it never asks. It exits with `approval_required`, and `details.retry` is the
+  same command with `--approval DIGEST`. Run that to go ahead. The one exception is
+  `ployz env sync --value ROW`, which refuses `--approval`, since a yes can't carry secrets given
+  again on stdin. Run that sync without `--json` and answer the question.
+- **In the dashboard**, confirming a dialog is your yes.
+- **From an agent**, a deploy comes back as a link where you review it and approve it with your
+  passkey. A stop or restart comes back as a link you approve or deny. Anything else that removes
+  something is refused with where to do it: `needs a person. Do it in Ployz Cloud`, plus the
+  `ployz` command when there is one. This holds for the [Ployz agent](agent-sidebar.md),
+  `ployz mcp` and an agent you [connected to Ployz Cloud](connect-an-agent.md).
 
-- `ployz deploy` and `ployz deploy --skip-deploy` ask only when the change removes something that's running.
-  Rolling out a new image or changing variables never asks.
-- Every deploy or redeploy an agent asks for asks, even one that destroys nothing. That covers the
-  [Ployz agent](agent-sidebar.md), `ployz mcp` and an agent you
-  [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
-  something, and one approval covers one deploy or redeploy. Outside a
-  [Protected environment](../environments/environments.md#protect-an-environment), redeploying from the CLI or the
-  dashboard never asks, except from the CLI when it takes something off: redeploying a
-  `ployz env shutdown`, or rolling back to a deploy from before a service was added, asks as a
-  deploy that removes the same would. In a Protected environment, a member's save, deploy or
-  redeploy asks an admin even when it removes nothing. An owner's or admin's Deploy token there
-  redeploys unasked when the redeploy destroys nothing. A rollback, or a redeploy that removes
-  again what its deploy removed, asks an admin. A rollback that would remove more, or a redeploy
-  that would prune a service or can't check every server for one, is refused, naming what and
-  that an owner or admin can redeploy it.
+The digest names exactly what you saw. If the change moved on before it runs, such as another
+deploy landing in between, the yes no longer fits. Nothing runs, and the command says
+`It changed after your yes`. Run it again to see what it does now.
+
+Which commands ask:
+
+- `ployz deploy` and `ployz deploy --skip-deploy` ask only when the change removes something
+  that's running. Rolling out a new image or changing variables never asks. Redeploying never
+  asks, except when it takes something off: redeploying a `ployz env shutdown`, or rolling back to
+  a deploy from before a service was added, asks as a deploy that removes the same would.
 - `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.
 - Removing or forgetting a server Ployz Cloud manages with `ployz server rm` or
-  `ployz server forget SERVER` always asks. `ployz server drain`
-  asks when a global service would run on no other server, and `ployz server clean` asks when it
-  would stop a service or delete volume data. `ployz server upgrade` never asks for an approval.
-- An agent's stop or restart of a service always asks, and one approval covers one stop or
-  restart. Typed in a terminal, `ployz service stop` and `ployz service restart` don't ask yet.
-  Starting a service never asks.
-- Dashboard buttons and dialogs never ask: confirming a dialog is your approval. The exception
-  is a member's request in a Protected environment, such as a save, deploy, sync, restart, stop
-  or volume grow, which waits for an owner or admin (see [Permissions](permissions.md#protect-production)). When the
-  [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
-- If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
-  again about the new one.
-- An approval covers one save. A later save that still carries a removal that hasn't
-  deployed yet asks again.
+  `ployz server forget SERVER` always asks. `ployz server drain` asks when a global service would
+  run on no other server, and `ployz server clean` asks when it would stop a service or delete
+  volume data. `ployz server upgrade` never asks.
+- `ployz service stop`, `ployz service restart` and starting a service don't ask.
+- In a [Protected environment](../environments/environments.md#protect-an-environment), a
+  member's deploy, stop and restart wait for an owner or admin, and anything else only they can
+  do is refused. See [Permissions](permissions.md#protect-production).
 
-A retry of a command you denied is still denied, even once it would destroy nothing. A retry of
-one still waiting for your answer still waits, unless it no longer destroys anything.
+A yes runs its command once. The CLI sends the same request again with the same request key, so
+a resend that crosses a lost reply runs nothing new.
 
-An approval works only for the person who asked for it, from the same login or token they asked
-from, and only for the command and the target they asked about. Anyone else who sends it is
-refused with `forbidden`, and nothing changes. So is the same person from another login or
-token, or a different command or target, even one that wouldn't ask for an approval at all, such
-as a save into another environment that removes nothing, a quick `ployz volume sync`, or one
-already done, such as `ployz env protect --off` for an environment that isn't protected. The
-refusal says which. One exception: when an agent retries a tool that finds nothing left to write,
-such as a save that already landed, only the person and the login or token are checked. Run the
-command again without `--approval` to ask for an approval of your own. When two people, or one person from
-two logins, ask for the same thing, each gets an approval of their own to answer.
-
-An approval runs its command once. Sending it again for another run asks again, with a new
-approval to answer, even when the command and target are the same, such as changing a member back
-to a role you changed once already. A retry of the same deploy, or the same request sent again with
-its request key, answers what the first one started and runs nothing new. A save or deploy that
-Ployz refuses leaves its approval unused.
-
-You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
-`ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or
-`ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the
-organization's slug, so it needs a terminal.
-
-An agent can't answer an approval: `ployz mcp`, an agent you connected to Ployz Cloud and the
-Ployz agent can neither approve nor deny one. When the Ployz agent or an agent you connected to
-Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve`
-refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
-in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
-computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
-organization that owns the request. Otherwise they refuse: run `ployz org use ORGANIZATION` to switch,
-then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
-approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
+An older `ployz` that sends an approval ID is refused with the update to run. Update `ployz` and
+run the command again.
 
 An agent's own sandbox doesn't ask. While only the agent owns it, nobody could answer, so its
 deploys and removals go ahead. Once a person keeps it, the agent asks like anywhere else.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
 that's trying to get around it: anything that holds your own `ployz` login or one of your own
-tokens can approve its own `ployz` request, as if you'd typed the name in a terminal. The agent
-token `ployz mcp login` saves can't approve or deny anything.
-Keep tokens you give an agent short-lived: a token can't make or revoke tokens, so revoking it
-cuts the agent off. Keep
+tokens can say yes to its own `ployz` request, as if you'd answered in a terminal. The agent token
+`ployz mcp login` saves can't. Keep tokens you give an agent short-lived: a token can't make or
+revoke tokens, so revoking it cuts the agent off. Keep
 [backups](../services/databases.md#back-up-a-database) of data you can't lose.
 
 ## Billing

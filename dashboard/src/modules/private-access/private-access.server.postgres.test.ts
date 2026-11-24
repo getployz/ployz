@@ -52,7 +52,7 @@ const session: ScopedRuntimeClientSession = {
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.sync(frame),
-    setPrivateAccess: (on: PrivateAccessOn | null) => Effect.gen(function* () {
+    setPrivateAccess: (on: PrivateAccessOn | null) => Effect.sync(() => {
       handed.push(on);
       if (on !== null && !refuses) placeRouter();
       const failure = { machine_id: SERVER, error: unanswered

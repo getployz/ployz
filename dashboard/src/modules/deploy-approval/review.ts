@@ -9,12 +9,15 @@ export type Redeploy = { deployment: number; rolls_back: number[] };
 /** What the Store asks a person to review before a write runs: the Destructive Effects and the diff they come from. */
 export type StoreReview = { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; redeploy?: Redeploy; prunes?: true; dropped?: string[] };
 
+/** A review as pruning reads it: a Store write's carries its diff, an operation's has none. */
+type Reviewed = Pick<StoreReview, "effects"> & Partial<Pick<StoreReview, "diff" | "prunes" | "dropped">>;
+
 /** A full Deploy that also removes every other Service its Environment runs, which only the Servers can name. */
-export const prunes = (review: object) => "diff" in review && "prunes" in review && review.prunes === true;
+export const prunes = (review: Reviewed) => review.diff !== undefined && review.prunes === true;
 
 /** Why a pruning Deploy couldn't check every Server: the ones large packets don't reach. Null when it doesn't say. */
-export function droppedLine(review: object) {
-  if (!prunes(review) || !("dropped" in review) || !Array.isArray(review.dropped) || review.dropped.length === 0) return null;
+export function droppedLine(review: Reviewed) {
+  if (!prunes(review) || review.dropped === undefined || review.dropped.length === 0) return null;
   return `Couldn't check every server: large packets to ${review.dropped.join(", ")} are dropped on the mesh path`;
 }
 

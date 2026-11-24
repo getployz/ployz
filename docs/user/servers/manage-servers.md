@@ -455,8 +455,8 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
 These need no signature, from the dashboard or the CLI: restarting, stopping and starting a
 service that already runs, deleting a service, a volume or an environment, removing or
 forgetting a server, upgrading along a Release Channel, and mirroring, syncing, restoring or
-resizing a volume. Each still asks what it asked before: a typed name, an owner's approval in a
-[Protected Environment](../environments/environments.md), or both.
+resizing a volume. Each still asks what it asked before: a typed name, a yes, or, in a
+[Protected Environment](../environments/environments.md), an owner or admin.
 
 `ployz volume move` needs no signature either, unless the volume's service runs in a region and
 the move leaves it. See [Move a volume](../services/move-a-volume.md).
@@ -590,7 +590,7 @@ service still runs on that server, but that failure alone doesn't make this serv
 move anything back.
 
 `ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
-failed, apart from that other server's move. It waits for an approval first when a global service would run on no other server (see
+failed, apart from that other server's move. It asks yes or no first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
@@ -1125,17 +1125,15 @@ any `ployz` command on the server starts Ployz again through it. Your services, 
 the private network and the server's place among your servers keep running until the server reboots or
 you remove it.
 
-When Ployz Cloud manages the server, `ployz server rm` and `ployz server forget` always wait for
-an approval (see
-[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first))
-before they take the server out, and so does an agent that removes or forgets one. The
-**Remove server** and **Forget server** dialogs don't ask: confirming one is the approval. An
-[agent sandbox](../account/try-without-an-account.md) that no person has claimed yet doesn't ask
-either, since no one could approve. One
-approval removes the server once, and approving a forget doesn't approve a removal that resets
-the server.
+When Ployz Cloud manages the server, `ployz server rm` and `ployz server forget` always show what
+they take out and ask yes or no first (see
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)). An
+agent can't remove or forget one. The **Remove server** and **Forget server** dialogs don't ask:
+confirming one is your yes. An [agent sandbox](../account/try-without-an-account.md) that no person
+has claimed yet doesn't ask either, since no one could answer. One yes removes the server once, and
+a yes to a forget doesn't cover a removal that resets the server.
 
-When you remove a server, the approval names each volume Ployz loses access to. The removal
+When you remove a server, the list names each volume Ployz loses access to. The removal
 doesn't erase those volumes' data: it stays on that server's disk until you wipe or reinstall
 the disk. `sudo ployz-uninstall` keeps volume data. Forgetting a server says the volume's data
 is deleted, since a server you forget may already be gone with its disk.
@@ -1186,10 +1184,10 @@ confirm:
 ployz server forget web-2 --confirm dead
 ```
 
-The approval Ployz Cloud asks for names the server and each volume whose only copy is on it, as
-those are lost with it. A volume with a mirror or a writer on another server isn't listed.
+What Ployz Cloud shows before you say yes names the server and each volume whose only copy is on
+it, as those are lost with it. A volume with a mirror or a writer on another server isn't listed.
 
-Once you approve, forgetting an offline server takes seconds. Forgetting one that is still up but
+Once you say yes, forgetting an offline server takes seconds. Forgetting one that is still up but
 doesn't answer takes Ployz Cloud about 12 minutes, even when the server holds only mirrors.
 Ployz Cloud can't tell which volumes a server writes until it answers, so it retries the server
 first in case it still writes one. `ployz server forget` says why after 30 seconds, then prints a
@@ -1337,8 +1335,8 @@ type its name and confirm. That deletes its containers and its volumes, data inc
 server.
 
 From the CLI, `ployz server clean` lists the same, and
-`ployz server clean --namespace my-app-staging --confirm my-app-staging` removes one. It asks for
-an approval before it stops services or deletes volume data (see
+`ployz server clean --namespace my-app-staging --confirm my-app-staging` removes one. It asks yes
+or no before it stops services or deletes volume data (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)), and
 works only when you're signed in, without `--context` or `--connect`, because only Ployz Cloud
 knows which environments still exist.

@@ -120,10 +120,9 @@ The namespace is the project and environment, joined by a hyphen. It answers the
 A cluster you add through Ployz Cloud is named after your organization's slug, cut to 63
 characters. To rename it, owners and admins open **Organization → Network**, click **Edit**
 beside **Cluster name**, and click **Save**. The name shows **Pending** until a server is online
-to take it. `ployz cluster name acme` and the [Ployz agent](../account/agent-sidebar.md) ask
-for an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
-service's long address changes. The approval names the addresses your servers answer now, even
-while another rename is still pending.
+to take it. `ployz cluster name acme` shows the addresses your servers answer now and asks
+[yes or no](../account/organizations.md#destructive-actions-ask-first) first, since every
+service's long address changes. An agent can't rename the cluster.
 
 Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`. Rename
 it at any time, with no approval, with:
@@ -172,11 +171,9 @@ your services at their private addresses, on any port and protocol.
    their own.
 
 **Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
-console, and the Linux command is there to copy. If you ask an agent, or run `ployz cluster private-access on`, it
-waits for an owner or admin to approve. The approver pastes the key in the approval card, so
-the agent never sees it. The card seals it in the browser, as **Connect** does. **Connect**
-approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
-Private Access off, in **Integrations**.
+console, and the Linux command is there to copy. `ployz cluster private-access on` and agents are
+refused with **Turn it on in Ployz Cloud.** If Tailscale refuses
+the key, try another key, or turn Private Access off, in **Integrations**.
 
 `ployz private-access` shows which servers run a router, meaning one whose node joined your
 tailnet. A router Tailscale refused the key for isn't one, though its container keeps
@@ -192,8 +189,8 @@ already joined keeps its identity when you run `on` again with another key; to j
 tailnet, turn Private Access off first.
 
 A server runs a router only for a key your passkey or an approved device approved, so
-**Connect** and the approval card ask for your passkey. `ployz private-access on` from a device
-that isn't approved is refused. Turning Private Access off needs no approval.
+**Connect** asks for your passkey. `ployz private-access on` from a device that isn't approved is
+refused. Turning Private Access off needs no approval.
 
 If the router a device uses stops, the device moves to another in about 16 seconds. It stays
 there when the first one returns. Services see the router's private address as the client.

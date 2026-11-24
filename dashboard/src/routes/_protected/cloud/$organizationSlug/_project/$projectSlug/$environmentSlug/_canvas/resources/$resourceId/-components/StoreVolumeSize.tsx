@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
-import { refetchApprovals } from "#/modules/approvals/approvals.queries";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { FieldError } from "#/components/ui/field";
 import { environmentKey } from "#/modules/config-store/environment-ref";
@@ -32,7 +30,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
 }) {
   const writer = useStoreWriter(organizationSlug);
   const queryClient = useQueryClient();
-  // The Environment is Protected and you can't protect it, so a grow asks an owner or admin first.
+  // The Environment is Protected and you can't protect it, so an owner or admin changes its size.
   const asks = useProtectedAsk(organizationSlug, environment);
   const working = volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : recorded;
   const [growingTo, setGrowingTo] = useState<Bytes | null>(null);
@@ -67,30 +65,25 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     const admitted = await resizeVolumeServerFn({ data: {
       organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.to, requestId: crypto.randomUUID(),
     } });
-    if ("requested" in admitted) {
-      toast("Requested");
-      void refetchApprovals(queryClient, organizationSlug);
-    } else {
-      setGrowingTo(asked.to);
-      watch(admitted.id);
-      void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
-    }
+    setGrowingTo(asked.to);
+    watch(admitted.id);
+    void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
   }
 
-  const hint = growing
+  const hint = asks
+    ? "An owner or admin does this."
+    : growing
     ? resizing?.message ?? `${resizing ? runWords(resizing) : `Growing to ${gb(growingTo ?? recorded)}`}…`
     : other !== null
     ? `${runWords(other)}. Grow it once that finishes.`
     : restoredSmaller
     ? `A restored revision asks for ${gb(working)}; the servers keep ${gb(recorded)}. Enter ${gigabytes(recorded)} to keep it.`
-    : asks
-    ? "Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet."
     : "Grows live on every server that holds a copy. Can't shrink yet.";
 
   return (
     <>
       <SettingsRow label="Storage limit" hint={hint} commit="confirm" control={(
-        <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB" disabled={growing || other !== null}
+        <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB" disabled={asks || growing || other !== null}
           value={gigabytes(Math.min(working, recorded))} isChanged={restoredSmaller}
           validate={(raw) => {
             const next = verdict(raw);

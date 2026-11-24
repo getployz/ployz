@@ -174,7 +174,22 @@ const shownTo = <C extends StoreCall>(caller: AgentCaller, call: C, result: Stor
   caller.support === null ? result : answerForSupport(call, result, caller.support);
 
 /** What an agent's Store write is called when it needs a person. */
-const STORE_WRITE_WORDS: Partial<Record<ConfigCommand["command"], string>> = { publish: "save", remove: "removal", cancel: "cancel", sync: "sync", take: "take" };
+const storeWriteWord = (command: ConfigCommand) => {
+  switch (command.command) {
+    case "admit":
+      return command.admit === "shut_down" ? "shutdown" : command.admit;
+    case "publish":
+      return "save";
+    case "remove":
+      return "removal";
+    case "cancel":
+    case "sync":
+    case "take":
+      return command.command;
+    default:
+      return "change";
+  }
+};
 
 /**
  * A Store write that needs a person's yes, refused to an agent with where a person does it: an owner or admin, in a
@@ -182,7 +197,7 @@ const STORE_WRITE_WORDS: Partial<Record<ConfigCommand["command"], string>> = { p
  */
 const needsPerson = (command: ConfigCommand, asked: StoreRefusal): StoreRefusal => {
   if (isProtectedAsk(asked)) return refusal("forbidden", OWNER_OR_ADMIN, { protected: true });
-  const what = command.command === "admit" ? (command.admit === "shut_down" ? "shutdown" : command.admit) : STORE_WRITE_WORDS[command.command] ?? "change";
+  const what = storeWriteWord(command);
   return refusal("forbidden", `This ${what} needs a person. Do it in Ployz Cloud (or with ployz).`);
 };
 

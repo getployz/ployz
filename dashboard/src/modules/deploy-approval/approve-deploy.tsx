@@ -71,12 +71,9 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   }, [organizationSlug, id, command, queryClient]);
 
   if (isPending) return <Skeleton className="h-40 w-full" />;
-  if (proposal === null || proposal === undefined) return <Note title="Nothing to approve here" body="This link doesn't name a deploy in this organization." />;
-  if (!waiting) {
-    return step !== undefined && !isDeploy(step) && proposal.status === "presented"
-      ? <Note title="Not a deploy" body="Approve this one from the agent sidebar." />
-      : <ProposalCard organizationSlug={organizationSlug} id={id} seed={proposal} />;
-  }
+  if (proposal === null || proposal === undefined) return <Note title="Nothing to approve here" body="This link doesn't name anything waiting in this organization." />;
+  // A stop or restart, or a decided proposal: its card approves or shows it.
+  if (!waiting) return <ProposalCard organizationSlug={organizationSlug} id={id} seed={proposal} />;
   if (page.kind === "reading") return <Skeleton aria-label="Checking this deploy" className="h-40 w-full" />;
   if (page.kind === "stopped") return <Note title="Not approved" body={page.message} />;
 

@@ -178,17 +178,11 @@ it("grows a deployed volume, then shows the run until it ends", async () => {
   expect(limit().hasAttribute("disabled")).toBe(false);
 });
 
-it("in a Protected environment a member's grow is a request an owner or admin approves, with no run to watch", async () => {
+it("in a Protected environment a member can't grow it, and an owner or admin does", async () => {
   vi.spyOn(protectedAsk, "useProtectedAsk").mockReturnValue(true);
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
-  screen.getByText("Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet.");
-  const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ requested: true });
-  const read = vi.spyOn(runs, "getVolumeRunServerFn");
-  enter("20");
-  await waitFor(() => expect(resize).toHaveBeenCalledTimes(1));
-  expect(read).not.toHaveBeenCalled();
-  expect(limit().hasAttribute("disabled")).toBe(false);
-  expect((limit() as HTMLInputElement).value).toBe("10");
+  screen.getByText("An owner or admin does this.");
+  expect(limit().hasAttribute("disabled")).toBe(true);
 });
 
 it.each([

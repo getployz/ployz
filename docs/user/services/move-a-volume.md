@@ -61,8 +61,8 @@ the volume and how it ended. `ployz volume release data` stops a mirror that's s
 
 In a [Protected environment](../environments/environments.md#protect-an-environment), a
 move, restore, release, mirror removal or resize from a member, or from a token or an agent without
-`environments:protect`, waits for an owner or admin to approve it. `ployz` waits for the approval.
-Adding a mirror and syncing don't ask.
+`environments:protect`, is refused with **An owner or admin does this.** Adding a mirror and
+syncing don't ask.
 
 If a run stops partway or a command is refused, see
 [Troubleshooting volumes](../troubleshooting/volumes.md).

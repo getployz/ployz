@@ -106,54 +106,24 @@ signing, and the deploy starts as whoever asked. Anyone who can deploy to the en
 approve it. If the environment changed since the agent asked, the page says **This deploy changed
 since it was asked for. Ask again.** and denies it. A deploy that can't ask anyone, like one whose
 servers don't answer, is refused with the reason instead. In a Protected environment, only an
-owner or admin approves a deploy from someone who can't protect it: on an approval card, or on the
-page when it needs a passkey signature or a password made.
+owner or admin approves a deploy from someone who can't protect it.
 
-A redeploy of a deployment that failed waits on an approval card. Its card, like **Redeploy
-shop/production**, is marked **Redeploys** and lists no changes, because it ships exactly what that
-deployment did. A redeploy that undoes later deployments is titled **Roll back shop/production**
-and marked **Rolls back**.
+Anything else the agent would do that removes something, it doesn't do. That covers a save that
+removes a running service, deletes or detaches a volume or removes a domain, a redeploy, removing,
+forgetting, draining or cleaning up a server, a volume command that deletes data, taking an
+environment or a project off your servers, and unprotecting an environment. The agent says it needs
+a person and where, like **This drain of fra-1 needs a person. Do it in Ployz Cloud.** Do it
+yourself in the dashboard or with `ployz`.
 
-When a deploy or save would remove a running service, delete a volume, detach a volume from a
-service or remove a domain, the agent stops and shows a card. It does the same before it removes
-or forgets a server, cleans up after one, drains a server whose global service runs on no other server, runs a volume
-command that deletes data, takes an environment or a project off your servers, or unprotects an
-environment. The card leads with what would be
-destroyed. Everything else the change does is folded under a count, like **2 other changes**;
-click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
+A stop or restart the agent asks for becomes a card marked **Proposal**, like **Stop web in
+shop/production**. See [Approve several steps at once](#approve-several-steps-at-once).
 
-1. Read the list of what gets destroyed.
-2. Click **Approve** to let the deploy go ahead.
-3. Or click **Deny** to stop it. To tell the agent why, click
-   **Deny with a reason…**, type the reason, and click **Deny**.
-
-<!-- screenshot: an approval card for Deploy shop/production that deletes the postgres-data volume -->
-
-The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
-
-While a card from this chat waits, the message box keeps what you type but doesn't send it. A line above it
-says **Approve or deny to send a message.** If the card waits on an owner or admin, it says **You can send a
-message once an owner or admin answers.**
-
-A card for a save, like **Save shop/production**, is marked **Deletes on deploy**: saving deletes
-nothing yet. Approving it saves without deploying, and shows **Approved. Saves without deploying.**
-Your next deploy deletes the data, including one a Git push starts.
-
-While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't
-start from this chat, like one a coding agent opened from the CLI or an agent you
-[connected to Ployz Cloud](connect-an-agent.md), appears at the top of the
-panel under **Waiting on you**, and you answer it the same way. That includes
-`ployz server rm`, `ployz server drain` and `ployz server clean`, whose cards are named for the
-server, like **Remove fra-1**.
-
-A member's request to deploy, sync, take, restart or stop in a
+A member's deploy, stop or restart in a
 [Protected environment](../environments/environments.md#protect-an-environment) also appears under
-**Waiting on you**, for owners and admins. The card says who asked, like **Asked by Linus**, and
-lists the change their request saves, like a variable on `api`, above anything else it deploys.
-Approving it runs the change as the member who asked. Only an owner or admin who didn't ask can
-approve or deny it. The member who asked finds their card under **Requested**, marked **Waiting on
-an owner or admin.**, with no **Approve** or **Deny**, and it doesn't count on the **Agent** button. An agent that asks for the same sync or take
-again while it waits doesn't add a second card.
+**Waiting on you**, for owners and admins. The card says who asked, like **Asked by Linus**.
+Approving it runs it as the member who asked. Only an owner or admin who didn't ask can approve or
+deny it. The member who asked finds their card under **Requested**, marked **Waiting on an owner or
+admin.**, with no **Approve** or **Deny**, and it doesn't count on the **Agent** button.
 
 ## Approve several steps at once
 
@@ -189,26 +159,14 @@ can only be presented by an owner or admin.
 - **Approving never deletes data on its own.** When a deploy or save would delete a volume's
   data, the agent stops and tells you which volumes. It goes ahead only if you ask it to, like
   "save, accepting the volume loss", and only in the same project and environment.
-- **Deploys, removals and interruptions ask.** Every deploy the agent starts asks, even one that
-  only rolls out a new image, changes variables or scales a service. Saving asks only when the
-  save removes something. Under a save that doesn't, you'll see **Didn't ask. Nothing destroyed.**
-  Stopping or restarting a service asks first, with a card like **Stop web in shop/production**
-  marked **Stops service**, because it takes the service down. The card names the server too when
-  the agent stops the service on just one. An approval covers that one stop or restart; a later
-  one asks again. Starting a service never asks, and neither does upgrading a server or
-  changing what it takes, unless turning web traffic off leaves no online server with a public IP to
-  serve your domains. Then the card lists the domains that go dark and everything else the change sets,
-  and approving it covers only that change. Every redeploy the agent starts asks too, and one
-  approval covers one redeploy. Starting a queued one doesn't ask.
-- **One at a time.** The agent runs at most one command that might ask per reply, so you never
-  get two cards for one message.
-- **You approve one plan.** If the change moves on before you answer, the card says the plan
-  changed, and the agent asks again about the new one.
+- **Deploys and interruptions ask.** Every deploy the agent starts waits for you, even one that
+  only rolls out a new image, changes variables or scales a service. A stop or restart waits on a
+  **Proposal** card. Starting a service never asks, and neither does upgrading a server. Anything
+  else that removes something is refused, and the agent tells you where to do it.
+- **You approve one plan.** If the environment changes before you approve a deploy, the page says
+  so, and the agent asks again about the new one.
 - **Asking is always on.** No setting turns it off. See
   [Destructive actions ask first](organizations.md#destructive-actions-ask-first).
-- **Answer anywhere.** An approval is the same in every tab and on every device. Answer it once
-  and every other card for it updates. If you answer a card someone already answered, it says the
-  approval was already decided elsewhere, and how.
 - **Pictures show as links.** When a reply includes an image, you see its full address as a link
   instead of the picture. Nothing loads until you click it, so a log line or repository file can't
   get the agent to send your data to another site inside an image address.
