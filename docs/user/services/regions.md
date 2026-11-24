@@ -320,6 +320,9 @@ starts its own.
   service with one number moves within the environment's region, or to any server when the
   environment has none. A replica a deploy left on its old version, in a region with no server
   that can run it, doesn't stop a drain from moving the service's other replicas.
+- **A drain moves a service's volume only to a region the service may run in.** It prefers a
+  server in the drained server's region. When the volume has a mirror on a server outside those
+  regions, the service stays and the drain says why.
 - **An older `ployz` still deploys an environment with regions.** Its deploys follow the
   environment's region and each service's counts. It shows a count for each region as
   `{"fsn":2,"syd":1}`, and can set one. It doesn't show the environment's region: `ployz get`

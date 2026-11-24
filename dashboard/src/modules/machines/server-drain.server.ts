@@ -258,6 +258,19 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
   return { servers: Object.fromEntries(latest) };
 });
 
+/**
+ * What a Drain of the Server would now do with each Service its data holds there, for the confirm dialog: a forecast
+ * from one frame, which the Drain checks again before it moves anything.
+ */
+export const previewServerDrain = Effect.fn("ServerDrain.preview")(function* (
+  actor: Actor,
+  input: { readonly organizationSlug: string; readonly machineId: MachineId },
+) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
+  const plan = yield* planDrain(organization.id, input.machineId);
+  return { data: plan?.data ?? {} };
+});
+
 /** Whether a Cloud Drain is pending or running on the Server: turning services back on would undo it. */
 export const drainActiveOn = Effect.fn("ServerDrain.activeOn")(function* (organizationId: string, machineId: MachineId) {
   const { drizzle } = yield* Database;

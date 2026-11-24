@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { refusedPublicly } from "#/modules/config-store/store-refusal";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { requireAccess } from "#/modules/organization/access.server";
-import { deleteCopy, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import { SEED_OFF } from "#/modules/volume-run/plan";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -47,14 +47,6 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(StageRestoreInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(() => Effect.fail(new Conflict({ userFacing: true, message: SEED_OFF }))),
-    refusedPublicly,
-  )));
-
-export const stageOffServerServerFn = createServerFn({ method: "POST" })
-  .middleware(authenticated)
-  .validator(strictValidator(Schema.Struct({ ...OrganizationSlugInput.fields, server: Machine })))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap(({ organization }) => stageOffServer(organization.id, data.server)),
     refusedPublicly,
   )));
 

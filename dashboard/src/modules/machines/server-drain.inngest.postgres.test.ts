@@ -289,7 +289,7 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
     await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
     expect(await latest()).toEqual({
-      [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport },
+      [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport, lines: {} },
     });
 
     expect((await drain(requestId, machineId, "run-duplicate")).result).toEqual({ attemptId: requestId, state: "finished" });
@@ -425,7 +425,7 @@ describe("drain-server", () => {
     };
     await drain();
 
-    expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
+    expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String), moving: null, volumes: [] }]);
   });
 
   it("stops reading waiting once its servers answer, even when a later step of that try fails and is retried", async () => {
@@ -576,7 +576,7 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([]);
     expect(await rows()).toMatchObject([{ state: "pending" }]);
 
-    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "finished" });
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "running" });
     expect(drainCalls).toHaveLength(1);
   });
 
@@ -642,6 +642,25 @@ describe("drain-server", () => {
 
     expect((await drain()).result).toEqual({ attemptId: requestId, state: "finished" });
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, refusal_message: null, report: partialReport }]);
+  });
+
+  // Catches a drain cancelled, failed or swept while its Volumes move losing what the Engine already did.
+  it.each([
+    ["a cancel", async () => { await cancel("run-1"); }],
+    ["a run that failed for good", async () => { await failRun("run-1"); }],
+    ["the hourly sweep", async () => {
+      await harness.pool.query(`update server_drain_attempt set started_at = now() - interval '25 hours'`);
+      await sweep();
+    }],
+  ])("%s while the Engine's answer is kept ends the row finished with that report", async (_, end) => {
+    await request();
+    await claim(requestId, "run-1");
+    await harness.pool.query(`update server_drain_attempt set report = $2 where id = $1`, [requestId, JSON.stringify(partialReport)]);
+
+    await end();
+
+    expect(await rows()).toMatchObject([{ state: "finished", end_code: null, report: partialReport, ended_at: expect.any(Date) }]);
+    expect(await runEffect(readCliServerDrain(organizationId, requestId))).toEqual({ state: "finished", report: partialReport });
   });
 
   it("the cancel handler ends its own run's row once: a running one unknown, a pending one cancelled", async () => {

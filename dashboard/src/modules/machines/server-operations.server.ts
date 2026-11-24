@@ -7,6 +7,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
+import { dataCheck, type DataPlan, dataPlan } from "#/modules/machines/server-drain-volumes";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -53,12 +54,20 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
   return unique.length === 0 ? `on ${server}` : `used by ${unique.join(", ")} on ${server}`;
 }
 
-/** An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server. */
-export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[]; readonly moves: QualifiedService[] };
+/**
+ * An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server.
+ * `data` is what the frame says of each Service held by its data here: whether it may move with its Volume. It is a
+ * forecast the drain checks again, so it stays out of the preview the approval signs.
+ */
+export type DrainPlan = OperationAsked & {
+  readonly targets: QualifiedService[];
+  readonly moves: QualifiedService[];
+  readonly data: Readonly<Record<string, DataPlan>>;
+};
 
 /**
  * What draining `machineId` does to the Services the Organization's Environments own there, from one frame: each moves,
- * stays (a Volume holds it; its data never moves), or retires (a Global slot). A Global with no running slot elsewhere
+ * stays (a Volume holds it, which the drain may then move with it), or retires (a Global slot). A Global with no running slot elsewhere
  * is removed outright. Null when the frame has no such Server.
  */
 export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, machineId: string): DrainPlan | null {
@@ -89,6 +98,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     }
   }
   [moves, stays, retires].forEach((list) => list.sort(byName));
+  const data = Object.fromEntries(stays.map((service) => [service, dataPlan(dataCheck(frame, service, machineId))]));
   effects.sort((a, b) => byName(a.path, b.path));
   return {
     subject: `server:${machineId}`,
@@ -100,6 +110,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
     moves,
+    data,
   };
 }
 

@@ -497,9 +497,8 @@ what a server answered when it first checked that build with GitHub, while the r
 stands. A copy of a version nobody signed
 moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). The drain
 reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
-run `ployz deploy` from an approved device to move those off. A volume stays on its server, and
-the drain names each one it leaves, with the `ployz volume move` line that moves it. See
-[Move a volume](../services/move-a-volume.md).
+run `ployz deploy` from an approved device to move those off. A service whose volume is on the
+server moves with its data when it can; see [Services with a volume](#services-with-a-volume).
 
 `ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.
 Signed out, it changes nothing when any copy could move to a server that enforces device
@@ -513,9 +512,10 @@ next: ployz login
 ```
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
-badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
-**Stays** when the last drain left it because its data is on the server, and **Stops** for a global
-service that runs on no other server, which the drain removes.
+badges what won't move as planned: **Moves with data** when its volume moves with it, **Skipped**
+when no project owns it, which draining leaves where it is, **Stays** with the reason when its
+data can't move with it, and **Stops** for a global service that runs on no other server, which
+the drain removes.
 Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
@@ -533,7 +533,8 @@ server holds under the tag.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
 the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
 the drain doesn't start; open it again to see what stops now. Drains in one organization run one
-at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
+at a time: a second one reads **Queued · Waiting on web-1**. While a drain waits on a
+[volume it moves](#services-with-a-volume), another can run. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
 If your servers don't answer when a drain's turn comes, as while one restarts, the drain reads
@@ -552,7 +553,8 @@ drain.
 
 A service stays running where it is, and is reported with the reason, when:
 
-- it mounts a volume or a bind mount on the server (tmpfs mounts don't count);
+- it mounts a bind mount or a Docker volume on the server (tmpfs mounts don't count), or a volume
+  the drain can't move (see [below](#services-with-a-volume));
 - its containers run different versions, because a deploy hasn't finished: deploy it first. A
   replica a deploy left on its old version in a
   [region with no server that can run it](../services/regions.md#when-no-server-is-in-the-region)
@@ -563,6 +565,39 @@ A service stays running where it is, and is reported with the reason, when:
   `ployz server upgrade` (the dashboard says **Upgrade web-3 to move it**), then drain again;
 - you stopped it with `ployz service stop`: start or remove it first;
 - its container here is the last one serving: deploy it to another server first.
+
+### Services with a volume
+
+When the replicated services have moved, the drain moves each service whose
+[volume](../services/volumes.md) is on the server, one at a time, the same way
+[`ployz volume move`](../services/move-a-volume.md) does: the volume copies while the service keeps
+running, then the service stops while its last changes copy and starts on the other server. It
+goes to a server that answers, runs services, isn't draining, has managed storage and is in a
+region the service may run in. A server that already holds a mirror of the volume comes first,
+then servers in the drained server's region, each by name. If one would refuse the move, the drain
+asks the next. While a volume moves, the **Drain** row reads **Draining · Moving data to web-3**,
+the service's line names the run, and `ployz volume runs data` lists it.
+
+A service stays where it is, and its line says why, when:
+
+- it mounts more than one volume;
+- another service, or a container on another server, uses its volume;
+- more than one of its containers runs on the volume, or none runs;
+- its volume allows shared writes;
+- another run on the volume hasn't finished;
+- no server can take it, or each one that could would refuse the move: the line gives the reason.
+
+If a move fails, the service runs again on the drained server, and its line says why. When Ployz
+Cloud can't confirm where it runs, the line names the run and the `ployz volume release data` line
+that finishes it. The drain moves volumes for up to a day after it started; one it had no time for
+reads **Not tried**. Cancelling the drain lets the move under way finish, and starts no more.
+
+While a volume moves to `web-3`, or a moved service still has to start there, Ployz Cloud refuses
+to drain `web-3` or turn off **Run services here** for it:
+
+```text
+data is moving to this server. Wait for run 0193… to finish.
+```
 
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
@@ -589,8 +624,9 @@ services are off, and when one of those moves fails without leaving anything beh
 service still runs on that server, but that failure alone doesn't make this server's drain incomplete. Turning services back on doesn't
 move anything back.
 
-`ployz server drain web-2` does the same from the CLI and exits non-zero if anything stayed or
-failed, apart from that other server's move. It waits for an approval first when a global service would run on no other server (see
+`ployz server drain web-2` does the same from the CLI, moves volumes too, and exits non-zero if
+anything stayed or failed, apart from that other server's move. A service that moved with its data
+counts as moved. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
@@ -1041,8 +1077,8 @@ needs a newer Ployz on web-1". Upgrade that server, then remove again.
 <!-- screenshot: the Remove web-2? dialog listing one volume, with the name typed -->
 
 [Drain the server](#change-what-a-server-does) first to move its services off. While services still
-run there, **Remove server** says how many, next to a **Drain** button. If only services whose
-volume is on the server are left, it names them: draining won't move them. It also names services
+run there, **Remove server** says how many, next to a **Drain** button. If only services the last
+drain left for their data on the server are left, it names them. It also names services
 no project owns, which draining leaves. `ployz server rm`
 warns about services a drain could still move off it and, while it still asks you to confirm,
 prints the drain command. With `--confirm` it doesn't ask, so it keeps the warning but leaves out

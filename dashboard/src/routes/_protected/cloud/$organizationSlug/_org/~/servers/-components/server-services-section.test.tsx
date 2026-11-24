@@ -174,8 +174,8 @@ describe("Drain dialog", () => {
   };
 
   const LEAD = "Moves its services to your other servers, one at a time. Nothing moves back on its own.";
-  const VOLUMES = "Services with a volume on web-2 stay.";
-  const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays });
+  const VOLUMES = "A service whose data can't move with it stays on web-2.";
+  const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays, why: null, withData: false });
   const dialog = (rows: DrainDialogRow[], onConfirm = () => {}) =>
     render(<DrainDialog serverName="web-2" rows={rows} open onOpenChange={() => {}} onConfirm={onConfirm} />);
   const listed = (key: string) => document.querySelector(`[data-row="${key}"]`) as HTMLElement;

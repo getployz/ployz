@@ -263,9 +263,9 @@ describe("Drain hints", () => {
     const api = { identity: "shop/api", name: "api", namespace: "shop" };
     const rows = drainDialogRows(view({ [web2.id]: finished([moved, volume]) }), web2.id, [postgres, stray, api], strays);
     expect(rows).toEqual([
-      { key: "shop/api", name: "api", namespace: "shop", stays: null },
-      { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data" },
-      { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned" },
+      { key: "shop/api", name: "api", namespace: "shop", stays: null, why: null, withData: false },
+      { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data", why: null, withData: false },
+      { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned", why: null, withData: false },
     ]);
     expect(drainDialogRows(view({}), web2.id, [postgres], none).map((row) => row.stays)).toEqual([null]);
   });

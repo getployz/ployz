@@ -1,5 +1,6 @@
 import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
 import type { LatestDrains } from "#/modules/machines/server-drain";
+import type { DataPlan, VolumeLine } from "#/modules/machines/server-drain-volumes";
 import { DRAIN_END_WORDS, type DrainEndCode } from "#/modules/machines/server-drain-states";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { listNames } from "#/lib/plural";
@@ -30,7 +31,14 @@ export type DrainView =
   | { readonly kind: "queued"; readonly behind: string | null }
   /** Its turn came and the servers didn't answer: it tries again until they do, or its pending limit ends it. */
   | { readonly kind: "waiting" }
-  | { readonly kind: "running"; readonly since: string }
+  | {
+    readonly kind: "running";
+    readonly since: string;
+    /** The Server a Volume is moving to now, once the Engine's part is done; null otherwise. */
+    readonly moving: string | null;
+    /** Each Service moving, or about to move, with its data, once the Engine's part is done. */
+    readonly volumes: readonly DrainRow[];
+  }
   | {
     readonly kind: "finished";
     readonly at: string;
@@ -78,8 +86,14 @@ export function drainView(input: {
       const behind = Object.entries(latest).find(([id, other]) => id !== server.id && other.state === "running");
       return { kind: "queued", behind: behind === undefined ? null : input.serverNames.get(behind[0]) ?? null };
     }
-    case "running":
-      return { kind: "running", since: own.startedAt };
+    case "running": {
+      const lines = Object.values(own.lines);
+      const volumes = own.report?.services.flatMap((entry) => {
+        const line = own.lines[entry.service];
+        return line === undefined ? [] : [drainRow(entry, server.id, line)];
+      }) ?? [];
+      return { kind: "running", since: own.startedAt, moving: lines.find((line) => line.tone === "moving")?.to ?? null, volumes };
+    }
     case "finished": {
       const { services, stopped } = own.report;
       return {
@@ -87,7 +101,7 @@ export function drainView(input: {
         at: own.endedAt,
         summary: drainSummary(own.report, server.name),
         stoppedEarly: stopWords(stopped),
-        rows: services.map((entry) => drainRow(entry, server.id)),
+        rows: services.map((entry) => drainRow(entry, server.id, own.lines[entry.service])),
         again: !own.report.complete,
       };
     }
@@ -141,8 +155,38 @@ const destinations = (moves: ReadonlyArray<{ readonly to: MachineRef }>) =>
 const movedBefore = (moves: ReadonlyArray<{ readonly to: MachineRef }>) =>
   moves.length > 0 ? ` Moved to ${destinations(moves)} before that.` : "";
 
-/** One report entry as a row. A `result` this page doesn't know (a newer Engine's) renders neutral, never crashes. */
-export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
+/** "moved to web-1" as a sentence: "Moved to web-1." */
+const sentence = (text: string) => {
+  const capital = `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`;
+};
+
+/**
+ * One report entry as a row, with its Volume's line when the drain moved, or tried to move, its data. The line is read
+ * now, so a move that finished after the drain ended still shows where it went.
+ */
+export function drainRow(entry: ServiceDrain, drained: string, line?: VolumeLine): DrainRow {
+  const row = engineRow(entry, drained);
+  if (line === undefined) return row;
+  const reason = sentence(line.text);
+  switch (line.tone) {
+    case "moved":
+      return entry.result === "moved"
+        ? { ...row, reason: row.reason ?? "Its data moved with it." }
+        : { ...row, tone: "moved", label: line.to === undefined ? "Moved with its data" : `Moved to ${line.to}`, reason, pinned: false };
+    case "moving":
+      return { ...row, tone: "neutral", label: line.to === undefined ? "Moving data" : `Moving data to ${line.to}`, reason, pinned: false };
+    case "waiting":
+      return { ...row, tone: "neutral", label: "Waiting", reason, pinned: false };
+    case "stayed":
+      return { ...row, tone: "stayed", label: "Stayed", reason, pinned: true };
+    case "failed":
+      return { ...row, tone: "failed", label: "Failed", reason, pinned: false };
+  }
+}
+
+/** One report entry as the Engine left it. A `result` this page doesn't know (a newer Engine's) renders neutral. */
+function engineRow(entry: ServiceDrain, drained: string): DrainRow {
   const base = {
     key: entry.service,
     ...splitQualifiedService(entry.service),
@@ -317,23 +361,35 @@ export type DrainDialogRow = {
   readonly name: string;
   readonly namespace: string | null;
   /**
-   * `stops`: a Global Service whose only running copy is here; a Drain stops it. `data`: the latest Drain left it for
-   * its volume or folder here. `unowned`: no Project owns it.
+   * `stops`: a Global Service whose only running copy is here; a Drain stops it. `data`: its data here holds it, as the
+   * Drain's forecast or the latest Drain says. `unowned`: no Project owns it.
    */
   readonly stays: "stops" | "data" | "unowned" | null;
+  /** Why its data holds it here, when the forecast says; null otherwise. */
+  readonly why: string | null;
+  /** The forecast says it moves with its data. */
+  readonly withData: boolean;
 };
 
-/** The confirm dialog's rows: what runs here, the ones a Drain won't move last. */
+/**
+ * The confirm dialog's rows: what runs here, the ones a Drain won't move last. `data` is the Drain's forecast for each
+ * Service its data holds here; before it is read, the latest Drain's stays stand in.
+ */
 export function drainDialogRows(
   view: DrainView,
   machineId: string,
   services: readonly RunningService[],
   strays: ReadonlySet<string>,
+  data: Readonly<Record<string, DataPlan>> = {},
 ): DrainDialogRow[] {
   const pinned = new Set(view.kind === "finished" ? view.rows.filter((row) => row.pinned).map((row) => row.key) : []);
   const split = drainableServices(services, strays);
-  const row = (service: RunningService, stays: DrainDialogRow["stays"]): DrainDialogRow =>
-    ({ key: service.identity, name: service.name, namespace: service.namespace, stays });
+  const row = (service: RunningService, stays: DrainDialogRow["stays"]): DrainDialogRow => {
+    const plan = stays === null || stays === "data" ? data[service.identity] : undefined;
+    if (plan?.kind === "moves") return { key: service.identity, name: service.name, namespace: service.namespace, stays: null, why: null, withData: true };
+    const why = plan?.kind === "stays" ? plan.why : null;
+    return { key: service.identity, name: service.name, namespace: service.namespace, stays: why === null ? stays : "data", why, withData: false };
+  };
   const rows = [
     ...split.drainable.map((service) => row(service,
       stopsOn(service, machineId) ? "stops" : pinned.has(service.identity) ? "data" : null)),
@@ -377,12 +433,4 @@ export function removeHint(view: DrainView, running: readonly RunningService[], 
     return { kind: "pinned", names: names(split.drainable), unowned };
   }
   return { kind: "drain", count: split.drainable.length, unowned };
-}
-
-/** The Volumes a Drain leaves on `server`, and how to move them. */
-export function stuckMessage(volumes: readonly string[], server: string) {
-  const [one] = volumes;
-  return volumes.length === 1 && one !== undefined
-    ? `${one} stays on ${server}. To move it, run ployz volume move ${one} --to <server>`
-    : `${listNames([...volumes])} stay on ${server}. To move each, run ployz volume move <volume> --to <server>`;
 }

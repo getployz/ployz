@@ -94,11 +94,12 @@ const drainingServers = Effect.fn("ServerDrain.drainingServers")(function* (orga
  * keeps the Engine's own words. A stopped Engine report moves nothing.
  */
 export const planDrainVolumes = Effect.fn("ServerDrain.planVolumes")(function* (request: Request, runId: string) {
+  const none: DrainVolume[] = [];
   const row = yield* ownedReport(request, runId);
-  if (row === null || row.report.stopped !== null) return [] as DrainVolume[];
+  if (row === null || row.report.stopped !== null) return none;
   const pinned = row.report.services.filter((entry) =>
     entry.result === "stays" && entry.reason.kind === "volume" && entry.reason.server.id === request.machineId);
-  if (pinned.length === 0) return [] as DrainVolume[];
+  if (pinned.length === 0) return none;
   const frame = yield* readFrame(request.organizationId);
   const { namespaces } = yield* readStore(request.organizationId, { query: "namespaces" });
   const draining = yield* drainingServers(request.organizationId);

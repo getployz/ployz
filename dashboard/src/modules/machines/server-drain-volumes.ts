@@ -26,7 +26,7 @@ const serviceName = (container: Container) => container.resolved_spec.name;
  * The Service's data on `machineId` may move with it when it mounts one Managed volume and nothing else that lasts, one
  * Container runs on that Volume and it is this Service's, and no Container of anything else uses it on any Server.
  */
-export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, machineId: MachineId): DataCheck {
+export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, machineId: string): DataCheck {
   const { namespace, name } = splitQualifiedService(service);
   const own = (container: Container) => container.namespace === namespace && serviceName(container) === name;
   const here = frame.containers.filter((container) => container.machine_id === machineId && container.kind === "service_container" && own(container));
@@ -50,6 +50,12 @@ export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, ma
   if (second !== undefined) return { kind: "stays", why: `${running.length} of its containers run on ${one.reference}, and a move takes one` };
   return { kind: "moves", dockerVolume, holder: holder.container_id };
 }
+
+/** What the drain dialog says of a Service whose data is on the Server: it may move with it, or it stays and why. */
+export type DataPlan = { readonly kind: "moves" } | { readonly kind: "stays"; readonly why: string };
+
+export const dataPlan = (check: DataCheck): DataPlan =>
+  check.kind === "moves" ? { kind: "moves" } : { kind: "stays", why: check.kind === "stays" ? check.why : "it uses a folder or a Docker volume here" };
 
 /** The Server holding a copy of `dockerVolume` beside its writer: the planner moves only onto it while it exists. */
 export function copyHolder(frame: RuntimeWatchView, dockerVolume: string): MachineId | null {
@@ -99,7 +105,8 @@ export type DrainRunRow = {
 /** How a Volume's line reads on the Server page. */
 export type VolumeTone = "moved" | "moving" | "stayed" | "failed" | "waiting";
 
-export type VolumeLine = { readonly tone: VolumeTone; readonly text: string };
+/** `to` names the Server a move is headed to or reached, when the line is about one. */
+export type VolumeLine = { readonly tone: VolumeTone; readonly text: string; readonly to?: string };
 
 const ACTIVE: readonly VolumeRunState[] = ["requested", "running"];
 
@@ -124,9 +131,9 @@ export function volumeLine(input: {
     return input.drainEnded ? { tone: "stayed", text: "not tried" } : { tone: "waiting", text: "waiting its turn to move" };
   }
   const to = move.to ?? "its new server";
-  if (move.state === "done") return { tone: "moved", text: `moved to ${to}` };
+  if (move.state === "done") return { tone: "moved", text: `moved to ${to}`, to };
   if (ACTIVE.includes(move.state)) {
-    return { tone: "moving", text: move.phase === "committed" ? `starting on ${to}, run ${move.id}` : `moving to ${to}, run ${move.id}` };
+    return { tone: "moving", text: move.phase === "committed" ? `starting on ${to}, run ${move.id}` : `moving to ${to}, run ${move.id}`, to };
   }
   const why = move.message ?? `the move ${move.state === "failed" ? "failed" : `ended ${move.state}`}`;
   if (release === undefined) return { tone: "stayed", text: why };
