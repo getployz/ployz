@@ -86,7 +86,7 @@
 //! the Machine API admits one (`admission.rs`, `Scope::Full`), the Drain classifies a
 //! Container by its observed spec (`observed_global_slot`), and Compose accepted
 //! `deploy.mode: global` up to v0.1.2-beta.41. A Drain never retires a system Global
-//! (`DrainScope::includes`).
+//! (`DrainScope::includes`), and from #4567 refuses any user Global, so it retires none.
 //!
 //! Out of scope: a yes the dashboard gives itself (a dashboard confirm, including the Drain
 //! dialog's Volume forecast, `previewServerDrain`), a Deploy that waits
