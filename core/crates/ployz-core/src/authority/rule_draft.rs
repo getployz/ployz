@@ -92,7 +92,9 @@ pub struct RuleTerms {
     pub signer: SignerKey,
 }
 
-pub(super) fn default_platform() -> String {
+/// What GitHub builds a rule's images for unless it names otherwise.
+#[must_use]
+pub fn default_platform() -> String {
     "linux/amd64".to_owned()
 }
 

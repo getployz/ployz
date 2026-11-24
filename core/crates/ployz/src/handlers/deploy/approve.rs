@@ -8,9 +8,12 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    Against, Approved, ApprovedChange, Before, Held, Mounts, ServiceVersion, SignerKey, Timestamp,
-    Unknown, birth,
+    Against, Approved, ApprovedChange, AutoDeployRule, Before, Births, Held, Mounts, RuleId,
+    RuleSummary, RuleTerms, ServiceVersion, SignerKey, Timestamp, Unknown, birth,
     deploy::{ChangeError, content_addressed},
+    rule::Builder,
+    rule_draft::default_platform,
+    version_draft::{SourceNeed, source_need, source_rule},
 };
 use ployz_core::{
     Claim, ContainerObservation, EnvironmentValues, Hint, InspectRequest, MachineId,
@@ -19,7 +22,8 @@ use ployz_core::{
     cluster_sealing_key, op,
 };
 use ployz_store::{
-    EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, TagPin,
+    EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, RulePrior, RuleQuery,
+    SavedRule, TagPin,
 };
 use serde_json::json;
 
@@ -38,6 +42,9 @@ pub(in crate::handlers) struct DeviceApproval {
     pub(in crate::handlers) versions: Vec<PostedVersion>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
+    /// The automatic deploy rule this Device signed with the versions, for what the Deploy
+    /// saves.
+    pub(in crate::handlers) rule: Option<SavedRule>,
 }
 
 /// The Cluster as this Device sees it: the Sealing key every Server holds and the
@@ -241,10 +248,25 @@ pub(in crate::handlers) fn sign(
     if forget_older {
         crate::ui::note(forgetting(&approved));
     }
-    let signed_at = consent((&namespace, &approved), |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })?;
     let signer = SignerKey::Device(signing.device_key());
+    let source = source(
+        matches,
+        store,
+        (environment, &plan.version),
+        &enforcing,
+        (signer, &seed, now),
+    );
+    if let Some(drafted) = &source {
+        super::super::github_rule::show(plan.environment.name.as_str(), &drafted.summary);
+    }
+    let signed_at = consent(
+        (
+            &namespace,
+            &approved,
+            source.as_ref().map(|drafted| &drafted.summary),
+        ),
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )?;
     let versions = approved
         .iter()
         .map(|change| {
@@ -274,11 +296,109 @@ pub(in crate::handlers) fn sign(
             })
         })
         .collect::<Result<_, Error>>()?;
+    let rule = source
+        .map(|drafted| {
+            Ok::<_, Error>(SavedRule {
+                rule: Box::new(signing.sign(&drafted.rule)?),
+                births: drafted.births,
+                prior: drafted.prior,
+            })
+        })
+        .transpose()?;
     Ok(Some(DeviceApproval {
         versions,
         version: plan.version,
         approved,
+        rule,
     }))
+}
+
+/// An automatic deploy rule drafted for this Device to sign with a Deploy's versions.
+struct Drafted {
+    rule: AutoDeployRule,
+    births: Births,
+    prior: Option<RulePrior>,
+    summary: RuleSummary,
+}
+
+/// The automatic deploy rule a Deploy at review `version` signs with its versions, when
+/// what it saves isn't what the kept rule approves, drafted as the dashboard's Deploy tap
+/// drafts it. None when it needs none, or after a warning when it can't be read or
+/// drafted: the Deploy goes on without it, and pushes wait. A rule the person ended stays
+/// ended.
+fn source(
+    matches: &ArgMatches,
+    store: &Store,
+    (environment, version): (&EnvironmentRef, &str),
+    enforcing: &Enforcing,
+    (signer, seed, issued_at): (SignerKey, &[u8; 16], Timestamp),
+) -> Option<Drafted> {
+    let without = |error: &(dyn std::error::Error + 'static)| {
+        crate::ui::warn_cause(
+            "Didn't sign automatic deploys, so pushes may wait for approval",
+            error,
+        );
+    };
+    let view = match store.read(&RuleQuery {
+        environment: environment.clone(),
+        staged: true,
+    }) {
+        Ok(view) => view,
+        Err(error) => {
+            without(&error);
+            return None;
+        }
+    };
+    // Another review: the Store refuses this Deploy as stale.
+    if view.version.as_deref() != Some(version) {
+        return None;
+    }
+    let mut basis = view.basis();
+    if source_need(&basis) == SourceNeed::None {
+        return None;
+    }
+    let kept = basis.kept();
+    let terms = RuleTerms {
+        cluster: enforcing.cluster,
+        machines: enforcing.machines.clone(),
+        owner_id: 0,
+        builder: (kept.as_ref()).map_or_else(Builder::pinned, |kept| kept.source.builder.clone()),
+        platform: default_platform(),
+        // The births the versions mint come from the same seed, so a Volume both mount is
+        // born once.
+        new_rule: RuleId::from_bytes(*seed),
+        issued_at,
+        signer,
+    };
+    let mut rule = match source_rule(&mut basis, terms) {
+        Ok(Some(rule)) => rule,
+        Ok(None) => return None,
+        Err(error) => {
+            without(&error);
+            return None;
+        }
+    };
+    match super::super::github_rule::owner(
+        matches,
+        &rule.source.repository,
+        rule.source.repository_id,
+    ) {
+        Ok(owner) => rule.source.owner_id = owner,
+        Err(error) => {
+            without(&error);
+            return None;
+        }
+    }
+    let summary = rule.summary(&basis);
+    Some(Drafted {
+        prior: kept.map(|kept| RulePrior {
+            rule: kept.rule,
+            generation: kept.generation,
+        }),
+        births: basis.minted,
+        rule,
+        summary,
+    })
 }
 
 /// Whether `name`, a switch some commands that sign lack, was given.
@@ -315,14 +435,14 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
 /// which every version signed for it carries, so a forget reaches each version signed
 /// before the yes, not only those signed before the prompt.
 fn consent(
-    (namespace, approved): (&Namespace, &[ApprovedChange]),
+    (namespace, approved, rule): (&Namespace, &[ApprovedChange], Option<&RuleSummary>),
     mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
     let services: Vec<&str> = approved
         .iter()
         .map(|change| change.service.as_str())
         .collect();
-    let marked: Vec<String> = approved
+    let mut marked: Vec<String> = approved
         .iter()
         .flat_map(|change| {
             let service = change.service.as_str();
@@ -332,6 +452,15 @@ fn consent(
                 .map(move |line| format!("{service}: {line}"))
         })
         .collect();
+    if let Some(rule) = rule {
+        marked.extend(rule.services.iter().flat_map(|service| {
+            let name = service.name.as_str();
+            (service.confirm.iter()).map(move |line| format!("{name}: {line}"))
+        }));
+        if !rule.pinned {
+            marked.push(format!("builder {}, not Ployz's own release", rule.builder));
+        }
+    }
     let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         "This deploy uses data that needs your yes, and there's no terminal to ask in. Run it \
@@ -354,8 +483,14 @@ fn consent(
         "SERVICE=IMAGE",
         "--yes",
     ])));
+    let pushes = rule.map_or_else(String::new, |rule| {
+        format!(", and deploy every push to {}", rule.branch)
+    });
     confirm(
-        &format!("Approve {} in namespace {namespace}?", services.join(", ")),
+        &format!(
+            "Approve {} in namespace {namespace}{pushes}?",
+            services.join(", ")
+        ),
         refusal,
         "Cancelled. Nothing signed or deployed.",
     )?;

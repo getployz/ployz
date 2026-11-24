@@ -35,8 +35,8 @@ pub struct ApproveRule {
     pub births: Births,
 }
 
-/// The rule a Save's tap signed, kept in the Save's own transaction once it saved.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+/// The rule a Save's or Deploy's tap signed, kept in its own transaction once it saved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SavedRule {
     #[ts(as = "Signed<AutoDeployRule>")]
@@ -142,8 +142,9 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
     view_of(tx, who, &environment, None, false)
 }
 
-/// Keep the rule a Save's tap signed, once the Save saved under `environment`'s lock,
-/// unless the rule kept moved since the tap read it.
+/// Keep the rule a Save's or Deploy's tap signed, once it saved under `environment`'s
+/// lock, unless the rule kept moved since the tap read it. A rule the person ended since
+/// stays ended: only the Deploy every push switch turns it on again.
 pub(crate) fn keep_saved(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -152,16 +153,28 @@ pub(crate) fn keep_saved(
 ) -> Result<(), RpcError> {
     let kept = stored(tx, &environment.summary.id)?
         .as_ref()
-        .and_then(opened)
-        .map(|kept| RulePrior {
-            rule: kept.rule,
-            generation: kept.generation,
-        });
-    if kept != saved.prior {
-        return Err(error::conflict(
-            "Automatic deploys changed since you looked. Save again.",
-            json!({}),
-        ));
+        .and_then(opened);
+    let prior = kept.as_ref().map(|kept| RulePrior {
+        rule: kept.rule,
+        generation: kept.generation,
+    });
+    if prior != saved.prior {
+        let message = match (&kept, opened(&saved.rule)) {
+            (Some(kept), Some(signed)) if kept.ended => {
+                let names: Vec<&str> = (signed.services.iter())
+                    .map(|service| service.name.as_str())
+                    .collect();
+                let them = if names.len() == 1 { "it" } else { "them" };
+                format!(
+                    "Automatic deploys are off for {}. Turn on Deploy every push to deploy {them}.",
+                    names.join(", ")
+                )
+            }
+            _ => {
+                "Automatic deploys changed since you looked. Check them, then try again.".to_owned()
+            }
+        };
+        return Err(error::conflict(message, json!({})));
     }
     keep(tx, who, environment, (&saved.rule, &saved.births))
 }

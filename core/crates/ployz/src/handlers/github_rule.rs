@@ -294,7 +294,7 @@ fn drafting(error: RuleDraftError) -> Error {
 
 /// What the person approves, before it is signed. The summary's strings came through
 /// [`Shown`] already.
-fn show(environment: &str, summary: &RuleSummary) {
+pub(super) fn show(environment: &str, summary: &RuleSummary) {
     crate::ui::stream(format_args!(
         "Approving automatic deploys for {}:",
         Shown::text(environment)

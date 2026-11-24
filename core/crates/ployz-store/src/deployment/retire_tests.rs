@@ -165,6 +165,7 @@ fn admit(
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))

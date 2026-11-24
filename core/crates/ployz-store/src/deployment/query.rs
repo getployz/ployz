@@ -133,6 +133,9 @@ pub enum Needs {
     /// Its image written by digest: it pulls a tag with a login, which no public lookup
     /// can pin for a person to sign.
     Digest,
+    /// Its automatic deploy rule turned on again: it builds from source, and the person
+    /// ended the rule, which only the Deploy every push switch turns back on.
+    Ended,
 }
 
 /// Where an Environment runs on the Servers.

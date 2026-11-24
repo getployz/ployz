@@ -887,11 +887,11 @@ pub(crate) fn unsigned(
 ) -> Result<Vec<crate::Unsigned>, RpcError> {
     use crate::Needs;
     use ployz_core::config::ServiceSource;
-    let rule = crate::auto_rule::stored(tx, environment)?
+    let kept = crate::auto_rule::stored(tx, environment)?
         .as_ref()
-        .and_then(crate::auto_rule::opened)
-        .filter(|rule| !rule.ended);
-    let approved: Vec<ServiceName> = match rule {
+        .and_then(crate::auto_rule::opened);
+    let ended = kept.as_ref().is_some_and(|rule| rule.ended);
+    let approved: Vec<ServiceName> = match kept.filter(|rule| !rule.ended) {
         Some(rule) => {
             let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
                 saved
@@ -953,6 +953,7 @@ pub(crate) fn unsigned(
                 continue;
             }
             (true, true) => Needs::Rebuild,
+            (true, false) if ended => Needs::Ended,
             (true, false) => Needs::Rule,
             (false, _) if login && !content_addressed(&spec.container.image) => Needs::Digest,
             (false, _) => Needs::Version,

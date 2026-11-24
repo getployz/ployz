@@ -444,6 +444,12 @@ your passkey once for the services a server runs only signed. A sheet lists what
 signs for each one, with its image by digest. Ployz Cloud looks up the digest of each tag, so
 check it. **Approve with passkey** signs them all in one prompt, and the deploy starts.
 
+When what the deploy saves isn't what your
+[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) approves, the same prompt
+signs the rule too, and the sheet shows it the way Save does. A deploy with nothing else to sign
+asks for the rule alone. When the prompt can't sign the rule, the deploy goes on without it and
+tells you why, and pushes hold until you approve it.
+
 The sheet checks each mount the way [`ployz deploy` does](#deploy-from-an-approved-device), with your
 servers' keys and containers as Ployz Cloud relays them. Mounts that keep the data you approved
 fold into one line. Lines that need your yes show under **Needs your yes**, above the button, and
@@ -462,6 +468,7 @@ Deploy stops and says why, and deploys nothing, when:
 
 - a service builds from source and no rule covers it: `No automatic deploy rule covers web. Approve one, or run ployz deploy.`
 - its rule covers it but hasn't built it yet: `Push to web's branch first. Its rule hasn't built this version yet.`
+- you turned automatic deploys off: `Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
 - a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
 - a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`
 - Ployz Cloud can't read your servers: `Couldn't reach your servers. Try again.` A server that

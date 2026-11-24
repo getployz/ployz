@@ -88,7 +88,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
     try {
       if (prepared.kind === "ask") {
         setBusy("passkey");
-        versions = await signVersions(prepared.ask);
+        ({ versions } = await signVersions(prepared.ask));
       }
     } catch (error) {
       setBusy(null);
