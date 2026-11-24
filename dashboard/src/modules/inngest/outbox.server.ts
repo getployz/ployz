@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { InngestClient, InngestEventSendError, type InngestSendableEvent, type PloyzInngest } from "#/modules/inngest/client";
 import { operationOutbox } from "#/modules/inngest/outbox.tables";
@@ -25,7 +25,7 @@ const send = Effect.fn("Outbox.send")(function* (rows: readonly OutboxRow[]) {
     catch: (cause) => new InngestEventSendError({ cause }),
   });
   const { drizzle } = yield* Database;
-  yield* drizzle.update(operationOutbox).set({ sentAt: new Date() })
+  yield* drizzle.update(operationOutbox).set({ sentAt: sql`now()` })
     .where(inArray(operationOutbox.eventId, rows.map((row) => row.eventId)));
 });
 

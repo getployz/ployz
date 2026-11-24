@@ -105,7 +105,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
   /** Claim the pending row `running`. False when it isn't pending or isn't this run's. */
   const claim = Effect.fn("AttemptRow.claim")(function* (id: string, runId: string) {
     const { drizzle } = yield* Database;
-    const [claimed] = yield* drizzle.update(table).set({ state: "running", startedAt: new Date() })
+    const [claimed] = yield* drizzle.update(table).set({ state: "running", startedAt: sql`now()` })
       .where(and(owned(id, runId), eq(table.state, "pending"))).returning({ id: table.id });
     return claimed !== undefined;
   });
@@ -169,7 +169,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
     const isPending = sql`${table.state} = 'pending'`;
     const rows = yield* drizzle.update(table).set({
       ...ends(<V extends string>(pending: V, running: V) => sql<V>`case when ${isPending} then ${pending} else ${running} end`),
-      endedAt: new Date(),
+      endedAt: sql`now()`,
     })
       .where(or(
         and(eq(table.inngestRunId, runId), active),
@@ -190,7 +190,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
     const { drizzle } = yield* Database;
     const now = Date.now();
     const running = yield* drizzle.update(table).set(input.running.end)
-      .where(and(eq(table.state, "running"), lt(table.startedAt, new Date(now - input.running.limitMs))))
+      .where(and(eq(table.state, "running"), lt(table.startedAt, sql`now() - make_interval(secs => ${input.running.limitMs / 1000})`)))
       .returning({ id: table.id });
     const when = input.pending.when(now);
     const pending = yield* drizzle.update(table).set(input.pending.end)
