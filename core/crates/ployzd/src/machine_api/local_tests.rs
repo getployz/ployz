@@ -1213,6 +1213,46 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Device's Tunnel Door, sent from its own connection, whose Device goes while the
+    /// doors wait for their turn: the opened token never reaches the connector's file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tunnel_door_queued_while_its_device_goes_writes_no_token() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake, _runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-removed").await;
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+            })
+            .await
+            .unwrap();
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let caller = service.clone().with_management_client(device.into());
+        let turn = store.admission_lock().write_owned().await;
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let call = set_doors(&caller, tunnel, false);
+        tokio::pin!(call);
+        if let std::task::Poll::Ready(answered) = futures_util::poll!(&mut call) {
+            panic!("answered before its turn: {answered:?}");
+        }
+        store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        drop(turn);
+        let answer = call.await;
+        assert!(
+            !data_dir.join("root/run/ployz/tunnel/token").exists(),
+            "{answer:?}"
+        );
+        assert_eq!(answer.unwrap_err().code(), Code::Unauthenticated);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn the_tunnel_door_closes_the_ports_and_runs_the_connector_on_the_opened_token() {
         let (data_dir, _store, service, fake, runtime, cluster) =
@@ -2396,6 +2436,7 @@ mod private_access {
             "{answer:?}"
         );
         assert!(!key_file(&data_dir).exists(), "{answer:?}");
+        assert!(!node_state(&data_dir).exists(), "{answer:?}");
         let refused = answer.unwrap_err();
         assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -4988,6 +5029,114 @@ mod set_volume_copy {
         assert!(!store.record().accepts_management_client(&device.into()));
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Device's floor raise queues on the floor lock behind another caller's, whose read
+    /// waits on the plugin, when `ployz device rm` removes that Device. A floor raise takes
+    /// no switch, so the removal waits for the floor lock instead: the raise lands before
+    /// the removal returns, or not at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removal_waits_out_its_floor_raise_queued_on_the_floor_lock() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake) =
+            fake_docker_service("ployzd-floor-removal-waits").await;
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+            })
+            .await
+            .unwrap();
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let reading = plugin.hold(INSPECT_ROUTE).await;
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let specs = service
+            .local()
+            .containers()
+            .unwrap()
+            .spec_store_path_for_test()
+            .to_owned();
+        let first = tokio::spawn({
+            let service = service.clone();
+            async move { set_copy(&service, floor(2)).await }
+        });
+        until_called(&plugin, INSPECT_ROUTE).await;
+        let mut asked = service.local().floor_asked();
+        let caller = service.clone().with_management_client(device.into());
+        let raising = tokio::spawn(async move {
+            caller
+                .set_volume_copy(Request::new(
+                    op::SetVolumeCopy::into_request(serde_json::from_value(floor(5)).unwrap())
+                        .encode()
+                        .unwrap(),
+                ))
+                .await
+                .map(|reply| reply.into_inner().decode_response().unwrap())
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            asked.wait_for(|asked| *asked >= 2),
+        )
+        .await
+        .expect("the Device's raise queues on the floor lock")
+        .unwrap();
+        let mut removing = tokio::spawn({
+            let (service, specs) = (service.clone(), specs.clone());
+            async move {
+                let remove = ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                };
+                let removed = service
+                    .set_device(Request::new(
+                        op::SetDevice::into_request(remove).encode().unwrap(),
+                    ))
+                    .await
+                    .map(|reply| reply.into_inner().decode_response().unwrap());
+                (removed, floor_row(&specs))
+            }
+        });
+        let early = tokio::select! {
+            removed = &mut removing => Some(removed.unwrap()),
+            queued = asked.wait_for(|asked| *asked >= 3) => {
+                queued.unwrap();
+                None
+            }
+        };
+        drop(reading);
+        let (removed, at_removal) = match early {
+            Some(removed) => removed,
+            None => removing.await.unwrap(),
+        };
+        reply(&first.await.unwrap());
+        let raised = raising.await.unwrap();
+        assert_eq!(
+            floor_row(&specs),
+            at_removal,
+            "a floor raise landed after the removal returned: {raised:?}"
+        );
+        removed
+            .unwrap()
+            .decode::<op::SetDevice>()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!store.record().accepts_management_client(&device.into()));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// The floor of the Volume as the spec store holds it, read without the floor lock.
+    fn floor_row(specs: &std::path::Path) -> i64 {
+        rusqlite::Connection::open(specs)
+            .unwrap()
+            .query_row(
+                "SELECT coalesce(max(floor), 0) FROM volume_floors WHERE name = ?1",
+                [VOLUME],
+                |row| row.get(0),
+            )
+            .unwrap()
     }
 
     /// A Seed, which only Full access sends, queued on the switch while its Device slot

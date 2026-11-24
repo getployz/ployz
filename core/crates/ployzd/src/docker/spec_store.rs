@@ -320,7 +320,7 @@ impl MachineSpecStore {
     /// Take the floor lock. It comes after the switch lock and the admission turn, and
     /// nothing waits on either of those while holding it. A holder may wait on Docker
     /// or the volume plugin: a fenced stop holds it through the Docker stop, a cut
-    /// through `zfs`.
+    /// through `zfs`, and a key change while it writes the keys.
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
         FloorTurn {
             store: self,

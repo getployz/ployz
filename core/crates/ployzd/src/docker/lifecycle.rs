@@ -432,6 +432,13 @@ impl Lifecycle {
             storage,
             plugin,
         } = request;
+        // A key that admitted the spec may have been removed while this creation waited
+        // for its turn: it then makes, pulls and adopts nothing, Volumes included, so it
+        // never starts a Container another key's creation left in the slot.
+        admitted
+            .still_holds(Error::AdmissionUnread)
+            .map_err(E::from)?
+            .map_err(|refusal| E::from(Error::Unadmitted(refusal)))?;
         {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let mut operation = self.specs.config_operation().await;
@@ -443,12 +450,6 @@ impl Lifecycle {
                 return Ok(existing);
             }
         }
-        // A key that admitted the spec may have been removed while this creation waited
-        // for its turn: it then makes and pulls nothing, Volumes included.
-        admitted
-            .still_holds(Error::AdmissionUnread)
-            .map_err(E::from)?
-            .map_err(|refusal| E::from(Error::Unadmitted(refusal)))?;
         tracing::info!(
             namespace = namespace.as_str(),
             service = spec.name.as_str(),

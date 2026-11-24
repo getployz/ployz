@@ -2059,7 +2059,35 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
+/// What to do for `want` against `now`. A reserved identity holds only a spec this daemon
+/// builds, and none mounts a Provisioned Volume, so a start of one that would is refused
+/// here: its ensure holds the doors lock, which a Volume step inside the switch takes too,
+/// so it must never wait for the switch.
 fn plan_container(
+    want: ContainerWant,
+    now: &ContainerNow,
+    phase: &LocalMachinePhase,
+) -> ContainerStep {
+    let step = plan_docker(want, now, phase);
+    let reserved = match (&step, now) {
+        (ContainerStep::CreateAndStart(new), _) => {
+            QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone()).reserved()
+        }
+        (ContainerStep::Start(_), ContainerNow::Present(observed)) => {
+            observed.identity().reserved()
+        }
+        _ => None,
+    };
+    if reserved.is_some() && starts_provisioned_holder(&step, now) {
+        return ContainerStep::Refuse(refuse(
+            ContainerRefusalReason::InvalidIngress,
+            "a reserved Service mounts no Provisioned Volume",
+        ));
+    }
+    step
+}
+
+fn plan_docker(
     want: ContainerWant,
     now: &ContainerNow,
     phase: &LocalMachinePhase,

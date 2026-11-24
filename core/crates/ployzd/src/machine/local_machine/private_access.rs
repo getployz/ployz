@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use super::reserved::{self, Effects, Gate, Retiree, Step, newest, retirees, usable};
 use super::{Error, LocalMachine, Scope, turns::ExclusiveTurn};
 use crate::docker::{ContainerRuntime, same_creation};
-use crate::images::private_access_router;
+use crate::images::{TAILSCALE, private_access_router};
 
 /// The waits of the Private Access route. `Default` is production's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,8 +199,8 @@ impl LocalMachine {
     /// Place this Machine's Private Access router, or remove it. An Operator's turn on
     /// needs an approval, as [`Self::admit_operator_private_access`] decides: refused
     /// before any effect at the scope the caller holds now, and checked again under the
-    /// turn that writes the auth key, so a caller downgraded while this waited writes
-    /// nothing.
+    /// turn that writes the node state and the auth key, so a caller downgraded or removed
+    /// while this waited writes nothing.
     ///
     /// # Errors
     ///
@@ -237,6 +237,13 @@ impl LocalMachine {
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
+            if opened.is_some() {
+                containers.doors().prepare_pinned_image(TAILSCALE).await?;
+            }
+            let turn = local.exclusive_turn().await?;
+            if let Scope::Operator = turn.scope() {
+                turn.admit_operator_private_access(&request)?;
+            }
             let wanted = match opened {
                 Some((sealed, key, network)) => {
                     let state = containers
@@ -244,18 +251,10 @@ impl LocalMachine {
                         .keep_private_access_state()
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
-                    containers
-                        .doors()
-                        .prepare_pinned_image(&spec.container.image)
-                        .await?;
                     Some(Wanted { spec, key })
                 }
                 None => None,
             };
-            let turn = local.exclusive_turn().await?;
-            if let Scope::Operator = turn.scope() {
-                turn.admit_operator_private_access(&request)?;
-            }
             if let Some(wanted) = &wanted {
                 containers
                     .machine_files()

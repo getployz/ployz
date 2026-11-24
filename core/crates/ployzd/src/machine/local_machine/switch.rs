@@ -8,7 +8,8 @@
 //! once `ployz device rm` returns, no step a removed caller asked for is still running,
 //! and every later one checks the keys again under the lock. The order is the switch, then
 //! an admission turn, then the installation guard: switch work takes its turns inside the
-//! switch, and nothing holding a turn asks for the switch.
+//! switch, and nothing holding a turn asks for the switch. A key change takes the floor
+//! lock last, which a floor raise takes alone, so it may fence a cut mid-drain.
 //!
 //! Taking it checks the caller's access under it, as an admission turn does: a request
 //! queued behind a long cut runs nothing for a caller removed while it waited, and acts
@@ -76,9 +77,9 @@ impl LocalMachine {
     }
 
     /// Change the keys this Machine trusts alone, as [`Self::finish_mutation`] runs work,
-    /// holding the switch from before the turn until the change is written. A switch step
-    /// under way ends first, so a removal returns only once no step its caller asked for
-    /// still runs.
+    /// holding the switch from before the turn, and the floor lock after it, until the
+    /// change is written. A switch step or a floor raise under way ends first, so a removal
+    /// returns only once no step its caller asked for still runs.
     pub(super) async fn finish_key_change<T, F, Fut>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
@@ -88,6 +89,13 @@ impl LocalMachine {
         let switch = self.take_switch().await;
         self.finish_mutation(move |local| async move {
             let _switch = switch;
+            let containers = local.containers().cloned();
+            #[cfg(test)]
+            local.floor_asked.send_modify(|asked| *asked += 1);
+            let _floor = match &containers {
+                Some(containers) => Some(containers.lifecycle().floor_turn().await),
+                None => None,
+            };
             work(local).await
         })
         .await
@@ -104,5 +112,11 @@ impl LocalMachine {
     #[cfg(test)]
     pub(crate) fn switch_asked(&self) -> tokio::sync::watch::Receiver<usize> {
         self.switch_asked.subscribe()
+    }
+
+    /// How many floor raises and key changes have asked for the floor lock so far.
+    #[cfg(test)]
+    pub(crate) fn floor_asked(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.floor_asked.subscribe()
     }
 }

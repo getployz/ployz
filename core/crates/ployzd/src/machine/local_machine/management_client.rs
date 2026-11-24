@@ -217,9 +217,9 @@ impl FullCaller {
 impl LocalMachine {
     /// Activate a staged management key for an authenticated operational RPC.
     ///
-    /// It retires only the key its own slot accepted, for the holder that proved it holds
-    /// the new one, so it narrows no other caller and takes no switch: every first call on
-    /// a rotated key would otherwise wait out a Volume step.
+    /// It retires the key its slot accepted, as a key change: a Volume step the retiring
+    /// key asked for ends first, so none still runs once the new key is in. Only the first
+    /// call on a staged key waits for it.
     ///
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.
@@ -227,7 +227,7 @@ impl LocalMachine {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
-        self.finish_mutation(move |local| async move {
+        self.finish_key_change(move |local| async move {
             local
                 .owner
                 .mutate(move |store| {

@@ -239,6 +239,16 @@ impl SwitchGuard {
             want,
             r#gen,
         } = request;
+        // Checked again at the scope the caller holds under the switch, before any effect:
+        // a caller that lost its Device slot while this queued promotes nothing for a start
+        // an Operator may not make.
+        if let WantedCopy::Writer {
+            start: Some(start), ..
+        } = &want
+        {
+            self.recheck_volume_start(&name, start, admitted.as_ref())
+                .await?;
+        }
         // Checked again under the switch lock: a newer lane may have fenced this Volume
         // while the request queued behind a cut.
         self.admit_gen(&name, r#gen).await?;
@@ -482,11 +492,22 @@ impl LocalMachine {
         self.inspect_copy(name).await
     }
 
+    /// The floor lock, with the caller's access checked under it. A floor raise takes no
+    /// turn and no switch, so it lands during a cut's drain and fences it, and every key
+    /// change takes this lock last, so a caller removed while this queued raises nothing.
+    ///
+    /// # Errors
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
     async fn joined_floor_turn(&self) -> Result<FloorTurn<'_>, Error> {
         self.require_joined()?;
-        let turn = self.docker()?.lifecycle().floor_turn().await;
+        let lifecycle = self.docker()?.lifecycle();
+        #[cfg(test)]
+        self.floor_asked.send_modify(|asked| *asked += 1);
+        let turn = lifecycle.floor_turn().await;
         // Checked again under the floor lock: a reset may have begun while this queued.
         self.require_joined()?;
+        self.clone().checked_under(&turn)?;
         Ok(turn)
     }
 

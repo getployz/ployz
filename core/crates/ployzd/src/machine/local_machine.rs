@@ -52,6 +52,10 @@ pub struct LocalMachine {
     /// queued behind it.
     #[cfg(test)]
     switch_asked: Arc<tokio::sync::watch::Sender<usize>>,
+    /// How many floor raises and key changes have asked for the floor lock, which a test
+    /// awaits to know a call queued behind it.
+    #[cfg(test)]
+    floor_asked: Arc<tokio::sync::watch::Sender<usize>>,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -319,6 +323,8 @@ impl LocalMachine {
             in_switch: switch::InSwitch::default(),
             #[cfg(test)]
             switch_asked: Arc::new(tokio::sync::watch::channel(0).0),
+            #[cfg(test)]
+            floor_asked: Arc::new(tokio::sync::watch::channel(0).0),
             #[cfg(test)]
             peers: None,
             #[cfg(test)]
@@ -807,11 +813,13 @@ impl LocalMachine {
         &self,
         request: UpdateMachineRequest,
     ) -> Result<MachineUpdated, Error> {
-        // Policy edits affect new admission without waiting for active Builds.
-        // Ordinary mutations remain serialized; all updates exclude installation.
+        // Policy edits run beside other shared work, and a Build takes no turn, so they
+        // affect new admission without waiting for one. The shared turn still checks the
+        // caller under a lock every key change takes. Ordinary mutations remain serialized;
+        // all updates exclude installation.
         if request.update.is_policy_edit() {
             return self
-                .finish_installed(move |local| async move { local.update_admitted(request).await })
+                .finish_shared(move |local| async move { local.update_admitted(request).await })
                 .await;
         }
         self.finish_mutation(move |local| async move { local.update_admitted(request).await })

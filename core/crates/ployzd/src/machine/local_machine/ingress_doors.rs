@@ -470,9 +470,11 @@ impl LocalMachine {
     }
 
     /// Place the doors `specs` describe, or the doors this Machine has with a fresh
-    /// Caddy for a legacy Deploy. Every pin is pulled and the tunnel `token` written
-    /// before any running Container is touched, under the door lifecycle lock and
-    /// before the admission turn, so a slow pull holds up no other admitted work.
+    /// Caddy for a legacy Deploy. Every pin is pulled before any running Container is
+    /// touched, under the door lifecycle lock and before the admission turn, so a slow
+    /// pull holds up no other admitted work. The tunnel `token` is written under the turn,
+    /// once the caller is checked again there, so a caller removed while this waited
+    /// writes nothing.
     pub(super) async fn converge_doors(
         &self,
         specs: &DoorSpecs,
@@ -504,13 +506,13 @@ impl LocalMachine {
                     .prepare_pinned_image(&spec.container.image)
                     .await?;
             }
+            let turn = local.exclusive_turn().await?;
             if let Some(token) = &token {
                 containers
                     .machine_files()
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let turn = local.exclusive_turn().await?;
             let set = local
                 .converge_doors_admitted(&turn, &containers, &inventory, &specs, legacy)
                 .await?;

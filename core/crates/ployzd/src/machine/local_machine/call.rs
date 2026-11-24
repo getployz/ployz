@@ -133,12 +133,13 @@ impl Checked {
     }
 }
 
-/// A lock every key change takes: either admission turn, or the switch.
+/// A lock every key change takes: either admission turn, the switch, or the floor lock.
 pub(super) trait Held {}
 
 impl Held for tokio::sync::OwnedRwLockWriteGuard<()> {}
 impl Held for tokio::sync::OwnedRwLockReadGuard<()> {}
 impl Held for tokio::sync::OwnedMutexGuard<()> {}
+impl Held for crate::docker::FloorTurn<'_> {}
 
 impl LocalMachine {
     /// This Machine serving `call`.

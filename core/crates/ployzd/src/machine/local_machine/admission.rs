@@ -579,11 +579,11 @@ impl LocalMachine {
     }
 
     /// Let a Writer's start through. Starting a Container the Machine already holds is
-    /// served, unless it is a hook an Operator names, checked here and again under the
-    /// turn that starts it, by [`Checked::start_kept`]. A Create is admitted as
+    /// served, unless it is a hook an Operator names. A Create is admitted as
     /// [`Self::admit_spec`] admits its spec, at the scope the caller holds now. An
     /// Operator's needs a signature from the versions or rule proof it carries, and a spec
-    /// that mounts `volume`, so no signature of a spec opens another Volume. A `check`
+    /// that mounts `volume`, so no signature of a spec opens another Volume. All of it is
+    /// checked again under the switch, by [`Checked::recheck_volume_start`]. A `check`
     /// keeps nothing, and refuses a spec this Machine's placement doesn't take.
     ///
     /// # Errors
@@ -625,20 +625,8 @@ impl LocalMachine {
                     *check,
                 ),
             };
-        let refused = |field| {
-            tracing::warn!("Volume start refused for {}: {field}", resolved_spec.name);
-            Error::DeployRefused(AuthorityRefusal::Mismatch { field })
-        };
-        if operator && versions.is_empty() && rule.is_none() {
-            return Err(refused(MismatchField::VolumeStart));
-        }
-        if operator
-            && !resolved_spec
-                .volume_graph()
-                .mounted_provisioned_volumes()
-                .any(|mounted| mounted.source.docker_volume_name() == Some(volume))
-        {
-            return Err(refused(MismatchField::StartedVolume));
+        if operator {
+            operator_start(volume, resolved_spec, versions, rule.as_deref())?;
         }
         let want = ContainerWant::Running {
             container: RunTarget::New(NewContainer {
@@ -663,7 +651,7 @@ impl LocalMachine {
             .admit_spec(&want, rule.as_deref(), versions, admit)
             .await?;
         if operator && !admitted.as_ref().is_some_and(AdmittedSpec::signed) {
-            return Err(refused(MismatchField::VolumeStart));
+            return Err(start_refused(resolved_spec, MismatchField::VolumeStart));
         }
         if check {
             let record = self.record();
@@ -699,6 +687,42 @@ impl LocalMachine {
 }
 
 impl Checked {
+    /// A Writer's `start`, admitted before the switch, checked again under it before the
+    /// promote: an Operator's as [`LocalMachine::admit_volume_start`] checks one, so a
+    /// caller that lost its Device slot while it queued starts only what an Operator may,
+    /// and a Create's admission only while it still stands.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for a start the scope held here refuses or an
+    /// admission that no longer stands, and [`Error::ApprovalRecord`] when the rule marks
+    /// cannot be read.
+    pub(super) async fn recheck_volume_start(
+        &self,
+        volume: &DockerVolumeName,
+        start: &Start,
+        admitted: Option<&AdmittedSpec>,
+    ) -> Result<(), Error> {
+        let (resolved_spec, versions, rule) = match start {
+            Start::Kept { container_id } => return self.refuse_operator_hook(container_id).await,
+            Start::Create {
+                resolved_spec,
+                versions,
+                rule,
+                ..
+            } => (resolved_spec, versions, rule),
+        };
+        let operator = matches!(self.scope(), Scope::Operator);
+        if operator {
+            operator_start(volume, resolved_spec, versions, rule.as_deref())?;
+        }
+        let admitted = admitted
+            .filter(|admitted| !operator || admitted.signed())
+            .ok_or_else(|| start_refused(resolved_spec, MismatchField::VolumeStart))?;
+        admitted
+            .still_holds(Error::ApprovalRecord)?
+            .map_err(Error::DeployRefused)
+    }
+
     /// Start `id`. An Operator's start is refused when the admission kept with the
     /// Container no longer stands here, as [`Standing::admits`] decides, and when this
     /// Machine kept no admission for it. Docker's start refuses it beside another running
@@ -766,6 +790,36 @@ impl LocalMachine {
         let admitted = self.admit_spec(&want, None, &[], Admit::Record).await?;
         self.ensure_container(want, admitted).await
     }
+}
+
+/// What an Operator's Writer start carries beyond the admission of its spec: the versions
+/// or rule proof a signature comes from, and a spec that mounts `volume`, so no signature
+/// of a spec opens another Volume.
+///
+/// # Errors
+/// Returns [`Error::DeployRefused`] naming what the start lacks.
+fn operator_start(
+    volume: &DockerVolumeName,
+    resolved_spec: &ResolvedServiceSpec,
+    versions: &[Signed<ServiceVersion>],
+    rule: Option<&RuleProof>,
+) -> Result<(), Error> {
+    if versions.is_empty() && rule.is_none() {
+        return Err(start_refused(resolved_spec, MismatchField::VolumeStart));
+    }
+    if !resolved_spec
+        .volume_graph()
+        .mounted_provisioned_volumes()
+        .any(|mounted| mounted.source.docker_volume_name() == Some(volume))
+    {
+        return Err(start_refused(resolved_spec, MismatchField::StartedVolume));
+    }
+    Ok(())
+}
+
+fn start_refused(resolved_spec: &ResolvedServiceSpec, field: MismatchField) -> Error {
+    tracing::warn!("Volume start refused for {}: {field}", resolved_spec.name);
+    Error::DeployRefused(AuthorityRefusal::Mismatch { field })
 }
 
 /// Whether any of `versions` is a forget a key trusted here signed.
