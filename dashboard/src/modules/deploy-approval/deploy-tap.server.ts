@@ -5,7 +5,8 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { Actor } from "#/modules/identity/actor";
-import { requireAccess } from "#/modules/organization/access.server";
+import { beyondEnvironments, requireAccess } from "#/modules/organization/access.server";
+import { environmentProtected } from "#/modules/config-store/store-lookup.server";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
 import { passkeyRequest } from "#/modules/passkeys/tables";
@@ -21,9 +22,10 @@ const SIGNS = ["ployz.container.signed-version.proposal.v1", "ployz.authority.sc
 const UNREACHED = "Couldn't reach your servers. Try again.";
 
 /**
- * What a person's Deploy needs before it asks for their passkey: nothing when no Server enforces device approval, else
- * the Cluster's key, the person's passkeys every enforcing Server trusts, the digest each tag the plan signs runs as,
- * and what each mount is compared with. Any other answer is why it can't ask, in words the sheet shows.
+ * What a person's Deploy needs before it asks for their passkey: nothing when no Server enforces device approval or the
+ * person only asks for it, else the Cluster's key, the person's passkeys every enforcing Server trusts, the digest each
+ * tag the plan signs runs as, and what each mount is compared with. Any other answer is why it can't ask, in words the
+ * sheet shows.
  */
 export type DeployTap =
   | { readonly kind: "off" }
@@ -72,7 +74,13 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     operation: "read", query: { query: "parent", environment: input.environment, services: [...signs] },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments })
     .pipe(Effect.map((read): Readonly<Record<string, Parent>> => read.ok ? read.value.services : {}));
-  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
+  // A member who can't protect this Protected Environment signs nothing here: their Deploy becomes a proposal, and the
+  // owner or admin who approves it signs it there.
+  const asks = input.classify !== true && access.kind === "member" && unsigned.length > 0 && !mayProtect(access, plan.environment.name)
+    && (yield* environmentProtected(access.organization.id, plan.environment.project, plan.environment.id).pipe(
+      Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
+    ));
+  const tap: DeployTap = unsigned.length === 0 || asks ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
   // Support never signs, and reads a plan only as its own view of it allows.
   if (access.kind === "support") {
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
@@ -82,6 +90,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   }
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
+
+const mayProtect = (access: { readonly permissions: readonly string[]; readonly environments: readonly string[] | undefined }, environment: string) =>
+  access.permissions.includes("environments:protect") && beyondEnvironments(access.environments, { environment }) === null;
 
 /** `userId` null only classifies a Deploy someone else signs: no one's passkeys, and no digest lookups. */
 const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null, organizationId: string, tags: readonly string[], asked: {

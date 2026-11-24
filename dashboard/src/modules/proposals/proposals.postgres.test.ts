@@ -34,6 +34,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { envPath } from "#/modules/config-store/setting-paths";
 import { type DeployLink, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
+import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { createOrganizationToken, revokeCredential } from "#/modules/identity/organization-token.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
@@ -496,6 +497,21 @@ it.live("a member's Deploy to a Protected Environment that only the page can fin
     expect(yield* admitted(id)).toBe(0);
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
     expect(yield* admitted(id)).toBe(1);
+  }));
+
+it.live("a member's dashboard Deploy to a Protected Environment needs no passkey of theirs, so it reaches the proposal", () =>
+  Effect.gen(function* () {
+    const shopped = yield* deployable();
+    const { cluster, provided, protect, enforce, write } = shopped;
+    yield* withCache(shopped);
+    enforce(true);
+    const ada = yield* provided(memberAgent);
+    const plan = cluster(prepareDeployTap({ userId: ada.userId }, { organizationSlug: "shop", environment: production, services: [] }));
+    // Unprotected, the member signs it, so the Servers' gate applies to them.
+    yield* write({ command: "set_environment_protected", environment: { project: null, environment: null }, protected: false });
+    expect(yield* plan).toMatchObject({ kind: "plan", tap: { kind: "refused" } });
+    yield* protect;
+    expect(yield* plan).toMatchObject({ kind: "plan", tap: { kind: "off" } });
   }));
 
 it.live("the same Deploy asked twice at once is one proposal, and its Deployment id asked with another body is refused", () =>
