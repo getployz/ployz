@@ -138,7 +138,9 @@ async fn trust(fixture: &Fixture, grant: TrustedGrant) {
                 .map(|held| ployz_core::authority::Prior::Edit {
                     issued_at: held.grant.issued_at,
                 });
-            store.approve_grant(grant, prior).unwrap()
+            store
+                .approve_grant(&crate::machine::KeyChangeHeld::for_test(), grant, prior)
+                .unwrap()
         })
         .await
         .unwrap();
@@ -309,9 +311,12 @@ async fn remove_ci(fixture: &Fixture) {
         .owner
         .mutate(|store| {
             store
-                .remove_key(ployz_core::authority::KeyRef::Signing {
-                    key: ci().public().into(),
-                })
+                .remove_key(
+                    &crate::machine::KeyChangeHeld::for_test(),
+                    ployz_core::authority::KeyRef::Signing {
+                        key: ci().public().into(),
+                    },
+                )
                 .unwrap()
         })
         .await
@@ -561,7 +566,10 @@ async fn a_moved_volume_starts_no_more_once_its_signer_is_removed() {
         .owner
         .mutate(move |store| {
             store
-                .remove_key(ployz_core::authority::KeyRef::Signing { key: key.into() })
+                .remove_key(
+                    &crate::machine::KeyChangeHeld::for_test(),
+                    ployz_core::authority::KeyRef::Signing { key: key.into() },
+                )
                 .unwrap()
         })
         .await

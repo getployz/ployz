@@ -11,11 +11,14 @@ fn joined(dir: &std::path::Path) -> LocalMachineStore {
         .enroll(ApprovingCluster::new(1).join(store.record()))
         .unwrap();
     store
-        .apply_join_restrictions(&ployz_core::JoinRestrictionSet {
-            removed_keys: Vec::new(),
-            removed_members: Vec::new(),
-            floors: Default::default(),
-        })
+        .apply_join_restrictions(
+            &crate::machine::KeyChangeHeld::for_test(),
+            &ployz_core::JoinRestrictionSet {
+                removed_keys: Vec::new(),
+                removed_members: Vec::new(),
+                floors: Default::default(),
+            },
+        )
         .unwrap();
     store.complete_catch_up().unwrap();
     store

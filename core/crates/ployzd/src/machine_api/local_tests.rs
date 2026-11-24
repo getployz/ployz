@@ -1240,7 +1240,13 @@ mod ingress_doors {
             panic!("answered before its turn: {answered:?}");
         }
         store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(turn);
@@ -2410,8 +2416,19 @@ mod private_access {
                 store.approve_device(device).unwrap();
                 store.approve_device(kept).unwrap();
                 let cloud = ployz_core::ManagementClientLabel::cloud();
-                store.stage_management_client(cloud, device.into()).unwrap();
-                store.activate_management_client(device.into()).unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
             })
             .await
             .unwrap();
@@ -2424,7 +2441,13 @@ mod private_access {
             panic!("answered before its turn: {answered:?}");
         }
         store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         assert!(store.record().accepts_management_client(&device.into()));
@@ -4915,7 +4938,13 @@ mod set_volume_copy {
         .await
         .expect("the forget queued on the switch");
         store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(switch);
@@ -5339,8 +5368,19 @@ mod set_volume_copy {
                 store.approve_device(device).unwrap();
                 store.approve_device(kept).unwrap();
                 let cloud = ployz_core::ManagementClientLabel::cloud();
-                store.stage_management_client(cloud, device.into()).unwrap();
-                store.activate_management_client(device.into()).unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
             })
             .await
             .unwrap();
@@ -5360,7 +5400,13 @@ mod set_volume_copy {
         });
         asked.wait_for(|asked| *asked >= 2).await.unwrap();
         store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         assert!(store.record().accepts_management_client(&device.into()));
@@ -6882,7 +6928,9 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_by_code(code).unwrap();
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), code)
+                        .unwrap();
                 })
                 .await
                 .unwrap();
@@ -6924,7 +6972,9 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_by_code(code).unwrap();
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), code)
+                        .unwrap();
                 })
                 .await
                 .unwrap();
@@ -6950,7 +7000,9 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_by_code(device.code()).unwrap();
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap();
                 })
                 .await
                 .unwrap();

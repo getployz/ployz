@@ -100,7 +100,7 @@ pub(crate) use container::names_content;
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
 pub(crate) use private_access::Pacing;
-pub(crate) use switch::SwitchGuard;
+pub(crate) use switch::{KeyChangeHeld, SwitchGuard};
 mod join_approval;
 mod management_client;
 mod push_target;

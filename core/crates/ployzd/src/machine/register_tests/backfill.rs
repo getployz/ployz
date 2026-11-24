@@ -1135,7 +1135,9 @@ async fn a_member_given_the_key_takes_the_holders_removals() {
         .local
         .owner()
         .mutate(move |store| {
-            store.remove_key(removed_key).unwrap();
+            store
+                .remove_key(&crate::machine::KeyChangeHeld::for_test(), removed_key)
+                .unwrap();
             store.remove_members(&[gone]).unwrap();
         })
         .await
@@ -1191,7 +1193,11 @@ async fn a_sealing_key_install_that_removes_a_device_waits_out_its_volume_step()
     holder
         .local
         .owner()
-        .mutate(move |store| store.remove_key(removed_key).unwrap())
+        .mutate(move |store| {
+            store
+                .remove_key(&crate::machine::KeyChangeHeld::for_test(), removed_key)
+                .unwrap()
+        })
         .await
         .unwrap();
     let sealed = holder.share_to(&founder).await;

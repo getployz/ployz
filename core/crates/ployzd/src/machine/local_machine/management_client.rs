@@ -38,7 +38,7 @@ impl LocalMachine {
             return Err(Error::DeviceSlot);
         }
         let caller = self.call.caller();
-        self.finish_key_change(move |local| async move {
+        self.finish_key_change(move |local, held| async move {
             local
                 .owner
                 .mutate(move |store| {
@@ -48,6 +48,7 @@ impl LocalMachine {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
                             store.stage_management_client(
+                                &held,
                                 label,
                                 ClientKey::from_bytes(*client.public().as_bytes()),
                             )?;
@@ -57,7 +58,7 @@ impl LocalMachine {
                             ))
                         }
                         SetManagementClientRequest::Clear { label } => {
-                            store.clear_management_client(&label)?;
+                            store.clear_management_client(&held, &label)?;
                             None
                         }
                     };
@@ -86,7 +87,7 @@ impl LocalMachine {
     ///
     /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local| async move {
+        self.finish_key_change(move |local, held| async move {
             let full = local.full_caller()?;
             local
                 .owner
@@ -94,19 +95,23 @@ impl LocalMachine {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
                     match request {
-                        SetDeviceRequest::Approve { key } => {
-                            trust(store, (NewKey::Device { key }, None), by, Timestamp::now())
-                        }
+                        SetDeviceRequest::Approve { key } => trust(
+                            store,
+                            &held,
+                            (NewKey::Device { key }, None),
+                            by,
+                            Timestamp::now(),
+                        ),
                         SetDeviceRequest::Remove { code } => {
-                            let removed = store.remove_by_code(code)?;
+                            let removed = store.remove_by_code(&held, code)?;
                             Ok(removal(code, removed, by))
                         }
                         SetDeviceRequest::RemoveKey { key } => {
-                            let removed = store.remove_key(key)?;
+                            let removed = store.remove_key(&held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                         SetDeviceRequest::RemoveGrant { key, retired } => {
-                            let removed = store.remove_grant(key, retired)?;
+                            let removed = store.remove_grant(&held, key, retired)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
@@ -123,14 +128,20 @@ impl LocalMachine {
     /// # Errors
     /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local| async move {
+        self.finish_key_change(move |local, held| async move {
             let full = local.full_caller()?;
             local
                 .owner
                 .mutate(move |store| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
-                    trust(store, (request.key.into(), None), by, Timestamp::now())
+                    trust(
+                        store,
+                        &held,
+                        (request.key.into(), None),
+                        by,
+                        Timestamp::now(),
+                    )
                 })
                 .await?
         })
@@ -151,7 +162,7 @@ impl LocalMachine {
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
     pub async fn key_step(&self, request: KeyStepRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local| async move {
+        self.finish_key_change(move |local, held| async move {
             let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
                 .map_err(Error::JoinRecord)?
                 .map(|key| key.public_key());
@@ -183,9 +194,9 @@ impl LocalMachine {
                             key,
                             issued_at,
                             prior,
-                        } => trust(store, (*key, prior), by, issued_at),
+                        } => trust(store, &held, (*key, prior), by, issued_at),
                         KeyVerified::Remove { key } => {
-                            let removed = store.remove_key(key)?;
+                            let removed = store.remove_key(&held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
@@ -227,12 +238,12 @@ impl LocalMachine {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
-        self.finish_key_change(move |local| async move {
+        self.finish_key_change(move |local, held| async move {
             local
                 .owner
                 .mutate(move |store| {
                     store
-                        .activate_management_client(remote)
+                        .activate_management_client(&held, remote)
                         .map_err(Error::from)
                 })
                 .await?
@@ -257,6 +268,7 @@ fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
 /// passkey. A `prior` is only ever a grant's, so a Device or passkey with one is refused.
 fn trust(
     store: &mut crate::machine::LocalMachineStore,
+    held: &crate::machine::KeyChangeHeld,
     (key, prior): (NewKey, Option<Prior>),
     by: PasskeyApprover,
     issued_at: Timestamp,
@@ -353,6 +365,7 @@ fn trust(
             let kind = KeyKind::from(grant.kind);
             Ok(approved(
                 store.approve_grant(
+                    held,
                     TrustedGrant {
                         grant,
                         approved_by: by,

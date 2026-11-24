@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::sync::{Mutex, MutexGuard, watch};
+use tokio::sync::{Mutex, MutexGuard, OwnedMutexGuard, watch};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS containers (
@@ -76,7 +76,7 @@ pub struct MachineSpecStore {
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
     rotations: watch::Sender<()>,
-    /// How many floor writes have begun on a blocking thread.
+    /// How many reads and writes under the floor lock have begun on a blocking thread.
     #[cfg(test)]
     floor_writes: watch::Sender<usize>,
     /// Never used: keeps SQLite from checkpointing the WAL each time a call's own
@@ -91,9 +91,13 @@ pub(super) struct ConfigOperation<'a> {
 
 /// The floor lock, held. Each Volume's floor is the newest lane `gen` this Machine
 /// accepted; it is read and raised only through this.
+///
+/// A read or write under it holds the lock too until its blocking thread ends, so a caller
+/// that stops waiting frees the lock only once the database has the write: a key change
+/// that takes the lock next never returns before a raise it admitted lands.
 pub struct FloorTurn<'a> {
     store: &'a MachineSpecStore,
-    _guard: MutexGuard<'a, ()>,
+    held: Arc<OwnedMutexGuard<()>>,
 }
 
 impl MachineSpecStore {
@@ -329,18 +333,19 @@ impl MachineSpecStore {
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
         FloorTurn {
             store: self,
-            _guard: self.floors.lock().await,
+            held: Arc::new(Arc::clone(&self.floors).lock_owned().await),
         }
     }
 
     /// Forget every floor, for a Machine leaving its cluster.
     pub async fn clear_floors(&self) -> Result<(), Error> {
-        let _turn = self.floor_turn().await;
-        self.run(move |connection| {
-            connection.execute("DELETE FROM volume_floors", [])?;
-            Ok(())
-        })
-        .await
+        self.floor_turn()
+            .await
+            .run(move |connection| {
+                connection.execute("DELETE FROM volume_floors", [])?;
+                Ok(())
+            })
+            .await
     }
 
     /// Record that this Machine forgot its copy of `name`, which carried `origin`.
@@ -653,6 +658,24 @@ impl MachineSpecStore {
 }
 
 impl FloorTurn<'_> {
+    /// Runs `work` as [`MachineSpecStore::run`] does, holding the floor lock until it ends.
+    async fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let held = Arc::clone(&self.held);
+        #[cfg(test)]
+        let begun = self.store.floor_writes.clone();
+        self.store
+            .run(move |connection| {
+                let _held = held;
+                #[cfg(test)]
+                begun.send_modify(|begun| *begun += 1);
+                work(connection)
+            })
+            .await
+    }
+
     /// Refuse a `gen` below the floor of `name` with that floor; otherwise raise the
     /// floor to `gen`. A Volume with no floor yet has floor 0.
     pub async fn admit(
@@ -661,12 +684,7 @@ impl FloorTurn<'_> {
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, super::Error> {
         let name = name.to_string();
-        #[cfg(test)]
-        let begun = self.store.floor_writes.clone();
-        self.store
-            .run(move |connection| {
-            #[cfg(test)]
-            begun.send_modify(|begun| *begun += 1);
+        self.run(move |connection| {
             let raised = match ployz_decide::volume_floor::admit(volume_floor(connection, &name)?, r#gen) {
                 Ok(raised) => raised,
                 Err(floor) => return Ok(Err(floor)),
@@ -692,16 +710,15 @@ impl FloorTurn<'_> {
         holder: &ContainerId,
     ) -> Result<(), super::Error> {
         let (name, holder) = (name.to_string(), holder.to_string());
-        self.store
-            .run(move |connection| {
-                connection.execute(
-                    "INSERT INTO volume_cut_stops (name, floor, holder) VALUES (?1, ?2, ?3) ON CONFLICT (name) DO UPDATE SET floor = excluded.floor, holder = excluded.holder",
-                    params![name, i64::try_from(r#gen.get()).unwrap_or(i64::MAX), holder],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(super::Error::from)
+        self.run(move |connection| {
+            connection.execute(
+                "INSERT INTO volume_cut_stops (name, floor, holder) VALUES (?1, ?2, ?3) ON CONFLICT (name) DO UPDATE SET floor = excluded.floor, holder = excluded.holder",
+                params![name, i64::try_from(r#gen.get()).unwrap_or(i64::MAX), holder],
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(super::Error::from)
     }
 
     /// Whether the last cut of `name` [`Self::note_cut_stop`] recorded was at `gen`
@@ -714,19 +731,18 @@ impl FloorTurn<'_> {
     ) -> Result<bool, super::Error> {
         let (name, holder) = (name.to_string(), holder.to_string());
         let floor = i64::try_from(r#gen.get()).unwrap_or(i64::MAX);
-        self.store
-            .run(move |connection| {
-                Ok(connection
-                    .query_row(
-                        "SELECT 1 FROM volume_cut_stops WHERE name = ?1 AND floor = ?2 AND holder = ?3",
-                        params![name, floor, holder],
-                        |_| Ok(()),
-                    )
-                    .optional()?
-                    .is_some())
-            })
-            .await
-            .map_err(super::Error::from)
+        self.run(move |connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT 1 FROM volume_cut_stops WHERE name = ?1 AND floor = ?2 AND holder = ?3",
+                    params![name, floor, holder],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some())
+        })
+        .await
+        .map_err(super::Error::from)
     }
 
     /// Refuse a `gen` below the floor of `name` with that floor, as [`Self::admit`] does,
@@ -737,15 +753,14 @@ impl FloorTurn<'_> {
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, super::Error> {
         let name = name.to_string();
-        self.store
-            .run(move |connection| {
-                Ok(ployz_decide::volume_floor::check(
-                    volume_floor(connection, &name)?,
-                    r#gen,
-                ))
-            })
-            .await
-            .map_err(super::Error::from)
+        self.run(move |connection| {
+            Ok(ployz_decide::volume_floor::check(
+                volume_floor(connection, &name)?,
+                r#gen,
+            ))
+        })
+        .await
+        .map_err(super::Error::from)
     }
 }
 

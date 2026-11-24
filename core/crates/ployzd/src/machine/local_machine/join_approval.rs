@@ -271,7 +271,8 @@ impl LocalMachine {
         &self,
         request: ConfirmJoinRequest,
     ) -> Result<JoinConfirmed, Error> {
-        self.finish_mutation(move |local| async move {
+        // The restrictions stop trusting keys, so taking them is a key change.
+        self.finish_key_change(move |local, key_change| async move {
             let record = local.record();
             let approval = record
                 .machine()
@@ -292,7 +293,7 @@ impl LocalMachine {
                 .install_floors(key.public_key(), &set.floors)?;
             local
                 .owner
-                .mutate(move |store| store.apply_join_restrictions(&set))
+                .mutate(move |store| store.apply_join_restrictions(&key_change, &set))
                 .await??;
             Ok(JoinConfirmed {})
         })
