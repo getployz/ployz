@@ -607,12 +607,14 @@ impl LocalMachine {
     /// served, unless it is a hook an Operator names. A Create is admitted as
     /// [`Self::admit_spec`] admits its spec. An Operator's needs a signature from the
     /// versions or rule proof it carries, and a spec that mounts `volume`, so no
-    /// signature of a spec opens another Volume. A `check` keeps nothing, and refuses a
-    /// spec this Machine's placement doesn't take.
+    /// signature of a spec opens another Volume. Either form refuses a spec its identity
+    /// doesn't admit, as the Create would. A `check` keeps nothing, and refuses a spec this
+    /// Machine's placement doesn't take.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] for a refused start
-    /// and a hook, the placement's error for a check this Machine doesn't take, and
+    /// and a hook, the identity's refusal, such as [`Error::GlobalUnreserved`], the
+    /// placement's error for a check this Machine doesn't take, and
     /// [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be read.
     pub(crate) async fn admit_volume_start(
         &self,
@@ -682,6 +684,10 @@ impl LocalMachine {
             }),
             rotation: rotation.clone(),
         };
+        // The Create after the promote admits the identity first. Both forms refuse what it
+        // would before the transition: an unchecked start promotes in this request, and a
+        // promoted Volume whose workload the Create refuses comes up on no resend.
+        self.admit_identity(namespace, resolved_spec).await?;
         let admit = if check { Admit::Check } else { Admit::Record };
         let admitted = self
             .admit_spec(&want, rule.as_deref(), versions, admit)
@@ -690,9 +696,6 @@ impl LocalMachine {
             return Err(refused(MismatchField::VolumeStart));
         }
         if check {
-            // The Create after the promote admits the identity first, so a check refuses
-            // what it would.
-            self.admit_identity(namespace, resolved_spec).await?;
             let record = self.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
             let storage = self.observe_storage().await;
