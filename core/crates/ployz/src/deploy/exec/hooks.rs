@@ -43,6 +43,7 @@ pub(super) async fn run_hook<C: MachineOperations>(
         deploy: Some(run),
         r#gen: Gen::FIRST,
         answer: AnswerWhen::Started,
+        replaces: None,
     };
     let container_id = start(&attempt, run, FailedStart::Discard)
         .await

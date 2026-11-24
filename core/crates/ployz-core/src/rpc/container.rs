@@ -132,9 +132,12 @@ pub enum RunRotation {
     },
 }
 
-/// What `Gone` does with the Container's anonymous Volumes. Only a
+/// What `Gone` asks for the Container's anonymous Volumes. Only a
 /// [`crate::RemoveContainerPurpose`] makes one, so a caller says why it removes the
-/// Container and never picks what happens to the data.
+/// Container and never picks what happens to the data. The Machine keeps them unless,
+/// as it removes the Container, another of its Containers of the same Service and kind
+/// runs that was made to replace it ([`NewContainer::replaces`]). An ask to keep them
+/// always keeps them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct AnonymousVolumes(#[ts(inline)] Disposal);
@@ -203,6 +206,12 @@ pub struct NewContainer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub image_id: Option<crate::ImageDigest>,
+    /// The copy on this Machine the new Container takes the place of, stamped as the
+    /// `ployz.replaces` label. While the new Container runs, a `Gone` of that copy may
+    /// take its anonymous Volumes. An older Machine ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub replaces: Option<crate::ContainerId>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.

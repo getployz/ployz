@@ -908,6 +908,7 @@ fn creation(
             image_prepared: false,
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
+            replaces: None,
         }),
         rotation: ployz_core::RunRotation::Pending,
     }

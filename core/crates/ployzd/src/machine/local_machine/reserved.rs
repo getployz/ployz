@@ -290,6 +290,7 @@ impl LocalMachine {
                 r#gen: Gen::FIRST,
                 image: ImagePull::Prepared,
                 admitted: AdmittedSpec::own(&Namespace::system(), spec)?,
+                replaces: None,
             })
             .await?;
         effects.created.push(created.container_id);

@@ -542,6 +542,7 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
         image_prepared: false,
         answer: ployz_core::AnswerWhen::Started,
         image_id: None,
+        replaces: None,
     }
 }
 

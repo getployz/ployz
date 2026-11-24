@@ -900,6 +900,7 @@ async fn execute_operation<C: MachineOperations>(
                 deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(*skip_health_monitor),
+                replaces: None,
             };
             start(&attempt, run, FailedStart::Discard)
                 .await
@@ -996,6 +997,7 @@ async fn execute_operation<C: MachineOperations>(
                     deploy: Some(shared.plan.run()),
                     r#gen,
                     answer: answer_when(replacement.skip_health_monitor),
+                    replaces: Some(replacement.old_container_id),
                 };
                 return replace_stop_first(
                     client,
@@ -1017,6 +1019,7 @@ async fn execute_operation<C: MachineOperations>(
                 deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(replacement.skip_health_monitor),
+                replaces: Some(replacement.old_container_id),
             };
             start(&attempt, run, FailedStart::Discard)
                 .await

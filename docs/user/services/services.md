@@ -70,11 +70,16 @@ a broken variable out, and any variable that references it, and warn, as for a
 Deleting a database's service also deletes its volume and data, unless another service mounts
 it. The deploy asks you to confirm first: see
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
-Anonymous volumes the service's image created, which no volume in Ployz names, stay on the
-server whenever a container leaves it with no new container in its place: after the service is
-deleted, after you lower its replicas, after a deploy's placement stops allowing that server, after
-a drain moves it off that server, and after you remove one of its containers. A deploy that
-replaces a container on the same server deletes the old container's anonymous volumes.
+Anonymous volumes the service's image created, which no volume in Ployz names, are deleted only
+when a deploy replaces a container on the same server: the server deletes the old container's
+anonymous volumes once the new container runs in its place. Every other removal leaves them on the
+server: after the service is deleted, after you lower its replicas, after a deploy's placement
+stops allowing that server, after a drain moves it off that server, after you remove one of its
+containers, after a failed deploy removes the container it started, and when a deploy removes an
+old pre-deploy hook container. A server keeps them on a replace too when the deploy ran on
+`ployz` 0.4.0-beta.2 or earlier, which doesn't tell the server which container the new one
+replaces. A server on 0.4.0-beta.2 or earlier deletes them whenever the deploy asks. Removing the
+server deletes them with it.
 
 ## Restart, stop or open a shell
 

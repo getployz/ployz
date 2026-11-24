@@ -298,6 +298,7 @@ impl LocalMachine {
                     r#gen: Gen::FIRST,
                     image: ImagePull::Policy(registry_auth.as_ref()),
                     admitted: AdmittedSpec::test_signed(&namespace, &spec),
+                    replaces: None,
                 })
                 .await
         })
@@ -369,6 +370,7 @@ impl LocalMachine {
                             r#gen: copy_gen,
                             image: ImagePull::Policy(None),
                             admitted: admitted.ok_or_else(unadmitted)?,
+                            replaces: None,
                         })
                         .await?
                         .container_id
@@ -1655,6 +1657,7 @@ impl LocalMachine {
                             (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
                         },
                         admitted,
+                        replaces: new.replaces,
                     })
                     .await;
                 let created = match created {
@@ -1719,6 +1722,7 @@ impl LocalMachine {
             r#gen,
             image,
             admitted,
+            replaces,
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
@@ -1731,6 +1735,7 @@ impl LocalMachine {
                     creation_key: &creation_key,
                     deployment_id: deployment_id.as_ref(),
                     r#gen,
+                    replaces: replaces.as_ref(),
                     image,
                     kind,
                     namespace,
@@ -1895,6 +1900,8 @@ pub(super) struct CreationFacts<'a> {
     pub(super) r#gen: Gen,
     pub(super) image: ImagePull<'a>,
     pub(super) admitted: AdmittedSpec,
+    /// The copy on this Machine the new Container takes the place of.
+    pub(super) replaces: Option<ContainerId>,
 }
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as

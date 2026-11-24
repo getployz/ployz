@@ -505,6 +505,7 @@ mod plan {
             image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
             image_id: None,
+            replaces: None,
         }
     }
 
@@ -2502,5 +2503,257 @@ mod reserved_lifecycle {
             }
         ));
         fixture.finish();
+    }
+}
+
+/// A removal takes a Container's anonymous volumes only while this Machine runs a
+/// Container of the same Service and kind that was made to replace it, whatever the
+/// caller asked.
+mod anonymous_volumes {
+    use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
+
+    use ployz_core::{
+        ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Drain,
+        EnsuredContainer, MachineName, NewContainer, RemoveContainerPurpose, RunRotation,
+        RunTarget, ServiceName, StopOptions,
+    };
+
+    use super::*;
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
+
+    use ContainerKind::{PreDeployHook as Hook, ServiceContainer as Copy};
+    use RemoveContainerPurpose::{Retire, Rollout};
+
+    struct Machine {
+        local: LocalMachine,
+        fake: FakeDocker,
+        data_dir: PathBuf,
+    }
+
+    impl Machine {
+        async fn new() -> Self {
+            let data_dir =
+                std::env::temp_dir().join(format!("ployzd-anonymous-{}", MachineId::random()));
+            let mut store = LocalMachineStore::open(&data_dir).unwrap();
+            store
+                .enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("local").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                            "192.0.2.1:51820".parse().unwrap(),
+                        )],
+                        grant: None,
+                    },
+                    wireguard_mtu: None,
+                    pinned: Default::default(),
+                })
+                .unwrap();
+            let owner = RecordOwner::spawn(store).unwrap();
+            let (runtime, fake) = fake_runtime_with(FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                list_named: true,
+                ..Default::default()
+            })
+            .await;
+            let local = LocalMachine::new(owner)
+                .with_containers(Some(runtime))
+                .with_zpool("true");
+            Self {
+                local,
+                fake,
+                data_dir,
+            }
+        }
+
+        /// Run a new Container of `service` and `kind` in slot `key`, made to replace
+        /// `replaces`.
+        async fn run(
+            &self,
+            (service, kind): (&str, ContainerKind),
+            key: &str,
+            replaces: Option<ContainerId>,
+        ) -> ContainerId {
+            let mut resolved_spec = spec_with_sources(vec![]);
+            resolved_spec.name = ServiceName::parse(service).unwrap();
+            let id = if service == "api" { 'a' } else { 'b' };
+            resolved_spec.service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
+            let new = NewContainer {
+                slot: ployz_core::SlotKey {
+                    namespace: Namespace::parse("app").unwrap(),
+                    service: resolved_spec.name.clone(),
+                    kind,
+                    creation_key: ployz_core::CreationKey::try_from(key.to_owned()).unwrap(),
+                },
+                resolved_spec,
+                r#gen: ployz_core::Gen::FIRST,
+                deployment_id: None,
+                registry_auth: None,
+                image_prepared: false,
+                answer: ployz_core::AnswerWhen::Started,
+                image_id: None,
+                replaces,
+            };
+            let reply = self
+                .local
+                .ensure_full_access(ContainerWant::Running {
+                    container: RunTarget::New(new),
+                    rotation: RunRotation::Pending,
+                })
+                .await
+                .unwrap();
+            match reply {
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(observed),
+                    ..
+                } => observed.container_id,
+                other @ (EnsuredContainer::Ensured { .. } | EnsuredContainer::Refused { .. }) => {
+                    panic!("expected {key} running, got {other:?}")
+                }
+            }
+        }
+
+        async fn stop(&self, id: ContainerId) {
+            self.local
+                .ensure_full_access(ContainerWant::Stopped {
+                    container: ContainerLocator::Id(id),
+                    drain: Drain::NONE,
+                    stop: StopOptions::default(),
+                })
+                .await
+                .unwrap();
+        }
+
+        /// Remove `id` for `purpose`, and answer whether its anonymous volumes went too.
+        async fn remove(&self, id: ContainerId, purpose: RemoveContainerPurpose) -> bool {
+            let reply = self
+                .local
+                .ensure_full_access(ContainerWant::Gone {
+                    container: ContainerLocator::Id(id),
+                    drain: Drain::NONE,
+                    anonymous_volumes: purpose.into(),
+                })
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    EnsuredContainer::Ensured {
+                        now: ContainerNow::Absent { .. },
+                        ..
+                    }
+                ),
+                "expected {id} gone, got {reply:?}"
+            );
+            self.fake
+                .removals
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(removed, _)| *removed == id.to_string())
+                .map(|(_, volumes)| *volumes)
+                .expect("Docker removed the Container")
+        }
+
+        fn finish(self) {
+            std::fs::remove_dir_all(self.data_dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removal_with_nothing_in_its_slot_keeps_them() {
+        let machine = Machine::new().await;
+        // A copy taken off its Server, an earlier run's Pending copy, and an old hook
+        // removed before the new hook is made: nothing was made to replace any of them.
+        for (kind, key) in [(Copy, "copy"), (Hook, "hook")] {
+            let old = machine.run(("api", kind), key, None).await;
+            assert!(
+                !machine.remove(old, Rollout).await,
+                "the {key}'s anonymous volumes went with nothing in its place"
+            );
+        }
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_running_replacement_in_its_slot_takes_them() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        machine.run(("api", Copy), "new", Some(old)).await;
+
+        assert!(machine.remove(old, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_of_another_copy_keeps_them() {
+        let machine = Machine::new().await;
+        // Two old copies of one Service, and one new copy made to replace the first.
+        let first = machine.run(("api", Copy), "first", None).await;
+        let second = machine.run(("api", Copy), "second", None).await;
+        let new = machine.run(("api", Copy), "new", Some(first)).await;
+
+        assert!(
+            !machine.remove(second, Rollout).await,
+            "a copy made to replace another took this one's place"
+        );
+        // Undoing the new copy while the old one still runs: the old one replaces nothing.
+        let undone = machine.run(("api", Copy), "undone", Some(first)).await;
+        assert!(!machine.remove(undone, Rollout).await);
+        assert!(machine.remove(first, Rollout).await);
+        assert!(!machine.remove(new, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_of_another_service_or_kind_keeps_them() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        machine.run(("web", Copy), "web", Some(old)).await;
+        machine.run(("api", Hook), "hook", Some(old)).await;
+
+        assert!(!machine.remove(old, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_stopped_or_went_keeps_them() {
+        let machine = Machine::new().await;
+        let stopped = machine.run(("api", Copy), "stopped", None).await;
+        let new = machine
+            .run(("api", Copy), "stopped-new", Some(stopped))
+            .await;
+        machine.stop(new).await;
+        assert!(!machine.remove(stopped, Rollout).await);
+
+        // Cleanup acting on a Rollout it decided before the new copy was removed.
+        let left = machine.run(("api", Copy), "left", None).await;
+        let removed = machine.run(("api", Copy), "left-new", Some(left)).await;
+        machine.remove(removed, Rollout).await;
+        assert!(!machine.remove(left, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_on_another_server_keeps_them() {
+        let (here, there) = (Machine::new().await, Machine::new().await);
+        let old = here.run(("api", Copy), "old", None).await;
+        there.run(("api", Copy), "moved", Some(old)).await;
+
+        assert!(!here.remove(old, Rollout).await);
+        here.finish();
+        there.finish();
+    }
+
+    #[tokio::test]
+    async fn a_removal_asked_to_keep_them_keeps_them_beside_its_replacement() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        machine.run(("api", Copy), "new", Some(old)).await;
+
+        assert!(!machine.remove(old, Retire).await);
+        machine.finish();
     }
 }

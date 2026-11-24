@@ -1094,6 +1094,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },

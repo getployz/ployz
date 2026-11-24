@@ -81,6 +81,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) creation_key: &'spec str,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
     pub(crate) r#gen: Gen,
+    /// The copy on this Machine the new Container takes the place of.
+    pub(crate) replaces: Option<&'spec ContainerId>,
     /// How creation obtains the image.
     pub(crate) image: ImagePull<'spec>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
@@ -105,6 +107,7 @@ struct Creating<'a> {
     creation_key: &'a str,
     deployment_id: Option<&'a ployz_core::DeploymentLogId>,
     r#gen: Gen,
+    replaces: Option<&'a ContainerId>,
     image: ImagePull<'a>,
     kind: ContainerKind,
     namespace: &'a Namespace,
@@ -391,6 +394,7 @@ impl Lifecycle {
                 creation_key: &format!("test:{}", MachineId::random()),
                 deployment_id: None,
                 r#gen: Gen::FIRST,
+                replaces: None,
                 image: ImagePull::Policy(None),
                 kind,
                 namespace,
@@ -423,6 +427,7 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
+            replaces,
             image,
             kind,
             namespace,
@@ -465,6 +470,7 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
+            replaces,
             image,
             kind,
             namespace,
@@ -585,6 +591,7 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
+            replaces,
             kind,
             namespace,
             spec,
@@ -635,6 +642,7 @@ impl Lifecycle {
             deployment_id,
             Some(creation_key),
             r#gen,
+            replaces,
         );
         Ok(body)
     }
@@ -1042,6 +1050,9 @@ impl Lifecycle {
         Ok(true)
     }
 
+    /// Removes `container_id` and its records. Its anonymous volumes go only when
+    /// `remove_volumes` asks and a Container made to replace it runs here (see
+    /// [`Self::replaced`]).
     pub async fn remove(
         &self,
         container_id: &ContainerId,
@@ -1106,7 +1117,9 @@ impl Lifecycle {
                 remove_volumes,
                 force,
             } => match self.observation.ensure_managed(container_id).await {
-                Ok(_) => {
+                Ok(inspected) => {
+                    let remove_volumes =
+                        remove_volumes && self.replaced(container_id, &inspected).await?;
                     let options = RemoveContainerOptionsBuilder::default()
                         .v(remove_volumes)
                         .force(force)
@@ -1133,6 +1146,41 @@ impl Lifecycle {
         }
         self.forget(container_id).await;
         Ok(())
+    }
+
+    /// Whether `retiree`'s anonymous volumes may go with it: a Container of the same
+    /// Service and kind runs on this Machine, not withdrawn, that was made to replace it
+    /// ([`labels::REPLACES`]). Read under the config lock every Ployz create and removal
+    /// takes, so none lands between this read and the removal. The removal of a system
+    /// Container, whose spec is the daemon's own, takes them as asked.
+    async fn replaced(&self, retiree: &ContainerId, inspected: &Inspected) -> Result<bool, Error> {
+        let labels = inspected.labels().ok_or(Error::NotManaged)?;
+        if labels::Class::of(labels) == Some(labels::Class::System) {
+            return Ok(true);
+        }
+        let retiring = ServiceLabels::parse(labels)?;
+        let named = self
+            .docker
+            .labelled(vec![format!("{}={retiree}", labels::REPLACES)])
+            .await?;
+        for (candidate, labels) in named {
+            if candidate == *retiree
+                || ServiceLabels::parse(&labels).ok().as_ref() != Some(&retiring)
+                || self.standing.is_withdrawn(&candidate)
+            {
+                continue;
+            }
+            match self.docker.inspect(&candidate).await {
+                Ok(replacement)
+                    if super::runtime_observation(replacement.state.as_ref()).is_running() =>
+                {
+                    return Ok(true);
+                }
+                Ok(_) | Err(Error::ContainerNotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(false)
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -1463,6 +1511,7 @@ mod tests {
                     creation_key,
                     deployment_id,
                     r#gen: generation,
+                    replaces: None,
                     ..container_request(kind, &namespace, &spec, std::future::ready(None))
                 },
             )

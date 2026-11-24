@@ -706,8 +706,10 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
-/// Why Ployz removes a Container: whether a new copy takes its slot on its Server. It
-/// alone decides what happens to the Container's anonymous Volumes.
+/// Why Ployz removes a Container: whether a new copy takes its slot on its Server. A
+/// `Retire` keeps the Container's anonymous Volumes. A `Rollout` only asks to remove
+/// them, which the Machine does when it runs the copy made to replace this one (see
+/// [`crate::AnonymousVolumes`]).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {

@@ -266,6 +266,8 @@ pub(crate) async fn move_container<C: MachineOperations>(
             answer: AnswerWhen::Settled,
             image_id: (!ployz_core::authority::deploy::content_addressed(&spec.container.image))
                 .then(|| image.clone()),
+            // A move's copy lands on another Machine, so it takes no copy's place there.
+            replaces: None,
         }),
         rotation: RunRotation::Pending,
     };
@@ -449,6 +451,8 @@ pub(super) struct SlotRun<'a> {
     pub(super) deploy: Option<&'a DeploymentLogId>,
     pub(super) r#gen: Gen,
     pub(super) answer: AnswerWhen,
+    /// The copy on the same Machine the new Container takes the place of.
+    pub(super) replaces: Option<ContainerId>,
 }
 
 pub(super) async fn start<C: MachineOperations>(
@@ -557,6 +561,7 @@ pub(super) async fn run_new<C: MachineOperations>(
         deploy,
         r#gen,
         answer,
+        replaces,
     } = run;
     attempt.running(OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
@@ -569,6 +574,7 @@ pub(super) async fn run_new<C: MachineOperations>(
             image_prepared: true,
             answer,
             image_id: None,
+            replaces,
         }),
         rotation: RunRotation::Pending,
     };
