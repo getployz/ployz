@@ -98,8 +98,9 @@ pub const TUNNEL_NETWORK_NAME: &str = "ployz-tunnel";
 #[derive(Clone)]
 pub struct LocalDocker {
     client: Docker,
-    /// Serializes bridge endpoint creates, and holds the last bridge address handed out.
-    endpoint_creates: Arc<Mutex<Option<std::net::Ipv4Addr>>>,
+    /// Serializes bridge endpoint creates, and holds the last bridge address handed out
+    /// in each part.
+    endpoint_creates: Arc<Mutex<crate::network::bridge::address::Handed>>,
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
@@ -143,7 +144,7 @@ impl LocalDocker {
     fn from_client(client: Docker) -> Self {
         Self {
             client,
-            endpoint_creates: Arc::new(Mutex::new(None)),
+            endpoint_creates: Arc::default(),
             creates: Arc::default(),
         }
     }
@@ -870,7 +871,7 @@ impl Observation {
             .labels()
             .ok_or(Error::MissingField("container labels"))?;
         let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
-        let (resolved_spec, rotation) = self
+        let (resolved_spec, rotation, admission) = self
             .specs
             .spec_and_rotation(container_id)
             .await?
@@ -966,6 +967,7 @@ impl Observation {
                     .as_ref()
                     .and_then(|host| host.log_config.as_ref())
                     .and_then(|log| log.typ.clone()),
+                admission: Some(admission),
             })?;
         let oom_killed = inspected.oom_killed();
         Ok(InspectedRun {
@@ -1286,6 +1288,8 @@ pub enum Error {
     /// The Ployz bridge has no endpoint available for a new Container.
     #[error("Ployz Docker bridge has no free endpoint capacity")]
     EndpointCapacity,
+    #[error(transparent)]
+    NoAddress(#[from] crate::network::bridge::address::NoAddress),
     #[error("Docker operation failed")]
     Docker(#[from] bollard::errors::Error),
     #[error("Docker inspect JSON failed")]
@@ -1531,6 +1535,7 @@ impl Error {
             | Self::LogStoreUpgrading(_) => RpcErrorCode::Unavailable,
             Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
+            | Self::NoAddress(_)
             | Self::DurationOverflow
             | Self::SizeOverflow
             | Self::InvalidContainerConfig(_)

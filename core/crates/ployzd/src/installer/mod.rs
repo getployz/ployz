@@ -336,12 +336,45 @@ async fn install_locked(
         }
     }
 
+    let downgrade = installed
+        .as_ref()
+        .is_some_and(|installed| target < *installed);
+    // Only a running downgrade takes the live fence out, once the older release is up. Staged,
+    // that release would start later under a fence it doesn't know, so it goes ahead only
+    // once iptables shows no fence.
+    if downgrade && installation_only {
+        let refused = |why: String| Error::Refused {
+            stage: "stage an older release".into(),
+            message: format!(
+                "{why}, and Ployz {target} may not know it, which would drop its Containers' traffic. Run the downgrade without --install-only, which takes the fence out once {target} is running"
+            ),
+        };
+        match crate::network::fence_active() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(refused(
+                    "this Server's container network fence is in place".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(refused(format!(
+                    "Ployz can't tell whether this Server's container network fence is in place ({})",
+                    ployz_core::error_chain::inline(&error),
+                )));
+            }
+        }
+    }
     let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
+    // An older release may not know the fence, and would keep Docker waiting on a unit it
+    // doesn't write. Its own units go in after, so one that knows the fence writes it back.
+    if downgrade {
+        host::remove_fence_files(&paths.systemd_dir, paths.layout.data_dir())?;
+    }
     install_units(paths).await?;
     if !installation_only {
-        activate_units()?;
+        activate_units(&paths.systemd_dir)?;
     }
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(paths).await?;
@@ -360,6 +393,9 @@ async fn install_locked(
         }
         progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(paths, &target).await?;
+        if downgrade {
+            host::remove_unknown_fence(paths.layout.data_dir())?;
+        }
         Readiness::Running
     };
     Ok(InstallOutcome {
@@ -663,6 +699,8 @@ mod tests {
             "rejected-executable",
             "hung-executable",
             "busy",
+            "staged-downgrade-fenced",
+            "staged-downgrade-unread-fence",
         ] {
             let fixture = fixture(case);
             create_installation_fixture(fixture.path(), case);
@@ -752,6 +790,9 @@ mod tests {
         let existing = match case {
             "success" | "install-only" | "installed-units" | "failed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
+            "staged-downgrade-fenced" | "staged-downgrade-unread-fence" => {
+                Some(write_existing_daemon(&paths, "1.2.4"))
+            }
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
         if case == "install-only" {
@@ -828,6 +869,17 @@ mod tests {
                 assert!(!paths.bin_dir.join("ployzd.previous").exists());
             }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
+            "staged-downgrade-fenced" | "staged-downgrade-unread-fence" => {
+                assert!(
+                    matches!(&result, Err(Error::Refused { message, .. }) if message.contains("without --install-only")),
+                    "a staged downgrade went ahead without iptables showing no fence: {result:?}"
+                );
+                assert_eq!(
+                    fs::read(paths.bin_dir.join("ployzd")).unwrap(),
+                    existing.as_deref().unwrap(),
+                    "a refused downgrade swapped the release"
+                );
+            }
             "missing-tar" => assert!(matches!(
                 result,
                 Err(Error::Command { stage, message })
@@ -886,6 +938,25 @@ mod tests {
         fs::create_dir_all(&payload).unwrap();
         write_script(&commands.join("id"), "if [ \"$1\" = -u ]; then echo 0; fi");
         write_script(&commands.join("dockerd"), "exit 0");
+        // Holds no rule and no chain, and says what it was asked.
+        for xtables in ["iptables", "ip6tables"] {
+            write_script(
+                &commands.join(xtables),
+                &format!(
+                    "if [ -n \"${{PLOYZ_INSTALLER_CONTRACT_ROOT:-}}\" ]; then echo \"{xtables} $*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/iptables.log\"; fi\nexit 1"
+                ),
+            );
+        }
+        match case {
+            "staged-downgrade-fenced" => write_script(
+                &commands.join("iptables"),
+                "echo -P FORWARD DROP\necho -N PLOYZ-FENCE",
+            ),
+            // iptables exits 4 when another writer holds its lock past the wait, as through
+            // a firewall reload.
+            "staged-downgrade-unread-fence" => write_script(&commands.join("iptables"), "exit 4"),
+            _ => {}
+        }
         symlink("/usr/bin/tar", commands.join("tar")).unwrap();
         symlink("/usr/bin/gzip", commands.join("gzip")).unwrap();
         symlink("/usr/bin/sleep", commands.join("sleep")).unwrap();

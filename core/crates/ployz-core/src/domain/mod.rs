@@ -1,3 +1,4 @@
+mod address_part;
 mod build_grant;
 mod certificate_policy;
 mod data_loss;
@@ -28,6 +29,7 @@ mod tailscale;
 mod tunnel;
 mod volume;
 
+pub use address_part::*;
 pub use build_grant::*;
 pub use certificate_policy::*;
 pub use data_loss::*;

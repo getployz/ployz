@@ -98,32 +98,20 @@ impl fmt::Display for Ipv6Off {
             Self::Setting {
                 setting,
                 from: Source::Flag,
-            } => {
-                let flag = match setting {
-                    Setting::Iptables => "--iptables=false".to_owned(),
-                    Setting::Ip6tables => "--ip6tables=false".to_owned(),
-                    Setting::Backend(backend) => format!("--firewall-backend={backend}"),
-                };
-                write!(
-                    f,
-                    "dockerd runs with {flag}, so Ployz can't fence container IPv6 out of the mesh. Remove it from Docker's systemd unit, {RESTART}."
-                )
-            }
+            } => write!(
+                f,
+                "{}, so Ployz can't fence container IPv6 out of the mesh. Remove it from Docker's systemd unit, {RESTART}.",
+                setting.named(&Source::Flag)
+            ),
             Self::Setting {
                 setting,
-                from: Source::File(path),
-            } => {
-                let key = match setting {
-                    Setting::Iptables => "\"iptables\": false".to_owned(),
-                    Setting::Ip6tables => "\"ip6tables\": false".to_owned(),
-                    Setting::Backend(backend) => format!("\"firewall-backend\": {backend:?}"),
-                };
-                let path = path.display();
-                write!(
-                    f,
-                    "{path} sets {key}, so Ployz can't fence container IPv6 out of the mesh. Remove it from {path}, {RESTART}."
-                )
-            }
+                from: from @ Source::File(path),
+            } => write!(
+                f,
+                "{}, so Ployz can't fence container IPv6 out of the mesh. Remove it from {path}, {RESTART}.",
+                setting.named(from),
+                path = path.display()
+            ),
             Self::UnreadableConfig { path, error } => write!(
                 f,
                 "Ployz can't read {path} ({error}), {unsure}. Make it readable, then `systemctl restart ployz`.",
@@ -166,6 +154,58 @@ impl fmt::Display for Ipv6Off {
             ),
         }
     }
+}
+
+impl Setting {
+    /// The setting as the operator finds it where it is set.
+    fn named(&self, from: &Source) -> String {
+        match from {
+            Source::Flag => {
+                let flag = match self {
+                    Self::Iptables => "--iptables=false".to_owned(),
+                    Self::Ip6tables => "--ip6tables=false".to_owned(),
+                    Self::Backend(backend) => format!("--firewall-backend={backend}"),
+                };
+                format!("dockerd runs with {flag}")
+            }
+            Source::File(path) => {
+                let key = match self {
+                    Self::Iptables => "\"iptables\": false".to_owned(),
+                    Self::Ip6tables => "\"ip6tables\": false".to_owned(),
+                    Self::Backend(backend) => format!("\"firewall-backend\": {backend:?}"),
+                };
+                format!("{} sets {key}", path.display())
+            }
+        }
+    }
+}
+
+/// The setting that keeps the running dockerd's forwarded IPv4 out of iptables, as the
+/// operator finds it, or `None` when none does or Ployz can't read dockerd's settings.
+pub(super) fn ipv4_off() -> Option<String> {
+    let (_, args) = dockerd().ok()?;
+    ipv4_off_in(&args, &Host)
+}
+
+fn ipv4_off_in(args: &[String], files: &impl Files) -> Option<String> {
+    let (flags, config_file) = flag_settings(args.get(1..).unwrap_or_default())?;
+    let path = Path::new(config_file.unwrap_or(DEFAULT_CONFIG_FILE));
+    let file = match config_file {
+        Some("") => Settings::default(),
+        _ => files
+            .read(path)
+            .ok()
+            .and_then(|contents| file_settings(&contents))
+            .unwrap_or_default(),
+    };
+    let flagged = flags.ipv4_off();
+    let setting = flags.or(file).ipv4_off()?;
+    let from = if flagged.as_ref() == Some(&setting) {
+        Source::Flag
+    } else {
+        Source::File(path.to_owned())
+    };
+    Some(setting.named(&from))
 }
 
 /// A ctime in nanoseconds, in UTC to the second.
@@ -350,6 +390,18 @@ impl Settings {
             ip6tables: self.ip6tables.or(other.ip6tables),
             firewall_backend: self.firewall_backend.or(other.firewall_backend),
             pidfile: self.pidfile.or(other.pidfile),
+        }
+    }
+
+    /// Which of these settings keeps Docker from hooking DOCKER-USER into iptables'
+    /// FORWARD, if any.
+    fn ipv4_off(&self) -> Option<Setting> {
+        if self.iptables == Some(false) {
+            return Some(Setting::Iptables);
+        }
+        match self.firewall_backend.as_deref() {
+            None | Some("" | "iptables") => None,
+            Some(backend) => Some(Setting::Backend(backend.to_owned())),
         }
     }
 
@@ -545,6 +597,29 @@ mod tests {
             &["dockerd"],
             Some("\u{feff}{\"ip6tables\": false}")
         ));
+    }
+
+    /// Docker's nftables backend hooks nothing into iptables' FORWARD, so the fence's chain
+    /// would sit where no forwarded IPv4 reaches it. The refusal names where it is set.
+    #[test]
+    fn the_setting_that_keeps_ipv4_out_of_iptables_is_named() {
+        let named = |args: &[&str], file: &str| {
+            let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            ipv4_off_in(
+                &args,
+                &Fake::with_pidfile().file(DEFAULT_CONFIG_FILE, file, 50),
+            )
+        };
+        assert_eq!(
+            named(&["dockerd"], r#"{"firewall-backend": "nftables"}"#).as_deref(),
+            Some(r#"/etc/docker/daemon.json sets "firewall-backend": "nftables""#)
+        );
+        assert_eq!(
+            named(&["dockerd", "--iptables=false"], "{}").as_deref(),
+            Some("dockerd runs with --iptables=false")
+        );
+        assert_eq!(named(&["dockerd"], r#"{"ip6tables": false}"#), None);
+        assert_eq!(named(&["dockerd"], "{}"), None);
     }
 
     #[test]

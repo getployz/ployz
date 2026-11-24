@@ -10011,6 +10011,21 @@ fn a_plan_asks_to_sign_a_service_that_reaches_data_until_a_kept_version_covers_i
     );
 }
 
+/// Once a person signed web, every Server keeps its name for a signed Container, so a
+/// later Deploy asks to sign it even though it reaches no data.
+#[test]
+fn a_plan_asks_to_sign_a_service_that_ran_signed_though_it_reaches_no_data() {
+    let (store, who) = shop();
+    assert_eq!(unsigned(&store, &who), []);
+    admit_signed(&store, &who, 1, vec![signed_web(&store, &who)]);
+    apply(&store, 1);
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    assert_eq!(
+        unsigned(&store, &who),
+        [("web".to_owned(), ployz_store::Needs::Version)]
+    );
+}
+
 #[test]
 fn a_plan_asks_for_a_digest_for_a_tag_pulled_with_a_login() {
     let (store, who) = shop();
