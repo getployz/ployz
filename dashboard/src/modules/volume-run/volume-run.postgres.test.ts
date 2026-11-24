@@ -2839,6 +2839,23 @@ describe("volume runs", () => {
       }]);
     });
 
+    // Catches an agent promoting a stale copy, losing the writes since its last sync, with no person asked.
+    it("an agent's restore is refused with where a person does it, and a person's goes ahead", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: null },
+        { name: "fsn-2", pool: true, copy: slotCopy(base) },
+      ];
+      containers = [];
+      const restore = (via: Caller["via"]) =>
+        runEffect(runVolume({ ...caller, via }, { volumeId, environment, kind: "restore", args: { from: "fsn-2" } }, { key: null, approved: null }));
+
+      expect(await restore("agent")).toEqual({ ok: false, refusal: {
+        code: "forbidden", message: "This restore of data needs a person. Do it in Ployz Cloud (or run `ployz volume restore data --from fsn-2`).", details: null,
+      } });
+      expect(await rows()).toEqual([]);
+      expect(await restore("cli")).toMatchObject({ ok: true });
+    });
+
     it("an old root beside a newer writer is cut read-only and the run asks to be run again", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: writerCopy(base, 3) },

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect } from "effect";
 import type { OperationAsked } from "#/modules/operations/asked";
-import { gateOperation, hasApprover, olderApproval, operationDigest } from "#/modules/operations/gate.server";
+import { agentRefusal, gateOperation, hasApprover, olderApproval, operationDigest } from "#/modules/operations/gate.server";
 import { proposeServiceAct } from "#/modules/proposals/proposal-link.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -204,6 +204,11 @@ export const runVolume = (
   holding(caller, call, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
     const planned = yield* planVolumeRun(caller.organization.id, input);
     if (!planned.ok) return refused(planned.refusal);
+    // A restore drops the writes since its copy's last sync and asks no one, so an agent's waits for a person.
+    if (input.kind === "restore" && caller.via === "agent" && (yield* hasApprover(caller.organization.id))) {
+      const name = planned.volume.volumeName;
+      return refused(agentRefusal({ verb: "restore", name, ployz: `ployz volume restore ${name} --from ${input.args.from}` }));
+    }
     const asked = yield* guardedVolume(caller, planned);
     if (asked !== null) {
       const gated = yield* gate(caller, call, asked);
