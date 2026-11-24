@@ -1,8 +1,8 @@
 import type { ModelMessage } from "@tanstack/ai";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, expect, it } from "vitest";
-import { type AgentScope, agentPersistence, claimResume, startRun, threadAvailable } from "#/modules/agent/persistence.server";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { type AgentScope, agentPersistence, CLAIM_LEASE_MS, claimResume, startRun, threadAvailable } from "#/modules/agent/persistence.server";
 import { agentRuns } from "#/modules/agent/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -84,4 +84,20 @@ it("a run another member or Organization took is foreign to the caller, and the 
   expect(await harness.runEffect(startRun(ada, "thread-elsewhere", "run-taken"))).toBe("foreign");
   expect(await harness.runEffect(startRun(bob, "thread-run", "run-taken"))).toBe("foreign");
   expect(await harness.runEffect(startRun(adaElsewhere, "thread-run", "run-taken"))).toBe("foreign");
+});
+
+it("a web instance whose clock runs ahead of Postgres's cannot take a resume another request holds", async () => {
+  const plain = await harness.runEffect(agentPersistence(ada));
+  await plain.stores.interrupts.create({ interruptId: "ask-skew", runId: "run-skew", threadId: "thread-skew", requestedAt: 1, payload: {} });
+  expect(await harness.runEffect(claimResume(ada, "X", ["ask-skew"]))).toBe("claimed");
+  const x = await harness.runEffect(agentPersistence(ada, "X"));
+  await x.stores.runs.createOrResume({ runId: "run-skew", threadId: "thread-skew", startedAt: 1 });
+
+  vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + CLAIM_LEASE_MS + 60_000 });
+  try {
+    expect(await harness.runEffect(claimResume(ada, "Y", ["ask-skew"]))).toBe("busy");
+    expect(await plain.stores.runs.findActiveRun("thread-skew")).toMatchObject({ runId: "run-skew" });
+  } finally {
+    vi.useRealTimers();
+  }
 });

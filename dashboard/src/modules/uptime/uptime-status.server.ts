@@ -27,6 +27,7 @@ import { tally } from "./uptime";
 import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource } from "./uptime-range";
 import { type RangeWindow, resolveRange } from "#/lib/time-range";
 import { HOUR_MS } from "#/lib/time-range";
+import { checkedNow } from "#/db/tables";
 
 // A probe request reads as checking until the slowest round ends: a self-host round's second probe goes 30 s after the
 // first, runs up to the check's timeout, and its result counts for ROUND_GRACE in uptime/src/control/detect.rs after.
@@ -199,7 +200,7 @@ export const requestUptimeProbe = Effect.fn("Uptime.requestProbe")(function* (ac
     eq(uptimeCheck.organizationId, organization.id),
     eq(uptimeCheck.environmentId, input.environmentId),
     eq(uptimeCheck.serviceId, input.serviceId),
-    or(isNull(uptimeCheck.probeRequestedAt), lt(uptimeCheck.probeRequestedAt, sql`now() - interval '15 seconds'`), answered),
+    or(isNull(uptimeCheck.probeRequestedAt), lt(uptimeCheck.probeRequestedAt, sql`${checkedNow()} - interval '15 seconds'`), answered),
   ));
   return null;
 });

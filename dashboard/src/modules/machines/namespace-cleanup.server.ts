@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import type { Actor } from "#/modules/identity/actor";
@@ -22,6 +22,7 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
+import { checkedNow } from "#/db/tables";
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (
@@ -85,9 +86,9 @@ type CleanupRunReply = { readonly cleanupId: string; readonly state: CleanupStat
 const rows = attemptRows(namespaceCleanup, "The namespace clean was not found.");
 
 const ended = (code: CleanupEndCodeWithoutMessage) =>
-  ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: null, endedAt: new Date() }) as const;
+  ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: null, endedAt: sql`now()` }) as const;
 const endedSaying = (code: "refused" | "incomplete", message: string) =>
-  ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: within(message), endedAt: new Date() }) as const;
+  ({ state: CLEANUP_END_CODES[code], endCode: code, endMessage: within(message), endedAt: sql`now()` }) as const;
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueCleanup = (row: CleanupRow) =>
@@ -153,7 +154,7 @@ export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function
     }),
     call: ({ row, connected }) => connected.destroyNamespace(row.namespace, { confirmed: row.confirmDataLoss }).pipe(
       Effect.map((outcome) => outcome.type === "success"
-        ? ({ state: "finished", volumes: row.confirmDataLoss.map(({ id }) => id.name).sort(), endedAt: new Date(), endCode: null, endMessage: null }) as const
+        ? ({ state: "finished", volumes: row.confirmDataLoss.map(({ id }) => id.name).sort(), endedAt: sql`now()`, endCode: null, endMessage: null }) as const
         : endedSaying("incomplete", "Some servers didn't finish removing the namespace.")),
       Effect.catchTag("MissingDataLossIdentities", () =>
         Effect.succeed(endedSaying("refused", "The servers hold Volumes this clean didn't confirm. Nothing was removed."))),
@@ -187,7 +188,7 @@ export const closeStaleCleanups = Effect.fn("NamespaceCleanup.closeStale")(funct
     running: { limitMs: CLEANUP_RUNNING_LIMIT_MS, end: ended("lost") },
     pending: {
       end: ended("not_started"),
-      when: (now) => lt(namespaceCleanup.requestedAt, new Date(now - CLEANUP_PENDING_LIMIT_MS)),
+      when: lt(namespaceCleanup.requestedAt, sql`${checkedNow()} - make_interval(secs => ${CLEANUP_PENDING_LIMIT_MS / 1000})`),
     },
   });
   return { failed: pending, unknown: running };

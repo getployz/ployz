@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { OperationAsked } from "#/modules/operations/asked";
 import { type ClusterNameRow, defaultClusterName } from "#/modules/cluster-name/cluster-name";
@@ -65,7 +65,7 @@ export const renameCluster = Effect.fn("ClusterName.rename")(function* (organiza
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(organizationClusterName).values({ organizationId, name })
-      .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { name, refusal: null, updatedAt: new Date() } })
+      .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { name, refusal: null, updatedAt: sql`now()` } })
       .returning(columns);
     yield* requestApply(organizationId);
     return row ?? (yield* Effect.die("an upsert returned no row"));
@@ -76,7 +76,7 @@ export const foundClusterName = Effect.fn("ClusterName.found")(function* (organi
   const name = yield* foundingClusterName(organizationId);
   const { drizzle } = yield* Database;
   yield* drizzle.insert(organizationClusterName).values({ organizationId, name })
-    .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { appliedName: null, refusal: null, updatedAt: new Date() } });
+    .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { appliedName: null, refusal: null, updatedAt: sql`now()` } });
 });
 
 export type ClusterNameApplied = "current" | "unfounded" | "waiting" | "refused";
@@ -101,19 +101,19 @@ export const applyClusterName = Effect.fn("ClusterName.apply")(function* (organi
   const answer = yield* session.connected.setClusterName(row.name).pipe(Effect.timeout(SET_LIMIT), Effect.result);
   const { drizzle } = yield* Database;
   if (answer._tag === "Success") {
-    const [written] = yield* drizzle.update(organizationClusterName).set({ appliedName: row.name, refusal: null, updatedAt: new Date() })
+    const [written] = yield* drizzle.update(organizationClusterName).set({ appliedName: row.name, refusal: null, updatedAt: sql`now()` })
       .where(eq(organizationClusterName.organizationId, organizationId)).returning({ name: organizationClusterName.name });
     return (written?.name === row.name ? "current" : "waiting") satisfies ClusterNameApplied;
   }
   const refusal = answer.failure._tag === "TimeoutError" ? null : refusalOf(answer.failure);
   if (refusal === null) {
     // The set may have landed without an answer, so the Cluster's name is unknown until a Server confirms one.
-    yield* drizzle.update(organizationClusterName).set({ appliedName: null, updatedAt: new Date() })
+    yield* drizzle.update(organizationClusterName).set({ appliedName: null, updatedAt: sql`now()` })
       .where(eq(organizationClusterName.organizationId, organizationId));
     yield* Effect.logWarning("No Server answered, so the Cluster Name stays pending.", answer.failure).pipe(Effect.annotateLogs({ organizationId }));
     return "waiting" satisfies ClusterNameApplied;
   }
-  yield* drizzle.update(organizationClusterName).set({ refusal, updatedAt: new Date() })
+  yield* drizzle.update(organizationClusterName).set({ refusal, updatedAt: sql`now()` })
     .where(and(eq(organizationClusterName.organizationId, organizationId), eq(organizationClusterName.name, row.name)));
   return "refused" satisfies ClusterNameApplied;
 }, Effect.scoped);

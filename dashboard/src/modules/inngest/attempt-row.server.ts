@@ -4,6 +4,7 @@ import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 /**
  * A row-backed attempt (a Drain, a web traffic change, a Namespace clean): one Cloud-owned row, written `pending` by the
@@ -42,9 +43,10 @@ export const settled = <State>(state: State) => ({ settled: state }) as const;
 /**
  * Drains and changes in an Organization take turns: a pending row's time runs from when the row before it
  * ended, and only while no row ahead of it is running or pending. `earlierOnly` counts only rows requested before it.
- * Spelled out: an update renders its columns unqualified, which inside a subquery would name the alias's.
+ * Both times are Postgres's, so the wait is measured on its clock. Spelled out: an update renders its columns
+ * unqualified, which inside a subquery would name the alias's.
  */
-export function queueWaitedPast(table: AttemptTable, cutoff: Date, { earlierOnly }: { readonly earlierOnly: boolean }) {
+export function queueWaitedPast(table: AttemptTable, limitMs: number, { earlierOnly }: { readonly earlierOnly: boolean }) {
   const name = sql.raw(getTableName(table));
   return [
     sql`not exists (
@@ -56,7 +58,7 @@ export function queueWaitedPast(table: AttemptTable, cutoff: Date, { earlierOnly
         select max(before.ended_at) from ${name} as before
         where before.organization_id = ${name}.organization_id${earlierOnly ? sql`
           and before.requested_at < ${name}.requested_at` : sql``}
-      )) < ${cutoff}`,
+      )) < ${checkedNow()} - make_interval(secs => ${limitMs / 1000})`,
   ];
 }
 
@@ -105,7 +107,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
   /** Claim the pending row `running`. False when it isn't pending or isn't this run's. */
   const claim = Effect.fn("AttemptRow.claim")(function* (id: string, runId: string) {
     const { drizzle } = yield* Database;
-    const [claimed] = yield* drizzle.update(table).set({ state: "running", startedAt: new Date() })
+    const [claimed] = yield* drizzle.update(table).set({ state: "running", startedAt: sql`now()` })
       .where(and(owned(id, runId), eq(table.state, "pending"))).returning({ id: table.id });
     return claimed !== undefined;
   });
@@ -169,7 +171,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
     const isPending = sql`${table.state} = 'pending'`;
     const rows = yield* drizzle.update(table).set({
       ...ends(<V extends string>(pending: V, running: V) => sql<V>`case when ${isPending} then ${pending} else ${running} end`),
-      endedAt: new Date(),
+      endedAt: sql`now()`,
     })
       .where(or(
         and(eq(table.inngestRunId, runId), active),
@@ -180,19 +182,18 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
   });
 
   /**
-   * The hourly sweep: a row running past `running.limitMs` lost its run; a pending one past `pending.when` never
+   * The hourly sweep: a row running past `running.limitMs` lost its run; a pending one `pending.when` matches never
    * starts. How many rows each ended.
    */
   const closeStale = Effect.fn("AttemptRow.closeStale")(function* (input: {
     readonly running: { readonly limitMs: number; readonly end: Values<T> };
-    readonly pending: { readonly end: Values<T>; readonly when: (now: number) => SQL | readonly SQL[] };
+    readonly pending: { readonly end: Values<T>; readonly when: SQL | readonly SQL[] };
   }) {
     const { drizzle } = yield* Database;
-    const now = Date.now();
     const running = yield* drizzle.update(table).set(input.running.end)
-      .where(and(eq(table.state, "running"), lt(table.startedAt, new Date(now - input.running.limitMs))))
+      .where(and(eq(table.state, "running"), lt(table.startedAt, sql`${checkedNow()} - make_interval(secs => ${input.running.limitMs / 1000})`)))
       .returning({ id: table.id });
-    const when = input.pending.when(now);
+    const when = input.pending.when;
     const pending = yield* drizzle.update(table).set(input.pending.end)
       .where(and(eq(table.state, "pending"), ...(Array.isArray(when) ? when : [when])))
       .returning({ id: table.id });

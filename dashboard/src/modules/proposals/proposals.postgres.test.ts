@@ -369,20 +369,20 @@ it.live("the sweep starts a step whose kickoff was lost, once, and never a step 
     // Approved in the database but never kicked off: Cloud fell over between the two.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
       .set({ status: "approved", decidedByUserId: owner.userId, decidedAt: new Date() }).where(eq(operationProposals.id, id))));
-    expect(yield* cluster(sweepProposals(new Date()))).toEqual([id]);
+    expect(yield* cluster(sweepProposals())).toEqual([id]);
     let rows = yield* acts;
     expect(rows).toMatchObject([{ verb: "stop", step: 0 }]);
     // Step 0 still running: another sweep starts nothing. Done and its advance lost: the sweep starts step 1, once.
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
     expect(yield* acts).toHaveLength(1);
     yield* ended(rows[0]?.id ?? expect.fail("no act"), "done");
-    yield* cluster(sweepProposals(new Date()));
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
+    yield* cluster(sweepProposals());
     rows = yield* acts;
     expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1 }]);
     // A plan approved over an hour ago is past every step's window and is left alone.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals).set({ decidedAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(operationProposals.id, id))));
-    expect(yield* cluster(sweepProposals(new Date()))).toEqual([]);
+    expect(yield* cluster(sweepProposals())).toEqual([]);
   }));
 
 it.live("a denial with a blank reason is a denial with none", () =>
@@ -421,7 +421,7 @@ it.live("an agent's Deploy becomes one proposal with one link, and one person's 
     expect(yield* admitted(id)).toBe(1);
     // A second answer, and the sweep that runs the step again, admit nothing more.
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("already decided") });
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
     expect(yield* admitted(id)).toBe(1);
     // The proposal reads as its Deployment: not done until it lands.
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: expect.stringMatching(/^(accepted|running)$/) }] } });
