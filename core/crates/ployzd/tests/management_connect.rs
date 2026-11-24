@@ -1332,51 +1332,9 @@ async fn tunnel_contract() {
             .await
             .unwrap();
     }
-    let capability = ManagementCapability::new(
-        local.record().management_secret().public_key(),
-        device.to_bytes(),
-    );
-    let endpoint = management::bind(
-        local.record().management_secret(),
-        &ManagementConfig {
-            relay_url: relay_url.clone(),
-            port: 0,
-            relay_tls: CaTlsConfig::insecure_skip_verify(),
-        },
-    )
-    .await
-    .unwrap();
-    let shutdown = CancellationToken::new();
-    let server = tokio::spawn(management::serve(
-        endpoint,
-        local.clone(),
-        MachineApi::builder(owner).build(),
-        Arc::default(),
-        None::<ReplicatedStore>,
-        shutdown.clone(),
-    ));
-    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
-        relay_url,
-        CaTlsConfig::insecure_skip_verify(),
-    ));
-    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let target = echo.local_addr().unwrap().to_string();
-    tokio::spawn(async move {
-        while let Ok((mut tcp, _)) = echo.accept().await {
-            tokio::spawn(async move {
-                let (mut read, mut write) = tcp.split();
-                let _ = tokio::io::copy(&mut read, &mut write).await;
-            });
-        }
-    });
-    let managed = connection(&capability);
-    let dial = |address: String| {
-        let connector = &connector;
-        let managed = &managed;
-        async move { connector.dial_proxy(managed, "tcp", &address).await }
-    };
+    let tunnels = Tunnels::serve(&local, owner, relay_url, &device).await;
 
-    let mut tunnel = dial(target.clone()).await.unwrap();
+    let mut tunnel = tunnels.dial(tunnels.echo.clone()).await.unwrap();
     let payload = [0_u8, 0xff, b'\n', 7];
     tunnel.write_all(&payload).await.unwrap();
     let mut echoed = [0_u8; 4];
@@ -1389,7 +1347,7 @@ async fn tunnel_contract() {
         ("localhost:80".to_owned(), "not an ip:port"),
         (unused_port(), "refused the connection"),
     ] {
-        match dial(address.clone()).await {
+        match tunnels.dial(address.clone()).await {
             Err(ConnectError::Attempt(message)) => {
                 assert!(message.contains(reason), "{address}: {message}");
             }
@@ -1407,11 +1365,144 @@ async fn tunnel_contract() {
         .expect("revocation must end an open tunnel");
     assert!(ended.is_err() || rest.is_empty(), "{ended:?}");
     assert!(matches!(
-        dial(target).await,
+        tunnels.dial(tunnels.echo.clone()).await,
         Err(ConnectError::ClientCleared)
     ));
-    shutdown.cancel();
-    server.await.unwrap();
+    tunnels.stop().await;
+}
+
+/// A Device whose key also holds Cloud's slot keeps that connection when its Device is
+/// removed, yet the tunnel it opened has ended by the time `device rm` returns, and it opens
+/// no other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_ends_with_its_device_though_its_key_keeps_another_slot() {
+    tokio::time::timeout(Duration::from_secs(120), narrowed_tunnel())
+        .await
+        .expect("tunnel test timed out");
+}
+
+async fn narrowed_tunnel() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
+    let device = SecretKey::generate();
+    let key = DeviceKey::from_bytes(*device.public().as_bytes());
+    let kept = DeviceKey::from_bytes(*SecretKey::generate().public().as_bytes());
+    for key in [kept, key] {
+        local
+            .set_device(SetDeviceRequest::Approve { key })
+            .await
+            .unwrap();
+    }
+    owner
+        .mutate(move |store| {
+            store
+                .stage_management_client(cloud(), ClientKey::from(key))
+                .unwrap();
+            store
+                .activate_management_client(ClientKey::from(key))
+                .unwrap();
+        })
+        .await
+        .unwrap();
+    let tunnels = Tunnels::serve(&local, owner, relay_url, &device).await;
+    let mut tunnel = tunnels.dial(tunnels.echo.clone()).await.unwrap();
+    tunnel.write_all(b"open").await.unwrap();
+    let mut echoed = [0_u8; 4];
+    tunnel.read_exact(&mut echoed).await.unwrap();
+
+    local
+        .set_device(SetDeviceRequest::Remove { code: key.code() })
+        .await
+        .unwrap();
+
+    let mut rest = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(10), tunnel.read_to_end(&mut rest))
+        .await
+        .expect("removing the Device must end its open tunnel");
+    assert!(ended.is_err() || rest.is_empty(), "{ended:?}");
+    assert!(matches!(
+        tunnels.dial(tunnels.echo.clone()).await,
+        Err(ConnectError::TunnelNeedsFull)
+    ));
+    tunnels.stop().await;
+}
+
+/// `local`'s management endpoint serving tunnels over a test relay, the Device `device` that
+/// dials them, and an echo server in the Cluster network standing in for a Container.
+struct Tunnels {
+    connector: SystemConnector,
+    managed: Connection,
+    /// The echo server's address.
+    echo: String,
+    shutdown: CancellationToken,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl Tunnels {
+    async fn serve(
+        local: &LocalMachine,
+        owner: RecordOwner,
+        relay_url: iroh::RelayUrl,
+        device: &SecretKey,
+    ) -> Self {
+        let capability = ManagementCapability::new(
+            local.record().management_secret().public_key(),
+            device.to_bytes(),
+        );
+        let endpoint = management::bind(
+            local.record().management_secret(),
+            &ManagementConfig {
+                relay_url: relay_url.clone(),
+                port: 0,
+                relay_tls: CaTlsConfig::insecure_skip_verify(),
+            },
+        )
+        .await
+        .unwrap();
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(management::serve(
+            endpoint,
+            local.clone(),
+            MachineApi::builder(owner).build(),
+            Arc::default(),
+            None::<ReplicatedStore>,
+            shutdown.clone(),
+        ));
+        let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+            relay_url,
+            CaTlsConfig::insecure_skip_verify(),
+        ));
+        let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = echo.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = echo.accept().await {
+                tokio::spawn(async move {
+                    let (mut read, mut write) = tcp.split();
+                    let _ = tokio::io::copy(&mut read, &mut write).await;
+                });
+            }
+        });
+        Self {
+            connector,
+            managed: connection(&capability),
+            echo: address,
+            shutdown,
+            server,
+        }
+    }
+
+    async fn dial(&self, address: String) -> Result<ployz::connect::BoxProxyStream, ConnectError> {
+        self.connector
+            .dial_proxy(&self.managed, "tcp", &address)
+            .await
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        self.server.await.unwrap();
+    }
 }
 
 fn unused_port() -> String {

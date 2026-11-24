@@ -24,6 +24,7 @@ struct Fixture {
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
     local: crate::machine::LocalMachine,
+    service: MachineService,
     machine: ployz_core::Machine,
     /// This Server's local socket, `unix://…`: a build sent there runs with Full scope,
     /// as one from an approved Device does. An Operator's build is refused.
@@ -98,7 +99,7 @@ impl Fixture {
         let socket = root.join("ployz.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let address = format!("unix://{}", socket.display());
-        let api = MachineApi::from_local(service);
+        let api = MachineApi::from_local(service.clone());
         let server = tokio::spawn(
             Server::builder().serve_with_incoming(api, UnixListenerStream::new(listener)),
         );
@@ -108,11 +109,44 @@ impl Fixture {
             policy,
             cluster,
             local,
+            service,
             machine,
             address,
             server,
             running_builds,
         }
+    }
+    /// Trust a Device whose key also holds Cloud's slot, and serve this Machine to it as its
+    /// own connection would: the Device and the `tcp://` address the CLI dials.
+    async fn device_in_two_slots(&self) -> (ployz_core::DeviceKey, String) {
+        let device = self
+            .local
+            .owner()
+            .mutate(crate::machine::test_support::device_in_two_slots)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("tcp://{}", listener.local_addr().unwrap());
+        tokio::spawn(
+            Server::builder()
+                .add_routes(crate::machine_api::device_routes(
+                    self.service.clone(),
+                    device.into(),
+                ))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        (device, address)
+    }
+    /// Remove `device` as `ployz device rm` on this Server does.
+    async fn remove(&self, device: ployz_core::DeviceKey) {
+        self.local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
     }
     async fn request(
         &self,
@@ -1322,6 +1356,107 @@ fn files_named(root: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// A Device whose key also holds Cloud's slot starts a Build carrying a Sealed value and is
+/// removed once the Build was admitted, before its upload ends: the Build opens nothing and
+/// runs nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_whose_device_goes_before_its_upload_ends_opens_no_sealed_value() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    let (admitted, uploading) = std::sync::mpsc::channel::<()>();
+    let (removed, removal) = std::sync::mpsc::channel::<()>();
+    let paused = std::sync::atomic::AtomicBool::new(false);
+    // Its own task: the client's progress callback blocks the task the client runs on.
+    let remove = tokio::spawn({
+        let local = fixture.local.clone();
+        async move {
+            tokio::task::spawn_blocking(move || uploading.recv().unwrap())
+                .await
+                .unwrap();
+            local
+                .on_local_socket()
+                .set_device(ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                })
+                .await
+                .unwrap();
+            removed.send(()).unwrap();
+        }
+    });
+    let result = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |progress| {
+                // The client reports the upload stage once admitted, before it uploads.
+                if matches!(progress, Progress::Stage(Stage::Upload))
+                    && !paused.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    admitted.send(()).unwrap();
+                    removal.recv().unwrap();
+                }
+            },
+        )
+        .await;
+    remove.await.unwrap();
+    assert!(result.is_err(), "the Build went on for its removed Device");
+    assert!(!fixture.root.join("executed").exists());
+    assert!(!fixture.root.join("seen-secret").exists());
+    let mut leftovers = Vec::new();
+    files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// A Device whose key also holds Cloud's slot is removed while its Build runs: the Build has
+/// stopped, and the values it opened are gone, by the time `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_build_whose_device_goes_has_stopped_when_its_removal_returns() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("hold-build"), "").unwrap();
+    let remove = async {
+        until_fake_docker(Duration::from_secs(10), || {
+            fixture.root.join("executed").exists()
+        })
+        .await
+        .unwrap();
+        fixture.remove(device).await;
+        let running = *fixture.running_builds.borrow();
+        let mut opened = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut opened);
+        fs::remove_file(fixture.root.join("hold-build")).unwrap();
+        (running, opened)
+    };
+    let (result, (running, opened)) = tokio::join!(
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {}
+        ),
+        remove,
+    );
+    assert_eq!(
+        running, 0,
+        "the Build still ran once its Device's removal returned"
+    );
+    assert!(opened.is_empty(), "{opened:?}");
+    assert!(result.is_err(), "the Build went on for its removed Device");
 }
 
 #[tokio::test]

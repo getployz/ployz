@@ -157,99 +157,14 @@ async fn an_exec_still_writing_when_its_client_goes_away_stops_its_command() {
 /// reads when `noisy`, then drop the client; how the command ended.
 async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     let root = TestDir::new("ployzd-exec-abandoned");
-    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let docker_address = docker_listener.local_addr().unwrap();
-    let container_id = ContainerId::parse("b".repeat(64)).unwrap();
-    let spec = crate::docker::test_support::spec_with_sources(vec![]);
-    // The container's own process is this test's, so the command shares its cgroup.
-    let managed = serde_json::json!({
-        "Id": container_id.as_str(),
-        "State": {"Pid": std::process::id()},
-        "Config": {"Labels": {
-            labels::MANAGED: "",
-            labels::NAMESPACE: "app",
-            labels::SERVICE_ID: spec.service_id.to_string(),
-            labels::SERVICE_NAME: spec.name.to_string(),
-        }},
-    })
-    .to_string();
-    // The exec's process: Docker reports its host PID, as for a Service's container.
-    let command = std::sync::Arc::new(std::sync::Mutex::new(
-        std::process::Command::new("sleep")
-            .arg("300")
-            .spawn()
-            .unwrap(),
-    ));
-    let pid = command.lock().unwrap().id();
-    let docker_command = std::sync::Arc::clone(&command);
-    let docker_server = tokio::spawn(async move {
-        let mut hijacked = Vec::new();
-        loop {
-            let (mut stream, path) = accept_docker_request_to(&docker_listener).await;
-            let body = if path.starts_with("/containers/") && path.ends_with("/json") {
-                managed.clone()
-            } else if path.ends_with("/exec") {
-                r#"{"Id":"slow"}"#.to_owned()
-            } else if path.starts_with("/exec/slow/start") {
-                stream
-                    .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-                    .await
-                    .unwrap();
-                if noisy {
-                    // Far more than the response channel holds, so forwarding waits on a send.
-                    tokio::spawn(async move {
-                        let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
-                        frame.extend([b'x'; 1024]);
-                        for _ in 0..4096 {
-                            if stream.write_all(&frame).await.is_err() {
-                                return;
-                            }
-                        }
-                        std::future::pending::<()>().await;
-                    });
-                } else {
-                    hijacked.push(stream);
-                }
-                continue;
-            } else {
-                let exited = docker_command.lock().unwrap().try_wait().unwrap();
-                match exited {
-                    None => format!(
-                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
-                        "b".repeat(64)
-                    ),
-                    Some(_) => r#"{"Running":false,"ExitCode":143}"#.to_owned(),
-                }
-            };
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-        }
-    });
-    let docker = bollard::Docker::connect_with_http(
-        &format!("http://{docker_address}"),
-        5,
-        bollard::API_DEFAULT_VERSION,
-    )
-    .unwrap();
-    let machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
-    let specs = MachineSpecStore::open(root.0.join("machine.db"))
-        .await
-        .unwrap();
-    specs
-        .config_operation()
-        .await
-        .put(&container_id, None, &spec, None)
-        .await
-        .unwrap();
-    let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
+    let command = ExecCommand::sleep();
+    let start = if noisy {
+        ExecStart::Noisy
+    } else {
+        ExecStart::Attached
+    };
+    let (runtime, container_id, docker_server) = exec_runtime(&root, &command, start).await;
+    let machine_store = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
     let api = MachineApi::builder(owner.clone())
         .with_local(crate::machine::LocalMachine::new(owner).with_containers(Some(runtime)))
@@ -279,11 +194,10 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let status = loop {
-        if let Some(status) = command.lock().unwrap().try_wait().unwrap() {
+        if let Some(status) = command.exited() {
             break status;
         }
         if std::time::Instant::now() > deadline {
-            let _ = command.lock().unwrap().kill();
             panic!("the exec's command outlived its client");
         }
         // real-wait: the command is a separate process, and its exit signals nothing in-process.
@@ -292,6 +206,230 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     docker_server.abort();
     server.abort();
     status
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_devices_exec_has_stopped_when_its_removal_returns() {
+    removed_devices_exec(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_devices_detached_exec_has_stopped_when_its_removal_returns() {
+    removed_devices_exec(true).await;
+}
+
+/// A Device whose key also holds Cloud's slot runs a command in a Service's Container,
+/// detached when `detach`, then its Device is removed: the command has stopped by the time
+/// `device rm` returns, and the client's stream has ended.
+async fn removed_devices_exec(detach: bool) {
+    {
+        let root = TestDir::new("ployzd-exec-removed-device");
+        let command = ExecCommand::sleep();
+        let start = if detach {
+            ExecStart::Detached
+        } else {
+            ExecStart::Attached
+        };
+        let (runtime, container_id, docker_server) = exec_runtime(&root, &command, start).await;
+        let mut store = crate::machine::test_support::founder(&root.0.join("machine"), "exec");
+        let device = crate::machine::test_support::device_in_two_slots(&mut store);
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+        let local = crate::machine::LocalMachine::new(owner).with_containers(Some(runtime));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder()
+                .add_routes(crate::machine_api::device_routes(
+                    crate::machine_api::MachineService::over(local.clone()),
+                    device.into(),
+                ))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        let mut output = client
+            .exec(Request::new(tokio_stream::iter([exec_config(
+                &container_id,
+                ["sleep", "300"],
+                detach,
+            )])))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+            ExecResponseFrame::ExecId("slow".into())
+        );
+
+        local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            command.exited().is_some(),
+            "a {} exec's command still runs once its Device's removal returned",
+            if detach { "detached" } else { "attached" }
+        );
+        let rest = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) = output.message().await {
+                frames.push(ExecResponseFrame::decode(&frame).unwrap());
+            }
+            frames
+        })
+        .await
+        .expect("the exec's stream ends once its command stopped");
+        assert!(
+            !rest
+                .iter()
+                .any(|frame| matches!(frame, ExecResponseFrame::Stdout(_))),
+            "{rest:?}"
+        );
+        docker_server.abort();
+        server.abort();
+    }
+}
+
+/// The local process an exec's command runs as, killed if a test leaves it running.
+struct ExecCommand(std::sync::Arc<std::sync::Mutex<std::process::Child>>);
+
+impl ExecCommand {
+    fn sleep() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            std::process::Command::new("sleep")
+                .arg("300")
+                .spawn()
+                .unwrap(),
+        )))
+    }
+
+    fn exited(&self) -> Option<std::process::ExitStatus> {
+        self.0.lock().unwrap().try_wait().unwrap()
+    }
+}
+
+impl Drop for ExecCommand {
+    fn drop(&mut self) {
+        let _ = self.0.lock().unwrap().kill();
+    }
+}
+
+/// How the stand-in Docker answers an exec's start.
+#[derive(Clone, Copy)]
+enum ExecStart {
+    Attached,
+    /// Attached, writing far more output than the response channel holds, so forwarding
+    /// waits on a send.
+    Noisy,
+    Detached,
+}
+
+/// A runtime over a stand-in Docker for one exec, `slow`, in a managed Container whose
+/// process is this test's, so `command` shares its cgroup as an exec's process does. Docker
+/// reports the exec running with `command`'s PID until it exits.
+async fn exec_runtime(
+    root: &TestDir,
+    command: &ExecCommand,
+    start: ExecStart,
+) -> (ContainerRuntime, ContainerId, tokio::task::JoinHandle<()>) {
+    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let docker_address = docker_listener.local_addr().unwrap();
+    let container_id = ContainerId::parse("b".repeat(64)).unwrap();
+    let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    let managed = serde_json::json!({
+        "Id": container_id.as_str(),
+        "State": {"Pid": std::process::id()},
+        "Config": {"Labels": {
+            labels::MANAGED: "",
+            labels::NAMESPACE: "app",
+            labels::SERVICE_ID: spec.service_id.to_string(),
+            labels::SERVICE_NAME: spec.name.to_string(),
+        }},
+    })
+    .to_string();
+    let pid = command.0.lock().unwrap().id();
+    let docker_command = std::sync::Arc::clone(&command.0);
+    let docker_server = tokio::spawn(async move {
+        let mut hijacked = Vec::new();
+        loop {
+            let (mut stream, path) = accept_docker_request_to(&docker_listener).await;
+            let body = if path.starts_with("/containers/") && path.ends_with("/json") {
+                managed.clone()
+            } else if path.ends_with("/exec") {
+                r#"{"Id":"slow"}"#.to_owned()
+            } else if path.starts_with("/exec/slow/start") {
+                match start {
+                    ExecStart::Detached => String::new(),
+                    ExecStart::Attached | ExecStart::Noisy => {
+                        stream
+                            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+                            .await
+                            .unwrap();
+                        if matches!(start, ExecStart::Noisy) {
+                            tokio::spawn(async move {
+                                let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
+                                frame.extend([b'x'; 1024]);
+                                for _ in 0..4096 {
+                                    if stream.write_all(&frame).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                std::future::pending::<()>().await;
+                            });
+                        } else {
+                            hijacked.push(stream);
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                let exited = docker_command.lock().unwrap().try_wait().unwrap();
+                match exited {
+                    None => format!(
+                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
+                    Some(_) => r#"{"Running":false,"ExitCode":143}"#.to_owned(),
+                }
+            };
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{docker_address}"),
+        5,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, None, &spec, None)
+        .await
+        .unwrap();
+    (
+        ContainerRuntime::new(LocalDocker::from_client(docker), specs),
+        container_id,
+        docker_server,
+    )
 }
 
 /// Accept one request to the fake Docker, returning its stream and path.

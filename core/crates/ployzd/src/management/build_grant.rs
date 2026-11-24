@@ -849,6 +849,49 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     }
 
+    /// A Device whose key also holds Cloud's slot mints a grant carrying Sealed values and is
+    /// removed before the holder reads them: once `device rm` returned, a holder connected
+    /// before reads nothing, and no new connection is admitted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removed_devices_grant_serves_nothing_once_its_removal_returns() {
+        let cluster = Cluster::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::machine::test_support::founder(dir.path(), "grants");
+        let device = crate::machine::test_support::device_in_two_slots(&mut store);
+        let local =
+            crate::machine::LocalMachine::new(crate::machine::RecordOwner::spawn(store).unwrap());
+        let from_device = local.clone().with_management_client(device.into());
+        let grants = BuildGrants::default();
+        let mint = Mint::check(
+            sealed_request(&cluster),
+            Some(&cluster.store()),
+            from_device.full_now().unwrap(),
+        )
+        .unwrap();
+        grants
+            .mint(
+                ManagementIdentity::from_bytes([7; 32]),
+                mint,
+                SocketAddr::from(([127, 0, 0, 1], 5000)),
+            )
+            .unwrap();
+        let connected = grants.admit(holder().as_bytes()).unwrap();
+
+        local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
+
+        let (status, body) = get_sealed(&connected).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!body.contains(MARKER));
+        assert!(grants.admit(holder().as_bytes()).is_none());
+    }
+
     #[test]
     fn a_holder_with_a_live_grant_mints_no_second() {
         let grants = BuildGrants::default();

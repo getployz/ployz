@@ -159,3 +159,39 @@ pub(crate) fn pin_of(registration: &Registered) -> Option<JoinPin> {
         devices: registration.devices.clone(),
     })
 }
+
+/// A store at `dir` that founded its own Cluster as `name`, so it is Participating.
+pub(crate) fn founder(dir: &std::path::Path, name: &str) -> super::LocalMachineStore {
+    let mut store = super::LocalMachineStore::open(dir).unwrap();
+    store
+        .enroll(EnrollRequest {
+            role: EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse(name).unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                grant: None,
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    store
+}
+
+/// Trust two Devices in `store` and return the first, whose key also holds Cloud's slot, as
+/// a key Cloud also connects with does: removing its Device leaves the key an Operator's.
+/// The second keeps the Machine from losing its last key.
+pub(crate) fn device_in_two_slots(store: &mut super::LocalMachineStore) -> DeviceKey {
+    let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+    store.approve_device(device).unwrap();
+    store
+        .approve_device(DeviceKey::from(Signer::from_seed(&[9; 32]).public()))
+        .unwrap();
+    store
+        .stage_management_client(ployz_core::ManagementClientLabel::cloud(), device.into())
+        .unwrap();
+    store.activate_management_client(device.into()).unwrap();
+    device
+}
