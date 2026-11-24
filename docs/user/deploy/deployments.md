@@ -437,6 +437,11 @@ dashboard is refused too: `This container was made before this server's upgrade 
 the service again with a current `ployz`, which signs it, and the new copy runs.
 Deploy each service once after you upgrade its server, so a restart never needs it.
 
+Upgrading from 0.4.0-beta.2 or earlier, upgrade every server first, then deploy each environment
+once with your passkey or `ployz deploy`. That deploy restarts each service once, including ones
+that hold a volume. Until then, names from before the upgrade aren't
+[kept signed](../services/private-networking.md#good-to-know).
+
 ### Deploy from the dashboard
 
 When your servers enforce device approval, **Deploy** at the bottom of an environment asks for
@@ -453,7 +458,9 @@ deploy before it asks, with the same words as the CLI.
 These need no prompt:
 
 - A service that reaches no data: no sealed value, no volume, no login for its image, and nothing
-  of its server beyond a plain container.
+  of its server beyond a plain container. Once it has run from a signed deploy or an automatic
+  deploy rule, even one that has since ended, it asks like the rest: its name
+  [stays signed](../services/private-networking.md#good-to-know).
 - A version someone already signed: a change of only replicas, placement or limits, and a
   rollback or redeploy of a signed deployment.
 
@@ -481,6 +488,9 @@ If Ployz Cloud doesn't answer after you approve, the sheet says
 
 **Create and deploy** on a new branch, **Deploy again** after a sync and **Redeploy** on a log
 card ask the same way.
+
+A [switch to or from a Cloudflare Tunnel](../services/cloudflare-tunnel.md) stops at a service
+that needs your passkey. Deploy that service from the dashboard, then switch again.
 
 A server refuses a container that reaches data from any deploy no person signed, and says what
 the service reaches:

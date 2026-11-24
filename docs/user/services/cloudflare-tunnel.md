@@ -46,7 +46,8 @@ only the services on that list, as they run now, and closes the old way in only 
 serve every new address. A service that isn't running stays stopped. Changes you haven't deployed
 stay staged, so `ployz diff` still shows them. Services you deployed separately may redeploy one at
 a time. The switch stops if one of those environments is still deploying. Wait for that deployment
-to finish, then switch again.
+to finish, then switch again. It also stops at a service that needs your passkey to deploy. Deploy
+that service from the dashboard, then switch again.
 
 While a switch runs, each row shows what your servers use right now. A second switch the
 same way joins the running one. One the other way is refused until it finishes.

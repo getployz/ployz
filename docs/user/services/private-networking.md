@@ -217,6 +217,15 @@ and running `off` again finishes the removal.
   [healthcheck](settings.md#healthcheck) if it has one. One that passed stays even if its check
   fails later, and its service card shows an amber **⚠**. While no replica is ready, the name
   doesn't resolve. Check that service's **Logs**.
+- **A name that ran signed stays signed.** Once a service runs from a deploy an
+  [approved device signed](../deploy/deployments.md#deploy-from-an-approved-device), or from an
+  automatic deploy rule, its name answers only with replicas deployed that way, even after
+  you delete the service. A container started any other way under that name gets no answers,
+  and your servers refuse to create one. Deploy it with your passkey or `ployz deploy`.
+- **After upgrading from 0.4.0-beta.2 or earlier, deploy each environment once.** Upgrade every
+  server first, then deploy with your passkey or `ployz deploy`. Until then, names from before
+  the upgrade aren't kept signed. The deploy restarts each service once, including ones that
+  hold a volume.
 - **Names are scoped to an environment; addresses aren't.** Projects and environments on
   your servers share one private network. A container that knows another environment's
   private address can connect to it, so give databases a password (the ones Ployz creates
