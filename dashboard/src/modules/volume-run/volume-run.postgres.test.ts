@@ -57,7 +57,7 @@ import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
-import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines } from "#/modules/machines/server-drain-volumes.server";
+import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -2100,6 +2100,27 @@ describe("volume runs", () => {
       const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
       await expect(runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: fsn2.id, requestId: "00000000-0000-4000-8000-0000000000d3", stops: [] })))
         .rejects.toMatchObject({ message: why });
+    });
+
+    // Catches a move the CLI asked for by Server name that what guards that Server can't find by its id.
+    it("records the Server's id on a move the CLI asked for by name", async () => {
+      const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "move", args: { to: "fsn-2" } }));
+
+      expect(planned).toMatchObject({ ok: true, input: { kind: "move", args: { to: "fsn-2", machine: fsn2.id } } });
+    });
+
+    // Catches draining, or turning services off on, the Server a move admitted before moves recorded ids is headed to.
+    it.each([
+      ["Cloud knows the Server by that name", "fsn-2", true],
+      ["Cloud never learned the Server's name", null, true],
+      ["the Server goes by another name", "fsn-9", false],
+    ])("guards the Server a move names only by name when %s", async (_, name, guarded) => {
+      await harness.pool.query(
+        `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name) values ($1, $2, $3, '{}', $4)`,
+        [organizationId, fsn2.id, "a".repeat(64), name]);
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      expect((await runEffect(volumeRunTargeting(organizationId, fsn2.id)))?.id ?? null).toBe(guarded ? move.id : null);
     });
 
     // Catches a failed move read as moved, or as stuck, when its Release put the Service back.

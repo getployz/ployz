@@ -117,7 +117,12 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const guarding = PROTECTED_VERBS[input.kind];
   const guard = asked ?? (guarding === null ? null : askedAs(guarding));
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
-  const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
+  // A move records its Server's id, so what guards that Server finds it by id whatever the Server is called later.
+  const pinned = input.kind === "release"
+    ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } }
+    : resolved.kind === "move" && (phase.kind === "move" || phase.kind === "landed")
+      ? { ...resolved, args: { ...resolved.args, machine: phase.target.machine.id } }
+      : resolved;
   return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
 }, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies ClusterPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 

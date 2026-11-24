@@ -283,7 +283,7 @@ const STEPS = {
     order: 2,
     runs: (change) => [
       ...change.clears.map(deleteOld),
-      change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name } },
+      change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name, machine: change.to.id } },
     ],
   },
   seed: {

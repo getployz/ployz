@@ -7,7 +7,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { attemptRows } from "#/modules/inngest/attempt-row.server";
 import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
 import { candidateServers, copyHolder, dataCheck, type DrainRunRow, reportComplete, volumeLine, type VolumeLine } from "#/modules/machines/server-drain-volumes";
-import { serverDrainAttempt } from "#/modules/machines/tables";
+import { organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { parseDockerVolumeName } from "#/modules/runtime/naming";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { expectOf, planFromCopies } from "#/modules/volume-run/plan";
@@ -358,10 +358,15 @@ export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: R
 
 /**
  * A Volume Run that will start a Service on `machineId`: an active move there, or a committed move or release still owed
- * its start there. While one does, nothing turns services off there or drains it.
+ * its start there. While one does, nothing turns services off there or drains it. A move admitted before moves recorded
+ * their Server's id names it only by name, so it counts for the Server last known by that name, or for any Server
+ * whose name Cloud never learned.
  */
 export const volumeRunTargeting = Effect.fn("ServerDrain.volumeRunTargeting")(function* (organizationId: string, machineId: MachineId) {
   const { drizzle } = yield* Database;
+  const [known] = yield* drizzle.select({ name: organizationMachine.machineName }).from(organizationMachine)
+    .where(and(eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.machineId, machineId)));
+  const named = (to: string) => known?.name === undefined || known.name === null || known.name === to;
   const candidates = yield* drizzle.select().from(volumeRun).where(and(
     eq(volumeRun.organizationId, organizationId),
     inArray(volumeRun.kind, ["move", "release"]),
@@ -373,7 +378,7 @@ export const volumeRunTargeting = Effect.fn("ServerDrain.volumeRunTargeting")(fu
   for (const row of candidates) {
     const input = laneInputOf(row);
     const active = ACTIVE_VOLUME_RUN_STATES.some((state) => state === row.state);
-    if (active && input.kind === "move" && input.args.machine === machineId) return row;
+    if (active && input.kind === "move" && (input.args.machine === undefined ? named(input.args.to) : input.args.machine === machineId)) return row;
     if (active && row.current === machineId) return row;
     if (row.phase === "committed" && row.current === machineId && (yield* commitment(row.volumeId)).owed?.id === row.id) return row;
   }
