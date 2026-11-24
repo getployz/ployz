@@ -100,7 +100,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
 export type SaveTap =
   | { readonly kind: "off" }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "view"; readonly view: RuleView; readonly tap: DeployTap | null };
+  | { readonly kind: "view"; readonly view: RuleView; readonly tap: DeployTap | null }
+  /** A member who can stage but not deploy: their Save keeps no rule, so the view only says whether it holds pushes. */
+  | { readonly kind: "unsigned"; readonly view: RuleView };
 
 /**
  * What a person's Save of `environment` reads before it can sign the automatic deploy rule for what it saves: nothing
@@ -113,17 +115,20 @@ export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Act
   readonly gate: boolean;
 }) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:stage");
+  if (access.kind !== "member") return { kind: "off" } satisfies SaveTap;
   // The Store keeps a Save's rule only for someone who may deploy.
-  if (access.kind !== "member" || !access.permissions.includes("changes:deploy")) return { kind: "off" } satisfies SaveTap;
+  const deploys = access.permissions.includes("changes:deploy");
   const read = yield* callStore(access.organization.id, actor.userId, {
     operation: "read", query: { query: "rule", environment: input.environment, staged: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
-  if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies SaveTap;
+  // Only a Save that could carry a rule waits on the read.
+  if (!read.ok) return deploys ? { kind: "refused", message: read.refusal.message } satisfies SaveTap : { kind: "off" } satisfies SaveTap;
   const view = read.value;
   // Read with the view: a protection Cloud couldn't read never reads as none.
   if (view.sources.length === 0 || (view.protected !== false && !mayProtect(access, view.environment.name))) {
     return { kind: "off" } satisfies SaveTap;
   }
+  if (!deploys) return { kind: "unsigned", view } satisfies SaveTap;
   const tap = input.gate ? yield* gate(actor.userId, access.organization.id, [], { namespace: view.namespace, parents: Effect.succeed({}), needs: SIGNS_RULE }) : null;
   return { kind: "view", view, tap } satisfies SaveTap;
 });

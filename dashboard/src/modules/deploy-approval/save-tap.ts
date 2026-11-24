@@ -28,17 +28,27 @@ export type SaveAsk = {
   readonly review: string;
 };
 
-/** `held` is why a Save that pushes need a new rule for goes without one: pushes wait for approval until one is signed. */
+/**
+ * `held` is why a Save that pushes need a new rule for goes without one: pushes wait for approval until one is signed.
+ * `unchecked` marks a Save whose Servers Cloud couldn't compare with the rule's: only a push placed on a Server the rule
+ * doesn't name waits.
+ */
 export type SavePrepared =
-  | { readonly kind: "save"; readonly command: Publish; readonly held?: string }
+  | { readonly kind: "save"; readonly command: Publish; readonly held?: string; readonly unchecked?: true }
   | { readonly kind: "refused"; readonly message: string }
   | { readonly kind: "ask"; readonly ask: SaveAsk };
+
+/** Why a stage-only member's Save holds pushes. */
+const ASK_DEPLOYER = "Ask someone who can deploy to approve the rule.";
 
 /** The repository owner's GitHub ID, or a reason the rule can't name it. */
 export type OwnerOf = (repository: string, repositoryId: number) => Promise<{ ownerId: number } | { problem: string }>;
 
 /** Cloud's read of what a Save saves; with `gate`, also what asking for a passkey needs. */
 export type ReadSave = (gate: boolean) => Promise<SaveTap>;
+
+const READ = "This browser couldn't read the rule.";
+const DRAFT = "This browser couldn't draft the rule.";
 
 const parsed = (body: string): AutoDeployRule => {
   // SAFETY: ployz-core drafted or the Store kept this body as an `AutoDeployRule`.
@@ -58,20 +68,27 @@ const saves = (view: RuleView, command: Publish): view is RuleView & { version: 
 export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now()): Promise<SavePrepared> {
   const plain = { kind: "save", command } as const;
   const first = await read(false);
-  if (first.kind !== "view") return first.kind === "off" ? plain : first;
+  if (first.kind === "off") return plain;
+  if (first.kind === "refused") return first;
   if (!saves(first.view, command)) return plain;
   let need: ReturnType<typeof sourceNeed>;
   try {
     need = sourceNeed(first.view);
   } catch (error) {
-    return { ...plain, held: error instanceof Error && error.message !== "" ? error.message : "This browser couldn't read the rule." };
+    return { ...plain, held: error instanceof Error && error.message !== "" ? error.message : READ };
   }
   if (need === "none") return plain;
-  // Only the Servers the kept rule names may be out of date: its pushes still deploy, so nothing is held.
-  const held = (reason: string): SavePrepared => need === "rule" ? { ...plain, held: reason } : plain;
+  // Someone who can't deploy signs nothing: say who can.
+  if (first.kind === "unsigned") return need === "rule" ? { ...plain, held: ASK_DEPLOYER } : plain;
+  // A new rule holds every push. When only the Servers the kept rule names may be out of date, a push holds only if it
+  // lands on one the rule doesn't name, which is certain once the Cluster's Servers drafted a rule that names more.
+  const held = (reason: string, drafted = false): SavePrepared =>
+    need === "servers" && !drafted ? { ...plain, held: reason, unchecked: true } : { ...plain, held: reason };
   const second = await read(true).catch(() => null);
   if (second === null) return held("Couldn't reach Ployz Cloud.");
-  if (second.kind !== "view") return second.kind === "off" ? plain : second;
+  // Publish checks the version and who may save; a refused read only keeps the rule from being asked for.
+  if (second.kind === "refused") return held(second.message);
+  if (second.kind !== "view") return plain;
   const { view, tap: gate } = second;
   if (!saves(view, command) || gate === null || gate.kind === "off") return plain;
   if (gate.kind === "refused") return held(gate.message);
@@ -82,16 +99,21 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
     issued_at: now, expires_at: now + WINDOW_MS, seed, against: gate.against,
     source: { rule: view.rule ?? null, sources: view.sources, target: view.target, machines: [...gate.members], owner_id: ownerId },
   });
+  let unowned: VersionsDraft | null;
+  try {
+    unowned = draft(0);
+  } catch (error) {
+    return held(error instanceof Error && error.message !== "" ? error.message : DRAFT);
+  }
+  if (unowned?.source === undefined) return plain;
   let signed: VersionsDraft | null;
   try {
-    const unowned = draft(0);
-    if (unowned?.source === undefined) return plain;
     const { repository, repository_id } = parsed(unowned.source.body).source;
     const owner = await ownerOf(repository, repository_id);
-    if ("problem" in owner) return held(owner.problem);
+    if ("problem" in owner) return held(owner.problem, true);
     signed = draft(owner.ownerId);
   } catch (error) {
-    return held(error instanceof Error && error.message !== "" ? error.message : "This browser couldn't draft the rule.");
+    return held(error instanceof Error && error.message !== "" ? error.message : DRAFT, true);
   }
   if (signed?.source === undefined) return plain;
   const kept = view.rule === null || view.rule === undefined ? null : parsed(view.rule.body);
@@ -122,8 +144,8 @@ export type SaveSteps = {
   readonly prepare: (command: Publish) => Promise<SavePrepared>;
   /** Asks the person to sign `ask`'s rule; settles once their Save was sent, or throws why it wasn't. */
   readonly ask: (ask: SaveAsk, handles: readonly string[]) => Promise<void>;
-  /** Tells the person the Save went without a rule, and why. */
-  readonly held: (reason: string) => void;
+  /** Tells the person the Save went without a rule, and why; `unchecked` when pushes may not wait. */
+  readonly held: (reason: string, unchecked: boolean) => void;
   /** Tells the person why nothing was saved; the Save then throws. */
   readonly refused: (message: string) => Error;
 };
@@ -153,5 +175,5 @@ export async function saveWith(steps: SaveSteps, command: Publish, handles: read
   if (prepared.kind === "refused") throw steps.refused(prepared.message);
   if (prepared.kind === "ask") return steps.ask(prepared.ask, handles);
   await steps.commit(prepared.command, handles);
-  if (prepared.held !== undefined) steps.held(prepared.held);
+  if (prepared.held !== undefined) steps.held(prepared.held, prepared.unchecked === true);
 }

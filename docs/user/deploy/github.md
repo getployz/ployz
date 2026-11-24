@@ -120,7 +120,8 @@ approve one. After you turn it off, Save never turns it back on: only the switch
 
 When Save can't ask your passkey, for example because a server is offline or your servers don't
 trust your passkey, it saves without the rule and tells you why. Pushes then hold until you
-approve the rule.
+approve the rule. If you can stage changes but not deploy them, Save never asks: it tells you
+when pushes hold until someone who can deploy approves the rule.
 
 From the CLI, approve it for the services that build from one branch:
 

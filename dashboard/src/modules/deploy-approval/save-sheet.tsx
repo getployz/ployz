@@ -50,7 +50,7 @@ export function useSaveTap(organizationSlug: string) {
       const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null }));
       if (failed !== null) throw failed;
     },
-    held: (reason) => toast.warning("Saved. Pushes wait for approval.", { description: reason }),
+    held: (reason, unchecked) => toast.warning(unchecked ? "Saved. Pushes may wait for approval." : "Saved. Pushes wait for approval.", { description: reason }),
     refused: (message) => {
       toast.error(`${message} Nothing saved.`);
       return new SaveNotSent();

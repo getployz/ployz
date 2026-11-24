@@ -21,8 +21,15 @@ const spec = (name: string) => ({
   },
 });
 
+/** web with a Volume, which runs only on the Servers a rule names. */
+const placed = () => ({
+  ...spec("web"),
+  volumes: [{ reference: "data", source: { kind: "provisioned", name: "web-data", maximum_bytes: 1024 } }],
+  mounts: [{ volume: "data", target: "/data" }],
+});
+
 /** The Store's staged rule view of a Save of web, which builds from main, at review `v1`. */
-const view = (rule: RuleView["rule"] = null): RuleView =>
+const view = (rule: RuleView["rule"] = null, web: ReturnType<typeof spec> = spec("web")): RuleView =>
   // SAFETY: the fixture is the JSON the Store answers; ployz-core parses what it reads of it.
   JSON.parse(JSON.stringify({
     environment: { id: "env", project: "shop", name: "production", revision: 1 },
@@ -32,7 +39,7 @@ const view = (rule: RuleView["rule"] = null): RuleView =>
       service: "web", repository: "acme/web", repository_id: 11, branch: "main", root_dir: ".",
       build: { buildMethod: "dockerfile", dockerfilePath: "Dockerfile" },
     }],
-    target: [spec("web")],
+    target: [web],
     changed: [],
     version: "v1",
     protected: false,
@@ -77,6 +84,29 @@ describe("prepareSave", () => {
     const unread = async () => ({ problem: "Couldn't read acme/web on GitHub." });
 
     expect(await prepareSave(save, read, unread)).toEqual({ kind: "save", command: save, held: "Couldn't read acme/web on GitHub." });
+  });
+
+  it("says pushes wait when someone who can't deploy saves what the rule doesn't cover", async () => {
+    const read = async (): Promise<SaveTap> => ({ kind: "unsigned", view: view() });
+
+    expect(await prepareSave(save, read, owner)).toMatchObject({ kind: "save", command: save, held: expect.any(String) });
+  });
+
+  it("says pushes may wait when it can't check a placed Service's Servers against the rule", async () => {
+    const rule = { body: autoDeployRuleBody(view(null, placed()), asTestDouble<RuleTerms>()({
+      cluster: CLUSTER, machines: ["1".repeat(32)], owner_id: 7, new_rule: "3".repeat(32), issued_at: 1_000, signer: "passkey",
+    })).body, signatures: [] };
+    const read = reads(view(rule, placed()), { kind: "refused", message: "Couldn't reach your servers. Try again." });
+
+    expect(await prepareSave(save, read, owner)).toEqual({ kind: "save", command: save, held: "Couldn't reach your servers. Try again.", unchecked: true });
+  });
+
+  it("saves without the rule when the read for the passkey is refused", async () => {
+    const read = vi.fn<(gate: boolean) => Promise<SaveTap>>()
+      .mockResolvedValueOnce({ kind: "view", view: view(), tap: null })
+      .mockResolvedValueOnce({ kind: "refused", message: "Couldn't read production." });
+
+    expect(await prepareSave(save, read, owner)).toEqual({ kind: "save", command: save, held: "Couldn't read production." });
   });
 
   it("refuses only when the staged read fails", async () => {
