@@ -65,7 +65,7 @@ export function copyHolder(frame: RuntimeWatchView, dockerVolume: string): Machi
 
 /**
  * The Servers a Volume may move to from `from`, best first: each answers, takes services, isn't draining, can start a
- * moved Service and holds a Machine Pool, and sits in a region the Service's signed spec runs in (any region when it
+ * moved Service and has managed storage, and sits in a region the Service's signed spec runs in (any region when it
  * names none). The Server already holding a copy comes first, then those in `from`'s region, each group by name.
  */
 export function candidateServers(frame: RuntimeWatchView, input: {
@@ -81,7 +81,8 @@ export function candidateServers(frame: RuntimeWatchView, input: {
   const fits = frame.machines.filter(({ machine, storage }) => {
     if (machine.id === input.from || unanswered.has(machine.id) || input.draining.has(machine.id) || !machine.accepts_services) return false;
     if (serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeStart) !== true) return false;
-    if (storage?.state !== "pool") return false;
+    // A Server makes its Machine Pool with its first Managed volume, so one that never held one reads `ready`.
+    if (storage === null || storage === undefined || storage.state === "stateless") return false;
     const region = regionOf(machine.labels);
     return input.regions.length === 0 || (region !== null && input.regions.includes(region));
   });

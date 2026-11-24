@@ -1808,7 +1808,7 @@ describe("volume runs", () => {
        values ($1, $2, $3, $4, 'running', 'run-drain', now(), $5)`,
       [DRAIN, organizationId, userId, fsn1.id, JSON.stringify(report)]);
     /** Runs every Volume Run still active to its end, as Inngest would while the drain waits. */
-    const runActive = async () => {
+    const runEveryActive = async () => {
       const { rows: active } = await harness.pool.query<{ id: string }>(
         "select id from volume_run where state in ('requested', 'running') order by created_at, id");
       for (const row of active) await execute(row.id, `run-${row.id}`);
@@ -1824,7 +1824,7 @@ describe("volume runs", () => {
       step: asTestDouble<Parameters<typeof executeDrainServer>[0]["step"]>()({
         run: async <A>(name: string, fn: () => Promise<A>) => name === "bind-run" ? { kind: "bound" } : fn(),
         sleep: async () => undefined,
-        waitForEvent: runActive,
+        waitForEvent: () => runActive(),
       }),
     }, runEffect);
     const cli = () => runEffect(readCliServerDrain(organizationId, DRAIN));
@@ -1834,12 +1834,16 @@ describe("volume runs", () => {
       return { entry: first(read.report.services), complete: read.report.complete };
     };
     const volumeRuns = async () => (await rows()).map(({ kind, state }) => ({ kind, state }));
+    /** What each wait for a Volume Run does; a test may wrap it. */
+    let runActive: () => Promise<null>;
 
     beforeEach(() => {
+      runActive = runEveryActive;
       machines = [
         { name: "fsn-1", id: fsn1.id, region: "fsn", pool: true, copy: writerCopy() },
         { name: "ams-1", id: hex("a1"), region: "ams", pool: true, copy: null },
-        { name: "fsn-2", id: fsn2.id, region: "fsn", pool: true, copy: null },
+        // Never held a Managed volume, so it has made no Machine Pool yet.
+        { name: "fsn-2", id: fsn2.id, region: "fsn", pool: false, copy: null },
       ];
     });
 
@@ -1853,6 +1857,25 @@ describe("volume runs", () => {
       expect(containers).toEqual([expect.objectContaining({ machine: "fsn-2", running: true })]);
       expect(await entry()).toEqual({
         entry: expect.objectContaining({ service: "shop-production/web", result: "moved", moves: [expect.objectContaining({ from: fsn1, to: fsn2 })] }),
+        complete: true,
+      });
+    });
+
+    // Catches a drain that reads a frame taken just after the move, still listing the removed Container, as the move
+    // having left the Service on the drained Server: the report reads incomplete and the CLI exits non-zero.
+    it("reads complete when the frame still lists the Container the move removed", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        containers.push({ machine: "fsn-1", id: "web-fsn-1", running: false });
+        return null;
+      };
+
+      await drain();
+
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "moved", moves: [expect.objectContaining({ from: fsn1, to: fsn2, old: { kind: "stopped" } })] }),
         complete: true,
       });
     });

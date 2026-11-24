@@ -721,6 +721,13 @@ const KeptWithoutSpec = Schema.Struct({
 const keptWithoutSpec = (error: PloyzSdkError) =>
   "cause" in error && Option.isSome(Schema.decodeUnknownOption(KeptWithoutSpec)(error.cause));
 
+/** The sentence a run's message carries for a Container it couldn't remove from `machine`. */
+const staysSentence = (containerId: ContainerId, machine: MachineRef) => `${containerId} stays on ${machine.name}, not removed`;
+
+/** Whether a run's message says it left a Container it couldn't remove on the Server named `machineName`. */
+export const leftContainerOn = (message: string | null, machineName: string) =>
+  message !== null && message.includes(` stays on ${machineName}, not removed`);
+
 /**
  * Removes one Container, or returns the sentence saying it stays, when its Server holds no spec for it.
  */
@@ -729,7 +736,7 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
   const session = yield* openSession(ctx.organizationId);
   return yield* session.removeContainer(machine.id, containerId).pipe(
     Effect.as(null),
-    Effect.catchIf(keptWithoutSpec, () => Effect.succeed(`${containerId} stays on ${machine.name}, not removed`)),
+    Effect.catchIf(keptWithoutSpec, () => Effect.succeed(staysSentence(containerId, machine))),
     Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
   );
 }, Effect.scoped);

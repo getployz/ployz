@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, DrainReport, EnvironmentRef, MachineId, MachineRef, OldCopyEnd, QualifiedService, RuntimeWatchView, ServiceDrain } from "@ployz/sdk";
+import type { ContainerId, DrainReport, EnvironmentRef, MachineId, MachineRef, QualifiedService, RuntimeWatchView, ServiceDrain } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, ne, or } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { StoreRefusal } from "#/lib/refusal";
@@ -13,7 +13,7 @@ import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server
 import { expectOf, planFromCopies } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
-import { observeVolumeMembers, readHolder, startRefusal } from "#/modules/volume-run/volume-run.cluster.server";
+import { leftContainerOn, observeVolumeMembers, readHolder, startRefusal } from "#/modules/volume-run/volume-run.cluster.server";
 import { activeLane, admitGuardedRun, commitment, laneInputOf, namedOwedRefusal, readRow, releaseOfMove, resolveVolume, type ResolvedVolume, rowlessGen } from "#/modules/volume-run/volume-run.rows.server";
 import { Database } from "#/server/database.server";
 import { uuidFrom } from "#/server/uuid-from";
@@ -307,8 +307,12 @@ export const readVolumeLines = Effect.fn("ServerDrain.readVolumeLines")(function
 });
 
 /**
- * The drain's last step: one frame for what remains on the drained Server, each Service whose move finished rewritten as
- * moved from there to its new Server, and `complete` worked out again by the Engine's rule. Ends the row finished.
+ * The drain's last step: each Service whose move finished rewritten as moved from the drained Server to its new one, one
+ * frame for what else remains there, and `complete` worked out again by the Engine's rule. Ends the row finished.
+ *
+ * A finished move stopped the Service on the drained Server before it committed and removed that Container after, so
+ * its own record says what it left: a Container it couldn't remove is named in its message. The frame may still list
+ * the removed Container for a few seconds, so it doesn't decide what a move left.
  */
 export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: Request, runId: string) {
   const row = yield* ownedReport(request, runId);
@@ -326,19 +330,21 @@ export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: R
     Effect.map((read) => read === null ? Option.none<RuntimeWatchView>() : Option.some(read)),
     Effect.orElseSucceed(() => Option.none<RuntimeWatchView>()),
   );
+  const cleared = new Set<QualifiedService>();
   const services = report.services.map((entry): ServiceDrain => {
     const move = entry.run === undefined ? undefined : found.get(entry.run);
     if (move === undefined || move.state !== "done") return entry;
     const input = laneInputOf(move);
     if (input.kind !== "move") return entry;
+    if (!leftContainerOn(move.message, from.name)) cleared.add(entry.service);
     const to: MachineRef = { id: move.current ?? input.args.machine ?? from.id, name: input.args.to };
-    return { service: entry.service, volume: entry.volume, run: entry.run, result: "moved", moves: [{ from, to, old: oldCopyEnd(frame, entry.service, from) }] };
+    return { service: entry.service, volume: entry.volume, run: entry.run, result: "moved", moves: [{ from, to, old: { kind: "stopped" } }] };
   });
   const remaining: DrainReport["remaining"] = Option.match(frame, {
     onNone: () => ({ kind: "unobserved", error: "Cloud couldn't read the cluster after the drain's volumes moved" }),
     onSome: (seen) => {
       const left = seen.services
-        .filter((service) => service.containers.some((container) => container.machine_id === from.id))
+        .filter((service) => !cleared.has(service.identity) && service.containers.some((container) => container.machine_id === from.id))
         .map((service) => service.identity);
       const unchosen = report.remaining.kind === "observed" ? report.remaining.unchosen.filter((service) => left.includes(service)) : [];
       return { kind: "observed", services: left, unchosen };
@@ -349,16 +355,6 @@ export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: R
   const state = yield* rows.end(request.attemptId, runId, { state: "finished", endedAt: new Date(), report: final }, ["running"]);
   return { attemptId: request.attemptId, state: state ?? (yield* rows.stateOf(request.attemptId)) };
 });
-
-/** What became of the moved Service's stopped Container on the drained Server, by what the frame still shows there. */
-function oldCopyEnd(frame: Option.Option<RuntimeWatchView>, service: QualifiedService, from: MachineRef): OldCopyEnd {
-  if (Option.isNone(frame)) return { kind: "running", unconfirmed: { kind: "failed", detail: "Cloud couldn't read the cluster to check" } };
-  const left = frame.value.services.find((entry) => entry.identity === service)?.containers
-    .some((container) => container.machine_id === from.id && container.kind === "service_container") ?? false;
-  return left
-    ? { kind: "running", unconfirmed: { kind: "failed", detail: `its stopped container is still on ${from.name}` } }
-    : { kind: "stopped" };
-}
 
 /**
  * A Volume Run that will start a Service on `machineId`: an active move there, or a committed move or release still owed
