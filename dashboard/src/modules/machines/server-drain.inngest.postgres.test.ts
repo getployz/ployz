@@ -140,8 +140,8 @@ describe("drain-server", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (id = requestId, machine = machineId, stops: string[] = []) =>
-    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id, stops }));
+  const request = (id = requestId, machine = machineId) =>
+    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id }));
   /** One run of the Drain. The test engine mints a run ID per step execution; Inngest keeps one per run. */
   const drain = (attemptId = requestId, machine = machineId, runId = "run-drain") => new InngestTestEngine({
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
@@ -384,22 +384,14 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
-  it("a dashboard Drain that retires the last copy of a Global runs without asking anyone", async () => {
+  // Catches a dashboard yes to a Drain the Engine refuses, since a Global's copy here may be its last that works.
+  it("refuses a dashboard Drain of a Server running a Global, and records nothing", async () => {
     frame = frameOf("global");
-    expect(await request(requestId, machineId, ["shop-production/api"])).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
-    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
-    await drain();
-
-    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
-  });
-
-  it("refuses a dashboard Drain that would stop a Service its dialog showed as moving", async () => {
-    frame = frameOf("global");
-    await expect(request()).rejects.toThrow("Draining now stops api. Review the drain again.");
+    await expect(request()).rejects.toThrow("api runs on every server, and draining could stop its last working copy.");
     expect(await rows()).toEqual([]);
   });
 
-  it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {
+  it("plans again when its turn comes and refuses a Global seen since, without asking the Engine", async () => {
     await request();
     frame = frameOf("global");
     const output = await drain();
@@ -409,7 +401,7 @@ describe("drain-server", () => {
     expect(await rows()).toMatchObject([{
       state: "failed",
       end_code: "refused",
-      refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
+      refusal_message: "api runs on every server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.",
       started_at: null,
     }]);
   });

@@ -8,6 +8,7 @@ import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { dataCheck, type DataPlan, dataPlan } from "#/modules/machines/server-drain-volumes";
+import { globalsStopDrain } from "#/modules/machines/server-drain-view";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -56,27 +57,28 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
 
 /**
  * An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server.
- * `data` is what the frame says of each Service held by its data here: whether it may move with its Volume. It is a
- * forecast the drain checks again, so it stays out of the preview the approval signs.
+ * `globals` are those that refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its
+ * data here: whether it may move with its Volume. It is a forecast the drain checks again, so it stays out of the
+ * preview the approval signs.
  */
 export type DrainPlan = OperationAsked & {
   readonly targets: QualifiedService[];
   readonly moves: QualifiedService[];
+  readonly globals: QualifiedService[];
   readonly data: Readonly<Record<string, DataPlan>>;
 };
 
 /**
  * What draining `machineId` does to the Services the Organization's Environments own there, from one frame: each moves,
- * stays (a Volume holds it, which the drain may then move with it), or retires (a Global slot). A Global with no running slot elsewhere
- * is removed outright. Null when the frame has no such Server.
+ * or stays (a Volume holds it, which the drain may then move with it). One with a Global copy anywhere refuses the
+ * Drain, as the Engine's does. Null when the frame has no such Server.
  */
 export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, machineId: string): DrainPlan | null {
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const moves: QualifiedService[] = [];
   const stays: QualifiedService[] = [];
-  const retires: QualifiedService[] = [];
-  const effects: DestructiveEffect[] = [];
+  const globals: QualifiedService[] = [];
   for (const service of frame.services) {
     const { namespace } = splitQualifiedService(service.identity);
     if (namespace === null || namespace === SYSTEM_NAMESPACE || !owned.has(namespace)) continue;
@@ -87,31 +89,37 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
       undefined,
     );
     if (newest === undefined) continue;
-    if (newest.resolved_spec.mode.mode === "global") {
-      retires.push(service.identity);
-      const runsElsewhere = slots.some((container) => container.machine_id !== machineId && container.runtime.state === "running");
-      if (!runsElsewhere) effects.push(removesService(service.identity, service.service_id));
+    if (service.containers.some((container) => container.resolved_spec.mode.mode === "global")) {
+      globals.push(service.identity);
     } else if (newest.resolved_spec.volumes.length > 0) {
       stays.push(service.identity);
     } else {
       moves.push(service.identity);
     }
   }
-  [moves, stays, retires].forEach((list) => list.sort(byName));
+  [moves, stays, globals].forEach((list) => list.sort(byName));
   const data = Object.fromEntries(stays.map((service) => [service, dataPlan(dataCheck(frame, service, machineId))]));
-  effects.sort((a, b) => byName(a.path, b.path));
   return {
     subject: `server:${machineId}`,
     verb: "drain",
     name,
     // Its attempt keeps the approval, so carrying it again answers that drain.
-    preview: { server: machineId, moves, stays, retires },
-    effects,
-    targets: [...moves, ...stays, ...retires].sort(byName),
+    preview: { server: machineId, moves, stays },
+    effects: [],
+    targets: [...moves, ...stays].sort(byName),
     moves,
+    globals,
     data,
   };
 }
+
+/**
+ * The refusal of a Drain whose Server runs a Service with a Global copy: a copy stays routed while it crash-loops, so
+ * the one here could be the last that works. Null when none does.
+ */
+export const drainRefusal = (plan: DrainPlan) => plan.globals.length === 0
+  ? null
+  : new Conflict({ userFacing: true, message: globalsStopDrain(plan.globals.map((service) => splitQualifiedService(service).name)) });
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
 const online = ({ machine, membership }: RuntimeWatchView["machines"][number], unanswered: readonly string[]) =>

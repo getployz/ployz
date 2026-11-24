@@ -3,7 +3,6 @@ import type { DrainReport, DrainScope, MachineId, MachineName, QualifiedService,
 import { and, desc, eq, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
-import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/operations/gate.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { type ServerDrainRequestedEventData, serverDrainRequested } from "#/modules/machines/machines.events";
@@ -18,10 +17,9 @@ import {
   type DrainEndCodeWithoutMessage,
   type DrainState,
 } from "#/modules/machines/server-drain-states";
-import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
+import { drainPlan, drainRefusal, planDrain } from "#/modules/machines/server-operations.server";
 import { untried } from "#/modules/machines/server-drain-volumes";
 import { readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
-import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -136,12 +134,8 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
   yield* refuseWhileTargeted(organizationId, input.machineId);
   const plan = yield* planDrain(organizationId, input.machineId);
   if (plan === null) return yield* new NotFound({ message: "The server was not found." });
-  const unseen = plan.effects.flatMap(({ kind, name }) =>
-    kind === "removes_service" && name !== undefined && !input.stops.includes(name) ? [splitQualifiedService(name).name] : []);
-  if (unseen.length > 0) {
-    const names = listNames(unseen);
-    return yield* new Conflict({ userFacing: true, message: `Draining now stops ${names}. Review the drain again.` });
-  }
+  const refusal = drainRefusal(plan);
+  if (refusal !== null) return yield* refusal;
   const gated = yield* gateOperation(caller, null, plan);
   if (!gated.ok) return yield* new Conflict({ userFacing: true, message: gated.refusal.message });
   return yield* database.transaction(Effect.gen(function* () {
@@ -311,9 +305,9 @@ function refusalMessage(cause: Error) {
 }
 
 /**
- * A Drain waits its turn after its gate, and an earlier Drain can leave this one retiring a last copy. So it plans
- * again before it runs, and runs only if what it would destroy now is what its gate admitted. One a person said yes to
- * runs only its exact plan, as its gate did. Also whether the plan moves anything, which decides the Servers it may land on.
+ * A Drain waits its turn after its gate, and what runs may change meanwhile. So it plans again before it runs, and runs
+ * only if what it would destroy now is what its gate admitted and no Global refuses it. One a person said yes to runs
+ * only its exact plan, as its gate did. Also whether the plan moves anything, which decides the Servers it may land on.
  */
 const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
   request: DrainRequest,
@@ -321,11 +315,13 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
   admitted: { readonly planDigest: string | null; readonly approved: boolean },
 ) {
   const plan = drainPlan(frame, new Set(yield* ownedNamespaces(request.organizationId)), request.machineId);
+  const refusal = plan === null ? null : drainRefusal(plan);
+  if (refusal !== null) return { covered: false, refusal: refusal.message, moves: false };
   const moves = plan === null || plan.moves.length > 0;
   // A yes covers only the plan it was given: one whose Server left the frame, so nothing plans, runs nothing.
-  if (admitted.approved) return { covered: plan !== null && admitted.planDigest === operationDigest(plan), moves };
+  if (admitted.approved) return { covered: plan !== null && admitted.planDigest === operationDigest(plan), refusal: null, moves };
   const harmless = plan === null || plan.effects.length === 0;
-  return { covered: harmless || admitted.planDigest === operationDigest(plan), moves };
+  return { covered: harmless || admitted.planDigest === operationDigest(plan), refusal: null, moves };
 });
 
 /**
@@ -387,13 +383,14 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
         .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
       // A row an older worker wrote, or one from before `approved`, names the approval it consumed instead: a yes too.
       const approved = row !== undefined && (row.approved || row.approvalId !== null);
-      const { covered, moves } = yield* stillCovered(request, frame, { planDigest: row?.planDigest ?? null, approved });
+      const { covered, refusal, moves } = yield* stillCovered(request, frame, { planDigest: row?.planDigest ?? null, approved });
+      if (refusal !== null) return yield* endPending(refused(refusal));
       if (!covered) {
         const changed = approved ? "The drain changed since you said yes." : "The drain now destroys something nobody approved.";
         return yield* endPending(refused(`${changed} Drain the server again to review it.`));
       }
-      // The Drain's Container steps run on the drained Server, which retires its Globals, and, when the Drain moves
-      // anything, on every other Server taking services, since a move may land on any of them.
+      // The Drain's Container steps run on the drained Server, and, when the Drain moves anything, on every other
+      // Server taking services, since a move may land on any of them.
       const lacking = lackingEnsure(frame, (machine) => machine.id === request.machineId || moves && machine.accepts_services);
       if (lacking.length > 0) return yield* endPending(refused(`Drains need a newer Ployz on ${lacking.join(", ")}.`));
       const targeted = yield* volumeRunTargeting(request.organizationId, request.machineId);

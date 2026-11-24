@@ -2175,7 +2175,7 @@ describe("volume runs", () => {
       await expect(runEffect(requestServerPolicyChange({ userId }, { organizationSlug: "acme", machineId: fsn2.id, change: { acceptsServices: false } })))
         .rejects.toMatchObject({ message: why });
       const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
-      await expect(runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: fsn2.id, requestId: "00000000-0000-4000-8000-0000000000d3", stops: [] })))
+      await expect(runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: fsn2.id, requestId: "00000000-0000-4000-8000-0000000000d3" })))
         .rejects.toMatchObject({ message: why });
     });
 

@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/operations/gate.server";
 import { Effect, Layer } from "effect";
 import { CloudStore, ConfigStoreOpenFailure } from "#/modules/config-store/store-sdk.server";
-import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { cleanPlan, drainPlan, drainRefusal, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 const here = "a".repeat(32);
@@ -53,34 +53,48 @@ const frame = (services: Record<string, Slot[]>) => {
 };
 
 describe("drainPlan", () => {
-  it("moves stateless Services, keeps ones a Volume holds, retires Globals, and destroys only a Global with no other slot", () => {
+  it("moves stateless Services, keeps ones a Volume holds, and destroys nothing", () => {
     const plan = drainPlan(frame({
       "shop/web": [{ machine: here }],
       "shop/db": [{ machine: here, volumes: 1 }],
-      "shop/edge": [{ machine: here, mode: "global" }, { machine: there, mode: "global" }],
-      "shop/metrics": [{ machine: here, mode: "global" }, { machine: there, mode: "global", state: "exited" }],
       "shop/elsewhere": [{ machine: there }],
       "other/web": [{ machine: here }],
-      "ployz-system/proxy": [{ machine: here }],
+      "ployz-system/proxy": [{ machine: here, mode: "global" }],
     }), new Set(["shop", "ployz-system"]), here);
 
     expect(plan).toEqual({
       subject: `server:${here}`,
       verb: "drain",
       name: "fra-1",
-      preview: { server: here, moves: ["shop/web"], stays: ["shop/db"], retires: ["shop/edge", "shop/metrics"] },
-      effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
-      targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],
+      preview: { server: here, moves: ["shop/web"], stays: ["shop/db"] },
+      effects: [],
+      targets: ["shop/db", "shop/web"],
       moves: ["shop/web"],
+      globals: [],
       data: { "shop/db": { kind: "stays", why: "it uses a folder or a Docker volume here" } },
     });
+    expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
+  });
+
+  it("refuses for each owned Service with a Global copy anywhere, even beside a replicated copy here", () => {
+    const plan = drainPlan(frame({
+      "shop/web": [{ machine: here }],
+      "shop/edge": [{ machine: here, mode: "global" }, { machine: there, mode: "global" }],
+      "shop/metrics": [{ machine: here, at: 2 }, { machine: there, mode: "global", state: "exited" }],
+      "other/agent": [{ machine: here, mode: "global" }],
+    }), new Set(["shop"]), here);
+
+    expect(plan?.globals).toEqual(["shop/edge", "shop/metrics"]);
+    expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
+      "edge and metrics run on every server, and draining could stop their last working copies. Remove each, deploy, then add them back with a replica count.",
+    );
   });
 
   it("weighs a Service by its newest slot on the Server", () => {
     const plan = drainPlan(frame({
       "shop/web": [{ machine: here, volumes: 1, at: 1 }, { machine: here, at: 2 }],
     }), new Set(["shop"]), here);
-    expect(plan?.preview).toEqual({ server: here, moves: ["shop/web"], stays: [], retires: [] });
+    expect(plan?.preview).toEqual({ server: here, moves: ["shop/web"], stays: [] });
   });
 
   it("is null for a Server the frame doesn't hold", () => {
