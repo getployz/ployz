@@ -1,46 +1,42 @@
 import "@tanstack/react-start/server-only";
-import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, DiffView, JsonValue, Place, Write } from "@ployz/sdk";
-import { Cause, Effect, Option, Schema } from "effect";
+import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, JsonValue, Place, Write } from "@ployz/sdk";
+import { Cause, Effect, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
-import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
-import { carriedInto, gateOperation, onceFor, redeemApproval, redeeming, requestApproval, reviewedDiff, unheldApproval } from "#/modules/approvals/approvals.server";
+import { approvalAsks } from "#/modules/config-store/store-asks";
+import { gateOperation, hasApprover, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { type Called, type Command, inputSchema } from "#/modules/commands/define";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
-import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
-import { refused, type StoreRefusal } from "#/lib/refusal";
+import { isProtectedAsk, type StoreAnswer, type StoreCall, type StoreResult } from "#/modules/config-store/store.contract";
+import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
 import { type AgentCaller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { type DeployLinked, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
-import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
+import { answerForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
 
 /**
- * One tool call. `key` admits it once; `approvalId` is the approval a retry carries; `page` is where it runs; `origin`
- * is the surface it came through. `input` still holds the `intent` the agent sent; `runAgentCall` takes it out.
+ * One tool call. `key` admits it once; `page` is where it runs; `origin` is the surface it came through. `input` still holds the `intent` the agent sent; `runAgentCall` takes it out.
  */
 export type AgentCall = {
   readonly tool: string;
   readonly input: JsonValue;
   readonly key: string;
-  readonly approvalId: string | null;
   readonly page: PagePlace;
   readonly origin: CallOrigin;
   /** The surface ended the call itself, before it could run, with this error: it is recorded as the failed call it is, and does not run. */
   readonly ended?: CallError;
 };
 
-export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
-
-export type AgentResult = { readonly outcome: ToolOutcome } | { readonly asking: Asking };
+export type AgentResult = { readonly outcome: ToolOutcome };
 
 export type AgentTool = {
   readonly name: string;
@@ -74,7 +70,7 @@ export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "servi
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
 const STAGE_SEVERAL = "For several steps under one approval, stage them in a proposal.";
 /** What the catalog's gated tools end with, said of a published command that asks too: its `about` is the CLI's help. */
-export const ASKS = "May stop to ask a human to approve.";
+export const ASKS = "May need a person.";
 /** A proposal's place in a Service tool: a gated call already says it asks, an ungated one asks only as a step. */
 const inProposal = (gated: boolean): string =>
   gated ? STAGE_SEVERAL : `It runs without approval; as a step of a proposal, a human approves it in the dashboard. ${STAGE_SEVERAL}`;
@@ -173,127 +169,54 @@ const KNOWN_TOOLS = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
 export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
 
-const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
-const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
-const DeniedOperation = Schema.Struct({ approval: Schema.Struct({ review: Schema.Struct({ operation: Schema.Struct({ name: Schema.String }) }) }) });
-
-/** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
-const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
-  if (refusal.code !== "approval_denied") return refusal;
-  const reason = Option.match(Schema.decodeUnknownOption(DeniedApproval)(refusal.details), { onNone: () => null, onSome: ({ approval }) => approval.reason });
-  return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
-};
-
-/** A denied act as the agent hears it, naming the Volume a Volume run's approval named. */
-export const actDenial = (action: Act["action"], refusal: StoreRefusal): StoreRefusal => {
-  const denied = Schema.decodeUnknownOption(DeniedOperation)(refusal.details);
-  return denialForAgent(actWords(action, Option.getOrNull(Option.map(denied, ({ approval }) => approval.review.operation.name))), refusal);
-};
-
-/** An act in the words a denial names it by, as in `restart whoami`. */
-const actWords = (action: Act["action"], volume: string | null): string => {
-  switch (action.action) {
-    case "service":
-      return `${action.verb} ${action.service}`;
-    case "drain":
-      return `drain ${action.server.name}`;
-    case "upgrade":
-      return `upgrade ${action.server.name}`;
-    case "set_server":
-      return `policy change on ${action.server.name}`;
-    case "clean":
-      return `cleanup of ${action.leftover}`;
-    case "remove_server":
-      return `removal of ${action.server.name}`;
-    case "forget_server":
-      return `forget ${action.server.name}`;
-    case "volume":
-      switch (action.run.run) {
-        case "mirror":
-          return `Volume mirror to ${action.run.to.name}`;
-        case "move":
-          return `Volume move to ${action.run.to.name}`;
-        case "restore":
-          return `Volume restore from ${action.run.from.name}`;
-        case "remove_mirror":
-          return volume === null ? "Volume mirror removal" : `mirror removal of ${volume}`;
-        case "sync":
-        case "release":
-          return volume === null ? `Volume ${action.run.run}` : `${action.run.run} of ${volume}`;
-      }
-  }
-};
-
-const StaleReview = Schema.Struct({
-  diff: Schema.Struct({
-    environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String, revision: Schema.Number }),
-    saved: Schema.NullOr(Schema.Number),
-    holds_staged: Schema.Boolean,
-  }),
-});
-
-/**
- * The save `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
- * landed: Saved State holds the very Working State the human reviewed. Any other version keeps the Store's conflict.
- */
-const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
-  if (sent.command !== "publish" || sent.version !== reviewed.version || refusal.code !== "conflict") return null;
-  const stale = Schema.decodeUnknownOption(StaleReview)(refusal.details);
-  if (Option.isNone(stale)) return null;
-  const { environment, saved, holds_staged: holdsStaged } = stale.value.diff;
-  const same = environment.id === reviewed.environment.id && environment.revision === reviewed.environment.revision;
-  return holdsStaged && same ? { written: "published", environment, saved, created: false } : null;
-};
-
 /** A Store answer as `caller` may read it: support sees it under the Organization's rules. */
 const shownTo = <C extends StoreCall>(caller: AgentCaller, call: C, result: StoreResult<StoreAnswer<C>>) =>
   caller.support === null ? result : answerForSupport(call, result, caller.support);
 
-const asking = (refusal: StoreRefusal): { asking: Asking } | null => {
-  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(refusal.details);
-  return Option.isNone(recorded) ? null : { asking: { approvalId: recorded.value.approval_id, refusal } };
+/** What an agent's Store write is called when it needs a person. */
+const STORE_WRITE_WORDS: Partial<Record<ConfigCommand["command"], string>> = { publish: "save", remove: "removal", cancel: "cancel", sync: "sync", take: "take" };
+
+/**
+ * A Store write that needs a person's yes, refused to an agent with where a person does it: an owner or admin, in a
+ * Protected Environment the agent's member can't protect.
+ */
+const needsPerson = (command: ConfigCommand, asked: StoreRefusal): StoreRefusal => {
+  if (isProtectedAsk(asked)) return refusal("forbidden", OWNER_OR_ADMIN, { protected: true });
+  const what = command.command === "admit" ? (command.admit === "shut_down" ? "shutdown" : command.admit) : STORE_WRITE_WORDS[command.command] ?? "change";
+  return refusal("forbidden", `This ${what} needs a person. Do it in Ployz Cloud (or with ployz).`);
 };
 
-type Gated =
-  | { linked: DeployLinked }
-  | { asking: Asking }
-  | { denied: StoreRefusal }
-  | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
+type Gated = { linked: DeployLinked } | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
 
-/** A gated Store write as `caller`: refused if it carries a secret, else redeemed or asked for, then sent to the Store. */
-export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
-  // Before any approval is redeemed or asked for: no human approves a secret through an agent.
+/**
+ * A gated Store write as `caller`: refused if it carries a secret, a Deploy linked for a person to approve, else sent to
+ * the Store. A write the Store asks a person about is refused with where one does it: no agent says yes.
+ */
+export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand) {
+  // No person approves a secret through an agent.
   const secret = agentSecretRefusal(asked);
   if (secret !== null) return { result: { ok: false, refusal: secret }, nothingDestroyed: false } satisfies Gated;
-  // A Deploy only a person's passkey can answer becomes one proposal with one link, not a card per call.
-  if (approvalId === null && asked.command === "admit" && asked.admit === "deploy") {
+  // A Deploy a person must approve becomes one proposal with one link.
+  if (asked.command === "admit" && asked.admit === "deploy") {
     const link = yield* linkDeploy(caller, asked);
     if (link !== null) return "refused" in link ? { result: { ok: false, refusal: link.refused }, nothingDestroyed: false } satisfies Gated : { linked: link.linked } satisfies Gated;
   }
-  const trusted = yield* redeemApproval(caller, approvalId, yield* redeeming(caller.organization.id, asked, approvalId));
-  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : approvalCommand(asked) === "retry" ? "retry" : "deploy", trusted.refusal) } satisfies Gated;
-  const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
-  const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
-  const call = { operation: "write", command } as const;
-  const stored = yield* callStore(caller.organization.id, caller.userId, call, { approval: trusted.approval, asks: approvalAsks(caller.via, asked), permissions: callerPermissions(caller), environments: callerEnvironments(caller) });
-  const landed = stored.ok || reviewed === null ? null : landedPublish(command, reviewed, stored.refusal);
-  if (landed !== null) return { result: { ok: true, value: landed }, nothingDestroyed: false } satisfies Gated;
+  const approval = (yield* hasApprover(caller.organization.id)) ? "required" : "not_required";
+  const call = { operation: "write", command: asked } as const;
+  const stored = yield* callStore(caller.organization.id, caller.userId, call, { approval, asks: approvalAsks(caller.via, asked), permissions: callerPermissions(caller), environments: callerEnvironments(caller) });
+  if (!stored.ok && stored.refusal.code === "approval_required") return { result: { ok: false, refusal: needsPerson(asked, stored.refusal) }, nothingDestroyed: false } satisfies Gated;
   const result = shownTo(caller, call, stored);
-  if (stored.ok || stored.refusal.code !== "approval_required") {
-    return { result, nothingDestroyed: result.ok && trusted.approval === "required" } satisfies Gated;
-  }
-  const request: StoreRefusal = yield* requestApproval(caller, command, stored.refusal, approvalId);
-  return asking(request) ?? { denied: caller.support === null ? request : refusalForSupport(request, caller.support) } satisfies Gated;
+  return { result, nothingDestroyed: result.ok && approval === "required" } satisfies Gated;
 });
 
-const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCaller, act: Act, approvalId: string | null) {
-  const result = yield* callCloud(caller, { act }, approvalId);
-  if (result.ok) return { result };
-  if (result.refusal.code === "approval_required") {
-    const asked = asking(result.refusal);
-    if (asked !== null) return asked;
-  }
-  return { result: { ok: false, refusal: actDenial(act.action, result.refusal) } as const };
+const LinkedAct = Schema.Struct({ proposal_id: Schema.String, url: Schema.String });
+
+/** A Cloud act as `caller`. A stop or restart a person must approve answers the link to its proposal, as a Deploy does. */
+const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCaller, act: Act) {
+  const result = yield* callCloud(caller, { act });
+  if (result.ok || result.refusal.code !== "conflict" || !Schema.is(LinkedAct)(result.refusal.details)) return { result };
+  const { proposal_id, url } = result.refusal.details;
+  return { linked: { proposal_id, status: "presented", url, message: result.refusal.message } satisfies DeployLinked };
 });
 
 /** The call to repeat after `command` refused: the fields it takes, so a key the caller made up is not echoed. */
@@ -390,8 +313,7 @@ const failureOf = (outcome: ToolOutcome): CallError | null => {
 
 /**
  * Runs one agent tool call as `caller`, and records it. Every tool takes an `intent`: the reason for the call, taken out
- * before the tool sees its input. A call without one is refused. A call that asks for an approval is not recorded; the
- * retry that carries the approval is, so a gated call counts once.
+ * before the tool sees its input. A call without one is refused.
  */
 export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
   const startedAt = new Date();
@@ -423,48 +345,39 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
       Cause.hasInterruptsOnly(cause) ? Effect.void : record({ kind: "call", tool: call.tool, intent, error: { type: "internal", message: "The tool failed." } }),
     ),
   );
-  if ("outcome" in result) yield* record({ kind: "call", tool: call.tool, intent, error: failureOf(result.outcome) });
+  yield* record({ kind: "call", tool: call.tool, intent, error: failureOf(result.outcome) });
   return result;
 });
 
 /**
- * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
- * answers `asking`; the retry carrying that approval runs it. A gated save and a Cloud act let the compiled tool finish;
- * any other gated Store write's answer is the call's outcome.
+ * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A Deploy, stop or restart a person must
+ * approve answers the link to its proposal; any other write a person must say yes to is refused with where one does
+ * it. A gated save and a Cloud act let the compiled tool finish; any other gated Store write's answer is the call's outcome.
  */
 const runTool = Effect.fn("Agent.runTool")(function* (caller: AgentCaller, call: AgentCall) {
   const proposal = stagesInto(call.input);
   if (PROPOSAL_NAMES.has(call.tool)) return done(yield* runProposalTool(caller, call, proposal));
   if (proposal !== null) {
-    if (call.approvalId !== null) return done(refused("invalid_argument", "A staged step takes no approval. Leave approval out."));
     if (!PROPOSAL_TOOLS.has(call.tool)) return done(refused("invalid_argument", `Only service_restart, service_stop and service_start can be staged into a proposal. Call ${call.tool} without proposal.`));
     return done(yield* stageCall(caller, call, proposal));
   }
   const published = findCommand(call.tool);
   if (published !== undefined) {
     if (!published.agents || published.typed !== null) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
-    const ran = yield* runCommand(caller, published.name, call.input, { approvalId: call.approvalId, key: call.key });
-    return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? done(heard(published, call, ran));
+    const ran = yield* runCommand(caller, published.name, call.input, { approved: null, key: call.key });
+    return done(heard(published, call, ran));
   }
   if (!COMPILED.has(call.tool)) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
   const at = placeOf(caller, call.page, call.tool, call.input);
   if ("refusal" in at) return done(at.refusal);
   const read = agentRead(caller);
   const started = agentStart(call.tool, call.input, at.place, call.key);
-  // A tool that asks no one still refuses an approval carried into it.
-  if (!GATED.has(call.tool)) {
-    const refused = yield* carriedInto(caller, call.approvalId, { command: call.tool });
-    return done(refused === null ? yield* finish(started, read, agentWrite(caller)) : { ok: false, refusal: refused });
-  }
+  if (!GATED.has(call.tool)) return done(yield* finish(started, read, agentWrite(caller)));
   const paused = yield* untilWrite(started, read);
   const { step, state } = paused;
-  // One that finds nothing to write, such as a retry of a save that landed, still answers only whoever asked.
-  if (step.step !== "write") {
-    const refused = yield* unheldApproval(caller, call.approvalId);
-    return done(refused === null ? yield* finish(paused, read, agentWrite(caller)) : { ok: false, refusal: refused });
-  }
+  if (step.step !== "write") return done(yield* finish(paused, read, agentWrite(caller)));
   const { write } = step;
-  // Protecting asks no one; unprotecting asks a human once, as Cloud's operations do, then the tool finishes.
+  // Protecting asks no one; unprotecting needs a person, so an agent is refused with where one does it.
   if (write.at === "store" && write.write.command === "set_environment_protected") {
     const unprotect = yield* unprotectAsked(caller.organization.id, write.write).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
@@ -474,26 +387,20 @@ const runTool = Effect.fn("Agent.runTool")(function* (caller: AgentCaller, call:
     if (asked !== null) {
       const refused = protectorOnly(caller, asked.preview.environment);
       if (refused !== null) return done({ ok: false, refusal: refused });
-      const gated = yield* gateOperation(caller, call.approvalId, asked);
-      if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });
-    } else {
-      // Already unprotected, or protecting: nothing asks, and an approval carried into it must be for exactly this.
-      const refused = yield* carriedInto(caller, call.approvalId, yield* redeeming(caller.organization.id, write.write, call.approvalId));
-      if (refused !== null) return done({ ok: false, refusal: refused });
+      const gated = yield* gateOperation(caller, null, { ...asked, ployz: `ployz env protect ${asked.preview.environment} --off` });
+      if (!gated.ok) return done({ ok: false, refusal: gated.refusal });
     }
     const written = yield* storeAnswer(caller, { operation: "write", command });
     return done(yield* finish(agentResume(state, [written]), read, agentWrite(caller)));
   }
   if (write.at === "store") {
-    const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
-    if ("asking" in gated) return gated;
+    const gated: Gated = yield* runGated(caller, write.write);
     if ("linked" in gated) return done({ ok: true, value: { ...gated.linked, next: `Don't deploy again. Call proposal_status with proposal ${gated.linked.proposal_id} to follow it.` } });
-    if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
     // A save and a refusal finish in the tool, so they answer as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
     const outcome = write.write.command === "publish" || !gated.result.ok ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
     return done(outcome.ok && gated.nothingDestroyed ? { ...outcome, nothing_destroyed: true } : outcome);
   }
-  const acted = yield* runGatedAct(caller, write.write, call.approvalId);
-  if ("asking" in acted) return acted;
+  const acted = yield* runGatedAct(caller, write.write);
+  if (acted.linked !== undefined) return done({ ok: true, value: { ...acted.linked, next: `Don't call it again. Call proposal_status with proposal ${acted.linked.proposal_id} to follow it.` } });
   return done(yield* finish(agentResume(state, [answered(acted.result)]), read, agentWrite(caller)));
 });

@@ -10,7 +10,7 @@ export const renameClusterServerFn = createServerFn({ method: "POST" })
   .middleware([callerMiddleware(RenameClusterInput)])
   .handler(({ context, data: { name } }) => runActor(context, Effect.gen(function* () {
     const { caller } = context;
-    const ran = yield* runCommand(caller, "cluster_rename", { name }, { approvalId: null, key: null });
+    const ran = yield* runCommand(caller, "cluster_rename", { name }, { approved: null, key: null });
     if (!ran.ok) return yield* new Validation({ message: ran.refusal.message, userFacing: true });
     const row = yield* readClusterName(caller.organization.id);
     return row ?? (yield* Effect.die("a rename left no row"));

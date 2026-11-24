@@ -1,9 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { Change, PostedVersion } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { askerNames } from "#/modules/approvals/approvals.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { decideProposal, fillDeploy, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
+import { askerNames, decideProposal, fillDeploy, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
 import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 /** A version the passkey signed. The Store checks the rest of it: this only keeps what is not one out. */

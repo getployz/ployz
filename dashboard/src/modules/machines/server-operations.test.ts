@@ -2,7 +2,7 @@ import type { ConfigStore, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { operationDigest } from "#/modules/approvals/approvals.server";
+import { operationDigest } from "#/modules/operations/gate.server";
 import { Effect, Layer } from "effect";
 import { CloudStore, ConfigStoreOpenFailure } from "#/modules/config-store/store-sdk.server";
 import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
@@ -58,7 +58,6 @@ describe("drainPlan", () => {
       subject: `server:${here}`,
       verb: "drain",
       name: "fra-1",
-      recorded: true,
       preview: { server: here, moves: ["shop/web"], stays: ["shop/db"], retires: ["shop/edge", "shop/metrics"] },
       effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
       targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],

@@ -8,7 +8,6 @@ import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { invitation, member, organization } from "#/modules/organization/tables";
-import { operationApprovals } from "#/modules/approvals/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
@@ -54,12 +53,12 @@ const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: Jso
     support: null,
     via,
   };
-  const command: { invoke: (caller: Caller, raw: JsonValue, call: { approvalId: null; key: null }) => Effect.Effect<
+  const command: { invoke: (caller: Caller, raw: JsonValue, call: { approved: null; key: null }) => Effect.Effect<
     { ok: true; output: unknown } | { ok: false; refusal: { code: string; message: string } },
     unknown,
     Database | InngestClient | Auth | AppConfig
   > } = COMMANDS[name];
-  return run(command.invoke(caller, input, { approvalId: null, key: null }));
+  return run(command.invoke(caller, input, { approved: null, key: null }));
 };
 
 const outcome = (effect: Effect.Effect<unknown, { readonly _tag: string }, Database | InngestClient | Auth | AppConfig>) =>
@@ -159,10 +158,10 @@ describe("invite links", () => {
 
   it("asks to revoke a link invite by its role, not its id", async () => {
     const { id } = await invite("ada", { role: "admin" });
-    expect(await as("carol", "org_invite_revoke", { invite: id }, "cli")).toMatchObject({ ok: false });
-    const [asked] = await harness.db.select({ review: operationApprovals.review }).from(operationApprovals)
-      .where(eq(operationApprovals.organizationId, ACME));
-    expect(asked?.review).toMatchObject({ effects: [{ kind: "revokes_invite", name: "admin link" }] });
+    expect(await as("carol", "org_invite_revoke", { invite: id }, "cli")).toMatchObject({
+      ok: false,
+      refusal: { code: "approval_required", details: { effects: [{ kind: "revokes_invite", name: "admin link" }] } },
+    });
   });
 
   it("refuses to revoke a link someone joins through while the revoke runs", async () => {
@@ -229,9 +228,6 @@ describe("member commands", () => {
     expect(await as("ada", "org_member_rm", { member: "eve@example.test" })).toMatchObject({ ok: true });
     expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "admin" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-    const approvals = async () => (await harness.db.select({ id: operationApprovals.id }).from(operationApprovals)
-      .where(eq(operationApprovals.organizationId, ACME))).length;
-    const asked = await approvals();
     expect(await as("ada", "org_member_rm", { member: "ada@example.test" }, "cli")).toMatchObject({
       ok: false,
       refusal: { code: "conflict", message: "An Organization needs an owner. Make someone else an owner first.", writes: "none" },
@@ -240,7 +236,6 @@ describe("member commands", () => {
       ok: false,
       refusal: { code: "conflict", message: "An Organization needs an owner. Make someone else an owner first.", writes: "none" },
     });
-    expect(await approvals()).toBe(asked);
     expect(await roleOf(ids.ada)).toBe("owner");
 
     expect(await as("ada", "org_member_role", { member: "Carol", role: "owner" })).toMatchObject({ ok: true });
@@ -270,7 +265,7 @@ describe("org leave", () => {
   const CHARLIE = "00000000-0000-4000-8000-00000000c003";
   let fay = "";
   const leave = (credential: Caller["credential"], acting: { id: string; slug: string }, organization: string) =>
-    run(orgLeave.invoke({ userId: fay, organization: acting, credential, role: "member", support: null, via: "cli" }, { organization }, { approvalId: null, key: null }));
+    run(orgLeave.invoke({ userId: fay, organization: acting, credential, role: "member", support: null, via: "cli" }, { organization }, { approved: null, key: null }));
   const membershipsOf = async (userId: string) => (await harness.db.select({ slug: organization.slug }).from(member)
     .innerJoin(organization, eq(organization.id, member.organizationId)).where(eq(member.userId, userId)))
     .map((row) => row.slug).sort();

@@ -9,7 +9,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
 import { fillDeployServerFn } from "#/modules/proposals/proposals.functions";
 import { DEPLOY_MOVED, isDeploy } from "#/modules/proposals/proposal";
-import { prunes } from "#/modules/approvals/approvals";
+import { prunes } from "#/modules/deploy-approval/review";
 import { decideProposal, landProposal, proposalOptions } from "#/modules/proposals/proposals.queries";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";

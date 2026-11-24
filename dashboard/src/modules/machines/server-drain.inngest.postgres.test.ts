@@ -310,7 +310,6 @@ describe("drain-server", () => {
       attemptId: requestId,
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
-      approvalId: null,
       planDigest: "",
       serverName: null,
     }));
@@ -357,19 +356,6 @@ describe("drain-server", () => {
       refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
       started_at: null,
     }]);
-  });
-
-  it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
-    const approvalId = "00000000-0000-4000-8000-0000000000b1";
-    const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      attemptId, machineId, targets: ["shop-production/api"], approvalId, planDigest: "", serverName: null,
-    }));
-    const attemptId = await cli(requestId);
-    await drain(attemptId);
-
-    expect(await cli(secondTab)).toBe(attemptId);
-    expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
-    expect(drainCalls).toHaveLength(1);
   });
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {

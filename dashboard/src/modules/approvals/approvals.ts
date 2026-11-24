@@ -1,25 +1,11 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
+import type { ConfigCommand, DestructiveEffect, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord, asString } from "#/lib/json";
-import type { Caller } from "#/modules/identity/actor";
+import { destroyedLine as storeDestroyedLine, droppedLine, type Guarded, prunes, type StoreReview } from "#/modules/deploy-approval/review";
+import { type OperationVerb, operationWords } from "#/modules/operations/asked";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
-
-/** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "mirror" | "sync" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
-
-/**
- * What an operation's `subject` names, before its colon: `server:<machine id>`, `servers:<organization id>`,
- * `organization:<organization id>`, `cluster:<organization id>`, `namespace:<name>`, `volume:<volume id>`,
- * `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`, `environment:<environment id>` or
- * `project:<name>`.
- */
-export const SUBJECT_KINDS = ["server", "servers", "organization", "cluster", "namespace", "volume", "member", "invite", "service", "environment", "project"] as const;
-export type SubjectKind = (typeof SUBJECT_KINDS)[number];
-
-/** The subjects whose approval is planned again when its command reruns, so there is no Cluster to recompute it from. */
-export const REPLANNED_ON_RERUN: ReadonlySet<string> = new Set<SubjectKind>(["member", "invite", "service", "project", "environment", "organization", "servers"]);
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
@@ -31,36 +17,14 @@ export type ServiceApply = { environmentId: string; service: string; verb: "stop
 export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };
 
 /**
- * An ask into the Protected Environment `environment` by someone who can't protect it: someone who can, other than its
- * asker, decides it.
- */
-export type Guarded = { environment: string };
-
-/** A redeploy as its approval binds it: the Deployment it ships again, by number, and the newer ones it rolls back. */
-export type Redeploy = { deployment: number; rolls_back: number[] };
-
-/**
  * What a human approves: the Destructive Effects, and either the Review they come from as the Store refused it, or the
  * operation's preview. A dashboard ask into a Protected Environment also keeps what runs as its asker once approved.
  */
 export type ApprovalReview =
-  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy; prunes?: true; dropped?: string[] }
+  | (StoreReview & { apply?: ConfigCommand })
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply | VolumeApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
-
-/** The verbs that don't read as their own name: the card's title for each, and how a refusal says what was asked. */
-const OPERATION_WORDS = {
-  set_cluster_name: { title: "Rename cluster", asked: (name: string) => `renaming the Cluster to ${name}` },
-  set_ingress_doors: { title: "Switch web traffic", asked: (name: string) => `switching web traffic ${name}` },
-  set_private_access: { title: "Turn private access", asked: (name: string) => `turning Private Access ${name}` },
-} as const satisfies Partial<Record<OperationVerb, { title: string; asked: (name: string) => string }>>;
-
-const operationWords = (verb: OperationVerb) => Object.entries(OPERATION_WORDS).find(([key]) => key === verb)?.[1] ?? null;
-
-/** What a refusal calls an operation waiting on a human: "renaming the Cluster to acme", or "this drain of fra-1". */
-export const operationAsked = (verb: OperationVerb, name: string) =>
-  operationWords(verb)?.asked(name) ?? `this ${verb.replaceAll("_", " ")} of ${name}`;
 
 /**
  * What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". A Store
@@ -104,15 +68,6 @@ export function approvalTarget(command: string, review: ApprovalReview) {
 export const shutsDownAgain = (review: ApprovalReview) => "diff" in review && !review.redeploy;
 
 export const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
-
-/** A full Deploy that also removes every other Service its Environment runs, which only the Servers can name. */
-export const prunes = (review: ApprovalReview) => "diff" in review && review.prunes === true;
-
-/** Why a pruning Deploy couldn't check every Server: the ones large packets don't reach. Null when it doesn't say. */
-export function droppedLine(review: ApprovalReview) {
-  if (!prunes(review) || !("diff" in review) || (review.dropped?.length ?? 0) === 0) return null;
-  return `Couldn't check every server: large packets to ${review.dropped?.join(", ")} are dropped on the mesh path`;
-}
 
 /**
  * Every line the card lists under what the plan destroys, as `ployz org approval show` prints them: each effect, then a
@@ -162,39 +117,6 @@ export const asksForAuthKey = (review: ApprovalReview) => "operation" in review
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
 
-/** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
-export function approvalCommand(command: ConfigCommand) {
-  if (command.command === "admit" && (command.admit === "retry" || command.admit === "shut_down")) return command.admit;
-  return command.command;
-}
-
-const agentShips = (via: Caller["via"], command: ConfigCommand) =>
-  via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
-
-/**
- * Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval.
- * A retry counts, since a shutdown's retry or a rollback takes Services off, and so does a cancel, which a member asks
- * an admin for in a Protected Environment. The Store decides which of them ask.
- */
-const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
-  via !== "dashboard" && (command.command === "remove" || command.command === "cancel"
-    || (command.command === "admit" && (command.admit === "shut_down" || command.admit === "retry")));
-
-/**
- * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), a retry, a cancel, and a Project or Environment removal or shutdown from `ployz` or an agent.
- */
-export function asksApproval(via: Caller["via"], command: ConfigCommand) {
-  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
-    || command.command === "sync" || command.command === "take"
-    || agentShips(via, command) || askedRemoval(via, command);
-}
-
-/** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */
-export function approvalAsks(via: Caller["via"], command: ConfigCommand): Asks {
-  return agentShips(via, command) ? "every_deploy" : "destroys";
-}
-
 /** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */
 export const ApprovalDecision = Schema.Union([
   Schema.Struct({ approve: Schema.Struct({ digest: Schema.String.check(Schema.isNonEmpty()) }) }),
@@ -202,26 +124,9 @@ export const ApprovalDecision = Schema.Union([
 ]);
 export type ApprovalDecision = typeof ApprovalDecision.Type;
 
-const destroys = {
-  removes_service: { verb: "Removes", noun: "service", after: "" },
-  deletes_volume: { verb: "Deletes", noun: "volume", after: ". Not recoverable." },
-  detaches_volume: { verb: "Detaches", noun: "volume", after: "" },
-  removes_domain: { verb: "Removes", noun: "domain", after: "" },
-  removes_server: { verb: "Removes", noun: "server", after: "" },
-  removes_member: { verb: "Removes", noun: "member", after: "" },
-  changes_role: { verb: "Changes", noun: "role of", after: "" },
-  revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
-  stops_service: { verb: "Stops", noun: "service", after: " until started again" },
-  restarts_service: { verb: "Restarts", noun: "service", after: "" },
-  unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
-  removes_organization: { verb: "Removes", noun: "organization", after: ". Not recoverable." },
-  restores_volume: { verb: "Restores", noun: "volume", after: "" },
-} satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
+export { droppedLine, prunes };
 
-/**
- * One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. A Save
- * destroys nothing itself, so its lines say the next Deploy does.
- */
+/** One thing the plan destroys, as `destroyedLine` in the Deploy review words it, but a Server removal's Volumes stay on its disk. */
 export function destroyedLine(effect: DestructiveEffect, command = "admit", review?: ApprovalReview) {
   if (effect.kind === "deletes_volume" && losesVolumeAccess(review)) {
     return {
@@ -230,11 +135,11 @@ export function destroyedLine(effect: DestructiveEffect, command = "admit", revi
       after: ". Its data stays on the Server's disk until wiped. Wipe or reinstall the disk to erase it; sudo ployz-uninstall keeps the data.",
     };
   }
-  const { verb: does, noun, after } = destroys[effect.kind];
-  const save = command === "publish";
-  const verb = save ? `Next deploy ${does.toLowerCase()}` : does;
-  const end = save ? "." : after;
-  const mount = effect.kind === "detaches_volume" ? effect.path.split(".mounts.") : [];
-  const tail = mount.length === 2 ? ` from ${mount[0]}${end}` : end;
-  return effect.name === undefined ? { verb: `${verb} a ${noun}`, name: null, after: tail } : { verb: `${verb} ${noun}`, name: effect.name, after: tail };
+  return storeDestroyedLine(effect, command);
+}
+
+/** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
+export function approvalCommand(command: ConfigCommand) {
+  if (command.command === "admit" && (command.admit === "retry" || command.admit === "shut_down")) return command.admit;
+  return command.command;
 }

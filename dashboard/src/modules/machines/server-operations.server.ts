@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
-import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import type { OperationAsked } from "#/modules/operations/asked";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
@@ -95,7 +95,6 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     verb: "drain",
     name,
     // Its attempt keeps the approval, so carrying it again answers that drain.
-    recorded: true,
     preview: { server: machineId, moves, stays, retires },
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
@@ -146,7 +145,6 @@ export function cleanPlan(
     verb: "clean",
     name: namespace,
     // Its clean keeps the approval, so carrying it again answers that clean.
-    recorded: true,
     preview: {
       namespace,
       services: services.map(({ identity }) => identity).sort(byName),

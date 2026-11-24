@@ -169,12 +169,12 @@ it.live(
         const agent = { ...alice, via: "agent" as const };
         const page = { at: "here" as const, project: "shop", environment: "production" };
         const byAgent = yield* runAsAgent(agent, {
-          tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-1" } }, key: "named", approvalId: null, page,
+          tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-1" } }, key: "named", page,
         });
         assert.deepInclude(byAgent, { outcome: { ok: true, value: { at: "shop/production", service: "web", changed: ["preferredBuilder"], immediate: ["preferredBuilder"], staged: false } } });
         assert.strictEqual(yield* preferred(), one, "the agent's service_update");
         const unknown = yield* runAsAgent(agent, {
-          tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-9" } }, key: "unknown", approvalId: null, page,
+          tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-9" } }, key: "unknown", page,
         });
         assert.deepNestedInclude(unknown, { "outcome.ok": false, "outcome.refusal.code": "not_found" });
 

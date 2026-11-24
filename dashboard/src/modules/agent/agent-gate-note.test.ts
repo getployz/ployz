@@ -4,7 +4,8 @@ import { GATED } from "#/modules/agent/agent-tools";
 
 /** The calls the system prompt names, by the words it uses, and the tools each stands for. */
 const NAMED: ReadonlyArray<readonly [phrase: string, tools: readonly string[]]> = [
-  ["A Deploy (skip_deploy included)", ["deploy", "deployment_retry"]],
+  ["A Deploy (skip_deploy included)", ["deploy"]],
+  ["Retrying a Deployment", ["deployment_retry"]],
   ["removing an Environment or a Project", ["environment_remove", "project_remove"]],
   ["a Service restart or stop", ["service_restart", "service_stop"]],
   ["a server drain, cleanup, removal or forget", ["server_drain", "server_clean", "server_remove", "server_forget"]],

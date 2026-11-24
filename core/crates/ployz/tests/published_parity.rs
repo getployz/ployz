@@ -388,7 +388,7 @@ fn mcp_offers_a_published_entry_only_when_marked_for_agents_with_the_entry_s_inp
         let about = entry["about"].as_str().unwrap();
         if entry["gate"] == "ask" {
             let said = format!(
-                "{}. May stop to ask a human to approve.",
+                "{}. May need a person.",
                 about.trim_end_matches('.')
             );
             assert_eq!(tool["description"], said.as_str(), "{tool}");

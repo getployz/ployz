@@ -5,7 +5,6 @@ import { Effect, Option, Schema } from "effect";
 import { expect, vi } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
-import { type Asking } from "#/modules/agent/agent-runner.server";
 import type { AgentCaller } from "#/modules/identity/actor";
 import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
@@ -59,7 +58,7 @@ const production = { project: "shop", environment: "production" };
 const page = { at: "here", ...production } as const;
 
 const Created = Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String }) });
-const idOf = (result: { readonly asking: Asking } | ToolOutcome) =>
+const idOf = (result: ToolOutcome) =>
   Schema.decodeUnknownOption(Created)(result).pipe(Option.map((created) => created.value.proposal_id), Option.getOrElse(() => expect.fail("no proposal")));
 
 /** Shop with `web`, an agent acting for its owner, and a member who can approve from the dashboard. */
@@ -110,7 +109,7 @@ const shop = Effect.fn(function* () {
     yield* drizzle.update(serviceAct).set({ state, endedAt: new Date() }).where(eq(serviceAct.id, actId));
   }));
   const call = (tool: string, input: JsonObject, key = `call-${Math.random()}`) =>
-    cluster(runAsAgent(agent, { tool, input, key, approvalId: null, page })).pipe(Effect.map((result) => "asking" in result ? result : result.outcome));
+    cluster(runAsAgent(agent, { tool, input, key, page })).pipe(Effect.map((result) => result.outcome));
   const staged = Effect.gen(function* () {
     const id = idOf(yield* call("proposal_create", {}));
     expect(yield* call("service_stop", { service: "web", proposal: id })).toMatchObject({ ok: true, value: { step: 1 } });
@@ -227,21 +226,25 @@ it.live("a first step that can't start hands the proposal back to waiting", () =
     const { call, staged, acts, cluster, provided, owner, approve, agent } = yield* shop();
     const id = yield* staged;
     yield* call("proposal_present", { proposal: id });
-    yield* provided(Effect.gen(function* () {
+    // The asker leaves; another owner approves.
+    const bob = yield* provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
       yield* drizzle.delete(member).where(eq(member.userId, agent.userId));
+      return person?.id ?? expect.fail("no person");
     }));
-    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringMatching(/^It didn't run: .* It's still waiting for approval\.$/) });
+    expect(yield* cluster(decideProposal({ ...owner, userId: bob }, id, approve))).toMatchObject({ ok: false, message: expect.stringMatching(/^It didn't run: .* It's still waiting for approval\.$/) });
     expect(yield* acts).toEqual([]);
     expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented" }]);
     const [row] = yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.select({ halt: operationProposals.halt }).from(operationProposals).where(eq(operationProposals.id, id))));
     expect(row).toEqual({ halt: null });
   }));
 
-it.live("a proposal in a Protected Environment is presented only by someone who could protect it", () =>
+// Catches a member who can't protect production approving their own stop there, or their ask refused outright.
+it.live("a member's stop in a Protected Environment is presented, and only someone who could protect it approves it", () =>
   Effect.gen(function* () {
-    const { provided, call, agent, protect } = yield* shop();
-    const id = idOf(yield* call("proposal_create", {}));
+    const { provided, cluster, agent, owner, approve, protect } = yield* shop();
     const [person] = yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.insert(user).values({ email: "ada.member@example.test", name: "Ada Member" }).returning()));
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "member" })));
     const ada: AgentCaller = { ...agent, userId: person?.id ?? "", credential: { kind: "session", id: "ada-session" }, role: "member" };
@@ -249,9 +252,10 @@ it.live("a proposal in a Protected Environment is presented only by someone who 
     const adaId = adas.ok && "value" in adas ? adas.value.proposal_id : expect.fail("no proposal");
     expect(yield* provided(stageStep(ada, adaId, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: true });
     yield* protect;
-    expect(yield* provided(presentProposal(ada, adaId))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
-    expect(yield* provided(stageStep(agent, id, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: true });
-    expect(yield* provided(presentProposal(agent, id))).toMatchObject({ ok: true });
+    expect(yield* provided(presentProposal(ada, adaId))).toMatchObject({ ok: true });
+    expect(yield* cluster(decideProposal(ada, adaId, approve))).toEqual({ ok: false, message: "An owner or admin does this." });
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id: adaId, status: "presented" }]);
+    expect(yield* cluster(decideProposal(owner, adaId, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
   }));
 
 it.live("steps staged at once all land, each at its own index, and the plan holds ten at most", () =>
@@ -330,7 +334,7 @@ const deployable = Effect.fn(function* () {
 const Linked = Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String, status: Schema.Literal("presented"), url: Schema.String }) });
 
 /** The agent's `deploy`, answered with the one link a person opens. */
-const linkOf = (answer: { readonly asking: Asking } | ToolOutcome) =>
+const linkOf = (answer: ToolOutcome) =>
   Schema.decodeUnknownOption(Linked)(answer).pipe(Option.map(({ value }) => value), Option.getOrElse(() => expect.fail(`no link: ${JSON.stringify(answer)}`)));
 
 it.live("an agent's Deploy becomes one proposal with one link, and one person's approval admits it once", () =>

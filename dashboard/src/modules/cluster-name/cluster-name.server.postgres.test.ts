@@ -4,9 +4,8 @@ import { Inngest } from "inngest";
 import type { JsonValue } from "@ployz/sdk";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { operationApprovals } from "#/modules/approvals/tables";
 import { clusterRename } from "#/modules/cluster-name/cluster-name.commands.server";
-import { applyClusterName, foundClusterName, freshRenameDigest, listUnappliedClusterNames, renameCluster } from "#/modules/cluster-name/cluster-name.server";
+import { applyClusterName, foundClusterName, listUnappliedClusterNames, renameCluster } from "#/modules/cluster-name/cluster-name.server";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { InngestClient } from "#/modules/inngest/client";
@@ -35,16 +34,15 @@ const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => E
 const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | OrganizationRuntime>) =>
   harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(OrganizationRuntime, runtime)));
 
-const as = (via: Caller["via"], input: JsonValue, who: Pick<Caller, "role" | "support"> = { role: "owner", support: null }) => run(clusterRename.invoke({
+const as = (via: Caller["via"], input: JsonValue, who: Pick<Caller, "role" | "support"> = { role: "owner", support: null }, approved: string | null = null) => run(clusterRename.invoke({
   userId: ADA,
   organization: { id: ORG, slug: SLUG },
   credential: { kind: "session", id: "ada-session" },
   ...who,
   via,
-}, input, { approvalId: null, key: null }));
+}, input, { approved, key: null }));
 
 const row = async () => (await harness.db.select().from(organizationClusterName).where(eq(organizationClusterName.organizationId, ORG)))[0];
-const approvals = async () => (await harness.db.select({ id: operationApprovals.id }).from(operationApprovals)).length;
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -70,23 +68,22 @@ const founded = () => harness.pool.query(
   [ORG, JSON.stringify({ v: 1 }), "1".repeat(32)],
 );
 
-it("renames from the dashboard at once, and asks a human first from the CLI or an agent", async () => {
+it("renames from the dashboard at once, asks the CLI for a yes, and sends an agent to a person", async () => {
   expect(await as("dashboard", { name: "acme" })).toMatchObject({ ok: true, output: { name: "acme" } });
   expect(await row()).toMatchObject({ name: "acme", appliedName: null, refusal: null });
-  expect(await approvals()).toBe(0);
 
-  for (const via of ["agent", "cli"] as const) {
-    expect(await as(via, { name: "beta" })).toMatchObject({ ok: false, refusal: {
-      code: "approval_required",
-      message: "A human must approve renaming the Cluster to beta before it runs.",
-      details: { operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } },
-      writes: "none",
-    } });
-  }
-  expect(await approvals()).toBe(1);
+  expect(await as("cli", { name: "beta" })).toMatchObject({ ok: false, refusal: {
+    code: "approval_required",
+    message: "Renaming the Cluster to beta needs your yes. Nothing ran.",
+    details: { operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } },
+    writes: "none",
+  } });
+  expect(await as("agent", { name: "beta" })).toMatchObject({ ok: false, refusal: {
+    code: "forbidden",
+    message: "Renaming the Cluster to beta needs a person. Do it in Ployz Cloud (or run `ployz cluster name beta`).",
+    writes: "none",
+  } });
   expect((await row())?.name).toBe("acme");
-  const [asked] = await harness.db.select({ review: operationApprovals.review, subject: operationApprovals.subject }).from(operationApprovals);
-  expect(asked).toMatchObject({ subject: `cluster:${ORG}`, review: { effects: [], operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } } });
 });
 
 it("never lets a support visit rename the Cluster", async () => {
@@ -99,17 +96,19 @@ const ask = async (name: string) => {
   const answer = await as("cli", { name });
   if (answer.ok || answer.refusal.code !== "approval_required") throw new Error("an approval refusal");
   const { approval, operation } = answer.refusal.details as { approval: string; operation: { preview: JsonValue } };
-  return { digest: approval, preview: operation.preview, fresh: () => run(freshRenameDigest(ORG, approval, operation.preview)) };
+  return { digest: approval, preview: operation.preview };
 };
 
-it("supersedes a pending rename once the name moves, so its card never shows a stale name", async () => {
+it("runs a yes only for the rename it saw, so a name that moved since asks again", async () => {
   await as("dashboard", { name: "acme" });
   const beta = await ask("beta");
-  expect(await beta.fresh()).toBe(beta.digest);
   await as("dashboard", { name: "gamma" });
-  expect(await beta.fresh()).not.toBe(beta.digest);
-  await as("dashboard", { name: "beta" });
-  expect(await beta.fresh()).toBeNull();
+  const moved = await as("cli", { name: "beta" }, undefined, beta.digest);
+  expect(moved).toMatchObject({ ok: false, refusal: { code: "approval_required", details: { operation: { preview: { from: "gamma", to: "beta" } } } } });
+  expect((await row())?.name).toBe("gamma");
+  const again = await ask("beta");
+  expect(again.digest).not.toBe(beta.digest);
+  expect(await as("cli", { name: "beta" }, undefined, again.digest)).toMatchObject({ ok: true, output: { name: "beta" } });
 });
 
 it("previews a rename from the name the Cluster holds, past a rename still pending", async () => {
@@ -124,20 +123,13 @@ it("previews a rename from the name the Cluster holds, past a rename still pendi
 
   const gamma = await ask("gamma");
   expect(gamma.preview).toEqual({ from: "alpha", to: "gamma" });
-  expect(await gamma.fresh()).toBe(gamma.digest);
-  const back = await ask("alpha");
-  expect(back.preview).toEqual({ from: "alpha", to: "alpha" });
-  expect(await back.fresh()).toBe(back.digest);
+  expect((await ask("alpha")).preview).toEqual({ from: "alpha", to: "alpha" });
 
   expect(await run(applyClusterName(ORG))).toBe("current");
   expect(named).toEqual(["alpha", "beta"]);
   const moved = await ask("gamma");
   expect(moved.preview).toEqual({ from: "beta", to: "gamma" });
-  expect(await gamma.fresh()).toBe(moved.digest);
-  expect(await back.fresh()).not.toBe(back.digest);
-
-  await as("dashboard", { name: "gamma" });
-  expect(await moved.fresh()).toBeNull();
+  expect(moved.digest).not.toBe(gamma.digest);
 });
 
 it("renames back to the name the Cluster holds without sending it again", async () => {

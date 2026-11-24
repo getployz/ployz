@@ -39,8 +39,7 @@ export const organizationCliRoutes = {
     }),
   "DELETE organizations/:id": ({ caller, request, id }) =>
     Effect.gen(function* () {
-      // A Project refuses the removal before the gate, so an approval it carries is checked first.
-      const carried = yield* approvalCarried(caller, request, { command: "remove", subject: `organization:${caller.organization.id}` });
+      const carried = approvalCarried(request);
       if (carried !== null) return carried;
       const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
       return removal.ok ? removal.value : cliRefusalResponse(removal.refusal);

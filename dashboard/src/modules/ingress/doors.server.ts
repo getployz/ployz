@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, exists, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
-import { Effect, Schedule, Schema } from "effect";
-import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
+import type { PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
+import { Effect, Schedule } from "effect";
+import type { OperationAsked } from "#/modules/operations/asked";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/ingress/door-frames";
 import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
@@ -241,23 +241,6 @@ export const reviewSwitch = Effect.fn("IngressDoors.review")(function* (organiza
   const looked = yield* switchSeen(organizationId, to);
   const { setup, hosted, moving, kept } = looked;
   return { moves: moving.map(({ from, to: next }) => ({ from, to: next })), kept, zone: setup?.zone ?? null, hostedName: hosted, gap: switchGap(looked) };
-});
-
-const Switched = Schema.Struct({ to: Schema.Literals(["tunnel", "public"]) });
-
-/**
- * A pending switch's digest as the Cluster stands now: none once the Cluster is where it asked to go. A switch refused
- * for now, while Cloudflare is being set up or until it is, keeps its digest, so the approval waits and the request it
- * lets through is refused with the reason, instead of being superseded and asked again at once.
- */
-export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function* (organizationId: string, stored: string, preview: JsonValue) {
-  const switched = Schema.decodeUnknownOption(Switched)(preview);
-  if (switched._tag === "None") return stored;
-  const { to } = switched.value;
-  const setup = yield* loadCloudflareSetup(organizationId);
-  if (switchProblem(setup, to, yield* latestChange(organizationId)) === null) return operationDigest(yield* switchAsked(organizationId, to));
-  const there = to === "tunnel" ? setup?.state === "active" : setup === null || setup.state === "left";
-  return there ? null : stored;
 });
 
 const enqueueSwitch = (row: AttemptRow, delivery: "await" | "detach") =>

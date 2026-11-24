@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
+import type { ConfigTrusted } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
-import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
-import { gateOperation, hasApprover, redeemApproval, redeeming, requestApproval } from "#/modules/approvals/approvals.server";
+import { approvalAsks, asksApproval } from "#/modules/config-store/store-asks";
+import { APPROVAL_HEADER, gateOperation, hasApprover, olderApproval, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { callStore } from "#/modules/config-store/config-store.server";
+import { asRecord, asString } from "#/lib/json";
 import { refusal } from "#/lib/refusal";
 import { cliRefusalResponse } from "#/server/public-error";
 import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { StoreCommand, StoreQuery, StoreSealingTargets, type StoreCall } from "#/modules/config-store/store.contract";
+import { isProtectedAsk, StoreCommand, StoreQuery, StoreSealingTargets, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -66,9 +68,11 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   // Without a server, the CLI hears so before the Store reads anything.
   const sealing = operation === "sealing" ? yield* readClusterSealingToSeal(caller.organization.id) : undefined;
   if (sealing !== undefined && sealing.state !== "ready") return Response.json(sealing, { headers: { "cache-control": "no-store" } });
-  // An approval the write names must be this Caller's, for this command, even where nobody is asked.
-  const named = request.headers.get("x-ployz-approval");
-  // A Deploy this caller can't sign waits on one person's passkey at a link. A CLI that predates links reads the link in the refusal.
+  // The digest of the plan a person said yes to, when this is the resend after Cloud asked.
+  const named = request.headers.get(APPROVAL_HEADER);
+  const older = olderApproval(named);
+  if (older !== null) return cliRefusalResponse(older);
+  // A Deploy this caller can't sign, or a member's into a Protected Environment, waits at a link. A CLI that predates links reads the link in the refusal.
   if (named === null && call.operation === "write" && call.command.command === "admit" && call.command.admit === "deploy") {
     const link = yield* linkDeploy(caller, call.command);
     if (link !== null) {
@@ -76,12 +80,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     }
   }
   const asks = call.operation === "write" && asksApproval(caller.via, call.command);
-  // Any write that carries one redeems it, even one that would ask no one or is already done.
-  const trusted = call.operation === "write" && (asks || named !== null)
-    ? yield* redeemApproval(caller, named, yield* redeeming(caller.organization.id, call.command, named))
-    : { ok: true, approval: "not_required" } as const;
-  if (!trusted.ok) return cliRefusalResponse(trusted.refusal);
-  // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
+  // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a person's yes.
   const unprotect = call.operation === "write"
     ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
@@ -94,20 +93,24 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     const gated = yield* gateOperation(caller, named, unprotect.asked);
     if (!gated.ok) return cliRefusalResponse(gated.refusal);
   }
-  const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
+  const approval: ConfigTrusted["approval"] = asks && (yield* hasApprover(caller.organization.id)) ? "required" : "not_required";
   // Every write here is a CLI's: a plain-text secret from one that predates sealing is refused with the update to run.
-  const gate = {
+  const gate = (approval: ConfigTrusted["approval"]) => ({
     approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller),
     protector: protector(caller), environments: callerEnvironments(caller), from_cli: true,
-  } as const;
+  } as const);
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
-  const result = yield* callStore(caller.organization.id, caller.userId, sent, gate);
+  let result = yield* callStore(caller.organization.id, caller.userId, sent, gate(approval));
+  // The Store asks again for the plan as it stands now. A yes runs only that plan, and never a member's own yes to an ask
+  // a Protected Environment makes of an owner or admin, which the Store would take.
+  if (!result.ok && result.refusal.code === "approval_required") {
+    if (isProtectedAsk(result.refusal)) return cliRefusalResponse(refusal("forbidden", OWNER_OR_ADMIN, { protected: true }));
+    const asked = asString(asRecord(result.refusal.details)?.["approval"] ?? null);
+    if (named !== null && named === asked) result = yield* callStore(caller.organization.id, caller.userId, sent, gate({ approved: named }));
+  }
   if (result.ok) {
     const answer = sealing === undefined ? result.value : { state: "ready", publicKey: sealing.publicKey, targets: result.value };
     return Response.json(answer, { headers: { "cache-control": "no-store" } });
-  }
-  if (call.operation === "write" && result.refusal.code === "approval_required") {
-    return cliRefusalResponse(yield* requestApproval(caller, call.command, result.refusal, named));
   }
   return cliRefusalResponse(result.refusal);
 });

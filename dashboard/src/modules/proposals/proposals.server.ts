@@ -1,16 +1,15 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { Change, ConfigTrusted, DeploymentStatus, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { Change, ConfigTrusted, DeploymentStatus, DestructiveEffect, DiffView, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type AgentCaller, type Actor, type Caller, type Credential, callerEnvironments } from "#/modules/identity/actor";
-import { askerCaller } from "#/modules/approvals/apply.server";
-import { RefusedReview } from "#/modules/approvals/approvals.server";
 import { callStore, readStore, writeStoreAsMember } from "#/modules/config-store/config-store.server";
-import { protector, protectorOnly } from "#/modules/config-store/protected.server";
+import { protector } from "#/modules/config-store/protected.server";
+import { OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
 import { isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
@@ -18,11 +17,11 @@ import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import { oauthCaller } from "#/modules/identity/caller.server";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
-import { organizationToken, session } from "#/modules/identity/tables";
+import { organizationToken, session, user } from "#/modules/identity/tables";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { actService, unheld } from "#/modules/operations/operations.server";
-import { beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
+import { type Access, beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
 import { member } from "#/modules/organization/tables";
 import {
   DEPLOY_MOVED,
@@ -44,6 +43,42 @@ import { Database } from "#/server/database.server";
 import { Forbidden, NotFound } from "#/server/public-error";
 
 type ProposalRow = typeof operationProposals.$inferSelect;
+
+/** The member who asked, acting from the dashboard with what they hold now, through the credential that asked. */
+export const askerCaller = (access: Access, credentialId: string): Caller => ({
+  userId: access.userId,
+  organization: access.organization,
+  credential: { kind: "session", id: credentialId },
+  role: access.kind === "member" ? access.role : null,
+  support: access.kind === "support" ? access.shows : null,
+  via: "dashboard",
+});
+
+/** The names of the people who asked, keyed by their user id, so a card says whom it waits for. */
+export const askerNames = Effect.fn("Proposals.askerNames")(function* (asked: readonly { readonly requested_by: string | null }[]) {
+  const ids = [...new Set(asked.flatMap((row) => row.requested_by ?? []))];
+  if (ids.length === 0) return new Map<string, string>();
+  const { drizzle } = yield* Database;
+  const people = yield* drizzle.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, ids));
+  return new Map(people.map((person) => [person.id, person.name]));
+});
+
+const isEffect = Schema.is(Schema.Struct({ kind: Schema.String, node: Schema.String, path: Schema.String }));
+const isDiff = Schema.is(Schema.Struct({
+  version: Schema.String,
+  environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String }),
+}));
+
+/** The review an `approval_required` refusal carries: the Store's `DestructiveEffect[]` and `DiffView`, by the fields Cloud reads. */
+export const RefusedReview = Schema.Struct({
+  approval: Schema.String,
+  effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
+  diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
+  protected: Schema.optional(Schema.Literal(true)),
+  redeploy: Schema.optional(Schema.Struct({ deployment: Schema.Number, rolls_back: Schema.mutable(Schema.Array(Schema.Number)) })),
+  prunes: Schema.optional(Schema.Literal(true)),
+  dropped: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+});
 
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
 
@@ -172,14 +207,6 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   if (!draft.ok) return draft;
   const { row } = draft;
   if (row.steps.length === 0) return refused("invalid_argument", "This proposal has no steps. Stage one first.");
-  // Each step runs as the asker once approved, so a Protected Environment takes a proposal only from someone who can protect it.
-  if (row.steps.some((step) => step.verb !== "start")) {
-    const isProtected = yield* environmentProtected(caller.organization.id, row.project, row.environmentId).pipe(
-      Effect.catchTag("StoreRefused", () => Effect.succeed(true)),
-    );
-    const guarded = isProtected ? protectorOnly(caller, row.environment) : null;
-    if (guarded !== null) return { ok: false, refusal: guarded } satisfies Refused;
-  }
   const { drizzle } = yield* Database;
   const [presented] = yield* drizzle.update(operationProposals).set({ status: "presented", updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"))).returning({ id: operationProposals.id });
@@ -472,7 +499,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
     const admission = yield* actService(
       askerCaller(access, row.credentialId),
       { ...body, ...found, verb: step.verb, digest: bodyDigest(`service_${step.verb}`, body), proposal: { id: row.id, step: index } },
-      { key: stepKey(row, index), approvalId: null },
+      { key: stepKey(row, index), approved: null },
     );
     return admission.ok ? started : yield* halt(admission.refusal.message);
   }).pipe(
@@ -576,6 +603,15 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   }
   const [first] = row.steps;
   let steps = row.steps;
+  // Each step runs as the asker, so in a Protected Environment only someone who can protect it approves a stop or restart.
+  if (row.steps.some((step) => !isDeploy(step) && step.verb !== "start")) {
+    const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
+    const protects = !isProtected || (yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy").pipe(
+      Effect.map((access) => access.kind === "member" && protector(access)),
+      Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, () => Effect.succeed(false)),
+    ));
+    if (!protects) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;
+  }
   if (first !== undefined && isDeploy(first)) {
     const checked = yield* approvedDeploy(decider, row, first, decision.approve.versions ?? []);
     if ("moved" in checked) {

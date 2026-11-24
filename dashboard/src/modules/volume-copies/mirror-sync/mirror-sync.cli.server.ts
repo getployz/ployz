@@ -13,8 +13,7 @@ export const mirrorSyncCliRoutes = {
       const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
       const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, body.environment.environment);
       if (unsynced !== null) return cliRefusalResponse(unsynced.refusal);
-      // It asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
-      const carried = yield* approvalCarried(caller, request, { command: "sync", subject: `volume:${id ?? ""}` });
+      const carried = approvalCarried(request);
       if (carried !== null) return carried;
       return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
         Effect.map((synced) => synced.ok ? { lines: synced.lines } : cliRefusalResponse(synced.refusal)),

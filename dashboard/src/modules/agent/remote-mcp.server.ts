@@ -5,10 +5,9 @@ import { type CallToolResult, createMcpHandler, fromJsonSchema, type JsonSchemaV
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentResult, runAgentCall } from "#/modules/agent/agent-runner.server";
 import type { AgentCaller } from "#/modules/identity/actor";
 import { CATALOG } from "#/modules/agent/agent-tools";
-import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
 import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/agent/agent-calls.server";
@@ -50,25 +49,12 @@ const challenge = (resource: string, message: string) => {
   return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }), { status: error?.statusCode ?? 401, headers });
 };
 
-const APPROVAL = {
-  type: "string",
-  description: "The ID of an approval a human granted. Send it when calling this tool again after it answered approval_required.",
-};
-
-const BAD_APPROVAL = { code: "invalid_argument", message: "This input does not fit: approval is an approval's ID, a string.", field: "approval", expected: APPROVAL, writes: "none" };
-
 /** Every argument reaches the tool, which refuses a bad one in the same shape as any other refusal. */
 const toolValidates: jsonSchemaValidator = {
   getValidator<T>(): JsonSchemaValidator<T> {
     // SAFETY: nothing reads `data` as `T`; the handler parses the arguments and the tool validates them.
     return (input) => ({ valid: true, data: input as T, errorMessage: undefined });
   },
-};
-
-const toolSchema = (tool: AgentTool): JsonObject => {
-  if (!tool.gated) return tool.inputSchema;
-  const properties = asRecord(tool.inputSchema["properties"]) ?? {};
-  return { ...tool.inputSchema, properties: { ...properties, approval: APPROVAL } };
 };
 
 type Run = <A, E>(effect: Effect.Effect<A, E, RemoteServices>) => Promise<A>;
@@ -96,16 +82,6 @@ const RESULT: JsonObject = {
       },
       required: ["code", "message"],
     },
-    approval_required: {
-      type: "object",
-      description: "A human must approve the call before it runs.",
-      properties: {
-        approval_id: { type: "string", description: "The approval to send as approval once a person approved it." },
-        message: { type: "string", description: "What waits for approval." },
-        url: { type: "string", description: "Where a human approves it." },
-      },
-      required: ["approval_id", "message", "url"],
-    },
     claim_required: {
       type: "object",
       description: "A human must claim the Organization before the call can run.",
@@ -124,28 +100,7 @@ const text = (body: JsonObject, isError: boolean): CallToolResult =>
 
 type Claim = { message: string; url: string };
 
-/** A published command's retry names the approval its call carried, which stays good while the plan it approved does. */
-const carrying = (tool: AgentTool, approval: string | null, result: AgentResult): AgentResult => {
-  if (approval === null || findCommand(tool.name) === undefined || !("outcome" in result) || !("refusal" in result.outcome)) return result;
-  const { refusal } = result.outcome;
-  if ("next" in refusal || !("retry" in refusal) || refusal.retry === undefined) return result;
-  const input = asRecord(refusal.retry.input);
-  return input === null ? result : { outcome: { ok: false, refusal: { ...refusal, retry: { ...refusal.retry, input: { ...input, approval } } } } };
-};
-
 const resultOf = (tool: string, result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
-  if ("asking" in result) {
-    const { approvalId, refusal } = result.asking;
-    const url = link();
-    return {
-      isError: true,
-      content: [{
-        type: "text",
-        text: `${refusal.message} A human must approve it: open ${url}, approve ${approvalId} under Waiting on you, then call this tool again with approval set to ${approvalId}.`,
-      }],
-      structuredContent: { ok: false, approval_required: { approval_id: approvalId, message: refusal.message, url }, request_key: key },
-    };
-  }
   const { outcome } = result;
   if (claim !== null) {
     return {
@@ -236,35 +191,30 @@ const serverFor = (caller: AgentCaller, request: Request, origin: CallOrigin, ru
     server.registerTool(tool.name, {
       title: tool.title,
       description: tool.description,
-      inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool), toolValidates),
+      inputSchema: fromJsonSchema<JsonObject>(tool.inputSchema, toolValidates),
       outputSchema: fromJsonSchema<JsonObject>(RESULT, toolValidates),
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive, idempotentHint: tool.idempotent, openWorldHint: tool.openWorld },
     }, async (args) => {
       const fields = asRecord(args) ?? {};
-      const { approval, ...rest } = fields;
       // A call this surface refuses before it can run goes through `runAgentCall` too, which records it as the failed call it is.
       const reject = async (refusal: JsonObject & { readonly message: string }) => {
-        await run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(fields) ?? null, key: "", approvalId: null, page: { at: "organization" }, origin, ended: { type: "validation", message: refusal.message } }));
+        await run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(fields) ?? null, key: "", page: { at: "organization" }, origin, ended: { type: "validation", message: refusal.message } }));
         return text({ ok: false, refusal }, true);
       };
-      if (tool.gated && approval !== undefined && asString(approval) === null) return reject(BAD_APPROVAL);
-      const input = tool.gated ? rest : fields;
-      const sentKey = asString(input["request_key"]);
+      const sentKey = asString(fields["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
       if (!given.ok) return reject(given.refusal);
       const key = given.key ?? randomUUID();
       keys.push(key);
-      const sent = tool.keyed ? { ...input, request_key: key } : input;
-      const approvalId = tool.gated ? asString(approval) : null;
-      const result = carrying(tool, approvalId, await run(runAgentCall(caller, {
+      const sent = tool.keyed ? { ...fields, request_key: key } : fields;
+      const result = await run(runAgentCall(caller, {
         tool: tool.name,
         input: projectJsonValue(sent) ?? null,
         key,
-        approvalId,
         page: { at: "organization" },
         origin,
-      })));
-      const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
+      }));
+      const refused = "refusal" in result.outcome ? result.outcome.refusal : null;
       const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
       return resultOf(tool.name, result, key, link, claim);
     });

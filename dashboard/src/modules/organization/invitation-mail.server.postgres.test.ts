@@ -44,12 +44,12 @@ const invite = async (input: JsonValue, mail: boolean) => {
     support: null,
     via: "dashboard",
   };
-  const command: { invoke: (caller: Caller, raw: JsonValue, call: { approvalId: null; key: null }) => Effect.Effect<
+  const command: { invoke: (caller: Caller, raw: JsonValue, call: { approved: null; key: null }) => Effect.Effect<
     { ok: true; output: unknown; message?: string } | { ok: false; refusal: { message: string } },
     unknown,
     Database | InngestClient | Auth | AppConfig
   > } = orgMemberInvite;
-  const result = await harness.runEffect(command.invoke(caller, input, { approvalId: null, key: null }).pipe(
+  const result = await harness.runEffect(command.invoke(caller, input, { approved: null, key: null }).pipe(
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(Auth, noSession),
     Effect.provide(configOf(mail)),

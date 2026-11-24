@@ -4,7 +4,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { Clock, Data, Effect, Option } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { listNames } from "#/lib/plural";
-import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
+import { gateOperation, operationDigest } from "#/modules/operations/gate.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { type ServerDrainRequestedEventData, serverDrainRequested } from "#/modules/machines/machines.events";
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
@@ -138,7 +138,6 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       serverName: plan.name || null,
       requestedByUserId: caller.userId,
       targets: [...plan.targets],
-      approvalId: gated.approvalId,
       planDigest: operationDigest(plan),
     }).onConflictDoNothing().returning();
     if (inserted !== undefined) {
@@ -153,7 +152,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
 
 /**
  * A Drain the signed-in CLI asked for, of exactly the services it previewed, under the attempt its request admits.
- * Answers the Drain that consumed the same approval, or the one already active on the Server, instead of a second.
+ * Answers the Drain already active on the Server instead of a second.
  */
 export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
@@ -161,7 +160,6 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly attemptId: string;
     readonly machineId: MachineId;
     readonly targets: readonly QualifiedService[];
-    readonly approvalId: string | null;
     readonly planDigest: string;
     /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
     readonly serverName: MachineName | null;
@@ -175,18 +173,13 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     serverName: input.serverName || null,
     requestedByUserId: caller.userId,
     targets: [...input.targets],
-    approvalId: input.approvalId,
     planDigest: input.planDigest,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
     yield* enqueueDrain(inserted);
     return inserted.id;
   }
-  const consumed = input.approvalId === null ? [] : yield* drizzle.select().from(serverDrainAttempt).where(and(
-    eq(serverDrainAttempt.organizationId, caller.organizationId),
-    eq(serverDrainAttempt.approvalId, input.approvalId),
-  ));
-  const [active] = consumed.length > 0 ? consumed : yield* drizzle.select().from(serverDrainAttempt).where(and(
+  const [active] = yield* drizzle.select().from(serverDrainAttempt).where(and(
     eq(serverDrainAttempt.organizationId, caller.organizationId),
     eq(serverDrainAttempt.machineId, input.machineId),
     rows.active,

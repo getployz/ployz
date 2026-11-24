@@ -19,10 +19,10 @@ import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { refused } from "#/lib/refusal";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, runAgentCall, stagesInto } from "#/modules/agent/agent-runner.server";
 import { type CallOrigin, sessionIdOf } from "#/modules/agent/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
-import { CATALOG, GATED } from "#/modules/agent/agent-tools";
+import { CATALOG } from "#/modules/agent/agent-tools";
 import {
   type AgentScope,
   agentPersistence,
@@ -38,22 +38,11 @@ import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPage
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import type { CallError } from "#/modules/agent/agent-calls.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { decideApproval } from "#/modules/approvals/approvals.server";
-import { findCommand } from "#/modules/commands/commands.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { AgentCaller, Caller } from "#/modules/identity/actor";
-import { canonicalJson, projectJsonValue } from "#/lib/json";
+import { projectJsonValue } from "#/lib/json";
 
-type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
-
-/** A gated call as the sidebar shows it. */
-const shown = (result: AgentResult): Gated =>
-  "asking" in result
-    ? { asking: { approvalId: result.asking.approvalId, message: result.asking.refusal.message } }
-    : { outcome: result.outcome };
-
-const outcomeOf = (result: AgentResult): ToolOutcome => "asking" in result ? { ok: false, refusal: result.asking.refusal } : result.outcome;
 
 type AgentServices =
   | Effect.Services<ReturnType<typeof runAgentCall>>
@@ -82,68 +71,32 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
-const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOrigin) => {
+/**
+ * Before each tool phase: where the member is now, and one staged step at a time, so a proposal's steps stay in the
+ * order the agent staged them. A thread paused on an approval from before resumes like any call: it runs through the
+ * gates again, so a Deploy or a stop answers a link and anything else that needs a person is refused.
+ */
+const callGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOrigin) => {
   const outcomes = new Map<string, ToolOutcome>();
-  const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
-  // The approval a published command refused under, by tool and input: the model repeats the call without it.
-  const held = new Map<string, string>();
   // A call the gate ends itself still is a call the agent made: it is recorded, once, as the failed call it is.
   const ended = (call: { id: string; function: { name: string; arguments: string } }, turn: string, error: CallError) =>
-    runAgentCall(caller, { tool: call.function.name, input: toolInput(call.function.arguments), key: `${turn}:${call.id}`, approvalId: null, page: here.page, origin, ended: error });
-  const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
-    Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runAgentCall>>, AgentServices> {
-      const answer = answers.get(call.id);
-      if (answer?.cancelled === true) {
-        if (answer.approvalId !== null) {
-          yield* decideApproval({ ...caller, via: "dashboard" }, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
-        }
-        yield* ended(call, turn, { type: "cancelled", message: "The call was cancelled." });
-        return { outcome: { ok: false, cancelled: true } };
-      }
-      const input = toolInput(call.function.arguments);
-      // Without the reason: the model words it again on a repeat, and the repeat is still the same call.
-      const same = `${call.function.name}:${canonicalJson(takeIntent(input).input)}`;
-      const approvalId = answer?.approvalId ?? held.get(same) ?? null;
-      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page, origin });
-      if (approvalId !== null && findCommand(call.function.name) !== undefined && "outcome" in result && !result.outcome.ok) held.set(same, approvalId);
-      return shown(result);
-    });
+    runAgentCall(caller, { tool: call.function.name, input: toolInput(call.function.arguments), key: `${turn}:${call.id}`, page: here.page, origin, ended: error });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
-    name: "ployz-approval-gate",
-    onInterruptResolution: (_ctx, resolutions) => {
-      for (const resolution of resolutions.for(approvalInterrupt)) {
-        answers.set(resolution.request.key, { approvalId: resolution.request.payload?.approvalId ?? null, cancelled: resolution.status === "cancelled" });
-      }
-      return { toolResume: "continue" };
-    },
+    name: "ployz-call-gate",
+    onInterruptResolution: () => ({ toolResume: "continue" }),
     onInterruptBoundary: async (ctx) => {
       if (ctx.phase !== "beforeTools") return undefined;
       here.page = await run(placeIn(caller, ctx.messages));
-      const calls = pendingCalls(ctx.messages);
-      // A call staged into a proposal runs nothing, so no one reviews it now: it runs like an ungated tool.
-      const staged = calls.filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
-      const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
-      const refuse = async (call: (typeof calls)[number], message: string) => {
-        await run(ended(call, ctx.runId, { type: "validation", message }));
-        outcomes.set(call.id, refused("invalid_argument", message));
-      };
+      const staged = pendingCalls(ctx.messages).filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
       if (staged.length > 1) {
-        for (const call of staged) await refuse(call, "Stage one step at a time.");
+        for (const call of staged) {
+          const message = "Stage one step at a time.";
+          await run(ended(call, ctx.runId, { type: "validation", message }));
+          outcomes.set(call.id, refused("invalid_argument", message));
+        }
       }
-      if (calls.length > 1) {
-        for (const call of gated) await refuse(call, `Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`);
-        return undefined;
-      }
-      const [only] = gated;
-      if (only === undefined) return undefined;
-      const decided = await run(decide(only, ctx.runId));
-      if ("outcome" in decided) {
-        outcomes.set(only.id, decided.outcome);
-        return undefined;
-      }
-      const { approvalId, message } = decided.asking;
-      return { interrupts: [approvalInterrupt.interrupt({ key: only.id, reason: "approval_required", message, payload: { approvalId } })] };
+      return undefined;
     },
     onBeforeToolCall: (_ctx, { toolCallId }) => {
       const outcome = outcomes.get(toolCallId);
@@ -152,17 +105,16 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
   });
 };
 
-/** Every agent tool. A gated one runs in the approval gate, so its own handler never does. */
+/** Every agent tool. */
 const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, origin: CallOrigin) => AGENT_TOOLS.map((tool) =>
   toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
     .server((args, context) => {
-      if (GATED.has(tool.name) && stagesInto(projectJsonValue(args) ?? null) === null) throw new Error(`${tool.name} ran outside the approval gate.`);
       const key = `${turn}:${context?.toolCallId ?? randomUUID()}`;
-      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page, origin }).pipe(Effect.map(outcomeOf)));
+      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, page: here.page, origin }).pipe(Effect.map((result) => result.outcome)));
     }));
 
-/** The system prompt's account of which calls may wait for a human. `agent-chat.server.test.ts` holds it to `GATED`. */
-export const GATE_NOTE = "A Deploy (skip_deploy included), removing an Environment or a Project, a Service restart or stop, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service start never waits, and neither does a server upgrade.";
+/** The system prompt's account of which calls may need a person. `agent-gate-note.test.ts` holds it to `GATED`. */
+export const GATE_NOTE = "A Deploy (skip_deploy included) and a Service restart or stop may need a person: the call answers a link to a proposal instead of running. Don't call it again; follow it with proposal_status. Retrying a Deployment, removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release need a person when they would destroy something: the call is refused and says where a person does it. Tell the member that, and don't work around it. A Service start never waits, and neither does a server upgrade.";
 
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
 
@@ -437,7 +389,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
       runId: request.runId,
       tools: agentTools(caller, run, request.runId, here, origin),
       systemPrompts: [systemPrompt(caller, adapter.model)],
-      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here, origin), limit.middleware,
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), callGate(caller, run, here, origin), limit.middleware,
         agentTracing, aiObservability(posthog, caller)],
       interrupts: [approvalInterrupt],
       agentLoopStrategy: maxIterations(STEP_LIMIT),

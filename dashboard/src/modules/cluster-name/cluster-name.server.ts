@@ -1,9 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
-import type { JsonValue } from "@ployz/sdk";
-import { Effect, Schema } from "effect";
-import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { Effect } from "effect";
+import type { OperationAsked } from "#/modules/operations/asked";
 import { type ClusterNameRow, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
 import { createClusterNameRequestedEvent } from "#/modules/cluster-name/cluster-name.events";
@@ -41,23 +40,11 @@ const askedOf = (organizationId: string, row: ClusterNameRow | undefined, to: st
   preview: { from: row === undefined ? null : row.appliedName ?? row.name, to },
   effects: [],
   alwaysAsks: true,
+  ployz: `ployz cluster name ${to}`,
 }) satisfies OperationAsked;
 
 export const renameAsked = Effect.fn("ClusterName.asked")(function* (organizationId: string, to: string) {
   return askedOf(organizationId, yield* readClusterName(organizationId), to);
-});
-
-const Renamed = Schema.Struct({ to: Schema.String });
-
-/**
- * A pending rename's digest as the Cluster stands now: none once `to` is saved, and a new one once a Server confirms
- * another name, since the addresses it moves from changed.
- */
-export const freshRenameDigest = Effect.fn("ClusterName.freshDigest")(function* (organizationId: string, stored: string, preview: JsonValue) {
-  const renamed = Schema.decodeUnknownOption(Renamed)(preview);
-  if (renamed._tag === "None") return stored;
-  const row = yield* readClusterName(organizationId);
-  return row?.name === renamed.value.to ? null : operationDigest(askedOf(organizationId, row, renamed.value.to));
 });
 
 const requestApply = (organizationId: string) =>

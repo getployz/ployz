@@ -2,14 +2,13 @@ import { it } from "@effect/vitest";
 import type { JsonValue } from "@ployz/sdk";
 import type { JsonObject } from "#/db/tables";
 import { EventType, type StreamChunk } from "@tanstack/ai";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { runAsAgent, scriptedAgent } from "#/test/agent-call";
-import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -44,7 +43,7 @@ const Heard = Schema.fromJsonString(Schema.Union([
 ]));
 
 /**
- * Shop with two pending approvals, Service web answering its uptime check with 500 and an incident open, Ada in her
+ * Shop with two approvals an older ployz asked for, which no longer wait on anyone, Service web answering its uptime check with 500 and an incident open, Ada in her
  * sidebar, and an Organization Token of hers for the route. `route` and `sidebar` call one command the way `ployz` and
  * the agent do; `rows` is everything a published command can change. `checker` answers each probe request the way the
  * uptime checker does, with a triggered 500 from eu-west.
@@ -60,7 +59,7 @@ const parity = Effect.fn(function* (billing?: "free" | "production") {
   const approvals = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.insert(operationApprovals).values(["volume:data", "volume:logs"].map((subject) => ({
-      organizationId: ORGANIZATION, subject, via: "cli" as const, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`,
+      organizationId: ORGANIZATION, subject, via: "cli" as const, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`, status: "superseded" as const,
       review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
         effects: [{ kind: "deletes_volume", name: subject.slice("volume:".length) }],
         operation: { verb: "release", name: subject.slice("volume:".length), preview: null },
@@ -224,7 +223,7 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
     expect((yield* rows).upgrades).toEqual([{ channel: "beta", automatic: false }]);
   }));
 
-it.live("asks before changing a role, removing a member or revoking an invite through ployz and the sidebar alike, so neither changes the team unseen", () =>
+it.live("asks before changing a role, removing a member or revoking an invite through ployz, and sends the sidebar to a person, so neither changes the team unseen", () =>
   Effect.gen(function* () {
     const { route, converse, team, provided, userId } = yield* parity();
     yield* provided(createInvite(ORGANIZATION, userId, { email: "cy@example.test", role: "member" }));
@@ -247,7 +246,8 @@ it.live("asks before changing a role, removing a member or revoking an invite th
       const chunks = yield* converse(model);
       const asking = chunks.flatMap((chunk) =>
         chunk.type === EventType.RUN_FINISHED && chunk.outcome?.type === "interrupt" ? chunk.outcome.interrupts : []);
-      expect(asking.map((interrupt) => interrupt.reason), name).toEqual(["approval_required"]);
+      expect(asking, name).toEqual([]);
+      expect(JSON.stringify(chunks), name).toContain("needs a person. Do it in Ployz Cloud");
       expect(yield* team, name).toEqual(before);
     }
   }));
@@ -280,47 +280,8 @@ it.live("refuses an input a command doesn't take and a Service it can't find, sa
     expect(yield* sidebar("uptime_show", { project: "shop", service: "nope" })).toMatchObject({ ok: false, refusal: { writes: "none", retry: { tool: "uptime_show" } } });
   }));
 
-/**
- * An approved role change making Ada an admin, which `run` refuses once it starts: Bob, an owner, made her a member
- * after her call took its role, so the locked recheck finds she can't manage members.
- */
-const approvedPromotion = Effect.fn(function* (provided: Effect.Success<ReturnType<typeof parity>>["provided"], userId: string, session: string) {
-  const email = "ada@example.test";
-  const asked = {
-    subject: `member:${userId}`,
-    verb: "set" as const,
-    preview: { email, from: "member", to: "admin" },
-    effects: [{ kind: "changes_role" as const, name: email, node: userId, path: `members/${userId}` }],
-  };
-  const [approved] = yield* provided(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
-    yield* drizzle.insert(member).values({ userId: bob?.id ?? expect.fail("no person"), organizationId: ORGANIZATION, role: "owner" });
-    yield* drizzle.update(member).set({ role: "member" }).where(and(eq(member.userId, userId), eq(member.organizationId, ORGANIZATION)));
-    return yield* drizzle.insert(operationApprovals).values({
-      organizationId: ORGANIZATION, subject: asked.subject, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: session,
-      command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
-      review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: asked.effects, operation: { verb: "set", name: email, preview: asked.preview } }),
-    }).returning({ id: operationApprovals.id });
-  }));
-  return { id: approved?.id ?? expect.fail("no approval"), input: { member: email, role: "admin" } };
-});
-
-it.live("an approved call that refused once it ran hears its retry without the approval, which the caller holds and repeats it under", () =>
-  Effect.gen(function* () {
-    const { provided, userId } = yield* parity();
-    const { id, input } = yield* approvedPromotion(provided, userId, "session-1");
-    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
-    const call = (key: string) => provided(runAsAgent(agent, { tool: "org_member_role", input, key, approvalId: id, page: { at: "organization" } }));
-    const first = yield* call("role-first");
-    expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown" } } });
-    const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
-    expect(retry).toEqual({ tool: "org_member_role", input });
-    expect(yield* call("role-retry")).toEqual(first);
-  }));
-
-// Catches an approved demotion that demotes again once the person is restored, under the approval already used.
-it.live("an approved role change runs once: repeating it after the role was restored asks again and changes nothing", () =>
+// Catches an agent changing a role on its own, which only a person may say yes to.
+it.live("an agent's role change is refused with where a person does it, and changes nothing", () =>
   Effect.gen(function* () {
     const { provided, team, userId } = yield* parity();
     const bob = yield* provided(Effect.gen(function* () {
@@ -333,77 +294,38 @@ it.live("an approved role change runs once: repeating it after the role was rest
     const roleOf = Effect.map(team, ({ members }) => members.find((row) => row.userId === bob)?.role);
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
     const input = { member: "bob@example.test", role: "member" };
-    const call = (key: string, approvalId: string | null) => provided(runAsAgent(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
 
-    const asked = yield* call("demote-ask", null);
-    const { refusal } = "asking" in asked ? asked.asking : expect.fail("the demotion ran without asking");
-    const { approval, approval_id } = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String, approval_id: Schema.String }))(refusal.details);
-    yield* provided(decideApproval({ ...agent, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
-    expect(yield* call("demote-run", approval_id)).toMatchObject({ outcome: { ok: true } });
-    expect(yield* roleOf).toBe("member");
-
-    yield* provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      yield* drizzle.update(member).set({ role: "owner" }).where(eq(member.userId, bob));
-    }));
-    expect(yield* call("demote-replay", approval_id)).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+    const asked = yield* provided(runAsAgent(agent, { tool: "org_member_role", input, key: "demote-ask", page: { at: "organization" } }));
+    expect(asked).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", message: expect.stringContaining("needs a person. Do it in Ployz Cloud (or run `ployz org member role") } } });
     expect(yield* roleOf).toBe("owner");
   }));
 
-// Catches an approval carried into a command that never asks, which skipped the gate and so every check of it.
-it.live("a command that never asks refuses an approval carried into it, and changes nothing", () =>
+it.live("a sidebar call that names an approval in its input does not pass the gate", () =>
   Effect.gen(function* () {
-    const { provided, rows, userId } = yield* parity();
-    const { id } = yield* approvedPromotion(provided, userId, "session-1");
-    const before = yield* rows;
-    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
-    const ran = yield* provided(runAsAgent(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
-    expect(ran).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", details: { approval_id: id } } } });
-    expect(yield* rows).toEqual(before);
-  }));
-
-it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>
-  Effect.gen(function* () {
-    const { provided, sidebar, userId } = yield* parity();
-    const { id, input } = yield* approvedPromotion(provided, userId, "session-other");
-    const heard = yield* sidebar("org_member_role", { ...input, approval: id });
+    const { sidebar } = yield* parity();
+    const heard = yield* sidebar("org_member_role", { member: "ada@example.test", role: "admin", approval: "00000000-0000-4000-8000-0000000000aa" });
     expect(heard).toMatchObject({ ok: false, refusal: { code: "invalid_argument", writes: "none" } });
     expect(JSON.stringify(heard)).not.toContain("Only an owner or admin");
   }));
 
-it.live("answers approvals only through ployz, records who decided, and keeps them out of the sidebar, so the agent never approves its own request", () =>
+// Catches a row an older ployz left pending turning into permission to run once someone approves it.
+it.live("never lets a pending approval from an older ployz be approved, through ployz or the sidebar", () =>
   Effect.gen(function* () {
-    const { route, sidebar, rows, approvals, userId } = yield* parity();
-    const [data, logs] = approvals;
-    const pending = yield* rows;
-    expect(yield* sidebar("org_approval_approve", { id: data ?? "" })).toEqual({ error: "Unknown tool: org_approval_approve" });
-    expect(yield* sidebar("org_approval_deny", { id: logs ?? "" })).toEqual({ error: "Unknown tool: org_approval_deny" });
-    expect(yield* rows).toEqual(pending);
-    const approved = yield* route("org_approval_approve", { id: data ?? "" });
-    const denied = yield* route("org_approval_deny", { id: logs ?? "", reason: "not during the demo" });
-    expect(approved).toMatchObject({ status: 200, body: { output: { id: data, status: "approved" }, message: "Approved: Release data. The command waiting on it goes ahead." } });
-    expect(denied).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied", reason: "not during the demo" }, message: "Denied: Release logs." } });
-    expect((yield* rows).decided).toEqual([
-      { id: data, status: "approved", reason: null, by: userId },
-      { id: logs, status: "denied", reason: "not during the demo", by: userId },
-    ]);
-  }));
-
-it.live("refuses a ployz approve of a request an agent asked for, and still lets it deny one", () =>
-  Effect.gen(function* () {
-    const { route, rows, approvals, provided } = yield* parity();
-    const [data, logs] = approvals;
+    const { route, sidebar, rows, approvals, provided } = yield* parity();
+    const [data] = approvals;
     yield* provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      yield* drizzle.update(operationApprovals).set({ via: "agent", credentialKind: "oauth", credentialId: "grant-1" })
-        .where(eq(operationApprovals.organizationId, ORGANIZATION));
+      yield* drizzle.update(operationApprovals).set({ status: "pending" }).where(eq(operationApprovals.id, data ?? ""));
     }));
-    expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
-      status: 403,
-      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything(), writes: "unknown" } },
+    expect(yield* sidebar("org_approval_approve", { id: data ?? "" })).toEqual({ error: "Unknown tool: org_approval_approve" });
+    expect(yield* route("org_approval_approve", { id: data ?? "" })).toMatchObject({
+      status: 409,
+      body: { error: { code: "conflict", message: "Nothing waits on this any more. Whoever asked runs the command again." } },
     });
-    expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
-    expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);
+    expect((yield* rows).decided.map(({ status, by }) => ({ status, by }))).toEqual([
+      { status: "superseded", by: null },
+      { status: "superseded", by: null },
+    ]);
   }));
 
 it.live("shows a Service's 500s and open incident by name over a short range or a long one, so an agent diagnosing it hears what the check got back", () =>
