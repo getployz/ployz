@@ -165,6 +165,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const reserved = and(
     eq(organizationCloudflareIngress.organizationId, organizationId),
     eq(organizationCloudflareIngress.state, "setting_up"),
+    // oxlint-disable-next-line anti-slop/postgres-clock-in-queries -- a fence, not a time: the put-back matches this exact value, which a microsecond now() would not survive the round trip
     eq(organizationCloudflareIngress.updatedAt, reservedAt),
   );
   const putBack = database.transaction(Effect.gen(function* () {

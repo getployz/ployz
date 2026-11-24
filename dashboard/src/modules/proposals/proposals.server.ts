@@ -590,10 +590,10 @@ const SWEEP_WINDOW_MS = 60 * 60_000;
  * Every minute: each approved plan whose next step is due gets it started, so a step lost between its approval and
  * its start, or between one step's end and the next's, still runs.
  */
-export const sweepProposals = Effect.fn("Proposals.sweep")(function* (now: Date) {
+export const sweepProposals = Effect.fn("Proposals.sweep")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(operationProposals)
-    .where(and(eq(operationProposals.status, "approved"), isNull(operationProposals.halt), gt(operationProposals.decidedAt, new Date(now.getTime() - SWEEP_WINDOW_MS))));
+    .where(and(eq(operationProposals.status, "approved"), isNull(operationProposals.halt), gt(operationProposals.decidedAt, sql`now() - make_interval(secs => ${SWEEP_WINDOW_MS / 1000})`)));
   yield* Effect.forEach(rows, continueProposal, { discard: true });
   return rows.map((row) => row.id);
 });

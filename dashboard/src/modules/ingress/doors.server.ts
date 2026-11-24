@@ -56,8 +56,8 @@ const ACTIVE_STATES: readonly DoorsState[] = ["pending", "running"];
 const MESSAGE_LIMIT = 1024;
 
 const within = (text: string) => (text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text);
-const failed = (failure: string) => ({ state: "failed", failure: within(failure), endedAt: new Date() }) as const;
-const finished = () => ({ state: "finished", failure: null, endedAt: new Date() }) as const;
+const failed = (failure: string) => ({ state: "failed", failure: within(failure), endedAt: sql`now()` }) as const;
+const finished = () => ({ state: "finished", failure: null, endedAt: sql`now()` }) as const;
 
 /** A row as the page reads it. The check constraint keeps each state's evidence; a row without it is a defect. */
 export function latestChangeOf(row: AttemptRow): Effect.Effect<LatestDoorsChange> {

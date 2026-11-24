@@ -40,7 +40,7 @@ export const recordCleanupWaiting = Effect.fn("DeploymentCleanup.waiting")(funct
   runId: string, data: ConfigDeploymentRetireRequestedEventData, left: readonly CleanupLeft[] = [],
 ) {
   const { drizzle } = yield* Database;
-  const waiting = { runId, state: "waiting" as const, left: [...left], message: null, updatedAt: new Date() };
+  const waiting = { runId, state: "waiting" as const, left: [...left], message: null, updatedAt: sql`now()` };
   yield* drizzle.insert(deploymentCleanup)
     .values({ ...cleanupOf(data), ...waiting })
     .onConflictDoUpdate({
@@ -60,7 +60,7 @@ export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (
   runId: string, end: CleanupEnd, requested: Option.Option<ConfigDeploymentRetireRequestedEventData>,
 ) {
   const { drizzle } = yield* Database;
-  const outcome = { runId, state: end.state, message: end.message ?? null, updatedAt: new Date() };
+  const outcome = { runId, state: end.state, message: end.message ?? null, updatedAt: sql`now()` };
   // A cancel or a failure that names no copies keeps the last ones the row named; Done leaves none.
   const keepsLast = (end.state === "cancelled" || end.state === "failed") && end.left === undefined;
   const ended = keepsLast ? outcome : { ...outcome, left: [...end.left ?? []] };

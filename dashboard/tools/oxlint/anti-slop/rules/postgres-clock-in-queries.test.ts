@@ -34,9 +34,38 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       yield* drizzle.insert(agentRuns).values({ runId, record: run });
       cache.set(key, new Date());`,
     },
+    {
+      filename,
+      code: `const gt = (left: number, right: number) => left > right;
+      const fresh = gt(Date.now(), expiresAt);
+      const row = { at: new Date() };
+      function later() { return drizzle.insert(log).values(row); }`,
+    },
     { filename: "feature.postgres.test.ts", code: `yield* drizzle.update(session).set({ expiresAt: new Date(Date.now() - 1_000) });` },
   ],
   invalid: [
+    {
+      filename,
+      code: `import { and, gt } from "drizzle-orm";
+      const leased = gt(agentInterrupts.claimedAt, new Date(Date.now() - CLAIM_LEASE_MS));
+      const rows = await drizzle.select().from(agentInterrupts).where(and(owned, leased));`,
+      errors: [{ messageId: "webClock" }],
+    },
+    {
+      filename,
+      code: `const set = { record: merged(agentRuns.record, patch), updatedAt: new Date() };
+      if (patch.status !== undefined) set.status = patch.status;
+      await drizzle.update(agentRuns).set(set).where(eq(agentRuns.runId, runId));`,
+      errors: [{ messageId: "webClock" }],
+    },
+    // The cleanup row's waiting write, through a spread and an upsert's set.
+    {
+      filename,
+      code: `const waiting = { runId, state: "waiting", updatedAt: new Date() };
+      yield* drizzle.insert(deploymentCleanup).values({ ...cleanupOf(data), ...waiting })
+        .onConflictDoUpdate({ target: deploymentCleanup.deploymentId, set: waiting });`,
+      errors: [{ messageId: "webClock" }],
+    },
     // 98aab905bb: a cancelled enrollment's token expired on the web instance's clock while the claim reads Postgres's.
     {
       filename,

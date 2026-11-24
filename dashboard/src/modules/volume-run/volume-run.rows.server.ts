@@ -108,7 +108,7 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
 });
 
 export const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
-  ({ state, message: message === null ? null : clip(message), finishedAt: new Date(), updatedAt: new Date() }) as const;
+  ({ state, message: message === null ? null : clip(message), finishedAt: sql`now()`, updatedAt: sql`now()` }) as const;
 
 const KIND_WORDS = {
   mirror: "mirror",

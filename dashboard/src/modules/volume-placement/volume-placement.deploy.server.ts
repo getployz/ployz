@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { isDeepStrictEqual } from "node:util";
 import type { EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
@@ -58,7 +59,7 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
 ) {
   const { drizzle } = yield* Database;
   const claim = and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId));
-  const settled: Partial<typeof volumePlacement.$inferInsert> = { staged: remaining, updatedAt: new Date() };
+  const settled: PgUpdateSetSource<typeof volumePlacement> = { staged: remaining, updatedAt: sql`now()` };
   if (mirrors !== null) settled.mirrors = [...mirrors];
   // Kept whole, the failed change landed or handed over: the Deploy reached the row, and a Redeploy finishes it.
   if (remaining !== null) {

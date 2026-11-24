@@ -9,6 +9,7 @@ const clockConversions = new Set(["getTime", "valueOf", "toISOString"]);
 const rowWrites = new Set(["set", "values"]);
 const conflictClauses = new Set(["onConflictDoUpdate", "onConflictDoNothing"]);
 const conflictFilters = new Set(["set", "where", "setWhere", "targetWhere"]);
+const comparisons = new Set(["eq", "ne", "gt", "gte", "lt", "lte", "between", "notBetween", "inArray", "notInArray"]);
 
 function isMember(node: ESTree.Node, object: string, property: string): boolean {
   return (
@@ -20,16 +21,25 @@ function isMember(node: ESTree.Node, object: string, property: string): boolean 
   );
 }
 
+function enclosingFunction(node: ESTree.Node): ESTree.Node | null {
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (current.type === "ArrowFunctionExpression" || current.type === "FunctionExpression" || current.type === "FunctionDeclaration") {
+      return current;
+    }
+  }
+  return null;
+}
+
 /**
  * The parts of a drizzle call that reach Postgres as values: `.set({...})`, `.values({...})`, `.where(...)` on a
  * query, and the `set` and filters of an upsert. Two-argument `Map#set` and callback `.where` (TanStack DB) are not.
+ * `first` is the call's argument, or the initializer of the `const` it names.
  */
-function queryValues(call: ESTree.CallExpression): Array<ESTree.Node> {
+function queryValues(call: ESTree.CallExpression, first: ESTree.Node): Array<ESTree.Node> {
   const callee = call.callee;
   if (callee.type !== "MemberExpression" || callee.computed) return [];
   const method = propertyName(callee.property);
-  const [first] = call.arguments;
-  if (method === null || first === undefined || call.arguments.length !== 1) return [];
+  if (method === null || call.arguments.length !== 1) return [];
   if (rowWrites.has(method)) return first.type === "ObjectExpression" || first.type === "ArrayExpression" ? [first] : [];
   if (method === "where") return first.type === "ArrowFunctionExpression" || first.type === "FunctionExpression" ? [] : [first];
   if (conflictClauses.has(method) && first.type === "ObjectExpression") {
@@ -55,6 +65,35 @@ export const postgresClockInQueriesRule = defineRule({
     const { visitorKeys } = sourceCode;
     const clockVariables = new Map<ESTree.Node, boolean>();
     const reported = new Set<ESTree.Node>();
+
+    /** `gt`, `lt` and the other comparisons imported from drizzle-orm, under any local name. */
+    function isComparison(callee: ESTree.Node): boolean {
+      if (callee.type !== "Identifier") return false;
+      const definition = resolveVariable(sourceCode, callee)?.defs[0];
+      if (definition?.type !== "ImportBinding" || definition.node.type !== "ImportSpecifier") return false;
+      const declaration = definition.parent;
+      return declaration?.type === "ImportDeclaration" && declaration.source.value === "drizzle-orm"
+        && comparisons.has(propertyName(definition.node.imported) ?? "");
+    }
+
+    /** A `const` declared in the same function stands for what it was built as: `.set(set)` checks `set`'s object. */
+    function resolveConst(node: ESTree.Node): ESTree.Node {
+      if (node.type !== "Identifier") return node;
+      const definition = resolveVariable(sourceCode, node as ESTree.IdentifierReference)?.defs[0];
+      const declarator = definition?.node;
+      if (declarator?.type !== "VariableDeclarator" || declarator.init === null) return node;
+      const declaration = definition?.parent;
+      if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") return node;
+      return enclosingFunction(declarator) === enclosingFunction(node) ? declarator.init : node;
+    }
+
+    function report(value: ESTree.Node) {
+      for (const read of clockReads(value)) {
+        if (reported.has(read)) continue;
+        reported.add(read);
+        context.report({ node: read, messageId: "webClock" });
+      }
+    }
 
     /** `const now = new Date()` and the like: a variable whose initial value is a reading of the clock. */
     function namesClock(identifier: ESTree.IdentifierReference): boolean {
@@ -104,6 +143,7 @@ export const postgresClockInQueriesRule = defineRule({
     function clockReads(node: ESTree.Node): Array<ESTree.Node> {
       if (isClockValue(node)) return [node];
       if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression") return [];
+      if (node.type === "SpreadElement") return clockReads(resolveConst(node.argument));
       return childNodes(node, visitorKeys).flatMap((child) => {
         if (node.type === "MemberExpression" && child === node.property && !node.computed) return [];
         if (node.type === "Property" && child === node.key && !node.computed) return [];
@@ -115,13 +155,13 @@ export const postgresClockInQueriesRule = defineRule({
 
     return {
       CallExpression(node) {
-        for (const value of queryValues(node)) {
-          for (const read of clockReads(value)) {
-            if (reported.has(read)) continue;
-            reported.add(read);
-            context.report({ node: read, messageId: "webClock" });
-          }
+        if (isComparison(node.callee)) {
+          for (const argument of node.arguments) report(argument);
+          return;
         }
+        const [first] = node.arguments;
+        if (first === undefined) return;
+        for (const value of queryValues(node, resolveConst(first))) report(resolveConst(value));
       },
     };
   },

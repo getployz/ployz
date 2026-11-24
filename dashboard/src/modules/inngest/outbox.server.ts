@@ -48,10 +48,10 @@ export const enqueueEvent = Effect.fn("Outbox.enqueue")(function* (event: Outbox
 });
 
 /** Sends the events whose own delivery failed; returns how many went. */
-export const sweepOutbox = Effect.fn("Outbox.sweep")(function* (now: Date) {
+export const sweepOutbox = Effect.fn("Outbox.sweep")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(operationOutbox)
-    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, new Date(now.getTime() - SWEEP_AFTER_MS))))
+    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, sql`now() - make_interval(secs => ${SWEEP_AFTER_MS / 1000})`)))
     .orderBy(asc(operationOutbox.createdAt))
     .limit(BATCH);
   yield* send(rows);
@@ -61,5 +61,5 @@ export const sweepOutbox = Effect.fn("Outbox.sweep")(function* (now: Date) {
 export const createSweepOperationOutbox = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "sweep-operation-outbox", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => ({ sent: await step.run("send-unsent", () => runInngestEffect(sweepOutbox(new Date()))) }),
+    async ({ step }) => ({ sent: await step.run("send-unsent", () => runInngestEffect(sweepOutbox())) }),
   );
