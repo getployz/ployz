@@ -1,13 +1,16 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigStore, RuntimeWatchView } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
-import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk } from "@tanstack/ai";
+import { type AnyTextAdapter, chat, defineChatMiddleware, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, toolDefinition } from "@tanstack/ai";
+import { withPersistence } from "@tanstack/ai-persistence";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { asTestDouble } from "#/lib/test-double";
-import { agentChat, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
+import { approvalInterrupt } from "#/modules/agent/agent";
+import { agentChat, REISSUE, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
+import { AGENT_TOOLS } from "#/modules/agent/agent-runner.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
@@ -444,6 +447,45 @@ it.live("the sidebar refuses a Drain that destroys something with where a person
       // The sidebar leaves out the CLI command: a person does it in Ployz Cloud.
       message: "This drain of fra-1 needs a person. Do it in Ployz Cloud",
     } }]);
+  }));
+
+/**
+ * A Save an older sidebar paused on an approval card, as the chat library stored it: the thread holds the call with no
+ * result, and the card's interrupt waits. Its tools fail if anything runs one.
+ */
+const olderCard = (persistence: Effect.Success<ReturnType<typeof agentPersistence>>) => Effect.promise(async () => {
+  const model = scriptedAgent();
+  model.setResponses([{ toolCalls: [{ name: "deploy", input: { skip_deploy: true } }] }]);
+  const tools = AGENT_TOOLS.map((tool) => toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
+    .server(() => { throw new Error(`${tool.name} ran before its card was answered`); }));
+  const card = defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
+    name: "older-approval-gate",
+    onInterruptBoundary: (ctx) => {
+      const call = ctx.messages.findLast((message) => message.role === "assistant")?.toolCalls?.[0];
+      if (ctx.phase !== "beforeTools" || call === undefined) return undefined;
+      return { interrupts: [approvalInterrupt.interrupt({ key: call.id, reason: "approval_required", message: "Approve the save.", payload: { approvalId: "00000000-0000-4000-8000-00000000a6ff" } })] };
+    },
+  });
+  const stream = chat({ adapter: model, messages: [{ role: "user", content: "save" }], threadId: THREAD, runId: "run-older", tools, middleware: [withPersistence(persistence), card], interrupts: [approvalInterrupt] });
+  for await (const _chunk of stream) { /* drained */ }
+});
+
+// Catches a card from before the upgrade running its Save once a person cancels or approves it, now that no approval stands behind it.
+it.live.each(["cancelled", "resolved"] as const)("an older approval card, %s, ends its call without running it", (status) =>
+  Effect.gen(function* () {
+    const { write, persistence, resume, watchWrites } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6102", environment: here, name: "cache", image: "redis:7" });
+    yield* olderCard(persistence);
+    const writes = watchWrites();
+    const model = scriptedAgent();
+    model.setResponses([{ text: "Nothing ran." }]);
+
+    const answered = yield* resume(status, {}, model);
+    expect(answered.results).toEqual([status === "cancelled"
+      ? { ok: false, cancelled: true }
+      : { ok: false, refusal: { code: "failed_precondition", message: REISSUE } }]);
+    expect(writes).not.toHaveBeenCalled();
+    expect(yield* Effect.promise(() => persistence.stores.interrupts.listPending(THREAD))).toEqual([]);
   }));
 
 it.live("a Save that destroys nothing runs without an interrupt", () =>

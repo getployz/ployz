@@ -71,24 +71,40 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
+/** What a call that waited on an approval card from before answers once that card is approved: Ployz keeps no approvals now. */
+export const REISSUE = "This waited on an approval Ployz no longer keeps. Nothing ran. Make the call again.";
+
 /**
  * Before each tool phase: where the member is now, and one staged step at a time, so a proposal's steps stay in the
- * order the agent staged them. A thread paused on an approval from before resumes like any call: it runs through the
- * gates again, so a Deploy or a stop answers a link and anything else that needs a person is refused.
+ * order the agent staged them. A thread paused on an approval card from before never runs its call: a cancelled card
+ * ends it cancelled, an approved one asks the agent to make the call again, through today's gates.
  */
 const callGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOrigin) => {
   const outcomes = new Map<string, ToolOutcome>();
+  // Each call paused on an approval card from before, by its tool call id, and how the person answered the card.
+  const carded = new Map<string, "resolved" | "cancelled">();
   // A call the gate ends itself still is a call the agent made: it is recorded, once, as the failed call it is.
   const ended = (call: { id: string; function: { name: string; arguments: string } }, turn: string, error: CallError) =>
     runAgentCall(caller, { tool: call.function.name, input: toolInput(call.function.arguments), key: `${turn}:${call.id}`, page: here.page, origin, ended: error });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
     name: "ployz-call-gate",
-    onInterruptResolution: () => ({ toolResume: "continue" }),
+    onInterruptResolution: (_ctx, resolutions) => {
+      for (const resolution of resolutions.for(approvalInterrupt)) carded.set(resolution.request.key, resolution.status);
+      return { toolResume: "continue" };
+    },
     onInterruptBoundary: async (ctx) => {
       if (ctx.phase !== "beforeTools") return undefined;
       here.page = await run(placeIn(caller, ctx.messages));
-      const staged = pendingCalls(ctx.messages).filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
+      const calls = pendingCalls(ctx.messages);
+      for (const call of calls) {
+        const answered = carded.get(call.id);
+        if (answered === undefined) continue;
+        const cancelled = answered === "cancelled";
+        await run(ended(call, ctx.runId, cancelled ? { type: "cancelled", message: "The call was cancelled." } : { type: "validation", message: REISSUE }));
+        outcomes.set(call.id, cancelled ? { ok: false, cancelled: true } : refused("failed_precondition", REISSUE));
+      }
+      const staged = calls.filter((call) => !outcomes.has(call.id) && stagesInto(toolInput(call.function.arguments)) !== null);
       if (staged.length > 1) {
         for (const call of staged) {
           const message = "Stage one step at a time.";
@@ -113,8 +129,8 @@ const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, ori
       return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, page: here.page, origin }).pipe(Effect.map((result) => result.outcome)));
     }));
 
-/** The system prompt's account of which calls may need a person. `agent-gate-note.test.ts` holds it to `GATED`. */
-export const GATE_NOTE = "A Deploy (skip_deploy included) and a Service restart or stop may need a person: the call answers a link to a proposal instead of running. Don't call it again; follow it with proposal_status. Retrying a Deployment, removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release need a person when they would destroy something: the call is refused and says where a person does it. Tell the member that, and don't work around it. A Service start never waits, and neither does a server upgrade.";
+/** The system prompt's account of which calls may need a person. */
+export const GATE_NOTE = "A Deploy (skip_deploy included) and a Service restart or stop may need a person: the call answers a link to a proposal instead of running. Don't call it again; follow it with proposal_status. Retrying a Deployment, removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release need a person when they would destroy something, and a Volume restore always does: the call is refused and says where a person does it. Tell the member that, and don't work around it. A Service start never waits, and neither does a server upgrade.";
 
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
 
