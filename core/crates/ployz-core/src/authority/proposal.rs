@@ -2,7 +2,8 @@
 //! runs when one step of that plan reaches it.
 //!
 //! Each step is a body nobody signed: a [`super::ServiceVersion`], a
-//! [`super::JoinApproval`], a [`super::KeyStep`] or a [`super::AutoDeployRule`]. What vouches for it is the bundle in
+//! [`super::JoinApproval`], a [`super::KeyStep`], a [`super::AutoDeployRule`] or a
+//! [`super::CopyStep`]. What vouches for it is the bundle in
 //! its envelope: a signed list of step digests in order. A Machine checks
 //! that its step sits in the bundle at the index the step names, with the same kind, and
 //! that the body it was handed hashes to that digest. Cloud can carry a step but cannot
@@ -49,6 +50,9 @@ pub enum StepKind {
     Key,
     /// A [`super::AutoDeployRule`]. It stands after the bundle's window ends.
     Source,
+    /// A [`super::CopyStep`]. One-shot: it starts a copy only inside the bundle's window,
+    /// and a copy it started may finish after.
+    Copy,
 }
 
 /// One step of a proposal: its place in the order, what it runs, and the digest of the

@@ -142,6 +142,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: nothing sends an Operator's Create with versions yet; Cloud must send one only to a Server advertising it. An older daemon ignores `versions`, `rule` and `check` and refuses an Operator's Create before any copy changes, so a Move there fails closed",
     ),
     (
+        "ployz.volume.seed-copy.v1",
+        "gated: nothing sends it yet; Cloud must offer a restore into a new Volume only when every Member advertises it. An older daemon refuses the unknown call before any copy starts",
+    ),
+    (
         "ployz.volume.origin.v1",
         "refused legibly: a Server sends a born Volume's data only to a pull that names it, and the refusal names the capability; Legacy data moves between any two daemons as before",
     ),

@@ -303,6 +303,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "SeedCopy",
+        "seed_copy",
+        "ployz.volume.seed-copy.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "SetVolumeCopy",
         "set_volume_copy",
         "ployz.volume.copy.set.v1",

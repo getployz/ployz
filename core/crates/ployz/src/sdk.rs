@@ -211,6 +211,7 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     match body {
         Body::InspectVolumeCopy(_)
         | Body::SeedVolume(_)
+        | Body::SeedCopy(_)
         | Body::SetVolumeCopy(_)
         | Body::SetVolumeSize(_) => body.unary_path().ok_or_else(|| {
             RpcError::invalid_argument(format!("{} is not a unary RPC", body.command()))

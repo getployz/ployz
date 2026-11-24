@@ -430,6 +430,18 @@ pub struct SeedVolumeRequest {
     pub r#gen: Option<VolumeGen>,
 }
 
+/// SeedCopy on the source's Writer: a [`SeedVolumeRequest`] an Operator may send, admitted
+/// by a Copy step a person signed for exactly this seed. Resent until it converges, as a
+/// SeedVolume is; the new Volume lands carrying the step's birth.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SeedCopyRequest {
+    pub seed: SeedVolumeRequest,
+    /// The Copy step, with the bundle that lists it in its envelope.
+    #[ts(as = "crate::authority::Signed<crate::authority::CopyStep>")]
+    pub step: crate::authority::Signed<crate::authority::CopyStep>,
+}
+
 /// Which stream a mirror asks its writer Machine for over the mesh.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SendSource {
@@ -528,6 +540,9 @@ pub enum SwitchError {
     /// Docker could not say which Containers mount the new Volume, so the seed stayed in
     /// its slot.
     DockerUnavailable,
+    /// A SeedCopy's Copy step needed its bundle's window to start the copy, and the
+    /// window had closed. A person approves the copy again.
+    Expired,
     /// A reason introduced after this build. This daemon never sends it.
     #[serde(other)]
     Unrecognized,
@@ -553,7 +568,8 @@ impl CodedRefusal for SwitchError {
             | Self::VolumeSwitching
             | Self::NoWriter
             | Self::RestorePointGone
-            | Self::Foreign => RpcErrorCode::Conflict,
+            | Self::Foreign
+            | Self::Expired => RpcErrorCode::Conflict,
             Self::NoCapacity | Self::DockerUnavailable => RpcErrorCode::Unavailable,
             Self::Unrecognized => RpcErrorCode::Internal,
         }
