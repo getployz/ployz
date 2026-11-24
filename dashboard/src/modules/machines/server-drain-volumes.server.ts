@@ -289,11 +289,14 @@ const finishedMoves = Effect.fn("ServerDrain.finishedMoves")(function* (report: 
   const finished = new Map<string, FinishedMove>();
   for (const entry of report.services) {
     const move = entry.run === undefined ? undefined : found.get(entry.run);
-    if (entry.run === undefined || move === undefined || move.state !== "done") continue;
+    if (entry.run === undefined || move === undefined) continue;
+    // A committed move that failed is finished by its Release, forward on the new Server.
+    const release = found.get(releaseOfMove(entry.run));
+    const finisher = move.state === "done" ? move : move.phase === "committed" && release?.state === "done" ? release : undefined;
     const input = laneInputOf(move);
-    if (input.kind !== "move") continue;
+    if (finisher === undefined || input.kind !== "move") continue;
     const to: MachineRef = { id: move.current ?? input.args.machine ?? report.server.id, name: input.args.to };
-    finished.set(entry.run, { to, removed: leftContainerOn(move.message, report.server.name) ? null : input.args.holder?.container ?? null });
+    finished.set(entry.run, { to, removed: leftContainerOn(finisher.message, report.server.name) ? null : input.args.holder?.container ?? null });
   }
   return { found, finished };
 });

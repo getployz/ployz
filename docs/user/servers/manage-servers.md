@@ -587,9 +587,12 @@ A service stays where it is, and its line says why, when:
 - another run on the volume hasn't finished;
 - no server can take it, or each one that could would refuse the move: the line gives the reason.
 
-If a move fails, the service runs again on the drained server, and its line says why. When Ployz
-Cloud can't confirm where it runs, the line names the run and the `ployz volume release data` line
-that finishes it. The drain moves volumes for up to a day after it started; one it had no time for
+If you stop the service, or start another container on its volume, while it moves, the move ends
+before the service stops and the service stays as you left it. If a move fails, its line says why
+and names the release run that follows it: the service runs again on the drained server, or, when
+it had already started on the other server, the release finishes it there and the service reads
+moved. When Ployz Cloud can't confirm where it runs, the line names the run and the
+`ployz volume release data` line that finishes it. The drain moves volumes for up to a day after it started; one it had no time for
 reads **Not tried**.
 
 While a volume moves to `web-3`, or a moved service still has to start there, Ployz Cloud refuses

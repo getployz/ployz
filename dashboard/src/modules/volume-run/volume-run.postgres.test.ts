@@ -2189,6 +2189,22 @@ describe("volume runs", () => {
       expect((await runEffect(volumeRunTargeting(organizationId, fsn2.id)))?.id ?? null).toBe(guarded ? move.id : null);
     });
 
+    // Catches a move its Release finished on the new Server read as both moved and didn't move, and as a stay by the CLI.
+    it("reads a committed move its Release finished as moved, naming the Release", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      failNext.set("writer@fsn-2", "mismatch");
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
+      const release = await releaseRow();
+      const { entry: read, complete } = await entry();
+      expect(read).toMatchObject({ result: "moved", detail: expect.stringMatching(new RegExp(`^moved to fsn-2 by release run ${release.id} after the move failed: `)) });
+      expect(read.detail).not.toContain("didn't move");
+      expect(complete).toBe(true);
+    });
+
     // Catches a failed move read as moved, or as stuck, when its Release put the Service back.
     it("reads a failed move by its Release: the Service runs again on the drained Server", async () => {
       machines = machines.filter((fake) => fake.name !== "ams-1");
@@ -2200,7 +2216,7 @@ describe("volume runs", () => {
       expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
       expect(containers.filter((container) => container.running)).toEqual([expect.objectContaining({ machine: "fsn-1" })]);
       expect(await entry()).toEqual({
-        entry: expect.objectContaining({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; running again on fsn-1$/) }),
+        entry: expect.objectContaining({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ put it back on fsn-1$/) }),
         complete: false,
       });
     });

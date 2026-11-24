@@ -141,14 +141,14 @@ export function volumeLine(input: {
   if (release === undefined) return { tone: "stayed", text: why };
   if (ACTIVE.includes(release.state)) return { tone: "failed", text: `didn't move: ${why}; still releasing, run ${release.id}` };
   if (release.state === "done") {
-    const where = release.message ?? (move.phase === "committed" ? `running on ${to}` : `running again on ${server}`);
-    return { tone: move.phase === "committed" ? "moved" : "stayed", text: `didn't move: ${why}; ${where}` };
+    // A Release after the commit finishes the move on the new Server; one before it puts the Service back.
+    if (move.phase === "committed") return { tone: "moved", text: `moved to ${to} by release run ${release.id} after the move failed: ${why}`, to };
+    return { tone: "stayed", text: `didn't move: ${why}; release run ${release.id} put it back on ${server}${release.message === null ? "" : `; ${release.message}`}` };
   }
   const end = release.message ?? release.state;
-  return {
-    tone: "failed",
-    text: `didn't move: ${why}; release run ${release.id} ended: ${end}. Where it runs now is unknown; ployz volume release ${volume} finishes it`,
-  };
+  // A Release that ended naming what to do next keeps its own advice.
+  const next = /Deploy it again|ployz volume/.test(end) ? "" : `. Where it runs now is unknown; ployz volume release ${volume} finishes it`;
+  return { tone: "failed", text: `didn't move: ${why}; release run ${release.id} ended: ${end}${next}` };
 }
 
 const EXCLUSIVE = (outcome: ServiceDrain): boolean => {
