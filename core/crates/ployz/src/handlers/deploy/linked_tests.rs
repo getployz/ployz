@@ -140,12 +140,13 @@ fn json_detach_or_a_signed_deploy_gets_cloud_s_answer_without_following_it() {
         (false, false, true),
     ] {
         let approval = Approval::of(json, detach, signed);
-        let Err(StoreCallError::Refused(refused)) =
+        let Err(StoreCallError::Stopped(failure)) =
             admitted(&store, link_answer(&cloud), &id, approval)
         else {
             panic!("{approval:?} didn't return Cloud's answer");
         };
-        assert_eq!(refused.details.get("proposal_id"), Some(&json!(PROPOSAL)));
+        let details = failure.json().get("details").cloned().unwrap_or_default();
+        assert_eq!(details.get("proposal_id"), Some(&json!(PROPOSAL)));
     }
     assert_eq!(reads.load(Ordering::SeqCst), 0);
 }

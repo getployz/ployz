@@ -76,18 +76,20 @@ enum Stand {
     Admitted(Box<DeploymentSummary>),
 }
 
-/// The Deployment `id` once someone approves the proposal Cloud answered `refused` with;
-/// any other refusal, or one `approval` doesn't wait for, as it came.
+/// The Deployment `id` once someone approves the proposal Cloud answered `refused` with.
+/// Any other refusal comes back as it came; a link `approval` doesn't wait for comes back
+/// as the command's failure, whose next step is the link.
 pub(super) fn admitted(
     store: &Store,
     refused: StoreCallError,
     id: &DeploymentId,
     approval: Approval,
 ) -> Result<DeploymentSummary, StoreCallError> {
-    let (Some(linked), Backend::Cloud(runtime, credential), Approval::Waits) =
-        (Linked::of(&refused), store.backend(), approval)
-    else {
+    let Some(linked) = Linked::of(&refused) else {
         return Err(refused);
+    };
+    let (Backend::Cloud(runtime, credential), Approval::Waits) = (store.backend(), approval) else {
+        return Err(StoreCallError::Stopped(Error::from(refused)));
     };
     crate::ui::note(format_args!("Approve this deploy at {}", linked.url));
     crate::ui::note_inline("Waiting for approval… ");
