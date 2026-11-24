@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import { releaseHostedDomain, reserveHostedDomain } from "#/modules/cluster-domain/hosted-dns.server";
 import { organizationClusterDomain, type OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
@@ -42,14 +42,13 @@ export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function*
     preferred: owner.slug,
     mintKey: hostedDnsMintKey === undefined ? undefined : Redacted.value(hostedDnsMintKey),
   });
-  const now = new Date();
   const [inserted] = yield* drizzle.insert(organizationClusterDomain).values({
     organizationId,
     endpoint,
     name: granted.name,
     encryptedToken: (yield* SecretEncryption).encrypt(granted.token),
-    reservedAt: now,
-    leaseRenewedAt: now,
+    reservedAt: sql`now()`,
+    leaseRenewedAt: sql`now()`,
   }).onConflictDoNothing().returning();
   if (inserted) {
     // A lost request only delays the records and wildcard until the hourly sync.

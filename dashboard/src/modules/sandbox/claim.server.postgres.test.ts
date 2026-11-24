@@ -14,7 +14,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { type ClaimedAction, claimUrlFor, hashClaimSecret, isAnonymousOrganization, requireClaimed } from "#/modules/sandbox/claim-required.server";
 import { bindClaimSignInOrganization } from "#/modules/sandbox/claim-sign-in.server";
 import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/sandbox/claim.server";
-import { organizationToken, session, user } from "#/modules/identity/tables";
+import { organizationToken, session, user, verification } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { fleetToken } from "#/modules/machines/waiting/tables";
@@ -76,6 +76,14 @@ const returning = Effect.fn(function* (name: string, email: string) {
 const organizationIds = Effect.fn(function* () {
   const { drizzle } = yield* Database;
   return (yield* drizzle.select({ id: organization.id }).from(organization)).map((row) => row.id).sort();
+});
+
+/** Until the claim's lock on its sandbox waits behind another transaction, however long the claim takes to get there. */
+const claimWaitsOnLock = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const waiting = sql`select 1 from pg_stat_activity
+    where datname = current_database() and wait_event_type = 'Lock' and query like 'select "id" from "organization"%for update'`;
+  yield* Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(drizzle.execute(waiting, "objects"))).not.toHaveLength(0), { timeout: 30_000 }));
 });
 
 const membersOf = Effect.fn(function* (organizationId: string) {
@@ -148,6 +156,30 @@ it.live("a returning person keeps an Organization they used", () =>
     expect(ids).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
     expect(yield* membersOf(ada.personalOrganizationId)).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
   })));
+
+it.live("a claim keeps the sign-in's Organization when the sign-in's binding lapses while the claim waits on the sandbox's lock", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const ada = yield* claimSignUp("Ada", "ada@example.test", agent.secret);
+    const database = yield* Database;
+    const locked = yield* Deferred.make<void>();
+    const parked = yield* Deferred.make<void>();
+    const holder = database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.select({ id: organization.id }).from(organization).where(eq(organization.id, agent.organization.id)).for("update");
+      yield* Deferred.succeed(locked, undefined);
+      yield* Deferred.await(parked);
+      // The binding lapses inside the wait: after the claim's transaction began, before it holds the sandbox.
+      yield* drizzle.update(verification).set({ expiresAt: sql`clock_timestamp()` })
+        .where(eq(verification.identifier, `claim-sign-in:${ada.actor.userId}:${hashClaimSecret(agent.secret)}`));
+    }));
+    const claimed = Deferred.await(locked).pipe(Effect.andThen(claimOrganization(ada.actor, agent.secret)));
+    const park = Deferred.await(locked).pipe(Effect.andThen(claimWaitsOnLock), Effect.andThen(Deferred.succeed(parked, undefined)));
+    const [hold, claim] = yield* Effect.all([Effect.exit(holder), Effect.exit(claimed), park], { concurrency: "unbounded" });
+    expect(Exit.isSuccess(hold)).toBe(true);
+    expect(Exit.isSuccess(claim)).toBe(true);
+    expect(yield* organizationIds()).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
+  })), 60_000);
 
 it.live("a person whose account predates the claim's sign-in keeps their Organization even when nothing ever happened in it", () =>
   inCloud(Effect.gen(function* () {
@@ -334,18 +366,14 @@ it.live("an anonymous token minted while the claim runs moves to the person inst
       yield* Deferred.await(release);
     }));
     const claimed = Deferred.await(inserted).pipe(Effect.andThen(claimOrganization(ada.actor, agent.secret)));
-    const waiting = sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`;
-    const parked = Deferred.await(inserted).pipe(
-      Effect.andThen(Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(database.drizzle.execute(waiting, "objects"))).not.toHaveLength(0)))),
-      Effect.andThen(Deferred.succeed(release, undefined)),
-    );
+    const parked = Deferred.await(inserted).pipe(Effect.andThen(claimWaitsOnLock), Effect.andThen(Deferred.succeed(release, undefined)));
     const [mint, claim] = yield* Effect.all([Effect.exit(minted), Effect.exit(claimed), parked], { concurrency: "unbounded" });
     expect(Exit.isSuccess(mint)).toBe(true);
     expect(Exit.isSuccess(claim)).toBe(true);
     const { drizzle } = yield* Database;
     expect(yield* drizzle.select({ userId: organizationToken.userId }).from(organizationToken).where(eq(organizationToken.name, "late")))
       .toEqual([{ userId: ada.actor.userId }]);
-  })));
+  })), 60_000);
 
 it.live("rotating the encryption secret retires every outstanding claim URL, and the next refusal names one that claims", () =>
   inCloud(Effect.gen(function* () {

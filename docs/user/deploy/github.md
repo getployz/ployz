@@ -114,14 +114,25 @@ changes something the rule covers. The rule covers every service that builds fro
 **Auto-deploy** on. If they build from different branches, it keeps the branch the rule already
 covers, and the other services save without it.
 
+**Deploy** does the same: when what it saves isn't what the rule approves, its passkey prompt
+signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule after the services it
+signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
+for.
+
+A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
+it leaves the rule as it was.
+
 When the services build from several branches and none of them is the rule's, Save signs nothing.
 Turn on **Deploy every push** under **Automatic deploys** in the environment's **Settings** to
-approve one. After you turn it off, Save never turns it back on: only the switch does.
+approve one. After you turn it off, Save and Deploy never turn it back on: only the switch does.
+A deploy signed while the rule was on, and sent after you turned it off, deploys nothing:
+`Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
 
-When Save can't ask your passkey, for example because a server is offline or your servers don't
-trust your passkey, it saves without the rule and tells you why. Pushes then hold until you
-approve the rule. If you can stage changes but not deploy them, Save never asks: it tells you
-when pushes hold until someone who can deploy approves the rule.
+When Save or Deploy can't ask your passkey for the rule, for example because a server is offline,
+your servers don't trust your passkey, or a server runs an older `ployz`, it goes on without the
+rule and tells you why. Pushes then hold until you approve the rule. If you can stage changes but
+not deploy them, Save never asks: it tells you when pushes hold until someone who can deploy
+approves the rule.
 
 From the CLI, approve it for the services that build from one branch:
 
@@ -205,8 +216,8 @@ A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
 `https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
 deploy of another environment from it builds on your servers.
 
-- **A saved change waits for you.** A Save in the dashboard signs the change with the rule. A
-  change saved without it, such as from the CLI, to a service the rule covers, its settings or
+- **A saved change waits for you.** A Save or Deploy in the dashboard, or `ployz deploy`, signs
+  the change with the rule. A change saved without it, such as a CLI save with no deploy, to a service the rule covers, its settings or
   how it builds, or a new service that builds from the rule's branch, holds pushes until you
   approve the rule again. Settings shows **Pushes to main are on hold** with what changed;
   **Review and approve** names each changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`

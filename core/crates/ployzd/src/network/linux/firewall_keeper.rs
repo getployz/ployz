@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::network::{
     NetworkError,
-    firewall::{Installed, remove_firewall_rules},
+    firewall::{Installed, remove_fence, remove_firewall_rules},
 };
 
 /// How long another tool's firewall change may shadow the mesh before the
@@ -59,6 +59,13 @@ pub(super) async fn keep_firewall(firewall: Installed, stop: CancellationToken) 
 /// Off the runtime: removal waits for the firewall writer and the xtables lock.
 pub(super) async fn remove_firewall(subnet: MachineSubnet) -> Result<(), NetworkError> {
     tokio::task::spawn_blocking(move || remove_firewall_rules(subnet))
+        .await
+        .map_err(|error| NetworkError::Io(io::Error::other(error)))?
+}
+
+/// As [`remove_firewall`], for the fence, once the bridge it guards is gone.
+pub(super) async fn remove_bridge_fence() -> Result<(), NetworkError> {
+    tokio::task::spawn_blocking(remove_fence)
         .await
         .map_err(|error| NetworkError::Io(io::Error::other(error)))?
 }

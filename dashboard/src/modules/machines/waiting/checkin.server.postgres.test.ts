@@ -1223,6 +1223,30 @@ it("starts one arrival when two overlap for the same host, and the other just wa
   expect(await autoAttempts()).toHaveLength(1);
 });
 
+it("refuses an arrival whose token expired while it waited behind a lock that changed nothing", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const host = newHost();
+  await send(token, host, { ...readyAuto, prep: { docker: "installing", zfs: "ready" } });
+  await harness.pool.query(`update waiting_server set report = jsonb_set(report, '{prep,docker}', '"ready"')`);
+  await harness.pool.query("update fleet_token set expires_at = clock_timestamp() + interval '1 second' where id = $1", [id]);
+  const holder = await harness.pool.connect();
+  try {
+    await holder.query("begin");
+    await holder.query("select id from fleet_token where id = $1 for update", [id]);
+    const arrival = arrive(id, host);
+    await lockWaiters(1);
+    await expect.poll(async () => (await harness.pool.query<{ ended: boolean }>(
+      "select expires_at <= clock_timestamp() as ended from fleet_token where id = $1", [id],
+    )).rows[0]?.ended, { timeout: 5_000, interval: 50 }).toBe(true);
+    await holder.query("commit");
+    expect(await arrival).toBe(false);
+  } finally {
+    holder.release();
+  }
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
 it("answers an admitted check-in with a plain wait when its arrival fails", async () => {
   await foundOrganization();
   const { token } = await autoToken(10);

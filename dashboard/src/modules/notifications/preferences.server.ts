@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import * as EffectRecord from "effect/Record";
 import type { Actor } from "#/modules/identity/actor";
@@ -39,7 +39,7 @@ export const setNotificationChannel = Effect.fn("Notifications.setChannel")(func
     .values({ userId, type, channel })
     .onConflictDoUpdate({
       target: [notificationPreference.userId, notificationPreference.type],
-      set: { channel, updatedAt: new Date() },
+      set: { channel, updatedAt: sql`now()` },
     });
 });
 

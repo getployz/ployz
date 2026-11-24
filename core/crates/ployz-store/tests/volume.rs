@@ -173,6 +173,7 @@ fn admit_named(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: observed,
@@ -1527,6 +1528,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),

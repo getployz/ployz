@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -29,7 +29,7 @@ export const setSupportAccess = Effect.fn("SupportAccess.set")(function* (
   if (access.kind === "support") return yield* new Forbidden({ message: refusalFor("org:settings") });
   const organizationId = access.organization.id;
   const { drizzle } = yield* Database;
-  const by = { changedByUserId: actor.userId, updatedAt: new Date() };
+  const by = { changedByUserId: actor.userId, updatedAt: sql`now()` };
   if (change.setting === "allowed") {
     const changed = change.on ? { allowed: true } : NO_SUPPORT_ACCESS;
     const [row] = yield* drizzle.insert(organizationSupportAccess).values({ organizationId, ...changed, ...by })

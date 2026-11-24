@@ -255,7 +255,16 @@ impl Daemon {
             &local_record,
         )
         .await?;
-        let mut network = NetworkPlane::start(&local_record, &config.data_dir).await?;
+        // Opened before the network plane, which reads the part of a member that needs a
+        // new address from it.
+        let specs = match config.containers {
+            ContainerMode::Absent => None,
+            ContainerMode::Auto => {
+                Some(MachineSpecStore::open(config.data_dir.join(MachineSpecStore::FILE)).await?)
+            }
+        };
+        let mut network =
+            NetworkPlane::start(&local_record, &config.data_dir, specs.clone()).await?;
         let machine_api_listener = match config
             .machine_api_address
             .or_else(|| network.as_ref().map(NetworkPlane::machine_api_address))
@@ -269,27 +278,23 @@ impl Daemon {
             }
             None => None,
         };
-        let containers = match config.containers {
-            ContainerMode::Absent => None,
-            ContainerMode::Auto => {
-                let specs =
-                    MachineSpecStore::open(config.data_dir.join(MachineSpecStore::FILE)).await?;
-                match LocalDocker::connect() {
-                    Ok(docker) => Some(
-                        ContainerRuntime::new(docker, specs)
-                            .with_sealing_key(config.data_dir.clone())
-                            .with_collector(config.data_dir.clone())
-                            .with_log_store(LogStore::of(config.units)),
-                    ),
-                    Err(error) => {
-                        eprintln!(
-                            "WARNING: local Docker is unavailable: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        );
-                        None
-                    }
+        let containers = match specs {
+            None => None,
+            Some(specs) => match LocalDocker::connect() {
+                Ok(docker) => Some(
+                    ContainerRuntime::new(docker, specs)
+                        .with_sealing_key(config.data_dir.clone())
+                        .with_collector(config.data_dir.clone())
+                        .with_log_store(LogStore::of(config.units)),
+                ),
+                Err(error) => {
+                    eprintln!(
+                        "WARNING: local Docker is unavailable: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                    None
                 }
-            }
+            },
         };
         let corrosion = start_corrosion(&config.data_dir, &run_dir, &local).await?;
         let shutdown = CancellationToken::new();

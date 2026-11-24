@@ -111,6 +111,7 @@ mod tests {
             attached,
             pinned: attached,
             ipv6: false,
+            namespace: None,
         }
     }
 
