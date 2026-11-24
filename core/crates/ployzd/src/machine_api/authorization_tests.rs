@@ -1175,3 +1175,92 @@ mod private_access {
         machine.remove();
     }
 }
+
+mod revoked {
+    //! A Device's call admitted when it arrived, whose key is removed while it waits for
+    //! its turn: the turn it waited for finds the key gone and runs nothing.
+
+    use super::*;
+
+    /// This Machine's API served to the management connection `key` authenticated.
+    async fn served_to(machine: &Enforcing, key: ployz_core::ClientKey) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let api = crate::machine_api::MachineApi::from_local(
+            machine.service.clone().with_management_client(key),
+        );
+        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
+        address
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removed_while_its_removal_drains_stops_and_deletes_nothing() {
+        let machine = Enforcing::new().await;
+        let id = running_container(&machine).await;
+        machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .lifecycle()
+            .start(&id)
+            .await
+            .unwrap();
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| store.approve_device(kept).unwrap())
+            .await
+            .unwrap();
+        let address = served_to(&machine, device.into()).await;
+        let mut withdrawn = machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .subscribe_stopping_for_test();
+        let turn = machine.store.admission_lock().write_owned().await;
+        let removal = op::EnsureContainer::into_request(
+            serde_json::from_value(json!({"want": {
+                "state": "gone", "container": {"id": id}, "drain": 0,
+                "anonymous_volumes": "remove",
+            }}))
+            .unwrap(),
+        );
+        let call = tokio::spawn(async move {
+            unary_at(address, op::EnsureContainer::PATH, &removal, false).await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            withdrawn.wait_for(|stopping| stopping.contains_key(&id)),
+        )
+        .await
+        .expect("the removal was admitted and waits for its turn")
+        .unwrap();
+        let before = machine.fake.requests.lock().unwrap().len();
+        machine
+            .store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        drop(turn);
+        let answer = call.await.unwrap();
+        let effects: Vec<_> = machine
+            .fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .filter(|(method, path)| *method == http::Method::DELETE || path.ends_with("/stop"))
+            .cloned()
+            .collect();
+        assert!(effects.is_empty(), "{answer:?} after {effects:?}");
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+}
