@@ -373,7 +373,7 @@ export const finishDrain = Effect.fn("ServerDrain.finish")(function* (request: R
   const finished = finishedMoves(row.report, yield* reportRuns(row.report));
   // With nothing moved, the Engine's own observation of what remains still holds.
   const final = finished.size === 0 ? null : finalReport(row.report, finished, yield* freshFrame(request.organizationId));
-  const state = yield* rows.end(request.attemptId, runId, { state: "finished", endedAt: new Date(), ...(final !== null && { report: final }) }, ["running"]);
+  const state = yield* rows.end(request.attemptId, runId, { state: "finished", endedAt: sql`now()`, ...(final !== null && { report: final }) }, ["running"]);
   return { attemptId: request.attemptId, state: state ?? (yield* rows.stateOf(request.attemptId)) };
 });
 

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { type ServerWebTrafficRequestedEventData, serverWebTrafficRequested } from "#/modules/machines/machines.events";
@@ -49,8 +49,8 @@ function latestWebTrafficOf(row: WebTrafficAttemptRow): Effect.Effect<LatestWebT
   }
 }
 
-const failed = (failure: string) => ({ state: "failed", failure: within(failure), endedAt: new Date() }) as const;
-const finished = () => ({ state: "finished", failure: null, endedAt: new Date() }) as const;
+const failed = (failure: string) => ({ state: "failed", failure: within(failure), endedAt: sql`now()` }) as const;
+const finished = () => ({ state: "finished", failure: null, endedAt: sql`now()` }) as const;
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueChange = (row: WebTrafficAttemptRow) =>
