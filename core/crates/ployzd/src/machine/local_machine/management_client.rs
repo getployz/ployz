@@ -38,17 +38,16 @@ impl LocalMachine {
             return Err(Error::DeviceSlot);
         }
         let caller = self.call.caller();
-        self.finish_key_change(move |local, held| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     LocalMachine::require_slot_authority(caller, store.record())?;
                     let capability = match request {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
                             store.stage_management_client(
-                                &held,
+                                held,
                                 label,
                                 ClientKey::from_bytes(*client.public().as_bytes()),
                             )?;
@@ -58,13 +57,14 @@ impl LocalMachine {
                             ))
                         }
                         SetManagementClientRequest::Clear { label } => {
-                            store.clear_management_client(&held, &label)?;
+                            store.clear_management_client(held, &label)?;
                             None
                         }
                     };
                     Ok(SetManagementClientResponse { capability })
                 })
                 .await?
+            })
         })
         .await
     }
@@ -87,36 +87,36 @@ impl LocalMachine {
     ///
     /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local, held| async move {
-            let full = local.full_caller()?;
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let full = local.full_caller()?;
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
                     match request {
                         SetDeviceRequest::Approve { key } => trust(
                             store,
-                            &held,
+                            held,
                             (NewKey::Device { key }, None),
                             by,
                             Timestamp::now(),
                         ),
                         SetDeviceRequest::Remove { code } => {
-                            let removed = store.remove_by_code(&held, code)?;
+                            let removed = store.remove_by_code(held, code)?;
                             Ok(removal(code, removed, by))
                         }
                         SetDeviceRequest::RemoveKey { key } => {
-                            let removed = store.remove_key(&held, key)?;
+                            let removed = store.remove_key(held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                         SetDeviceRequest::RemoveGrant { key, retired } => {
-                            let removed = store.remove_grant(&held, key, retired)?;
+                            let removed = store.remove_grant(held, key, retired)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
                 .await?
+            })
         })
         .await
     }
@@ -128,22 +128,22 @@ impl LocalMachine {
     /// # Errors
     /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local, held| async move {
-            let full = local.full_caller()?;
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let full = local.full_caller()?;
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
                     trust(
                         store,
-                        &held,
+                        held,
                         (request.key.into(), None),
                         by,
                         Timestamp::now(),
                     )
                 })
                 .await?
+            })
         })
         .await
     }
@@ -162,14 +162,13 @@ impl LocalMachine {
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
     pub async fn key_step(&self, request: KeyStepRequest) -> Result<DeviceSet, Error> {
-        self.finish_key_change(move |local, held| async move {
-            let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
-                .map_err(Error::JoinRecord)?
-                .map(|key| key.public_key());
-            let approvals = local.approvals.clone();
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .map(|key| key.public_key());
+                let approvals = local.approvals.clone();
+                held.mutate(&local.owner, move |store, held| {
                     let record = store.record();
                     record.require_participating()?;
                     let now = approvals.observed_now(Timestamp::now())?;
@@ -194,14 +193,15 @@ impl LocalMachine {
                             key,
                             issued_at,
                             prior,
-                        } => trust(store, &held, (*key, prior), by, issued_at),
+                        } => trust(store, held, (*key, prior), by, issued_at),
                         KeyVerified::Remove { key } => {
-                            let removed = store.remove_key(&held, key)?;
+                            let removed = store.remove_key(held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
                 .await?
+            })
         })
         .await
     }
@@ -238,15 +238,15 @@ impl LocalMachine {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
-        self.finish_key_change(move |local, held| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                held.mutate(&local.owner, move |store, held| {
                     store
-                        .activate_management_client(&held, remote)
+                        .activate_management_client(held, remote)
                         .map_err(Error::from)
                 })
                 .await?
+            })
         })
         .await
     }
