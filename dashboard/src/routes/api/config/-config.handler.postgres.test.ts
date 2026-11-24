@@ -182,7 +182,7 @@ it.live("an agent's Save that stops a Service is refused with where a person doe
       });
       const ask = yield* person().pipe(Effect.map(({ text }) => ({ json: decodeAnswer(text) })));
       if (!("error" in ask.json) || ask.json.error.code !== "approval_required") assert.fail(`no ask: ${JSON.stringify(ask.json)}`);
-      assert.isTrue(ask.json.error.message.endsWith("If ployz didn't ask yes or no, update it."), ask.json.error.message);
+      assert.isTrue(ask.json.error.message.endsWith(". If ployz didn't ask yes or no, update it."), ask.json.error.message);
       const digest = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String }))(ask.json.error.details).approval;
 
       const resent = yield* send("write", save, digest);

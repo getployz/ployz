@@ -22,7 +22,9 @@ export const UPDATE_IF_UNASKED = "If ployz didn't ask yes or no, update it.";
 
 /** The Store's ask for a yes as `ployz` reads it. Any other refusal is unchanged. */
 export const askedOfCli = (refused: StoreRefusal): StoreRefusal =>
-  refused.code === "approval_required" ? { ...refused, message: `${refused.message} ${UPDATE_IF_UNASKED}` } : refused;
+  refused.code === "approval_required"
+    ? { ...refused, message: `${refused.message}${/[.!?]$/.test(refused.message) ? "" : "."} ${UPDATE_IF_UNASKED}` }
+    : refused;
 
 /**
  * The refusal for an approval ID an older `ployz` carries: Cloud keeps no approvals now, so one names nothing that could
