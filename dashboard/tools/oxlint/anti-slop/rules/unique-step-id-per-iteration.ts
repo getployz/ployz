@@ -19,6 +19,15 @@ function isStepCall(callee: ESTree.Node): boolean {
   return tools.type === "MemberExpression" && !tools.computed && propertyName(tools.property) === "step";
 }
 
+/** A step's id: its first argument, or the `id` of Inngest's options object (`step.run({ id: "stop" }, ...)`). */
+function stepId(argument: ESTree.Node | undefined): ESTree.Node | undefined {
+  if (argument?.type !== "ObjectExpression") return argument;
+  for (const property of argument.properties) {
+    if (property.type === "Property" && !property.computed && propertyName(property.key) === "id") return property.value;
+  }
+  return undefined;
+}
+
 /** The innermost loop a node runs in: a loop statement, or the callback of `.map`, `.flatMap` or `.forEach`. */
 function innermostLoop(node: ESTree.Node): ESTree.Node | null {
   for (let current = node.parent; current !== null; current = current.parent) {
@@ -69,8 +78,9 @@ function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean): boolean {
     case "IfStatement":
       return statement.alternate !== null && alwaysLeaves(statement.consequent, breakLeaves) && alwaysLeaves(statement.alternate, breakLeaves);
     case "TryStatement":
-      return (statement.finalizer !== null && alwaysLeaves(statement.finalizer, breakLeaves))
-        || (alwaysLeaves(statement.block, breakLeaves) && (statement.handler === null || alwaysLeaves(statement.handler.body, breakLeaves)));
+      // A finally can `continue` past whatever its block returned, so no try with one is taken to leave.
+      return statement.finalizer === null
+        && alwaysLeaves(statement.block, breakLeaves) && (statement.handler === null || alwaysLeaves(statement.handler.body, breakLeaves));
     default:
       return false;
   }
@@ -80,9 +90,13 @@ function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean): boolean {
  * A step the iteration cannot outlive runs once per run, however many times the loop turned before it: it is returned,
  * or a later statement on its way out of the loop returns, throws or breaks before anything can continue. Only a loop
  * statement can be left this way: a return in an iterator callback ends one call, and the next element runs the step.
+ * Inside a try with a finally it never is, since the finally may `continue` instead.
  */
 function endsIteration(call: ESTree.Node, loop: ESTree.Node, visitorKeys: VisitorKeys): boolean {
   if (isFunctionNode(loop)) return false;
+  for (let current = call.parent; current !== null && current !== loop; current = current.parent) {
+    if (current.type === "TryStatement" && current.finalizer !== null) return false;
+  }
   let breakLeaves = true;
   let child: ESTree.Node = call;
   for (let current = call.parent; current !== null && current !== loop; current = current.parent) {
@@ -124,7 +138,7 @@ export const uniqueStepIdPerIterationRule = defineRule({
     return {
       CallExpression(node) {
         if (!isStepCall(node.callee)) return;
-        const id = node.arguments[0];
+        const id = stepId(node.arguments[0]);
         if (id === undefined) return;
         const fixed = (id.type === "Literal" && typeof id.value === "string") || id.type === "TemplateLiteral";
         if (!fixed) return;

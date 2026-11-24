@@ -35,6 +35,11 @@ tester.run("unique-step-id-per-iteration", uniqueStepIdPerIterationRule, {
       }`,
     },
     {
+      code: `for (const m of machines) {
+        await step.run({ id: \`stop-\${m.id}\`, name: "Stop" }, () => stop(m));
+      }`,
+    },
+    {
       code: `for (let attempt = 1; ; attempt += 1) {
         const { left } = await step.run(\`retire-\${attempt}\`, () => runEffect(retireOldCopies(data)));
         if (left.length === 0) {
@@ -61,6 +66,24 @@ tester.run("unique-step-id-per-iteration", uniqueStepIdPerIterationRule, {
         await step.run("stop", () => stop(m));
         return;
       });`,
+      errors: [{ messageId: "sharedId" }],
+    },
+    // A finally that continues overrides the return: the next machine runs the step under the same id.
+    {
+      code: `for (const m of machines) {
+        try {
+          return await step.run("stop", () => stop(m));
+        } finally {
+          if (m.retry) continue;
+        }
+      }`,
+      errors: [{ messageId: "sharedId" }],
+    },
+    // Inngest's object form names the id in its options.
+    {
+      code: `for (const m of machines) {
+        await step.run({ id: "stop" }, () => stop(m));
+      }`,
       errors: [{ messageId: "sharedId" }],
     },
   ],
