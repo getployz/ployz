@@ -590,7 +590,7 @@ A service stays where it is, and its line says why, when:
 If a move fails, the service runs again on the drained server, and its line says why. When Ployz
 Cloud can't confirm where it runs, the line names the run and the `ployz volume release data` line
 that finishes it. The drain moves volumes for up to a day after it started; one it had no time for
-reads **Not tried**. Cancelling the drain lets the move under way finish, and starts no more.
+reads **Not tried**.
 
 While a volume moves to `web-3`, or a moved service still has to start there, Ployz Cloud refuses
 to drain `web-3` or turn off **Run services here** for it:

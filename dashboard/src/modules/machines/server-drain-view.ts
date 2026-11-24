@@ -99,7 +99,7 @@ export function drainView(input: {
       return {
         kind: "finished",
         at: own.endedAt,
-        summary: drainSummary(own.report, server.name),
+        summary: drainSummary(own.report, server.name, own.lines),
         stoppedEarly: stopWords(stopped),
         rows: services.map((entry) => drainRow(entry, server.id, own.lines[entry.service])),
         again: !own.report.complete,
@@ -118,10 +118,15 @@ export function drainView(input: {
  * The counts line, in the order the page reads: moved, stopped, stayed, failed, not attempted, then what the Drain left
  * alone (no Project owns it, so it never chose it) and whether it couldn't check what's left.
  */
-export function drainSummary(report: DrainReport, serverName: string): string {
+export function drainSummary(report: DrainReport, serverName: string, lines: Readonly<Record<string, VolumeLine>> = {}): string {
   const { services, remaining } = report;
-  const count = (...results: ReadonlyArray<ServiceDrain["result"]>) =>
-    services.filter((entry) => results.includes(entry.result)).length;
+  // A Volume's line, read from its move now, says what became of a Service the Engine left for its data.
+  const resultOf = (entry: ServiceDrain): ServiceDrain["result"] | "moving" => {
+    const tone = lines[entry.service]?.tone;
+    return tone === "moved" || tone === "failed" ? tone : tone === "moving" ? "moving" : entry.result;
+  };
+  const count = (...results: ReadonlyArray<ServiceDrain["result"] | "moving">) =>
+    services.filter((entry) => results.includes(resultOf(entry))).length;
   const leftovers = (stopped: boolean) =>
     services.filter((entry) => entry.result === "old_copies" && leftoverStopped(entry.ends) === stopped).length;
   const stoppedCount = count("retired") + leftovers(true);
@@ -136,6 +141,7 @@ export function drainSummary(report: DrainReport, serverName: string): string {
   }
   const parts = [
     count("moved") > 0 ? `${count("moved")} moved` : null,
+    count("moving") > 0 ? `${count("moving")} moving` : null,
     stoppedCount > 0 ? `${stoppedCount} stopped` : null,
     stayedCount > 0 ? `${stayedCount} stayed` : null,
     count("failed", "not_retired") > 0 ? `${count("failed", "not_retired")} failed` : null,

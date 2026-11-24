@@ -61,6 +61,14 @@ const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason
 const rollout: ServiceDrain = { service: "shop/redis", result: "stays", reason: { kind: "mid_rollout" } };
 
 describe("Drain result", () => {
+  // Catches a drain cancelled mid-move whose summary still counts the Service it went on to move as stayed.
+  it("counts a Service the Engine left for its data by its Volume's line", () => {
+    expect(drainSummary(report([moved, volume]), "web-2", { "shop/postgres": { tone: "moved", text: "moved to web-1", to: "web-1" } }))
+      .toBe("2 moved");
+    expect(drainSummary(report([moved, volume]), "web-2", { "shop/postgres": { tone: "moving", text: "moving to web-1, run r", to: "web-1" } }))
+      .toBe("1 moved, 1 moving");
+  });
+
   it("counts what moved, stopped, stayed and failed, in that order", () => {
     const failed: ServiceDrain = { service: "shop/worker", result: "failed", moves: [], failure: { stage: "no_destination", from: web2, detail: "no room" } };
     expect(drainSummary(report([moved, retired, volume, rollout, failed]), "web-2")).toBe("1 moved, 1 stopped, 2 stayed, 1 failed");
