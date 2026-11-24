@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { ContainerId, ContainerObservation, CopyRefusal, CopyStart, DockerVolume, EnvironmentRef, ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, SnapshotGuid, SwitchError, VolumeCopy, VolumeSwitchRequest, WantedCopy } from "@ployz/sdk";
-import { and, eq, inArray, notInArray, or } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import { Context, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked, OperationVerb } from "#/modules/operations/asked";
@@ -595,7 +595,7 @@ export const commitMove = Effect.fn("VolumeRun.commit")(function* (
 ) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.update(volumeRun)
-    .set({ phase: "committed", current: to, at, epoch, updatedAt: new Date() })
+    .set({ phase: "committed", current: to, at, epoch, updatedAt: sql`now()` })
     .where(and(
       eq(volumeRun.id, ctx.id),
       eq(volumeRun.inngestRunId, inngestRunId),
