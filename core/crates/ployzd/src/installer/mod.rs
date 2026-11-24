@@ -345,7 +345,7 @@ async fn install_locked(
         return Err(Error::Refused {
             stage: "stage an older release".into(),
             message: format!(
-                "this Server's container network fence is in place, and Ployz {target} doesn't know it, so its Containers' traffic would be dropped. Run the downgrade without --install-only, which takes the fence out once {target} is running"
+                "this Server's container network fence is in place, and Ployz {target} may not know it, which would drop its Containers' traffic. Run the downgrade without --install-only, which takes the fence out once {target} is running"
             ),
         });
     }
