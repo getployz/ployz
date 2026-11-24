@@ -65,8 +65,11 @@ function isFunctionNode(node: ESTree.Node): boolean {
   return node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression" || node.type === "FunctionDeclaration";
 }
 
-/** A statement after which the iteration never goes on: it returns, throws or breaks on every path. */
-function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean): boolean {
+/**
+ * A statement after which the iteration never goes on: it returns, throws or breaks on every path, with no `continue`
+ * before. No try counts: a catch or a finally can turn what its block did into a `continue`.
+ */
+function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean, visitorKeys: VisitorKeys): boolean {
   switch (statement.type) {
     case "ReturnStatement":
     case "ThrowStatement":
@@ -74,41 +77,46 @@ function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean): boolean {
     case "BreakStatement":
       return breakLeaves && statement.label === null;
     case "BlockStatement":
-      return statement.body.some((child) => alwaysLeaves(child, breakLeaves));
+      return leavesBefore(statement.body, breakLeaves, visitorKeys);
     case "IfStatement":
-      return statement.alternate !== null && alwaysLeaves(statement.consequent, breakLeaves) && alwaysLeaves(statement.alternate, breakLeaves);
-    case "TryStatement":
-      // A finally can `continue` past whatever its block returned, so no try with one is taken to leave.
-      return statement.finalizer === null
-        && alwaysLeaves(statement.block, breakLeaves) && (statement.handler === null || alwaysLeaves(statement.handler.body, breakLeaves));
+      return statement.alternate !== null && alwaysLeaves(statement.consequent, breakLeaves, visitorKeys)
+        && alwaysLeaves(statement.alternate, breakLeaves, visitorKeys);
     default:
       return false;
   }
+}
+
+/** Whether a run of statements leaves the iteration before any of them can `continue`. */
+function leavesBefore(statements: ReadonlyArray<ESTree.Node>, breakLeaves: boolean, visitorKeys: VisitorKeys): boolean {
+  for (const statement of statements) {
+    if (alwaysLeaves(statement, breakLeaves, visitorKeys)) return true;
+    if (hasContinue(statement, visitorKeys)) return false;
+  }
+  return false;
 }
 
 /**
  * A step the iteration cannot outlive runs once per run, however many times the loop turned before it: it is returned,
  * or a later statement on its way out of the loop returns, throws or breaks before anything can continue. Only a loop
  * statement can be left this way: a return in an iterator callback ends one call, and the next element runs the step.
- * Inside a try with a finally it never is, since the finally may `continue` instead.
+ * A step inside a try never is, since its catch or finally may `continue` instead.
  */
 function endsIteration(call: ESTree.Node, loop: ESTree.Node, visitorKeys: VisitorKeys): boolean {
   if (isFunctionNode(loop)) return false;
+  // A `break` inside a switch leaves the switch, so it leaves the iteration only from a block outside every switch.
+  let switches = 0;
   for (let current = call.parent; current !== null && current !== loop; current = current.parent) {
-    if (current.type === "TryStatement" && current.finalizer !== null) return false;
+    if (current.type === "TryStatement" || isFunctionNode(current)) return false;
+    if (current.type === "SwitchStatement") switches += 1;
   }
-  let breakLeaves = true;
   let child: ESTree.Node = call;
   for (let current = call.parent; current !== null && current !== loop; current = current.parent) {
     if (current.type === "ReturnStatement" || current.type === "ThrowStatement") return true;
-    if (current.type === "SwitchStatement") breakLeaves = false;
-    if (isFunctionNode(current)) return false;
+    if (current.type === "SwitchStatement") switches -= 1;
     if (current.type === "BlockStatement") {
       const after = current.body.slice(current.body.indexOf(child as ESTree.Statement) + 1);
-      for (const statement of after) {
-        if (alwaysLeaves(statement, breakLeaves)) return true;
-        if (hasContinue(statement, visitorKeys)) return false;
-      }
+      if (leavesBefore(after, switches === 0, visitorKeys)) return true;
+      if (after.some((statement) => hasContinue(statement, visitorKeys))) return false;
     }
     child = current;
   }

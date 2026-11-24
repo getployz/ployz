@@ -79,6 +79,29 @@ tester.run("unique-step-id-per-iteration", uniqueStepIdPerIterationRule, {
       }`,
       errors: [{ messageId: "sharedId" }],
     },
+    // A throw a catch turns into continue: the next machine runs the step under the same id.
+    {
+      code: `for (const m of machines) {
+        try {
+          await step.run("stop", () => stop(m));
+          throw new Error("stopped");
+        } catch {
+          continue;
+        }
+      }`,
+      errors: [{ messageId: "sharedId" }],
+    },
+    // A continue before the return in a later block: the iteration can go on.
+    {
+      code: `for (const m of machines) {
+        await step.run("stop", () => stop(m));
+        {
+          if (m.retry) continue;
+          return;
+        }
+      }`,
+      errors: [{ messageId: "sharedId" }],
+    },
     // Inngest's object form names the id in its options.
     {
       code: `for (const m of machines) {
