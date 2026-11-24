@@ -436,7 +436,13 @@ impl Lifecycle {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let mut operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(&mut operation, machine, namespace, kind, spec, creation_key)
+                .matching_creation(
+                    &mut operation,
+                    machine,
+                    (namespace, kind, spec),
+                    creation_key,
+                    admitted.signed(),
+                )
                 .await
                 .map_err(E::from)?
             {
@@ -534,10 +540,9 @@ impl Lifecycle {
             .matching_creation(
                 &mut config_operation,
                 machine,
-                namespace,
-                kind,
-                spec,
+                (namespace, kind, spec),
                 creation_key,
+                creating.admitted.signed(),
             )
             .await?
         {
@@ -665,10 +670,9 @@ impl Lifecycle {
                     .matching_creation(
                         config_operation,
                         machine,
-                        namespace,
-                        kind,
-                        spec,
+                        (namespace, kind, spec),
                         creation_key,
+                        creating.admitted.signed(),
                     )
                     .await?
                     .ok_or(Error::SlotNameOccupied(display_name));
@@ -742,27 +746,28 @@ impl Lifecycle {
     ) -> Result<Option<ContainerCreated>, Error> {
         // Wait for an in-flight create to persist its spec, as a create does before comparing.
         let mut operation = self.specs.config_operation().await;
-        self.matching_creation(&mut operation, machine, namespace, kind, spec, key)
+        self.matching_creation(&mut operation, machine, (namespace, kind, spec), key, false)
             .await
     }
 
     /// The Container an earlier create under `key` made. Every caller holds the spec
     /// store's config lock, so no create is between Docker's create and its spec's write.
+    /// A `signed` create refuses a copy this Machine didn't admit signed rather than
+    /// adopt it: that copy answers for no name a signed one keeps.
     async fn matching_creation(
         &self,
         operation: &mut ConfigOperation<'_>,
         machine: &Machine,
-        namespace: &Namespace,
-        kind: ContainerKind,
-        spec: &ResolvedServiceSpec,
+        (namespace, kind, spec): (&Namespace, ContainerKind, &ResolvedServiceSpec),
         key: &str,
+        signed: bool,
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
         let existing = self.resolve_slot(operation, &machine.id, name, key).await?;
         let Some(existing) = existing else {
             return Ok(None);
         };
-        if !same_creation(&existing, namespace, kind, spec) {
+        if !same_creation(&existing, namespace, kind, spec) || (signed && !existing.signed()) {
             return Err(Error::SlotNameOccupied(name.into()));
         }
         Ok(Some(ContainerCreated {

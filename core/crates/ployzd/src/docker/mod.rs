@@ -870,7 +870,7 @@ impl Observation {
             .labels()
             .ok_or(Error::MissingField("container labels"))?;
         let ServiceLabels { identity, kind } = ServiceLabels::parse(labels)?;
-        let (resolved_spec, rotation) = self
+        let (resolved_spec, rotation, admission) = self
             .specs
             .spec_and_rotation(container_id)
             .await?
@@ -966,6 +966,7 @@ impl Observation {
                     .as_ref()
                     .and_then(|host| host.log_config.as_ref())
                     .and_then(|log| log.typ.clone()),
+                admission: Some(admission),
             })?;
         let oom_killed = inspected.oom_killed();
         Ok(InspectedRun {

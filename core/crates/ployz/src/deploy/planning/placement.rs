@@ -1343,7 +1343,12 @@ fn container_fate(
     landing: Landing,
 ) -> ContainerFate {
     let observation = container.as_observation();
+    // A copy its Machine admitted unsigned answers for no name a signed copy keeps, so a
+    // signed Deploy replaces it. One from a Machine that doesn't report stays.
+    let unsigned = options.signs(&requested.name)
+        && observation.admission == Some(ployz_core::Admission::Free);
     if options.recreates(&requested.name)
+        || unsigned
         || !observation.runtime.may_serve()
         || !serving_rotation(observation)
     {

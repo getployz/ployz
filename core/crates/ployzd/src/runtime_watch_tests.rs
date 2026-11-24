@@ -464,6 +464,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         stopped: false,
         run: None,
         log_driver: None,
+        admission: None,
     })
     .unwrap()
 }

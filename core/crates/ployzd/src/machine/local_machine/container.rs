@@ -1723,6 +1723,7 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+        let keeps_name = admitted.signed() && kind == ContainerKind::ServiceContainer;
         containers
             .lifecycle()
             .create_with_admission(
@@ -1766,6 +1767,12 @@ impl LocalMachine {
                         )
                         .await?;
                         Box::pin(self.refuse_second_holder(kind, spec)).await?;
+                        // Before Docker makes it, so no signed copy exists whose name its
+                        // own replica doesn't keep, even one removed before a scan sees it.
+                        // A create that fails later leaves the name kept.
+                        if keeps_name {
+                            self.replicated()?.keep_signed_service(&identity).await?;
+                        }
                         Ok(())
                     },
                     storage: self.observe_storage(),

@@ -57,6 +57,19 @@ pub(crate) enum AdmittedBy {
     Free,
 }
 
+impl AdmittedBy {
+    /// What the Container's observation reports. A key, a rule or this Machine's own
+    /// caller vouched for every admission but [`Self::Free`].
+    pub(crate) fn admission(&self) -> ployz_core::Admission {
+        match self {
+            Self::Keys { .. } | Self::Rule { .. } | Self::Local { .. } => {
+                ployz_core::Admission::Signed
+            }
+            Self::Free => ployz_core::Admission::Free,
+        }
+    }
+}
+
 /// Whether an admission keeps what it decided: a floor a forget raised, a rule's newer
 /// generation and a hook's place. A check answers the same and keeps none of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,13 +457,22 @@ impl LocalMachine {
                 .await?;
             return admitted(admitted_rule.by, admitted_rule.verified);
         }
-        match needs_signature(creation(new), new.registry_auth.is_some()) {
-            Some(reach) => Err(refused(
+        if let Some(reach) = needs_signature(creation(new), new.registry_auth.is_some()) {
+            return Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
-            )),
-            // A spec that reaches no data runs whatever came with it.
-            None => admitted(AdmittedBy::Free, None),
+            ));
         }
+        // A name that ran signed answers only for a signed Container, so a Container that
+        // can't vouch for itself never takes it.
+        if new.slot.kind == ContainerKind::ServiceContainer
+            && self.replicated()?.signed_service_kept(&service).await?
+        {
+            return Err(refused(
+                unapproved.unwrap_or(AuthorityRefusal::SignedName { service }),
+            ));
+        }
+        // A spec that reaches no data runs whatever came with it.
+        admitted(AdmittedBy::Free, None)
     }
 
     /// The admission of `new`'s spec under `versions`: every key that signed one of them,
@@ -758,6 +780,12 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::NeedsSignature { reach } => {
             return format!(
                 "This service {reach}, so this server runs it only from a deploy an approved device signed."
+            );
+        }
+        AuthorityRefusal::SignedName { service } => {
+            return format!(
+                "{} ran from a signed deploy before, so this server runs it only from a deploy an approved device signed.",
+                service.name
             );
         }
         AuthorityRefusal::Unsigned { .. } => {

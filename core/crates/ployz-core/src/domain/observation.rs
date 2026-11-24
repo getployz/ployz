@@ -285,6 +285,23 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub log_driver: Option<String>,
+    /// How the owning Machine admitted this Container, from its own record. `None` only
+    /// from daemons that do not report it, which name and hostname checks read as
+    /// [`Admission::Free`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub admission: Option<Admission>,
+}
+
+/// How a Machine admitted a Container it made.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Admission {
+    /// A key, an automatic deploy rule or the Machine itself vouched for its spec.
+    Signed,
+    /// Admitted because its spec reaches no data, or the Machine kept no record of how it
+    /// was admitted.
+    Free,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -1261,6 +1278,7 @@ mod tests {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .unwrap()
     }

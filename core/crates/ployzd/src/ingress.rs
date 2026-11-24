@@ -1,8 +1,8 @@
 //! Observer-local ingress derivation, watching, and shared filesystem state.
 
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, HttpProtocol, Machine, MachineId, ProxyRoutes,
-    QualifiedService, ServiceContainer, service_containers,
+    CertificateHost, ContainerAddress, ContainerId, HttpProtocol, KeptNames, Machine, MachineId,
+    ProxyRoutes, QualifiedService, ServiceContainer, service_containers, signed_view,
 };
 use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use std::{
@@ -467,13 +467,18 @@ fn woke(wake: Result<Wake, CorrosionError>) -> io::Result<bool> {
 ///
 /// Caddy dials only the copies a client can reach now. The route keeps every copy
 /// [`ployz_core::proxy_routes`] keeps, so the acks and the next pass match a proxy that
-/// dialed them all.
+/// dialed them all. A copy not admitted signed is left out while a signed copy of its
+/// Service is in view, so it neither publishes nor serves that Service's hostnames.
+/// Once none is, its hostnames are free again, so no row of names is read here.
 fn next_pass(
     machine: &Machine,
     containers: &[ServiceContainer],
     certificates: &BTreeMap<CertificateHost, CertificateRow>,
     reach: &Reach,
 ) -> (ProxyRoutes, IngressProjection) {
+    let mut kept = KeptNames::default();
+    kept.keep_signed(containers.iter().map(ServiceContainer::as_observation));
+    let containers = &signed_view(containers, &kept);
     let pass = reach.pass(containers);
     let projection = IngressProjection::derive(machine, containers, certificates, &pass.reachable);
     (pass.routes, projection)
