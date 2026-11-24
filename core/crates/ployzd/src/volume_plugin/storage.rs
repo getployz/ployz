@@ -40,7 +40,17 @@ pub(super) struct VolumeStorage {
     pub(super) stop_deadline: Duration,
     /// Where a rename under a name lists the Containers that mount it.
     pub(super) holders: super::holders::Holders,
+    /// Where each Copy step a seed began a copy under is reserved ([`super::seed`]).
+    pub(super) copies: PathBuf,
+    /// The wall clock a Copy step's window is read against.
+    pub(super) now: Clock,
 }
+
+/// A wall clock; tests set the time it reads.
+pub(super) type Clock = Arc<dyn Fn() -> ployz_core::authority::Timestamp + Send + Sync>;
+
+/// The directory of Copy reservations under the plugin's data directory.
+const COPIES_DIR: &str = "seed-copies";
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
 /// slot's `fs` copy carries the same bound and is not counted again.
@@ -108,7 +118,10 @@ pub(super) enum CapacityAdmission {
 
 impl VolumeStorage {
     pub(super) fn new(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
         Self {
+            copies: data_dir.join(COPIES_DIR),
+            now: Arc::new(ployz_core::authority::Timestamp::now),
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
             mutation: MutationLock::default(),
@@ -142,6 +155,8 @@ impl VolumeStorage {
             receive_stall: RECEIVE_STALL,
             stop_deadline: STOP_DEADLINE,
             holders: super::holders::Holders::none(),
+            copies: fixture.join("admission-data").join(COPIES_DIR),
+            now: Arc::new(ployz_core::authority::Timestamp::now),
         }
     }
 

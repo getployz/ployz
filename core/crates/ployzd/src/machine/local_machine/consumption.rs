@@ -62,13 +62,10 @@ struct Consumption {
     copies: BTreeMap<String, CopyTaken>,
 }
 
-/// A Copy step this Machine took: the step as its bundle listed it, and whether a copy
-/// began under it. Once one began, the new Volume being gone means it was deleted.
+/// A Copy step this Machine took, as its bundle listed it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CopyTaken {
     digest: StepDigest,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    began: bool,
 }
 
 /// Where a Copy step is kept: the operation and index its bundle lists it at.
@@ -510,20 +507,18 @@ impl ConsumptionLog {
         })
     }
 
-    /// Take `copy`, a Copy step verified at the floored clock, and answer whether a copy
-    /// already began under it here. A step taken before is taken again whatever its window,
-    /// so a resend finishes the copy it started; a step not taken yet is taken only while its
-    /// window holds. Written before the plugin may start a copy, so a restart never forgets
-    /// a step whose copy began.
+    /// Take `copy`, a Copy step verified at the floored clock. A step taken before is taken
+    /// again whatever its window, so a resend finishes the copy it started; a step not taken
+    /// yet is taken only while its window holds.
     ///
     /// # Errors
     /// Returns [`Error::CopyRefused`] for a step past its window that was never taken, or
     /// for another step at the same place, and [`Error::ApprovalRecord`] when the record
     /// cannot be read or written.
-    pub(crate) fn take_copy(&self, copy: &CopyVerified) -> Result<bool, Error> {
+    pub(crate) fn take_copy(&self, copy: &CopyVerified) -> Result<(), Error> {
         let key = copy_key(copy.step.proposal);
         self.transact(Error::ApprovalRecord, |log| match log.copies.get(&key) {
-            Some(taken) if taken.digest == copy.digest => Ok(Edit::Keep(taken.began)),
+            Some(taken) if taken.digest == copy.digest => Ok(Edit::Keep(())),
             Some(_) => Err(Error::CopyRefused(AuthorityRefusal::Mismatch {
                 field: MismatchField::Step,
             })),
@@ -535,26 +530,9 @@ impl ConsumptionLog {
                     key,
                     CopyTaken {
                         digest: copy.digest,
-                        began: false,
                     },
                 );
-                Ok(Edit::Write(false))
-            }
-        })
-    }
-
-    /// Record whether a copy may have begun under the Copy step at `place`.
-    ///
-    /// # Errors
-    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
-    pub(crate) fn copy_began(&self, place: ProposalRef, began: bool) -> Result<(), Error> {
-        self.transact(Error::ApprovalRecord, |log| {
-            match log.copies.get_mut(&copy_key(place)) {
-                Some(taken) if taken.began != began => {
-                    taken.began = began;
-                    Ok(Edit::Write(()))
-                }
-                _ => Ok(Edit::Keep(())),
+                Ok(Edit::Write(()))
             }
         })
     }

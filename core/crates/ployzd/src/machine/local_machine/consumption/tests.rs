@@ -45,25 +45,23 @@ fn copy_step(index: u32, window: CopyWindow, body: &str) -> CopyVerified {
         },
         digest: StepDigest::of(body),
         window,
+        closes: made_at,
     }
 }
 
-/// A resend after a restart must know a copy began under its step: otherwise a Volume the
-/// user deleted once its copy began is made again from the old approval.
+/// A step taken inside its window is taken again after a restart whatever its window, so a
+/// resend can finish its copy; another step at its place, or a new step past its window,
+/// is refused.
 #[test]
-fn a_copy_step_is_taken_once_and_remembers_its_copy_across_a_restart() {
+fn a_copy_step_is_taken_once_and_kept_across_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let log = ConsumptionLog::new(dir.path());
-    let step = copy_step(0, CopyWindow::Open, "a");
-    assert!(!log.take_copy(&step).unwrap());
-    log.copy_began(step.step.proposal, true).unwrap();
+    log.take_copy(&copy_step(0, CopyWindow::Open, "a")).unwrap();
 
     let restarted = ConsumptionLog::new(dir.path());
-    assert!(
-        restarted
-            .take_copy(&copy_step(0, CopyWindow::Closed, "a"))
-            .unwrap()
-    );
+    restarted
+        .take_copy(&copy_step(0, CopyWindow::Closed, "a"))
+        .unwrap();
     assert!(matches!(
         restarted.take_copy(&copy_step(0, CopyWindow::Open, "b")),
         Err(Error::CopyRefused(AuthorityRefusal::Mismatch {

@@ -11,7 +11,7 @@ use ployz_core::{
     WantedCopy,
 };
 
-use ployz_core::authority::{AuthorityRefusal, CopyFacts, CopyWindow, Purpose, Timestamp, copy};
+use ployz_core::authority::{AuthorityRefusal, CopyFacts, CopyVerified, Purpose, Timestamp, copy};
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
 use crate::{
@@ -118,10 +118,11 @@ impl LocalMachine {
     }
 
     /// SeedCopy: a Volume.Seed an Operator sends under a person's Copy step, under the
-    /// switch lock. The step must open here for exactly this seed. It is taken in the
-    /// approvals record before the plugin may start a copy, and the plugin starts one, or
-    /// starts it over, only while the step's window holds; once one may have begun, a
-    /// resend only finishes it and never makes a deleted new Volume again.
+    /// switch lock. The step must open here for exactly this seed, and is taken in the
+    /// approvals record only while its window holds. The plugin then starts a copy, or
+    /// starts it over, only while the window still holds on its own clock, and reserves the
+    /// step before it makes the new Volume's slot, so a resend finishes a copy underway and
+    /// never makes a deleted new Volume again.
     ///
     /// # Errors
     ///
@@ -140,11 +141,13 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let trusted = record.trusted_keys();
+        let read = Timestamp::now();
+        let now = self.approvals.observed_now(read)?;
         let facts = CopyFacts {
             trusted: &trusted,
             cluster: self.cluster_key(record.phase()),
             machine: record.id(),
-            now: self.approvals.observed_now(Timestamp::now())?,
+            now,
         };
         let verified =
             copy::verify(&request.step, &request.seed, &facts).map_err(Error::CopyRefused)?;
@@ -154,7 +157,7 @@ impl LocalMachine {
                 problem: error.to_string(),
             })
         })?;
-        let began = self.approvals.take_copy(&verified)?;
+        self.approvals.take_copy(&verified)?;
         let step = &verified.step;
         let seed = SeedCopy {
             seed: request.seed,
@@ -162,23 +165,12 @@ impl LocalMachine {
                 birth,
                 source: step.origin,
                 taken_at: step.taken_at,
-                open: verified.window == CopyWindow::Open,
-                began,
+                step: verified.digest,
+                closes: plugin_closes(&verified, (read, now)),
             },
         };
-        // A call that may begin the copy records that it began first, so a restart while
-        // the plugin works never forgets it. Only a refusal the plugin gave before any
-        // effect takes it back; a call that failed on the way may have begun the copy.
-        if !began {
-            self.approvals.copy_began(step.proposal, true)?;
-        }
-        let view = self
-            .volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
-            .await;
-        if !began && view.as_ref().is_err_and(began_nothing) {
-            self.approvals.copy_began(step.proposal, false)?;
-        }
-        view
+        self.volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
+            .await
     }
 
     /// SetVolumeSize, under the switch lock.
@@ -729,17 +721,10 @@ fn not_routed(message: String) -> RpcError {
     RpcError::conflict(message)
 }
 
-/// Whether `error` is a refusal the plugin's seed gives before it changes anything: a
-/// switch refusal, which names its reason, or a capacity it knows is short. A capacity it
-/// could not read is also how a call that never came back reads.
-fn began_nothing(error: &Error) -> bool {
-    let Error::StoragePreparation(error) = error else {
-        return true;
-    };
-    error.details.get("reason").is_some()
-        || error
-            .details
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|code| code != "storage_capacity_unknown")
+/// When `verified`'s window closes on the plugin's clock, which reads the wall clock
+/// unfloored: earlier by as much as the floored `now` runs ahead of the wall clock `read`.
+fn plugin_closes(verified: &CopyVerified, (read, now): (Timestamp, Timestamp)) -> Timestamp {
+    let ahead = now.as_millis().saturating_sub(read.as_millis());
+    Timestamp::from_millis(verified.closes.as_millis().saturating_sub(ahead))
+        .unwrap_or(verified.closes)
 }

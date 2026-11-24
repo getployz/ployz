@@ -74,11 +74,13 @@ pub struct CopyBinding {
     pub source: VolumeOrigin,
     /// When the point was taken, as the source's snapshot records it to the second.
     pub taken_at: ployz_core::authority::Timestamp,
-    /// Whether the step's window holds, so a copy may start or start over.
-    pub open: bool,
-    /// Whether a copy already began under the step here, so a new Volume that is gone was
-    /// deleted and is not made again.
-    pub began: bool,
+    /// The step's digest. The plugin reserves it before it makes the slot, and the slot
+    /// carries it, so only that slot is this step's and a new Volume gone after the
+    /// reservation was deleted.
+    pub step: ployz_core::authority::StepDigest,
+    /// The last instant on this Machine's clock a copy may start, or start over, under the
+    /// step. The plugin reads it under its mutation, right before it does.
+    pub closes: ployz_core::authority::Timestamp,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

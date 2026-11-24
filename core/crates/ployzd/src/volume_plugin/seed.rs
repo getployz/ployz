@@ -3,12 +3,17 @@
 //! it pulls, and lands as a root the next call finds complete. Every call answers the copy
 //! of `into` as it stands, so the same request resent converges.
 //!
-//! A seed a Copy step admitted is bound to the step's birth: its slot records the birth's
-//! origin, and the root lands carrying it. Only a slot or root of `into` that carries that
-//! origin is this copy's; any other refuses, so the seed never adopts another copy of
-//! `into`. It starts a copy, or starts one over, only when the daemon says the step may.
+//! A seed a Copy step admitted is bound to the step: the slot it makes carries the step's
+//! digest and records the birth's origin from the moment ZFS makes it, and the root lands
+//! carrying that origin. Only a slot carrying both, or a root carrying the origin, is this
+//! copy's; any other refuses, so the seed never adopts, clears or lands on another copy of
+//! `into`. Before it makes the slot, the seed reserves the step in a file of its own,
+//! which deleting `into` leaves, so once the reservation stands an `into` that is gone was
+//! deleted and the step never makes it again. A call that fails before the reservation,
+//! however it fails, leaves the step free to begin on a resend. It starts a copy, or starts
+//! one over, only while the step's window holds on its own clock, read under its mutation.
 
-use std::process::Stdio;
+use std::{fs, io, process::Stdio};
 
 use crate::{
     dataset_layout::DatasetLayout,
@@ -17,6 +22,7 @@ use crate::{
     volume_send::begin::{self, READ_BOUND},
 };
 use axum::{Json, extract::State};
+use ployz_core::authority::{StepDigest, Timestamp};
 use ployz_core::{
     DockerVolumeName, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
     VolumeCopyView, VolumeOrigin,
@@ -175,20 +181,21 @@ impl Stale {
     }
 }
 
-/// The source's restore point the Seed copies, the origin the copy records, and the bound
-/// the copy takes from the source.
+/// The source's restore point the Seed copies, its origin, and the bound the copy takes
+/// from the source.
 struct Source {
     root: String,
     point: Snapshot,
-    /// The point's own origin, or under a Copy step the birth's.
+    /// The point's own origin, which a copy no Copy step binds records.
     record: Origin,
     bound: u64,
 }
 
 impl CopyBinding {
-    /// Refuse to start the copy of `into` over once the step's window has closed.
-    fn may_restart(&self, into: &VolumeName) -> Result<(), RpcError> {
-        if self.open {
+    /// Refuse to start a copy into `into`, or start one over, once the step's window has
+    /// closed at `now`.
+    fn may_start(&self, into: &VolumeName, now: Timestamp) -> Result<(), RpcError> {
+        if now <= self.closes {
             return Ok(());
         }
         Err(SwitchError::Expired.rpc_error(format!(
@@ -196,21 +203,49 @@ impl CopyBinding {
         )))
     }
 
-    /// Refuse to begin a copy into `into` that is gone after a copy began under the step,
-    /// since it was deleted, or once the step's window has closed.
-    fn may_begin(&self, into: &VolumeName) -> Result<(), RpcError> {
-        if self.began {
-            return Err(SwitchError::Precondition.rpc_error(format!(
-                "Volume {into} was deleted after its copy began; approve the restore again"
-            )));
+    /// The slot marks the step's copy carries from the moment ZFS makes its parent.
+    fn slot_marks(&self) -> [(Mark, String); 2] {
+        [
+            (Mark::PullOrigin, self.birth.to_string()),
+            (Mark::CopyStep, self.step.to_string()),
+        ]
+    }
+}
+
+impl VolumeStorage {
+    fn reservation(&self, step: StepDigest) -> std::path::PathBuf {
+        self.copies.join(step.to_string())
+    }
+
+    /// Whether a copy began under `step` on this Machine.
+    fn reserved(&self, step: StepDigest) -> Result<bool, RpcError> {
+        match fs::symlink_metadata(self.reservation(step)) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(RpcError::internal(format!(
+                "could not read the Copy reservations: {error}"
+            ))),
         }
-        self.may_restart(into)
+    }
+
+    /// Reserve `step` for a copy into `into`, durably, before any slot of it is made.
+    fn reserve(&self, step: StepDigest, into: &VolumeName) -> Result<(), RpcError> {
+        let failed =
+            |error: io::Error| RpcError::internal(format!("could not reserve the copy: {error}"));
+        fs::create_dir_all(&self.copies).map_err(failed)?;
+        if let Some(parent) = self.copies.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(failed)?;
+        }
+        crate::filesystem::atomic_write(&self.reservation(step), into.to_string().as_bytes(), 0o600)
+            .map_err(failed)
     }
 }
 
 impl VolumeStorage {
     /// The seed `request` asks for, bound to `copy` when a Copy step admitted it.
-    async fn seed_volume(
+    pub(super) async fn seed_volume(
         &self,
         request: &SeedVolumeRequest,
         copy: Option<&CopyBinding>,
@@ -221,9 +256,8 @@ impl VolumeStorage {
         let (held, _installation) = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        let birth = copy.map(|copy| copy.birth);
         match self
-            .seed_progress(&held, &pool, &datasets, &into, (guid, birth))
+            .seed_progress(&held, &pool, &datasets, &into, (guid, copy))
             .await?
         {
             SeedProgress::Taken => Err(SwitchError::Precondition
@@ -246,26 +280,36 @@ impl VolumeStorage {
                 self.seeded(&pool, &into).await
             }
             SeedProgress::Stale(stale) => {
-                if let Some(copy) = copy {
-                    copy.may_restart(&into)?;
-                }
                 let source = self
                     .seed_source(&pool, &datasets, (request, &name, &into), copy)
                     .await?;
+                if let Some(copy) = copy {
+                    copy.may_start(&into, (self.now)())?;
+                }
                 stale.clear(self, &into).await?;
-                self.copy_point(&held, &pool, &into, source).await
+                self.copy_point(&held, &pool, &into, (source, copy)).await
             }
             SeedProgress::Absent => {
-                if let Some(copy) = copy {
-                    copy.may_begin(&into)?;
+                if let Some(copy) = copy
+                    && self.reserved(copy.step)?
+                {
+                    return Err(SwitchError::Precondition.rpc_error(format!(
+                        "Volume {into} was deleted after its copy began; approve the restore again"
+                    )));
                 }
                 let source = self
                     .seed_source(&pool, &datasets, (request, &name, &into), copy)
                     .await?;
+                if let Some(copy) = copy {
+                    copy.may_start(&into, (self.now)())?;
+                }
                 self.ensure_commitment(&pool, &datasets, source.bound)
                     .await?;
                 self.ensure_mirror_root(&pool, &datasets).await?;
-                self.copy_point(&held, &pool, &into, source).await
+                if let Some(copy) = copy {
+                    self.reserve(copy.step, &into)?;
+                }
+                self.copy_point(&held, &pool, &into, (source, copy)).await
             }
         }
     }
@@ -273,17 +317,18 @@ impl VolumeStorage {
     /// The one read of [`SeedProgress`], under the mutation `_held`. Its only registry read
     /// is [`super::transfer::Receives::take_failure`], which answers and clears in one
     /// step: a receive task ends outside the mutation, so two reads could each see a
-    /// different side of that end. `birth` is a Copy step's, which every root, slot and
-    /// receive of `into` the seed goes on with must carry; a slot that holds nothing yet
-    /// carries none and may be started over.
+    /// different side of that end. Under `copy`, a root of `into` the seed goes on with
+    /// must carry the step's birth, and a slot must carry the step and record the birth or
+    /// hold a copy carrying it; a receive of `into` with no such slot is another's.
     async fn seed_progress(
         &self,
         _held: &HeldMutation,
         pool: &MachinePool,
         datasets: &[Dataset],
         into: &VolumeName,
-        (guid, birth): (SnapshotGuid, Option<VolumeOrigin>),
+        (guid, copy): (SnapshotGuid, Option<&CopyBinding>),
     ) -> Result<SeedProgress, RpcError> {
+        let birth = copy.map(|copy| copy.birth);
         let root = DatasetLayout::of(pool).root(into);
         let parent = DatasetLayout::of(pool).slot_parent(into);
         let slot = Self::slot(datasets, pool, into).is_some();
@@ -311,25 +356,22 @@ impl VolumeStorage {
             );
         }
         let fs = Self::slot_fs(datasets, pool, into).map(|fs| fs.name.clone());
-        let bound = match birth {
-            Some(birth) if slot => {
-                let newest = match &fs {
-                    Some(fs) => self.newest_snapshot(fs).await?.map(|newest| newest.name),
-                    None => None,
-                };
-                let carried = self
-                    .origin_of(Some(&parent), fs.as_deref().map(|fs| (fs, newest.as_ref())))
-                    .await?;
-                if carried.is_some_and(|carried| carried != birth)
-                    || (carried.is_none() && fs.is_some())
-                {
-                    return Ok(SeedProgress::Taken);
-                }
-                carried.is_some()
+        if let Some(copy) = copy
+            && slot
+        {
+            let step = self.marks(&parent).get(Mark::CopyStep).await?;
+            let newest = match &fs {
+                Some(fs) => self.newest_snapshot(fs).await?.map(|newest| newest.name),
+                None => None,
+            };
+            let carried = self
+                .origin_of(Some(&parent), fs.as_deref().map(|fs| (fs, newest.as_ref())))
+                .await?;
+            if step != Some(copy.step.to_string()) || carried != Some(copy.birth) {
+                return Ok(SeedProgress::Taken);
             }
-            Some(_) => false,
-            None => true,
-        };
+        }
+        let bound = copy.is_none() || slot;
         let pulling = if slot {
             self.marks(&parent).pull_target().await?
         } else {
@@ -365,7 +407,7 @@ impl VolumeStorage {
     /// any slot of `into` as it was.
     ///
     /// Under a Copy step it also refuses a point whose origin or time is not the one the
-    /// step approved, and the copy records the step's birth in place of the point's origin.
+    /// step approved.
     async fn seed_source(
         &self,
         pool: &MachinePool,
@@ -432,18 +474,19 @@ impl VolumeStorage {
         Ok(Source {
             root,
             point,
-            record: Some(copy.birth),
+            record: read.origin,
             bound,
         })
     }
 
     /// A new slot of `into` marked with the point it pulls, and the copy started into it.
+    /// Under `copy`, ZFS makes the slot carrying the step and recording its birth.
     async fn copy_point(
         &self,
         held: &HeldMutation,
         pool: &MachinePool,
         into: &VolumeName,
-        source: Source,
+        (source, copy): (Source, Option<&CopyBinding>),
     ) -> Result<VolumeCopyView, RpcError> {
         let parent = DatasetLayout::of(pool).slot_parent(into);
         let fs = DatasetLayout::of(pool).slot_fs(into);
@@ -453,9 +496,18 @@ impl VolumeStorage {
             record,
             bound,
         } = source;
-        self.create_slot(&parent, bound).await?;
-        self.marks(&parent).set_pull(point.name.as_str()).await?;
-        self.write_record(&parent, record).await?;
+        match copy {
+            Some(copy) => {
+                self.create_marked_slot(&parent, bound, &copy.slot_marks())
+                    .await?;
+                self.marks(&parent).set_pull(point.name.as_str()).await?;
+            }
+            None => {
+                self.create_slot(&parent, bound).await?;
+                self.marks(&parent).set_pull(point.name.as_str()).await?;
+                self.write_record(&parent, record).await?;
+            }
+        }
         let storage = self.clone();
         let snapshot = format!("{root}@{}", point.name);
         // A receive still alive refuses the spawn, and the copy as it stands answers then too.

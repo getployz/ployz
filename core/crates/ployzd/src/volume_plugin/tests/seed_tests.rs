@@ -986,18 +986,25 @@ fn legacy_data() -> String {
         .to_string()
 }
 
-/// A SeedCopy of `data`'s point 77 into `seed`, bound to [`BIRTH`]. `open` says whether the
-/// step's window holds and `began` whether a copy began under it.
-fn copy(open: bool, began: bool) -> Value {
-    copy_of(&legacy_data(), 1_700_000_000, (open, began))
+/// The digest of the Copy step the tests' seeds ride on.
+const STEP: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+/// A window that holds for any clock a test runs on, and one that closed long ago.
+const OPEN: u64 = 4_102_444_800_000;
+const CLOSED: u64 = 1_000;
+
+/// A SeedCopy of `data`'s point 77 into `seed` under [`STEP`], bound to [`BIRTH`], whose
+/// window closes at `closes` milliseconds.
+fn copy(closes: u64) -> Value {
+    copy_of(&legacy_data(), 1_700_000_000, closes)
 }
 
-fn copy_of(source: &str, taken_seconds: u64, (open, began): (bool, bool)) -> Value {
+fn copy_of(source: &str, taken_seconds: u64, closes: u64) -> Value {
     json!({
         "seed": seed(77),
         "copy": {
             "birth": BIRTH, "source": source, "taken_at": taken_seconds * 1000,
-            "open": open, "began": began,
+            "step": STEP, "closes": closes,
         },
     })
 }
@@ -1029,7 +1036,7 @@ async fn a_copy_lands_carrying_its_birth_not_the_sources_origin() {
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
 
-    let landed = copy_settled(&socket, &copy(true, false)).await;
+    let landed = copy_settled(&socket, &copy(OPEN)).await;
 
     assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
     assert_landed(&test);
@@ -1049,13 +1056,13 @@ async fn a_copy_of_a_point_the_step_did_not_approve_is_refused_before_any_effect
     let foreign = post(
         &socket,
         "/Volume.SeedCopy",
-        copy_of(BORN, 1_700_000_000, (true, false)),
+        copy_of(BORN, 1_700_000_000, OPEN),
     )
     .await;
     let other_time = post(
         &socket,
         "/Volume.SeedCopy",
-        copy_of(&legacy_data(), 1_700_000_001, (true, false)),
+        copy_of(&legacy_data(), 1_700_000_001, OPEN),
     )
     .await;
 
@@ -1071,7 +1078,7 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
     set_property(&fresh, "tank/ployz/data", "snapshots", POINT);
     let log = commands(&fresh);
     refused(
-        &post(&socket, "/Volume.SeedCopy", copy(false, false)).await,
+        &post(&socket, "/Volume.SeedCopy", copy(CLOSED)).await,
         "expired",
     );
     assert_eq!(effects_since(&fresh, &log), Vec::<String>::new());
@@ -1079,14 +1086,14 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
     let underway = test_dir();
     let (socket, _server) = start(&underway, USABLE_POOL, &["root", "volume"]);
     set_property(&underway, "tank/ployz/data", "snapshots", POINT);
-    let started = post(&socket, "/Volume.SeedCopy", copy(true, false)).await;
+    let started = post(&socket, "/Volume.SeedCopy", copy(OPEN)).await;
     assert_eq!(
         started.pointer("/Ok/copy/kind").unwrap(),
         "slot",
         "{started}"
     );
 
-    let landed = copy_settled(&socket, &copy(false, true)).await;
+    let landed = copy_settled(&socket, &copy(CLOSED)).await;
 
     assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
     assert_eq!(
@@ -1095,16 +1102,139 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
     );
 }
 
+/// Delete the new Volume once its copy began, restart the plugin, and resend the same
+/// Copy inside its window: the reservation outlives both, so nothing is made again.
 #[tokio::test]
 async fn a_copy_never_makes_its_deleted_volume_again() {
     let test = test_dir();
-    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    copy_settled(&socket, &copy(OPEN)).await;
+    assert_eq!(
+        post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await,
+        json!({"Ok": null})
+    );
+    server.abort();
+    let _ = server.await;
+    fs::remove_file(&socket).unwrap();
+    let _server = tokio::spawn(serve(
+        UnixListener::bind(&socket).unwrap(),
+        VolumeStorage::with_programs(test.0.join("zpool"), test.0.join("zfs")),
+    ));
     let log = commands(&test);
 
-    let reply = post(&socket, "/Volume.SeedCopy", copy(true, true)).await;
+    let reply = post(&socket, "/Volume.SeedCopy", copy(OPEN)).await;
 
     refused(&reply, "precondition");
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+/// A call that fails before it reserves the step, here refused by an upgrade holding
+/// storage, leaves the step free: the same Copy resent begins the copy.
+#[tokio::test]
+async fn a_copy_refused_before_it_began_begins_on_resend() {
+    let test = test_dir();
+    for marker in ["root", "volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let storage = VolumeStorage::with_programs(zpool, zfs);
+    let installation = storage.installation.clone();
+    let socket = test.0.join("plugin.sock");
+    let _server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    installation.mark_active("upgrade").unwrap();
+    let log = commands(&test);
+
+    let refused_first = post(&socket, "/Volume.SeedCopy", copy(OPEN)).await;
+    assert!(refused_first.get("Err").is_some(), "{refused_first}");
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+    installation.clear_active("upgrade").unwrap();
+
+    let landed = copy_settled(&socket, &copy(OPEN)).await;
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "ployz:origin").as_deref(),
+        Some(BIRTH)
+    );
+}
+
+/// An empty slot parent of `seed`, such as an interrupted mirror pull leaves, is no copy
+/// this step made: whether or not the step began a copy that was then deleted, a resend
+/// refuses it and leaves it as it is.
+#[tokio::test]
+async fn a_copy_never_clears_an_empty_slot_parent_it_did_not_make() {
+    for began in [false, true] {
+        let test = test_dir();
+        let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        if began {
+            copy_settled(&socket, &copy(OPEN)).await;
+            post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await;
+        }
+        fs::write(test.0.join("seed-slot"), "").unwrap();
+        let log = commands(&test);
+
+        let reply = post(&socket, "/Volume.SeedCopy", copy(OPEN)).await;
+
+        refused(&reply, "precondition");
+        assert_eq!(
+            effects_since(&test, &log),
+            Vec::<String>::new(),
+            "began {began}"
+        );
+        assert!(test.0.join("seed-slot").exists(), "began {began}");
+    }
+}
+
+/// A Copy whose window closes while it waits for the plugin's mutation starts nothing:
+/// the window is read under the mutation, not when the request arrived.
+#[tokio::test]
+async fn a_copy_queued_past_its_window_starts_nothing() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let test = test_dir();
+    for marker in ["root", "volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let clock = Arc::new(AtomicU64::new(1_000_000));
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let mut storage = VolumeStorage::with_programs(zpool, zfs);
+    storage.now = {
+        let clock = Arc::clone(&clock);
+        Arc::new(move || {
+            ployz_core::authority::Timestamp::from_millis(clock.load(Ordering::SeqCst)).unwrap()
+        })
+    };
+    let request: crate::volume_copy::SeedCopy = serde_json::from_value(copy(1_000_500)).unwrap();
+    let held = storage.mutation.lock().await;
+    let log = commands(&test);
+
+    let seeding = storage.seed_volume(&request.seed, Some(&request.copy));
+    let mut seeding = std::pin::pin!(seeding);
+    std::future::poll_fn(|context| {
+        assert!(
+            seeding.as_mut().poll(context).is_pending(),
+            "the seed waits for the mutation"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    clock.store(1_001_000, Ordering::SeqCst);
+    drop(held);
+    let reply = seeding.await;
+
+    let error = reply.expect_err("the window closed while the seed waited");
+    assert_eq!(
+        serde_json::to_value(&error)
+            .unwrap()
+            .pointer("/details/reason"),
+        Some(&json!("expired")),
+        "{error:?}"
+    );
     assert_eq!(effects_since(&test, &log), Vec::<String>::new());
 }
 
@@ -1128,7 +1258,7 @@ async fn a_copy_never_adopts_another_copy_of_its_volume() {
     set_property(&slot, "tank/ployz-mirror/seed", "ployz:pull-origin", BORN);
     let log = commands(&slot);
     refused(
-        &post(&socket, "/Volume.SeedCopy", copy(true, false)).await,
+        &post(&socket, "/Volume.SeedCopy", copy(OPEN)).await,
         "precondition",
     );
     assert_eq!(effects_since(&slot, &log), Vec::<String>::new());
@@ -1140,7 +1270,7 @@ async fn a_copy_never_adopts_another_copy_of_its_volume() {
     set_property(&root, "tank/ployz/seed", "ployz:origin", BORN);
     let log = commands(&root);
     refused(
-        &post(&socket, "/Volume.SeedCopy", copy(true, false)).await,
+        &post(&socket, "/Volume.SeedCopy", copy(OPEN)).await,
         "precondition",
     );
     assert_eq!(effects_since(&root, &log), Vec::<String>::new());

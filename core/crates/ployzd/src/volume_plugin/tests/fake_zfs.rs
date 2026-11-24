@@ -346,6 +346,16 @@ case "$*" in
     new_guid
     printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/data/guid'
     ;;
+  'create -o canmount=off -o readonly=on -o refquota='*' -o ployz:pull-origin='*' -o ployz:copy-step='*' tank/ployz-mirror/{seed}')
+    if [ -e '{seed_slot}' ]; then echo "cannot create 'tank/ployz-mirror/{seed}': dataset already exists" >&2; exit 1; fi
+    touch '{seed_slot}'
+    mkdir -p '{props}/tank/ployz-mirror/{seed}'
+    printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/{seed}/refquota'
+    printf '%s\n' "${{9#ployz:pull-origin=}}" > '{props}/tank/ployz-mirror/{seed}/ployz:pull-origin'
+    printf '%s\n' "${{11#ployz:copy-step=}}" > '{props}/tank/ployz-mirror/{seed}/ployz:copy-step'
+    new_guid
+    printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/{seed}/guid'
+    ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/{seed}')
     if [ -e '{seed_slot}' ]; then echo "cannot create 'tank/ployz-mirror/{seed}': dataset already exists" >&2; exit 1; fi
     touch '{seed_slot}'

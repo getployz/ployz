@@ -477,6 +477,8 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
         holders: first.holders.clone(),
+        copies: first.copies.clone(),
+        now: first.now.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -548,6 +550,8 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
         holders: first.holders.clone(),
+        copies: first.copies.clone(),
+        now: first.now.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -1059,5 +1063,7 @@ esac
         receive_stall: super::super::transfer::RECEIVE_STALL,
         stop_deadline: super::super::transfer::STOP_DEADLINE,
         holders: super::super::holders::Holders::none(),
+        copies: directory.join("admission-data").join("seed-copies"),
+        now: std::sync::Arc::new(ployz_core::authority::Timestamp::now),
     }
 }

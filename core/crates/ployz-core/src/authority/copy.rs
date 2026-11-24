@@ -20,6 +20,7 @@ use super::{
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
+    validity::CLOCK_SKEW_MILLIS,
 };
 use crate::{
     DockerVolumeName, MachineId, Namespace, SealingPublicKey, SeedVolumeRequest, SnapshotGuid,
@@ -98,6 +99,9 @@ pub struct CopyVerified {
     /// The digest the bundle lists for the step, which the Machine records it under.
     pub digest: StepDigest,
     pub window: CopyWindow,
+    /// The last instant the window holds: the bundle's expiry plus the clock skew a
+    /// Machine allows. Past it, a copy may finish but none starts.
+    pub closes: Timestamp,
 }
 
 impl CopyVerified {
@@ -133,6 +137,7 @@ pub fn verify(
         });
     };
     let (body, _, cluster) = open_approval(step, facts.trusted, facts.cluster)?;
+    let closes = bundle.open()?.expires_at.plus(CLOCK_SKEW_MILLIS);
     let window = match bundle_window(step, facts.now) {
         Ok(()) => CopyWindow::Open,
         Err(AuthorityRefusal::Expired) => CopyWindow::Closed,
@@ -166,6 +171,7 @@ pub fn verify(
         step: body,
         digest,
         window,
+        closes,
     })
 }
 
