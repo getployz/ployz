@@ -6,14 +6,21 @@
  *   node scripts/clock-readers.ts [--base <rev>] [--all]
  *
  * `--base` keeps only columns whose `now()` write the diff against <rev> added (default: every `now()` write).
- * `--all` prints display-only readers too. Exits 1 while a JS-clock decider has no `clock-readers: <reason>` comment.
+ * `--all` prints display-only readers too. Exits 1 while a JS-clock decider or writer has no reason in KEPT.
  */
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parseSync, visitorKeys } from "oxc-parser";
 
-type Node = { type: string; start: number; end: number; parent?: Node | null; [key: string]: unknown };
+/** The ESTree fields this script reads; oxc-parser fills whichever a node's type has. */
+type Node = {
+  type: string; start: number; end: number; parent?: Node | null;
+  name?: string; value?: unknown; operator?: string; computed?: boolean;
+  callee?: Node; object?: Node; property?: Node; arguments?: Node[]; tag?: Node; quasi?: Node; quasis?: Node[]; expressions?: Node[];
+  id?: Node; init?: Node | null; key?: Node; params?: Node[]; declarations?: Node[]; declaration?: Node | null; body?: Node | Node[];
+  argument?: Node | null; left?: Node; right?: Node; expression?: Node; imported?: Node; local?: Node; properties?: Node[];
+};
 type Column = { table: string; field: string; snake: string };
 type Reader = { column: string; at: string; via: "drizzle" | "row" | "sql" | "write"; verdict: Verdict; note: string };
 type Verdict = "sql-clock" | "row-vs-row" | "display" | "js-clock" | "js-write";
@@ -36,7 +43,7 @@ const isNode = (value: unknown): value is Node =>
 function children(node: Node): Node[] {
   const keys = (visitorKeys as Record<string, readonly string[]>)[node.type] ?? [];
   return keys.flatMap((key) => {
-    const value = node[key];
+    const value = (node as unknown as Record<string, unknown>)[key];
     if (Array.isArray(value)) return value.filter(isNode);
     return isNode(value) ? [value] : [];
   });
@@ -448,15 +455,26 @@ for (const file of files) {
   }
 }
 
-/** A decider that stays on the JS clock carries `clock-readers: <reason>` on its line or the line above. */
+/**
+ * Deciders that stay on the JS clock, by file and field, each with why. Name the reason a reviewer would ask for; a new
+ * decider that fits none of these is a bug to fix, not a line to add.
+ */
+const KEPT: ReadonlyArray<{ file: string; field: string; reason: string }> = [
+  { file: "src/modules/agent/agent-runner.server.ts", field: "startedAt", reason: "an agent run record's start, epoch ms in jsonb and a bigint column, not a timestamp Postgres stamps" },
+  { file: "src/modules/agent/remote-mcp.server.ts", field: "startedAt", reason: "an agent run record's start, epoch ms in jsonb and a bigint column, not a timestamp Postgres stamps" },
+  { file: "src/modules/github/github-connect.server.ts", field: "expiresAt", reason: "a signed state token's expiry, issued and checked on the web clock, never stored" },
+  { file: "src/modules/github/inngest-sync/sync.ts", field: "syncedAt", reason: "the GitHub repository cache's sync time, a column this change doesn't move and nothing ages" },
+  { file: "src/modules/identity/auth.server.ts", field: "expiresAt", reason: "better-auth writes session expiry on the web clock; days long, so drift can't decide it" },
+  { file: "src/modules/identity/organization-token.server.ts", field: "expiresAt", reason: "Organization token expiry, deferred: https://github.com/getployz/ployz/issues/4560" },
+  { file: "src/modules/sandbox/anonymous-signup.server.ts", field: "expiresAt", reason: "Organization token expiry, deferred: https://github.com/getployz/ployz/issues/4560" },
+  { file: "src/modules/sandbox/claim.server.ts", field: "expiresAt", reason: "Organization token expiry, deferred: https://github.com/getployz/ployz/issues/4560" },
+  { file: "src/modules/ingress/cloudflare.setup.server.ts", field: "updatedAt", reason: "a fence, not a time: the put-back matches this exact value, which a microsecond now() would not survive" },
+  { file: "useCanvasPositionMutation.ts", field: "updatedAt", reason: "the browser's optimistic copy; the server's write stamps now()" },
+];
+
 function excused(reader: Reader): string | null {
-  const [path, line] = reader.at.split(":");
-  const lines = readFileSync(join(root, path!), "utf8").split("\n");
-  for (const text of [lines[Number(line) - 1], lines[Number(line) - 2]]) {
-    const match = text?.match(/clock-readers: (.+?)(?:\*\/)?$/u);
-    if (match) return match[1]!.trim();
-  }
-  return null;
+  const field = reader.column.split(".")[1]?.split(" ")[0];
+  return KEPT.find((kept) => reader.at.split(":")[0]!.endsWith(kept.file) && kept.field === field)?.reason ?? null;
 }
 
 const unique = [...new Map(readers.map((reader) => [`${reader.column} ${reader.at} ${reader.verdict}`, reader])).values()];
@@ -482,3 +500,35 @@ for (const reader of showAll ? unique : decide) {
   console.log(`| ${reader.column} | ${reader.at} | ${reader.via} | ${reader.verdict} | ${reason ? `kept: ${reason}` : reader.note} |`);
 }
 process.exitCode = open.length === 0 ? 0 : 1;
+
+// now() is when the transaction began. One a function evaluates after it took a lock may predate the lock's wait.
+const lockLike = (node: Node) => {
+  if (node.type === "CallExpression" && calleeMethod(node) === "for") return true;
+  if (node.type === "CallExpression" && /lock/iu.test(calleeName(node) ?? "")) return true;
+  return isSqlTemplate(node) && /\bfor (update|share|no key update|key share)\b|pg_advisory/iu.test(sqlText(node.quasi as Node));
+};
+const afterLock: string[] = [];
+const nowTemplate = (node: Node) => isSqlTemplate(node) && /\bnow\(\)/u.test(sqlText(node.quasi as Node));
+for (const file of files) {
+  const added = addedLines(file.path);
+  // A module-level `const expired = sql\`... now()\`` is read where it is used: each use counts as its now().
+  const nowConsts = new Set(file.nodes.filter((node) => node.type === "VariableDeclarator" && node.init && nowTemplate(node.init as Node)
+    && node.parent?.parent?.type !== "BlockStatement").map((node) => name(node.id as Node)));
+  for (const node of file.nodes) {
+    const usesConst = node.type === "Identifier" && nowConsts.has(node.name as string) && node.parent?.type !== "VariableDeclarator"
+      && !(node.parent?.type === "MemberExpression" && node.parent.property === node);
+    if (!nowTemplate(node) && !usesConst) continue;
+    if (added && !added.has(file.lineOf(node.start)) && !usesConst) continue;
+    let top: Node = node;
+    while (top.parent && top.parent.type !== "Program" && top.parent.type !== "ExportNamedDeclaration") top = top.parent;
+    if (top.type === "VariableDeclaration" && nowTemplate(((top.declarations as Node[])[0]?.init as Node | undefined) ?? top)) continue;
+    // A lock taken earlier in the declaration, or by the statement that reads now() itself (its projection is
+    // evaluated before the row lock is granted).
+    const lock = file.nodes.find((other) => within(top, other) && lockLike(other)
+      && (other.end <= node.start || (calleeMethod(other) === "for" && within(other, node))));
+    if (lock) afterLock.push(`| ${at(node)}${usesConst ? ` (${node.name})` : ""} | ${at(lock)}${within(lock, node) ? " (same statement)" : ""} |`);
+  }
+}
+console.log(`\n## now() after a lock in the same declaration: ${new Set(afterLock).size}\n`);
+console.log("| now() | Lock |\n|---|---|");
+for (const line of new Set(afterLock)) console.log(line);
