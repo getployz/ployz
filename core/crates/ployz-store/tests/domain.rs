@@ -566,6 +566,7 @@ fn removing_a_deployed_generated_domain_is_destructive() {
         version: None,
         message: None,
         accept_volume_loss: Vec::new(),
+        rule: None,
     };
     let asking = Trusted {
         approval: Approval::Required,
@@ -695,6 +696,7 @@ fn a_restored_generated_domain_reads_by_its_full_hostname() {
         version: None,
         message: None,
         accept_volume_loss: Vec::new(),
+        rule: None,
     };
     store.write_trusted(&who, &publish, &cloud()).unwrap();
     store
@@ -1487,6 +1489,7 @@ fn a_restored_generated_prefix_never_takes_a_hostname_a_custom_domain_holds() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &trusted,
         )
@@ -1740,6 +1743,7 @@ fn web_with_staged_edits() -> (ConfigStore, Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -1850,6 +1854,7 @@ fn a_reapply_ships_a_referenced_service_only_as_it_runs() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -1928,6 +1933,7 @@ fn save(store: &ConfigStore, who: &Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();

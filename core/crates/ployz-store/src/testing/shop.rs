@@ -83,6 +83,7 @@ pub fn publish(store: &ConfigStore, who: &Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

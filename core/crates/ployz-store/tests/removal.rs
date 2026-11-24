@@ -2191,6 +2191,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             version: None,
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         })),
         Some("production"),
     );

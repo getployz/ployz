@@ -187,6 +187,7 @@ pub(crate) fn save(store: &ConfigStore, who: &Actor, environment: &str) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

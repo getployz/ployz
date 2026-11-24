@@ -1227,6 +1227,7 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 approval: ployz_store::Approval::NotRequired,
@@ -2668,6 +2669,7 @@ fn an_own_copy_made_after_its_owner_only_saved_a_seal_copies_it_not_set() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )

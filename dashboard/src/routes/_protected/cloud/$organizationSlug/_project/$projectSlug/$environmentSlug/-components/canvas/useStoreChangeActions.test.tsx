@@ -65,6 +65,8 @@ function setup(placementLoss = NO_LOSS) {
   let review = "2:1:0";
   // SAFETY: with no passkey to ask for, a Deploy reads only its plan's version.
   vi.spyOn(tapFunctions, "prepareDeployTapServerFn").mockImplementation(async () => ({ kind: "plan", plan: { version: review }, tap: { kind: "off" } }) as never);
+  // SAFETY: a Save that signs no rule reads only that it is off.
+  vi.spyOn(tapFunctions, "prepareSaveTapServerFn").mockResolvedValue({ kind: "off" } as never);
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { rerender } = render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);

@@ -111,6 +111,7 @@ fn shop(protected: bool) -> (ConfigStore, EnvironmentId) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

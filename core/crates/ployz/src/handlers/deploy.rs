@@ -282,6 +282,7 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
         version: matches.get_one::<String>("expect-version").cloned(),
         message: matches.get_one::<String>("message").cloned(),
         accept_volume_loss: super::shared::accepted::accepted(matches)?,
+        rule: None,
     };
     let saved = store
         .publish(&saving)

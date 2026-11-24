@@ -285,6 +285,7 @@ impl Tool for DeployInput {
                 message: self.message,
                 accept_volume_loss: self.accept_volume_loss,
                 id: Some(cx.mint(self.request_key)?),
+                rule: None,
             })?;
             return Ok(json!({
                 "at": saved.environment.to_string(),
