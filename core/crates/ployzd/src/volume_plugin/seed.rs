@@ -12,9 +12,13 @@
 //! its own ([`VolumeStorage::bury`]), so an `into` that is gone and a tombstone mean the
 //! step's Volume was deleted, and the step never makes it again. With no tombstone the step
 //! never made anything that was then destroyed, however a call before ended, so it may
-//! start. It starts a copy, or starts one over, only while the step's window holds on its
-//! own clock, read right before each effect that starts one, and never once the daemon
-//! found the window closed.
+//! start. The step's window bounds only what makes a new destination: a copy into an
+//! absent `into` makes its slot and starts its receive only while the window holds on the
+//! plugin's own clock, read right before each of those effects, and never once the daemon
+//! found the window closed. Starting over inside the slot the step made takes no window:
+//! that slot already carries the step and its birth, so receiving the same point into it
+//! again makes nothing new and gives the data to no one new. It finishes a copy underway,
+//! as landing one does.
 
 use std::{fs, io, path::PathBuf, process::Stdio};
 
@@ -168,6 +172,8 @@ impl Copied {
 /// snapshot.
 struct Stale {
     parent: String,
+    /// The bound the parent was made with, which the Pool already counts for it.
+    bound: u64,
     /// The slot's `fs`, when a receive began one.
     fs: Option<String>,
 }
@@ -188,15 +194,11 @@ impl Stale {
         Ok(())
     }
 
-    /// Clears the slot's `fs` so `copy`'s copy starts over in the parent it made, which
+    /// Clears the slot's `fs` so the step's copy starts over in the parent it made, which
     /// stays: the parent names the step, so a stop at any point leaves a slot the next call
-    /// starts over again. Refused, changing nothing, once the window has closed.
-    async fn restart(
-        self,
-        storage: &VolumeStorage,
-        into: &VolumeName,
-        copy: &CopyBinding,
-    ) -> Result<(), RpcError> {
+    /// starts over again. It takes no window, since the parent it keeps is the destination
+    /// the window admitted.
+    async fn restart(&self, storage: &VolumeStorage, into: &VolumeName) -> Result<(), RpcError> {
         let Some(fs) = &self.fs else {
             return Ok(());
         };
@@ -206,7 +208,6 @@ impl Stale {
                 self.parent
             )));
         }
-        copy.may_start(into, (storage.now)())?;
         storage.zfs(&["destroy", "-r", fs]).await?;
         Ok(())
     }
@@ -223,8 +224,8 @@ struct Source {
 }
 
 impl CopyBinding {
-    /// Refuse to start a copy into `into`, or start one over, unless the daemon found the
-    /// step's window open and it still holds at `now`.
+    /// Refuse to make a new copy into an absent `into` unless the daemon found the step's
+    /// window open and it still holds at `now`.
     fn may_start(&self, into: &VolumeName, now: Timestamp) -> Result<(), RpcError> {
         match self.window {
             StartWindow::Open { closes } if now <= closes => Ok(()),
@@ -346,18 +347,21 @@ impl VolumeStorage {
                 copied.land(self, &request.into, (guid, copy)).await?;
                 self.seeded(&pool, &into).await
             }
+            // Under a Copy step, the step's own slot: the copy starts over in it, inside
+            // the bound the slot was admitted with, whatever the window and the source's
+            // bound now.
             SeedProgress::Stale(stale) => {
-                if let Some(copy) = copy {
-                    copy.may_start(&into, (self.now)())?;
-                }
                 let source = self
                     .seed_source(&pool, &datasets, (request, &name, &into), copy)
                     .await?;
                 match copy {
-                    Some(copy) => {
-                        stale.restart(self, &into, copy).await?;
-                        self.receive_point(&held, &pool, &into, (source, copy))
-                            .await
+                    Some(_) => {
+                        stale.restart(self, &into).await?;
+                        let source = Source {
+                            bound: stale.bound,
+                            ..source
+                        };
+                        self.spawn_copy(&held, &pool, &into, source).await
                     }
                     None => {
                         stale.clear(self, &into).await?;
@@ -480,10 +484,13 @@ impl VolumeStorage {
                 }));
             }
         }
-        Ok(if slot {
-            SeedProgress::Stale(Stale { parent, fs })
-        } else {
-            SeedProgress::Absent
+        Ok(match Self::slot(datasets, pool, into) {
+            Some(slot) => SeedProgress::Stale(Stale {
+                bound: slot.refquota,
+                parent,
+                fs,
+            }),
+            None => SeedProgress::Absent,
         })
     }
 
@@ -582,8 +589,9 @@ impl VolumeStorage {
         self.spawn_copy(held, pool, into, source).await
     }
 
-    /// `copy`'s copy started into the slot of `into` it made, unless the window closed
-    /// since the call began: the slot then stays as it is, for a call the window admits.
+    /// `copy`'s new copy started into the slot of `into` it just made, unless the window
+    /// closed since: the slot then stays as it is, and the next call starts the copy over
+    /// in it.
     async fn receive_point(
         &self,
         held: &HeldMutation,

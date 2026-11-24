@@ -123,8 +123,9 @@ impl LocalMachine {
     /// switch lock. The step must open here for exactly this seed, and is taken in the
     /// approvals record only while its window holds. A step taken before is taken again
     /// past its window, and the plugin then hears the window closed, so a resend only
-    /// finishes a copy underway. Otherwise the plugin starts a copy, or starts it over,
-    /// only while the window still holds on its own clock. It leaves the step's tombstone
+    /// finishes a copy underway, starting its receive over in the slot the step made if a
+    /// restart killed it. Otherwise the plugin makes a new copy's slot only while the
+    /// window still holds on its own clock. It leaves the step's tombstone
     /// whenever it destroys what the step made, so a resend never makes a deleted new
     /// Volume again.
     ///

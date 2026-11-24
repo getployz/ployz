@@ -10,8 +10,10 @@
 //! (`VolumeStorage::seed_volume` with a `CopyBinding`, seed.rs): its reads, then for a new
 //! copy the slot ZFS makes carrying the step and recording the birth (`create_marked_slot`)
 //! and the receive's spawn, or for a copy a restart killed the clear of the old receive
-//! inside the slot it keeps (`Stale::restart`) and the spawn. Each of those effects reads
-//! the window right before it, and any of them can fail or be the last before a restart.
+//! inside the slot it keeps (`Stale::restart`) and the spawn. A new copy reads the window
+//! at the top of its arm and right before each of its two effects; a copy started over in
+//! the slot its step made reads none, since that slot is the destination the window
+//! already admitted. Any effect can fail or be the last before a restart.
 //! A receive runs outside both locks. The user deletes `into` under the same mutation:
 //! every destroy of a dataset carrying the step leaves the step's tombstone first
 //! (`VolumeStorage::bury`, run by `VolumeStorage::zfs`), and a restart can come between.
@@ -23,10 +25,10 @@
 //!
 //! The properties: once `into` was deleted carrying the birth, no copy makes it again; a
 //! copy never answers, lands on or destroys a copy of `into` it did not make; every root
-//! the copy answers carries the step's birth; a copy starts, or starts over, only inside
-//! the step's window on the plugin's clock; a call the daemon found past the window starts
-//! nothing; and a copy is refused as deleted only after `into` was deleted, so no call that
-//! ended or failed partway costs the approval.
+//! the copy answers carries the step's birth; a new copy makes its slot and starts its
+//! receive only inside the step's window on the plugin's clock; a call the daemon found
+//! past the window starts no new copy; and a copy is refused as deleted only after `into`
+//! was deleted, so no call that ended or failed partway costs the approval.
 //!
 //! Out of scope: a receive that fails (its answer is the same `Failed` arm the unbound seed
 //! has), the zfs calls inside a landing (the `volume_marks` model checks their order), a
@@ -111,7 +113,8 @@ impl Into {
     };
 }
 
-/// The effect a plugin call, its reads done, makes next. It reads the window right before.
+/// The effect a plugin call, its reads done, makes next. A new copy reads the window right
+/// before each.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Stage {
     /// ZFS makes the slot carrying the step and recording the birth, in one create.
@@ -158,7 +161,8 @@ enum Path {
     Starts,
     /// No `into` and the step's tombstone: refused as deleted.
     Deleted,
-    /// `CopyBinding::may_start` refused: the window closed, or the daemon found it closed.
+    /// `CopyBinding::may_start` refused a new copy: the window closed, or the daemon found
+    /// it closed.
     Expired,
 }
 
@@ -173,7 +177,7 @@ enum Action {
     Outage,
     /// The plugin's reads under `admit_mutation`, and the branch they choose.
     Plugin,
-    /// The plugin's next effect in the call, after the window read before it.
+    /// The plugin's next effect in the call, after the window read before it for a new copy.
     Advance,
     /// The receive task exits 0.
     Received,
@@ -254,9 +258,11 @@ struct State {
     harmed_other: bool,
     /// The origin of the last root the plugin answered.
     answered: Option<Origin>,
-    /// A copy started, or started over, with the window closed on the plugin's clock.
+    /// A new copy made its slot or started its receive with the window closed on the
+    /// plugin's clock.
     started_late: bool,
-    /// A copy started, or started over, in a call the daemon found past the window.
+    /// A new copy made its slot or started its receive in a call the daemon found past the
+    /// window.
     started_closed: bool,
     /// A copy was refused as deleted though `into` was never deleted.
     falsely_deleted: bool,
@@ -328,9 +334,8 @@ const NEVER_REMADE: &str = "once into was deleted carrying the birth, no copy ma
 const KEEPS_OTHER: &str =
     "a copy never answers, lands on or destroys a copy of into it did not make";
 const ANSWERS_BIRTH: &str = "every root the copy answers carries the step's birth";
-const STARTS_IN_WINDOW: &str =
-    "a copy starts, or starts over, only inside the step's window on the plugin's clock";
-const CLOSED_STAYS_CLOSED: &str = "a call the daemon found past the window starts nothing";
+const STARTS_IN_WINDOW: &str = "a new copy makes its slot and starts its receive only inside the step's window on the plugin's clock";
+const CLOSED_STAYS_CLOSED: &str = "a call the daemon found past the window starts no new copy";
 const DELETED_ONLY_AFTER_DELETE: &str = "a copy is refused as deleted only after into was deleted";
 
 /// Each branch the bounds reach, once. `every_copy_sometimes_needs_what_it_names` takes each
@@ -385,10 +390,16 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Path::AnswersRoot),
     },
     Coverage {
-        name: "a copy killed by a restart starts over in its own slot inside the window",
+        name: "a copy killed by a restart starts over in its own slot",
         on: fresh,
         omit: Some(Omit::Path(Path::StartsOver)),
         reached: |_, state| took(state, Path::StartsOver),
+    },
+    Coverage {
+        name: "a copy killed by a restart starts over in its own slot in a call the daemon found past the window",
+        on: fresh,
+        omit: Some(Omit::Path(Path::StartsOver)),
+        reached: |_, state| took(state, Path::StartsOver) && !state.open,
     },
     Coverage {
         name: "a copy cut after its slot was made, or while it starts over, starts over in its slot",
@@ -445,7 +456,7 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Path::Expired) && state.last == Some(Action::Advance),
     },
     Coverage {
-        name: "a call the daemon found closed refuses to start over though the clock stepped back",
+        name: "a call the daemon found closed makes no slot though the clock stepped back",
         on: fresh,
         omit: Some(Omit::Actions(&[Action::ClockBack])),
         reached: |_, state| took(state, Path::Expired) && state.plugin_open,
@@ -453,8 +464,8 @@ const COVERAGE: &[Coverage] = &[
 ];
 
 impl CopyStep {
-    /// `CopyBinding::may_start` read right before an effect, or with `!boundary` at the
-    /// top of the `Stale` and `Absent` arms.
+    /// `CopyBinding::may_start` read right before a new copy's effect, or with `!boundary`
+    /// at the top of the `Absent` arm.
     fn may_start(&self, state: &State, open: bool, boundary: bool) -> bool {
         if self.broken.ignores_window || (boundary && self.broken.window_before_reads) {
             return true;
@@ -502,8 +513,6 @@ impl CopyStep {
                     state.into = Into::Root(stamped);
                     state.answered = Some(stamped);
                     Err(Path::Lands)
-                } else if !self.may_start(state, open, false) {
-                    Err(Path::Expired)
                 } else {
                     state.harmed_other |= !ours;
                     Ok(Held::Plugin {
@@ -542,15 +551,18 @@ impl CopyStep {
         }
     }
 
-    /// The plugin call's next effect, `at`, after the window read right before it.
+    /// The plugin call's next effect, `at`, after the window read right before it for a new
+    /// copy.
     fn advance(&self, state: &mut State, (open, at, new): (bool, Stage, bool)) {
-        if !self.may_start(state, open, true) {
+        if new && !self.may_start(state, open, true) {
             state.path = Some(Path::Expired);
             state.held = Held::Idle;
             return;
         }
         let next = match at {
             Stage::Make => {
+                state.started_late |= !state.plugin_open;
+                state.started_closed |= !open;
                 state.made = true;
                 state.into = Into::Slot {
                     ours: true,
@@ -576,8 +588,8 @@ impl CopyStep {
                 Stage::Spawn
             }
             Stage::Spawn => {
-                state.started_late |= !state.plugin_open;
-                state.started_closed |= !open;
+                state.started_late |= new && !state.plugin_open;
+                state.started_closed |= new && !open;
                 if let Into::Slot { ours, record, .. } = state.into {
                     state.into = Into::Slot {
                         ours,
@@ -901,6 +913,15 @@ mod tests {
         }
     }
 
+    /// The step that broke the property was an effect of a new copy into an absent `into`,
+    /// which the window guards, not of one started over in its own slot.
+    fn a_new_copy_broke(path: &[(State, Option<Action>)]) -> bool {
+        path.iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|(before, _)| matches!(before.held, Held::Plugin { new: true, .. }))
+    }
+
     #[test]
     fn a_copy_step_holds_in_every_scenario() {
         for scenario in ALL {
@@ -1017,9 +1038,11 @@ mod tests {
         }
     }
 
+    /// The window guards a new copy: with it ignored, a copy makes its slot or starts its
+    /// receive after the window closed.
     #[test]
     fn a_copy_starts_only_inside_its_window() {
-        breaks(
+        let path = breaks(
             broken(
                 Scenario::Fresh,
                 Broken {
@@ -1029,6 +1052,7 @@ mod tests {
             ),
             STARTS_IN_WINDOW,
         );
+        assert!(a_new_copy_broke(&path), "a new copy started late");
     }
 
     /// The window read when the daemon took the request is stale by the time the plugin
@@ -1049,6 +1073,7 @@ mod tests {
             harness::took_action(&path, Action::WindowCloses),
             "the window closed after the take"
         );
+        assert!(a_new_copy_broke(&path), "a new copy started late");
     }
 
     /// Read once before the plugin's reads and preparation, the window closes before the
@@ -1069,10 +1094,11 @@ mod tests {
             harness::took_action(&path, Action::Advance),
             "the window closed inside the plugin's call"
         );
+        assert!(a_new_copy_broke(&path), "a new copy started late");
     }
 
     /// The daemon found the window closed, so the call may only finish a copy underway;
-    /// a plugin that reads only its own clock starts the copy over once the clock steps
+    /// a plugin that reads only its own clock makes a new copy's slot once the clock steps
     /// back.
     #[test]
     fn a_copy_the_daemon_found_closed_starts_nothing_whatever_the_clock() {
@@ -1089,6 +1115,10 @@ mod tests {
         assert!(
             harness::took_action(&path, Action::ClockBack),
             "the plugin's clock stepped back"
+        );
+        assert!(
+            a_new_copy_broke(&path),
+            "a new copy started after the window"
         );
     }
 

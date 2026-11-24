@@ -78,21 +78,26 @@ pub struct CopyBinding {
     /// lands as, so only that slot is this step's, and destroying either leaves the step's
     /// tombstone: a new Volume gone with its step's tombstone was deleted.
     pub step: ployz_core::authority::StepDigest,
-    /// Whether the call may start a copy, or start one over.
+    /// Whether the call may make a new copy into an absent Volume. A copy starting over in
+    /// the slot the step made, which carries the step and its birth, does not read it.
     pub window: StartWindow,
 }
 
-/// Whether a Copy may still start, as the daemon found its window when it took the call.
+/// Whether a Copy may still make its new Volume's slot, as the daemon found its window when
+/// it took the call. The window bounds when an approval may make a new destination. A copy
+/// whose slot the step already made is underway, so starting its receive over in that slot,
+/// like landing it, takes no window.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StartWindow {
-    /// The window holds until `closes`, the last instant on the plugin's clock a copy may
-    /// start. The plugin reads its clock right before each effect that starts one.
+    /// The window holds until `closes`, the last instant on the plugin's clock a new copy
+    /// may start. The plugin reads its clock right before making the slot and right before
+    /// starting the receive into the slot it just made.
     Open {
         closes: ployz_core::authority::Timestamp,
     },
-    /// The window had closed: the call only finishes a copy underway, whatever the plugin's
-    /// clock reads.
+    /// The window had closed: the call makes no slot, whatever the plugin's clock reads,
+    /// and only finishes a copy underway in the slot the step made.
     Closed,
 }
 

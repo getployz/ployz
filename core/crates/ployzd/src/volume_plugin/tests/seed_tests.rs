@@ -1147,8 +1147,8 @@ async fn a_copy_of_a_point_the_step_did_not_approve_is_refused_before_any_effect
     assert_eq!(effects_since(&test, &log), Vec::<String>::new());
 }
 
-/// Once the daemon found the window closed, the plugin starts no copy and starts none over,
-/// however early its own clock reads, but it finishes the copy underway.
+/// Once the daemon found the window closed, the plugin makes no new copy, however early its
+/// own clock reads, but it finishes the copy underway.
 #[tokio::test]
 async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
     let early = Arc::new(AtomicU64::new(1_000));
@@ -1164,16 +1164,6 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
         "expired",
     );
     assert_eq!(effects_since(&fresh, &log), Vec::<String>::new());
-
-    let killed = killed_copy();
-    let (socket, _server) = plugin(&killed, Some(&early));
-    let log = commands(&killed);
-    refused(
-        &post(&socket, "/Volume.SeedCopy", copy(closed())).await,
-        "expired",
-    );
-    assert_eq!(effects_since(&killed, &log), Vec::<String>::new());
-    assert!(killed.0.join("seed-fs").exists());
 
     let underway = fixture(&[]);
     let (socket, _server) = plugin(&underway, None);
@@ -1385,39 +1375,69 @@ async fn a_copy_whose_window_closes_while_it_prepares_makes_no_slot() {
     assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
 }
 
-/// The window closes while the copy reads whether its old receive holds a point written
-/// here: the slot stays as it was, receive and all.
+/// The window closes after the copy made its slot and before its receive starts: no
+/// receive starts, and the slot stays, so the resend the daemon found past the window
+/// starts the copy over in it and lands.
 #[tokio::test]
-async fn a_copy_whose_window_closes_while_it_reads_its_slot_keeps_it() {
-    let test = killed_copy();
+async fn a_copy_whose_window_closes_after_it_makes_its_slot_starts_over_in_it() {
+    let test = fixture(&[]);
 
-    let reply = closing_during(
-        &test,
-        "get -H -o value ployz:epoch tank/ployz-mirror/seed/fs",
-    )
-    .await;
+    let reply = closing_during(&test, MAKE_SLOT).await;
 
     refused(&reply, "expired");
     assert!(test.0.join("seed-slot").exists());
-    assert!(test.0.join("seed-fs").exists());
-}
-
-/// The window closes as the copy clears its old receive: no receive starts, and the slot
-/// it made stays, so a call inside a window starts the copy over in it and lands.
-#[tokio::test]
-async fn a_copy_whose_window_closes_after_it_clears_its_slot_starts_no_receive() {
-    let test = killed_copy();
-
-    let reply = closing_during(&test, "destroy -r tank/ployz-mirror/seed/fs").await;
-
-    refused(&reply, "expired");
-    assert!(test.0.join("seed-slot").exists());
-    assert!(!test.0.join("seed-fs").exists());
     assert!(!commands(&test).contains("zfs receive"));
-    let (socket, _server) = plugin(&test, None);
-    let landed = copy_settled(&socket, &copy(open(OPEN))).await;
+    let late = Arc::new(AtomicU64::new(1_001_000));
+    let (socket, _server) = plugin(&test, Some(&late));
+    let landed = copy_settled(&socket, &copy(closed())).await;
     assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
     assert_copy_landed(&test);
+}
+
+/// A copy a restart killed is underway in the slot its step made: resent after the window,
+/// whether the daemon found it closed or the plugin's clock has passed it, the copy starts
+/// over in that slot and lands with the birth, keeping the parent.
+#[tokio::test]
+async fn a_copy_killed_by_a_restart_starts_over_in_its_slot_after_the_window() {
+    let late = Arc::new(AtomicU64::new(1_001_000));
+    for window in [closed(), open(1_000_500)] {
+        let test = killed_copy();
+        let (socket, _server) = plugin(&test, Some(&late));
+
+        let landed = copy_settled(&socket, &copy(window.clone())).await;
+
+        assert_eq!(
+            landed.pointer("/Ok/copy/kind").unwrap(),
+            "root",
+            "{window}: {landed}"
+        );
+        assert_copy_landed(&test);
+        let log = commands(&test);
+        assert!(
+            log.contains("zfs destroy -r tank/ployz-mirror/seed/fs"),
+            "{window}: {log}"
+        );
+        assert!(!log.contains(MAKE_SLOT), "{window}: {log}");
+    }
+}
+
+/// A copy started over in its slot is received inside the bound the slot was admitted
+/// with, though the source grew since: the Pool counts only the slot's bound.
+#[tokio::test]
+async fn a_copy_started_over_keeps_its_slot_bound_though_the_source_grew() {
+    let test = killed_copy();
+    set_property(&test, "tank/ployz-mirror/seed", "refquota", "1073741824");
+    set_property(&test, "tank/ployz/data", "refquota", "4294967296");
+    let (socket, _server) = plugin(&test, None);
+
+    let landed = copy_settled(&socket, &copy(open(OPEN))).await;
+
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_copy_landed(&test);
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "refquota").as_deref(),
+        Some("1073741824")
+    );
 }
 
 /// An empty slot parent of `seed`, such as an interrupted mirror pull leaves, is no copy

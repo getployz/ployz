@@ -26,7 +26,7 @@ Each property is phrased over a stale Seed, or over a copy no writer elsewhere h
 cd core && cargo test -p ployz-verify volume_marks -- --nocapture --test-threads=1
 ```
 
-A warm run of the twenty-three tests (eleven here, twelve in the Copy step model below) takes under a second, since the largest scenario has 12,606 states (258 in the Seed model). The whole crate took 111 s at `0928c565` on a shared host, almost all of it in the other models. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
+A warm run of the twenty-three tests (eleven here, twelve in the Copy step model below) takes under a second, since the largest scenario has 12,783 states (258 in the Seed model). The whole crate took 111 s at `0928c565` on a shared host, almost all of it in the other models. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
 
 The run is green when all twenty-three tests pass. Read the Seed model's eleven as three groups; the Copy step model's twelve are under its own heading.
 
@@ -128,7 +128,7 @@ A green model says nothing about them. Cover them with the seed tests in `core/c
 `core/crates/ployz-verify/src/volume_marks/copy_step.rs` is a second, smaller model of the same Seed when a person's Copy step admits it. Cloud resends `SeedCopy` for `into` until Machine A answers a root, and any request can arrive late. A takes each request under the switch lock in two steps (`LocalMachine::seed_copy` in `core/crates/ployzd/src/machine/local_machine/volume_copy.rs`):
 
 1. It takes the step in its approvals record (`ConsumptionLog::take_copy` in `core/crates/ployzd/src/machine/local_machine/consumption.rs`). A step not taken yet is taken only while its window holds. A step taken before is taken again past its window, and the plugin then hears the window closed (`StartWindow::Closed`), so that call only finishes a copy underway.
-2. It calls the plugin's bound seed (`VolumeStorage::seed_volume` with a `CopyBinding`, `core/crates/ployzd/src/volume_plugin/seed.rs`) under `admit_mutation`. After its reads, a new copy makes the slot parent carrying the step's digest (`ployz:copy-step`), the birth's origin and the point in one `zfs create` (`create_marked_slot`), then spawns the receive. A copy a restart killed starts over inside the slot it made, which it keeps: it destroys only the old `fs` (`Stale::restart`), then spawns the receive. The plugin reads the window on its own clock (`CopyBinding::may_start`) right before each of those effects, after its reads and its preparation (capacity, the mirror root, the written-here lookup). The model runs each effect as its own step, so the window can close and a call can be cut between any two.
+2. It calls the plugin's bound seed (`VolumeStorage::seed_volume` with a `CopyBinding`, `core/crates/ployzd/src/volume_plugin/seed.rs`) under `admit_mutation`. After its reads, a new copy makes the slot parent carrying the step's digest (`ployz:copy-step`), the birth's origin and the point in one `zfs create` (`create_marked_slot`), then spawns the receive. A copy a restart killed starts over inside the slot it made, which it keeps: it destroys only the old `fs` (`Stale::restart`), then spawns the receive. For a new copy the plugin reads the window on its own clock (`CopyBinding::may_start`) at the top of the `Absent` arm and right before each of its two effects, after its reads and its preparation (capacity, the mirror root). A copy started over in the slot its step made reads no window: that slot already carries the step and the birth, so receiving the same point into it again makes no new destination and finishes the copy underway, as a landing does. It receives inside the bound the slot was made with, not the source's bound now. The model runs each effect as its own step, so the window can close and a call can be cut between any two.
 
 Every `zfs destroy` of a dataset carrying `ployz:copy-step`, on the dataset or with `-r` under it, first writes the step's tombstone, a file under the plugin's data directory (`VolumeStorage::bury`, which `VolumeStorage::zfs` runs ahead of every destroy). The landed root carries the step too, so a delete of it buries the step. An `into` that is absent with the step's tombstone was deleted. Absent with none, the step never made anything that was later destroyed, so it may start inside its window.
 
@@ -139,27 +139,27 @@ Its properties:
 - `NEVER_REMADE`: **once `into` was deleted carrying the birth, no copy makes it again.**
 - `KEEPS_OTHER`: **a copy never answers, lands on or destroys a copy of `into` it did not make.**
 - `ANSWERS_BIRTH`: **every root the copy answers carries the step's birth.**
-- `STARTS_IN_WINDOW`: **a copy starts, or starts over, only inside the step's window on the plugin's clock.**
-- `CLOSED_STAYS_CLOSED`: **a call the daemon found past the window starts nothing.**
+- `STARTS_IN_WINDOW`: **a new copy makes its slot and starts its receive only inside the step's window on the plugin's clock.**
+- `CLOSED_STAYS_CLOSED`: **a call the daemon found past the window starts no new copy.**
 - `DELETED_ONLY_AFTER_DELETE`: **a copy is refused as deleted only after `into` was deleted.**
 
 Its tests:
 
 - `a_copy_step_holds_in_every_scenario` checks the code as it is.
-- `every_copy_sometimes_needs_what_it_names` cuts each `COVERAGE` row's omit and expects the row unreached. The rows include a resend beginning the copy after a call cut before its slot was made, a copy cut after its slot was made or while it starts over starting over in its slot, a late resend after a restart refusing `into` deleted, a delete a restart cut leaving the copy a resend answers, a window closing between a copy's reads and its next effect, and a call the daemon found closed refusing to start over though the plugin's clock stepped back.
+- `every_copy_sometimes_needs_what_it_names` cuts each `COVERAGE` row's omit and expects the row unreached. The rows include a resend beginning the copy after a call cut before its slot was made, a copy cut after its slot was made or while it starts over starting over in its slot, a copy a restart killed starting over in its slot in a call the daemon found past the window, a late resend after a restart refusing `into` deleted, a delete a restart cut leaving the copy a resend answers, a window closing between a copy's reads and its next effect, and a call the daemon found closed making no slot though the plugin's clock stepped back.
 - Ten `breaks` tests each remove one guard:
   - `a_copy_never_remakes_its_deleted_volume_without_the_tombstone` (`no_tombstone`: no destroy leaves a tombstone, so a resend inside the window makes the deleted Volume again).
   - `a_copy_cut_before_its_slot_was_made_is_not_refused_as_deleted` (`reserves_at_begin`, the cut before this one: the plugin reserved the step before ZFS made the slot, so a stop between left the step refused as deleted).
   - `a_copy_starts_over_inside_the_slot_it_keeps` (`destroys_parent_on_restart`, the first cuts: starting over destroyed the step's own slot, burying the step, so a stop before the slot was made again left it refused as deleted).
   - `a_copy_restarts_only_a_slot_carrying_its_step` (`ignores_step`: an empty parent passes for the step's own slot).
   - `a_copy_checks_the_origin_of_into` (`ignores_origin`).
-  - `a_copy_starts_only_inside_its_window` (`ignores_window`).
+  - `a_copy_starts_only_inside_its_window` (`ignores_window`). This and the next three assert that the effect that broke the property belongs to a new copy, which the window still guards.
   - `a_copy_reads_its_window_where_it_starts` (`window_at_take`: the window as the daemon read it when it took the request, stale once the plugin waits for its mutation).
   - `a_copy_reads_its_window_right_before_each_effect` (`window_before_reads`: one read before the plugin's reads and preparation, stale by the time it makes the slot or spawns the receive).
-  - `a_copy_the_daemon_found_closed_starts_nothing_whatever_the_clock` (`ignores_verdict`: the plugin reads only its own clock, and starts a copy over once that clock steps back).
+  - `a_copy_the_daemon_found_closed_starts_nothing_whatever_the_clock` (`ignores_verdict`: the plugin reads only its own clock, and makes a new copy's slot once that clock steps back).
   - `a_copy_lands_with_the_birth_its_slot_records` (`lands_point_origin`).
 
-Out of scope: a receive that fails, the zfs calls inside a landing (the Seed model above checks their order), a wall clock that steps back while a call the daemon found open waits for the plugin, Docker adopting the root, and the bundle's signature, which the `authority::copy` tests in `ployz-core` cover. The plugin tests in `seed_tests.rs` stage each cut on fake ZFS with a plugin restart: `a_copy_interrupted_making_its_slot_lands_on_resend`, `a_copy_interrupted_starting_over_keeps_its_slot_and_lands_on_resend`, `a_copy_never_makes_its_deleted_volume_again`, and the three `a_copy_whose_window_closes_*` tests.
+Out of scope: a receive that fails, the zfs calls inside a landing (the Seed model above checks their order), a wall clock that steps back while a call the daemon found open waits for the plugin, Docker adopting the root, and the bundle's signature, which the `authority::copy` tests in `ployz-core` cover. The plugin tests in `seed_tests.rs` stage each cut on fake ZFS with a plugin restart: `a_copy_interrupted_making_its_slot_lands_on_resend`, `a_copy_interrupted_starting_over_keeps_its_slot_and_lands_on_resend`, `a_copy_never_makes_its_deleted_volume_again`, the two `a_copy_whose_window_closes_*` tests, `a_copy_killed_by_a_restart_starts_over_in_its_slot_after_the_window` and `a_copy_started_over_keeps_its_slot_bound_though_the_source_grew`.
 
 ## Coverage
 
