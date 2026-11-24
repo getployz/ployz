@@ -25,6 +25,8 @@ import {
   sweepProposals,
 } from "#/modules/proposals/proposals.server";
 import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
+import type { CliCall } from "#/modules/commands/cli-call.server";
+import { proposalsCliRoutes } from "#/modules/proposals/proposals.cli.server";
 import { operationProposals } from "#/modules/proposals/tables";
 import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId } from "@ployz/sdk";
 import { RpcError } from "#/modules/runtime/ployz.server";
@@ -609,4 +611,18 @@ it.live("an agent token revoked before the tap gets nothing run, though its owne
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("is gone") });
     expect(yield* admitted(id)).toBe(0);
     expect(yield* provided(deployStep(id))).toMatchObject({ status: "denied" });
+  }));
+
+it.live("the CLI follows a Deploy's proposal only through the credential that asked, and reads only its status", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, agent } = yield* deployable();
+    const asker: CliCall["caller"] = { userId: agent.userId, organization: agent.organization, role: "owner", support: null, via: "agent", credential: { kind: "session", id: BROWSER } };
+    const id = linkedId(yield* cluster(linkDeploy(asker, admitDeploy(production, ASKED))));
+    const read = (caller: CliCall["caller"]) => provided(proposalsCliRoutes["GET proposals/:id"]({ caller, id, request: new Request("http://cloud.test") }));
+    expect(yield* read(asker)).toEqual({ proposal: { status: "presented", reason: null, deployment_id: ASKED } });
+    // The same person's staging token can't read the production proposal its maker's sign-in asked for.
+    const staging: CliCall["caller"] = { ...asker, via: "cli", credential: { kind: "token", id: "token-staging", grant: { permissions: null, environments: ["staging"] } } };
+    const refused = yield* read(staging);
+    if (!(refused instanceof Response)) return expect.fail(`read: ${JSON.stringify(refused)}`);
+    expect(yield* Effect.promise(() => refused.json())).toMatchObject({ error: { code: "not_found" } });
   }));

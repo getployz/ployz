@@ -34,7 +34,7 @@ pub(crate) fn fake_cloud(
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0;
-            let (status, json) = reply(route, &String::from_utf8(body).unwrap());
+            let (status, json) = reply(route, &String::from_utf8_lossy(&body));
             let json = json.to_string();
             write!(
                 stream,

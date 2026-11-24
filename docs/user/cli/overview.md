@@ -308,6 +308,24 @@ These `ployz env` commands do what the dashboard's environment controls do. See
 `keep` and `never-sync` take `--off` to undo. `ployz env copy` gives the branch its own copy of the
 service, and a volume it mounts starts empty. `ployz env --help` lists the rest.
 
+## Deploy without a key
+
+On a computer with no device key or `PLOYZ_KEY`, `deploy` and `up` print a link when servers
+need a passkey to run the deploy:
+
+```text
+Approve this deploy at https://ployz.dev/cloud/acme/approve/6f1c2b9e-…
+Waiting for approval… approved.
+```
+
+Then it follows the deploy as usual. If no one approves within 10 minutes, it stops with
+`Nothing deployed yet` and the link, which still works. If someone approved but the deploy
+hasn't started by then, or Cloud stops answering, it says so with the link. A denied deploy
+stops with the reason given. With `--json` or `--detach`, or on a computer that has a device
+key or `PLOYZ_KEY`, it returns the link at once, and `--json` also gives the `proposal_id`. An upload from `ployz up` is
+kept for a day, so approving it after that deploys nothing. See
+[Deploy with no key](../deploy/deployments.md#deploy-with-no-key).
+
 ## Deploy a directory
 
 > [!WARNING]

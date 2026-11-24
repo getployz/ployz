@@ -8,6 +8,7 @@ pub(super) mod approve;
 #[cfg(test)]
 mod follow_tests;
 mod forget;
+mod linked;
 pub(crate) mod progress;
 mod silent;
 #[cfg(test)]
@@ -377,9 +378,10 @@ pub(super) fn upload_and_ship(
             .upload(&id, dir, listing)
             .map_err(|error| staged.unstage(store, error))?;
     }
+    let approval = linked::Approval::of(ui::json(), detaches(matches), approve::keyed(matches));
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
-            id,
+            id: id.clone(),
             environment,
             services,
             version,
@@ -394,6 +396,7 @@ pub(super) fn upload_and_ship(
                 .unwrap_or_default(),
             recreate: Vec::new(),
         }))
+        .or_else(|refused| linked::admitted(store, refused, &id, approval))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     let forgot = (!forgets.is_empty())
         .then(|| forget::everywhere(matches, forgets))
