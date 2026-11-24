@@ -121,29 +121,32 @@ impl<'a> Report<'a> {
             .map_or_else(|| id.to_string(), |name| name.to_string())
     }
 
-    /// A copy this run couldn't remove that never went In: its own new one, or one an
-    /// ended run left. No proxy routes it once its Machine is back, and the next
-    /// Deploy removes it.
+    /// A copy this run couldn't remove that was not In when it last read it: its own
+    /// new one, or one an ended run left. No proxy routes it once its Machine is back,
+    /// and the next Deploy removes it.
     pub(super) fn leave_unrouted(
         &self,
         progress: &Progress,
-        service: &QualifiedService,
-        machine_id: MachineId,
-        container_id: ContainerId,
+        (service, machine_id, container_id): (&QualifiedService, MachineId, ContainerId),
+        purpose: RemoveContainerPurpose,
         error: RpcError,
     ) {
         let (reason, _) = self.failed_on(machine_id, error);
-        self.name_left(progress, service, machine_id, container_id, reason);
+        self.name_left(
+            progress,
+            (service, machine_id, container_id),
+            purpose,
+            reason,
+        );
     }
 
-    /// A copy this run couldn't remove that never went In, for `reason`, which keeps
-    /// running. It was only ever an attempt at its slot, so its removal is a Rollout.
+    /// A copy this run couldn't remove, for `reason`, which keeps running, with
+    /// `purpose` for the cleanup that retries its removal.
     pub(super) fn name_left(
         &self,
         progress: &Progress,
-        service: &QualifiedService,
-        machine_id: MachineId,
-        container_id: ContainerId,
+        (service, machine_id, container_id): (&QualifiedService, MachineId, ContainerId),
+        purpose: RemoveContainerPurpose,
         reason: String,
     ) {
         progress.warn(DeployWarning::LeftRunning {
@@ -151,7 +154,7 @@ impl<'a> Report<'a> {
             container_id,
             machine: self.machine_name(&machine_id),
             reason,
-            purpose: RemoveContainerPurpose::Rollout,
+            purpose,
         });
     }
 

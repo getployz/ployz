@@ -46,9 +46,12 @@ pub(super) async fn discard_new<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
-                shared
-                    .report
-                    .leave_unrouted(progress, service, *machine_id, container_id, error);
+                shared.report.leave_unrouted(
+                    progress,
+                    (service, *machine_id, container_id),
+                    RemoveContainerPurpose::Rollout,
+                    error,
+                );
             }
             return running();
         }
@@ -106,13 +109,19 @@ pub(super) async fn discard_new<C: MachineOperations>(
 /// In or Held, which the run's runner may have made it after losing its claim: that
 /// copy serves, so it stays, named because it serves beside this Deploy's new copies.
 /// One that stays for any other reason is named too, and the Deploy goes on without it.
+///
+/// The Gone undoes the ended run's own attempt, as that run would have, so it takes the
+/// anonymous Volumes. A copy it leaves may have come In and served since, so the cleanup
+/// that retries it keeps them.
 pub(super) async fn remove_stray<C: MachineOperations>(
     client: &C,
     progress: &Progress,
     shared: &Shared<'_>,
-    (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
+    stray: (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
+    let (service, machine_id, container_id) = stray;
+    let stray = (service, *machine_id, container_id);
     let removed = within_restart(
         machine_id,
         cleanup::gone(
@@ -124,10 +133,11 @@ pub(super) async fn remove_stray<C: MachineOperations>(
             Some(RESTART_WAIT),
         ),
     );
+    let retire = RemoveContainerPurpose::Retire;
     let answer = tokio::select! {
         answer = removed => answer,
         () = cancellation.cancelled() => {
-            shared.report.name_left(progress, service, *machine_id, container_id, "interrupted".into());
+            shared.report.name_left(progress, stray, retire, "interrupted".into());
             return;
         }
     };
@@ -136,9 +146,8 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::InRotation { .. }) => {
             shared.report.name_left(
                 progress,
-                service,
-                *machine_id,
-                container_id,
+                stray,
+                retire,
                 "it came into routing after this deploy planned".into(),
             );
             return;
@@ -146,9 +155,7 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
-    shared
-        .report
-        .leave_unrouted(progress, service, *machine_id, container_id, error);
+    shared.report.leave_unrouted(progress, stray, retire, error);
 }
 
 /// Why a move's replacement never served, and whether none of it is left on its

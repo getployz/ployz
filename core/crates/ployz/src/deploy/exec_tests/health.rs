@@ -925,6 +925,19 @@ async fn deploy_as(client: &Scripted, run: &str, ended: &[&str]) -> DeployOutcom
     .await
 }
 
+/// The purpose each left copy's warning records, by which Cloud's cleanup removes it.
+fn left_purposes(warnings: &[DeployWarning]) -> Vec<RemoveContainerPurpose> {
+    warnings
+        .iter()
+        .filter_map(|warning| {
+            let DeployWarning::LeftRunning { purpose, .. } = warning else {
+                return None;
+            };
+            Some(*purpose)
+        })
+        .collect()
+}
+
 fn pending_copies(client: &Scripted) -> Vec<ContainerId> {
     client
         .snapshot()
@@ -1059,6 +1072,11 @@ async fn a_left_copy_that_came_in_before_its_removal_keeps_serving_and_is_named(
             "it came into routing after this deploy planned"
         )]
     );
+    assert_eq!(
+        left_purposes(&warnings),
+        [RemoveContainerPurpose::Retire],
+        "it served, so Cloud's cleanup keeps its anonymous Volumes"
+    );
     client.assert_done();
     assert_eq!(client.rotation(&promoted), Some(CopyRotation::In));
     assert_eq!(client.rotation(&serving), Some(CopyRotation::In));
@@ -1095,6 +1113,11 @@ async fn a_cancel_during_a_left_copys_removal_names_the_copy_at_once() {
     assert_eq!(
         warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
         [super::flip::left_running(&left, "machine-1", "interrupted")]
+    );
+    assert_eq!(
+        left_purposes(&warnings),
+        [RemoveContainerPurpose::Retire],
+        "it may have come In since the plan read it"
     );
     client.assert_done();
 }
@@ -1138,6 +1161,11 @@ async fn a_left_copy_the_deploy_cannot_remove_is_named_and_holds_up_no_service()
             "machine-1",
             "Docker did not answer"
         )]
+    );
+    assert_eq!(
+        left_purposes(&warnings),
+        [RemoveContainerPurpose::Retire],
+        "it may have come In since the plan read it"
     );
     client.assert_done();
 }
