@@ -106,18 +106,20 @@ async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), Insta
 struct UnitSnapshot(Vec<(PathBuf, Option<Vec<u8>>)>);
 
 impl UnitSnapshot {
-    const WRITTEN: [Unit; 4] = [
+    const WRITTEN: [Unit; 5] = [
         Unit::Ployz,
         Unit::PloyzSocket,
         Unit::VolumePluginSocket,
         Unit::VolumePluginService,
+        Unit::Fence,
     ];
 
     fn take(systemd_dir: &Path) -> Result<Self, InstallError> {
         Self::WRITTEN
             .into_iter()
-            .map(|unit| {
-                let path = systemd_dir.join(unit.name());
+            .map(|unit| systemd_dir.join(unit.name()))
+            .chain([super::host::docker_fence_drop_in(systemd_dir)])
+            .map(|path| {
                 let content = read_unit(&path).map_err(|source| InstallError::Io {
                     stage: "read systemd unit before the upgrade",
                     source,
@@ -235,12 +237,21 @@ mod tests {
             root.path(),
         )
         .unwrap();
-        let mut written: Vec<_> = fs::read_dir(root.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
+        let mut written = Vec::new();
+        let mut directories = vec![root.path().to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    directories.push(path);
+                } else {
+                    written.push(path);
+                }
+            }
+        }
         written.sort();
-        let mut snapshot = UnitSnapshot::WRITTEN.map(|unit| unit.name().to_owned());
+        let snapshot = UnitSnapshot::take(root.path()).unwrap();
+        let mut snapshot: Vec<_> = snapshot.0.into_iter().map(|(path, _)| path).collect();
         snapshot.sort();
         assert_eq!(written, snapshot);
     }

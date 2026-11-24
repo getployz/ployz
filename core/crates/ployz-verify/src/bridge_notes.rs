@@ -79,7 +79,7 @@ const CRASHES: u8 = 1;
 const REFUSED_STARTS: u8 = 1;
 /// Container listings that fail, in the readdress (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`) or the pin pass (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
 const FAILED_LISTINGS: u8 = 1;
-/// Pinned connects Docker refuses, whose `connect(None)` fallback it then accepts or refuses.
+/// Pinned connects Docker refuses.
 const REFUSED_CONNECTS: u8 = 1;
 /// Moves of Docker's restart policy on a member not stopped through the API.
 const FLIPS: u8 = 1;
@@ -335,9 +335,6 @@ enum Step {
     Stop(Settle),
     /// The disconnect again (`ployzd::network::linux::bridge::NetworkPlane::detach`), or the pinned connect again (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`).
     Again,
-    /// `connect(None)` (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`); `either`: Docker may refuse it too, after it refused the
-    /// pinned connect.
-    Fallback { either: bool },
 }
 
 /// The statement a daemon start runs next.
@@ -471,7 +468,6 @@ enum Disconnect {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Connect {
     Pinned(Addr),
-    Dynamic(Addr),
     BetweenRestarts,
     /// Another endpoint holds the pinned address.
     InUse,
@@ -1050,7 +1046,7 @@ impl BridgeNotes {
                     Step::Again
                 }
             }
-            Step::First | Step::Again | Step::Fallback { .. } => step,
+            Step::First | Step::Again => step,
         }
     }
 
@@ -1274,7 +1270,6 @@ impl BridgeNotes {
                         i,
                         step: self.stop(state, member, step, pick),
                     },
-                    Step::Fallback { .. } => unreachable!("detach has no fallback"),
                 }
             }
             At::Remove => {
@@ -1327,22 +1322,18 @@ impl BridgeNotes {
                             answer,
                         });
                         match answer {
-                            Connect::Pinned(_) | Connect::Dynamic(_) => {
-                                Self::after_member(state, phase, i)
-                            }
+                            Connect::Pinned(_) => Self::after_member(state, phase, i),
                             Connect::BetweenRestarts if step == Step::First => At::Rejoin {
                                 phase,
                                 i,
                                 step: Step::Inspect,
                             },
                             Connect::BetweenRestarts | Connect::InUse | Connect::Refused => {
-                                At::Rejoin {
-                                    phase,
-                                    i,
-                                    step: Step::Fallback {
-                                        either: pick == Pick::Fails,
-                                    },
+                                if phase == Phase::Pin {
+                                    state.pass.unjoined = state.pass.unjoined.with(member);
                                 }
+                                state.took = Some(Branch::Unjoined { phase, member });
+                                Self::after_member(state, phase, i)
                             }
                         }
                     }
@@ -1351,33 +1342,6 @@ impl BridgeNotes {
                         i,
                         step: self.stop(state, member, step, pick),
                     },
-                    Step::Fallback { .. } => {
-                        let answer = match pick {
-                            Pick::Dynamic(address) => {
-                                state.docker.get_mut(member).endpoint = Endpoint::Dynamic(address);
-                                Connect::Dynamic(address)
-                            }
-                            Pick::Go
-                            | Pick::Fails
-                            | Pick::AfterRename
-                            | Pick::Netless
-                            | Pick::Stop
-                            | Pick::Remove => Connect::Refused,
-                        };
-                        state.took = Some(Branch::Connected {
-                            phase,
-                            member,
-                            step,
-                            answer,
-                        });
-                        if answer == Connect::Refused {
-                            if phase == Phase::Pin {
-                                state.pass.unjoined = state.pass.unjoined.with(member);
-                            }
-                            state.took = Some(Branch::Unjoined { phase, member });
-                        }
-                        Self::after_member(state, phase, i)
-                    }
                 }
             }
             At::Finish => {
@@ -1582,24 +1546,6 @@ impl BridgeNotes {
                             vec![Pick::Go, Pick::Fails]
                         } else {
                             vec![Pick::Go]
-                        }
-                    }
-                    (At::Rejoin { .. }, Step::Fallback { either }) => {
-                        let container = state.docker.get(member);
-                        if matches!(container.run, Run::Gone | Run::Held)
-                            || container.endpoint.attached()
-                        {
-                            vec![Pick::Go]
-                        } else {
-                            let mut picks = self
-                                .free(state)
-                                .into_iter()
-                                .map(Pick::Dynamic)
-                                .collect::<Vec<_>>();
-                            if either || picks.is_empty() {
-                                picks.push(Pick::Go);
-                            }
-                            picks
                         }
                     }
                     _ => vec![Pick::Go],
@@ -2486,22 +2432,6 @@ const COVERAGE: &[Coverage] = &[
     },
     // Risk 3: an owed address that a member no longer holds.
     Coverage {
-        name: "a refused pinned connect falls back to a dynamic address while the address note owes another",
-        on: everywhere,
-        omit: None,
-        reached: |_, state| {
-            matches!(
-                state.took,
-                Some(Branch::Connected {
-                    step: Step::Fallback { .. },
-                    answer: Connect::Dynamic(address),
-                    member,
-                    ..
-                }) if owes_another(state, member, address)
-            )
-        },
-    },
-    Coverage {
         name: "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
         on: everywhere,
         omit: None,
@@ -2516,24 +2446,6 @@ const COVERAGE: &[Coverage] = &[
                     member,
                     ..
                 }) if owes_another(state, member, address)
-            )
-        },
-    },
-    Coverage {
-        name: "Stopped::start starts a member attached on a dynamic address while the address note owes another",
-        on: everywhere,
-        omit: None,
-        reached: |_, state| {
-            matches!(
-                state.took,
-                Some(Branch::Start {
-                    answer: Started::Ran { detached: false, .. },
-                    member,
-                    ..
-                }) if matches!(
-                    state.docker.get(member).endpoint,
-                    Endpoint::Dynamic(address) if owes_another(state, member, address)
-                )
             )
         },
     },
@@ -2960,8 +2872,6 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             answer,
         } => {
             let call = match (phase, step) {
-                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None)".to_owned(),
-                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None)".to_owned(),
                 (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned", phase_name(phase)),
                 (_, Step::First | Step::Inspect | Step::Note | Step::Stop(_)) => format!(
                     "{}: rejoin_with connects {member:?} pinned at {:?}",
@@ -2971,7 +2881,6 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             };
             let answered = match answer {
                 Connect::Pinned(address) => format!("it rejoins pinned at {address:?}"),
-                Connect::Dynamic(address) => format!("Docker attaches it on {address:?}, a dynamic address"),
                 Connect::BetweenRestarts => "Docker refuses it as between restarts (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`)".to_owned(),
                 Connect::InUse => "Docker refuses it: another endpoint holds that address".to_owned(),
                 Connect::Refused => "Docker refuses it".to_owned(),
@@ -2979,7 +2888,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             format!("{call}: {answered}")
         }
         Branch::Unjoined { phase, member } => format!(
-            "{}: connect(None) is refused too, so rejoin_with reports and returns false{}",
+            "{}: rejoin_with reports the refusal and returns false{}",
             phase_name(phase),
             match phase {
                 Phase::Readdress => format!(", which rejoin discards; {member:?} stays detached"),
@@ -3185,25 +3094,25 @@ mod tests {
         ])
     }
 
-    /// The second finding's early return: start 1's rejoin of M0 is refused pinned and refused
-    /// again by `connect(None)`, so M0 stays detached. The pin pass's listing fails, so
+    /// The second finding's early return: start 1's rejoin of M0 is refused, so M0 stays
+    /// detached. The pin pass's listing fails, so
     /// `pin_members` returns before rejoining it, and `Stopped::start` runs M0.
     fn the_early_return() -> Vec<Action> {
         schedule(&[
             &TO_THE_REJOIN,
-            &[daemon(Pick::Fails), GO, daemon(Pick::Fails), GO],
+            &[daemon(Pick::Fails), daemon(Pick::Fails), GO],
         ])
     }
 
     /// The second finding's false rejoin: start 1 dies after detaching M0. Start 2's readdress
     /// lists M0 detached, detaches nothing and replaces the bridge, so it rejoins nothing. The
-    /// pin pass restores A for M0, and Docker refuses the pinned connect and `connect(None)`,
-    /// so `rejoin_with` returns false. `finish` keeps {M0: A}, and `Stopped::start` runs M0.
+    /// pin pass restores A for M0, and Docker refuses the pinned connect, so `rejoin_with`
+    /// returns false. `finish` keeps {M0: A}, and `Stopped::start` runs M0.
     fn the_false_rejoin() -> Vec<Action> {
         schedule(&[
             &TO_THE_DETACH,
             &[CRASH, GO, GO, GO, GO, GO, GO, GO],
-            &[daemon(Pick::Fails), GO, GO, GO],
+            &[daemon(Pick::Fails), GO, GO],
         ])
     }
 
@@ -3401,10 +3310,6 @@ mod tests {
         (named.condition)(&model, state)
     }
 
-    fn row(name: &str) -> &'static Coverage {
-        COVERAGE.iter().find(|row| row.name == name).expect("a row")
-    }
-
     /// The rows of `model` its checker never reaches, in `COVERAGE` order.
     fn unreached(model: BridgeNotes, checker: &impl Checker<BridgeNotes>) -> Vec<&'static str> {
         COVERAGE
@@ -3545,10 +3450,6 @@ mod tests {
             Pick::Go,
         );
         assert!(holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
-        let risk_3 = row(
-            "Stopped::start starts a member attached on a dynamic address while the address note owes another",
-        );
-        assert!((risk_3.reached)(&as_is(), &after));
     }
 
     #[test]

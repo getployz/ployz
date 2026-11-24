@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     corrosion::{MachineView, ReplicatedStore},
+    docker::MachineSpecStore,
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
@@ -41,12 +42,16 @@ pub struct NetworkPlane {
     probed: watch::Sender<Vec<ProbedPeer>>,
     /// `None` until start installs it, and on a plane built only to clean up.
     firewall: Option<Installed>,
+    /// This Server's Container records, which say the part of a member that needs a new
+    /// address. `None` when the daemon runs without Containers.
+    records: Option<MachineSpecStore>,
 }
 
 impl NetworkPlane {
     pub async fn start(
         record: &LocalMachineRecord,
         data_dir: &Path,
+        records: Option<MachineSpecStore>,
     ) -> Result<Option<Self>, NetworkError> {
         let bootstrap = record.bootstrap();
         let machine = match record.body() {
@@ -95,6 +100,7 @@ impl NetworkPlane {
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
             firewall: None,
+            records,
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
@@ -224,6 +230,7 @@ impl NetworkPlane {
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
             firewall: None,
+            records: None,
         }
         .cleanup()
         .await

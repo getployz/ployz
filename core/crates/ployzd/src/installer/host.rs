@@ -242,7 +242,61 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
         &volume_plugin_service_unit(bin_dir),
         "write Volume plugin service unit",
     )?;
+    write_file_atomically(
+        &systemd_dir.join(Unit::Fence.name()),
+        &fence_service_unit(bin_dir),
+        "write container network fence unit",
+    )?;
+    let docker_drop_in = docker_fence_drop_in(systemd_dir);
+    fs::create_dir_all(docker_drop_in.parent().unwrap_or(systemd_dir)).map_err(|source| {
+        Error::Io {
+            stage: "create Docker unit drop-in directory",
+            source,
+        }
+    })?;
+    write_file_atomically(
+        &docker_drop_in,
+        &docker_fence_requirement(),
+        "write Docker's fence requirement",
+    )?;
     remove_legacy_observe_unit(systemd_dir)
+}
+
+/// Where Docker's unit learns it starts only once the fence is back.
+pub(super) fn docker_fence_drop_in(systemd_dir: &Path) -> std::path::PathBuf {
+    systemd_dir
+        .join("docker.service.d")
+        .join("ployz-fence.conf")
+}
+
+/// Takes the fence out of systemd and both iptables families, before a release that doesn't
+/// know it replaces this one. Its unit and Docker's requirement go first, so no boot in
+/// between restores a fence nothing keeps.
+pub(super) fn remove_fence(systemd_dir: &Path, data_dir: &Path) -> Result<(), Error> {
+    for (path, stage) in [
+        (
+            docker_fence_drop_in(systemd_dir),
+            "remove Docker's fence requirement",
+        ),
+        (
+            systemd_dir.join(Unit::Fence.name()),
+            "remove container network fence unit",
+        ),
+        (
+            data_dir.join(crate::network::FENCE_FILE),
+            "remove container network fence file",
+        ),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::Io { stage, source }),
+        }
+    }
+    crate::network::remove_fence().map_err(|error| Error::Command {
+        stage: "remove container network fence".into(),
+        message: ployz_core::error_chain::inline(&error),
+    })
 }
 
 pub(super) fn activate_units() -> Result<(), Error> {
@@ -291,6 +345,42 @@ RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
+"
+    )
+}
+
+/// Puts the fence on the container network back before Docker starts any Container at
+/// boot. Install and upgrade only write it: nothing starts it but Docker's start. A release
+/// from before the fence, which a failed upgrade puts back, refuses the subcommand as a
+/// usage error, exit 2, and keeps no fence to restore.
+fn fence_service_unit(bin_dir: &Path) -> String {
+    let bin = bin_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz container network fence
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={bin}/ployzd fence
+SuccessExitStatus={USAGE_ERROR}
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
+/// Docker starts only after the fence is back, and not at all when it can't be.
+fn docker_fence_requirement() -> String {
+    let fence = Unit::Fence.name();
+    format!(
+        "\
+[Unit]
+Requires={fence}
+After={fence}
 "
     )
 }

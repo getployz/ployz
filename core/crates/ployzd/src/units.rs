@@ -13,6 +13,8 @@ pub(crate) enum Unit {
     VolumePluginService,
     Observe,
     Dns,
+    /// Puts the container network's fence back before `docker.service` at boot.
+    Fence,
 }
 
 impl Unit {
@@ -28,6 +30,7 @@ impl Unit {
             Self::VolumePluginService => "ployz-volume-plugin.service",
             Self::Observe => "ployz-observe.service",
             Self::Dns => "ployz-dns.service",
+            Self::Fence => "ployz-fence.service",
         }
     }
 }
@@ -42,13 +45,14 @@ mod tests {
 
     impl Unit {
         /// Every unit `scripts/uninstall.sh` has to stop and remove.
-        const UNINSTALL_SET: [Self; 6] = [
+        const UNINSTALL_SET: [Self; 7] = [
             Self::Ployz,
             Self::PloyzSocket,
             Self::VolumePluginSocket,
             Self::VolumePluginService,
             Self::Observe,
             Self::Dns,
+            Self::Fence,
         ];
     }
 
@@ -73,6 +77,7 @@ mod tests {
                 "ployz-volume-plugin.service",
                 "ployz-observe.service",
                 "ployz-dns.service",
+                "ployz-fence.service",
             ]
         );
         assert_eq!(

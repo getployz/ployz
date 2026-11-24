@@ -336,6 +336,14 @@ async fn install_locked(
         }
     }
 
+    // An older release may not know the fence, and would keep Docker waiting on a unit it
+    // doesn't write, or a fence it never takes down.
+    if installed
+        .as_ref()
+        .is_some_and(|installed| target < *installed)
+    {
+        host::remove_fence(&paths.systemd_dir, paths.layout.data_dir())?;
+    }
     let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;

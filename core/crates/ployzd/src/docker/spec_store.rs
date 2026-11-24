@@ -10,8 +10,8 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
-    DockerVolumeName, Namespace, ResolvedServiceSpec, VolumeGen,
+    AddressPart, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
+    DockerVolumeName, Namespace, QualifiedService, ResolvedServiceSpec, VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
@@ -154,6 +154,25 @@ impl MachineSpecStore {
         // A build from before floors, never released, kept no Service or time with an
         // admission, which reads as none kept.
         Ok(kept.and_then(|kept| serde_json::from_value(kept).ok()))
+    }
+
+    /// The part a Container takes a new bridge address in, from its kept spec and
+    /// admission and the Namespace its labels name. One with no spec, no admission or no
+    /// Namespace takes Free.
+    pub(crate) async fn address_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<AddressPart, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(AddressPart::Free);
+        };
+        let admission = self.admitted_by(container_id).await?;
+        Ok(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            admission.map(|by| by.admission()),
+            spec.volume_graph(),
+        ))
     }
 
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.

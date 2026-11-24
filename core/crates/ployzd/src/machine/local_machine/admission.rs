@@ -57,6 +57,19 @@ pub(crate) enum AdmittedBy {
     Free,
 }
 
+impl AdmittedBy {
+    /// What the Container's observation reports. A key, a rule or this Machine's own
+    /// caller vouched for every admission but [`Self::Free`].
+    pub(crate) fn admission(&self) -> ployz_core::Admission {
+        match self {
+            Self::Keys { .. } | Self::Rule { .. } | Self::Local { .. } => {
+                ployz_core::Admission::Signed
+            }
+            Self::Free => ployz_core::Admission::Free,
+        }
+    }
+}
+
 /// Whether an admission keeps what it decided: a floor a forget raised, a rule's newer
 /// generation and a hook's place. A check answers the same and keeps none of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
