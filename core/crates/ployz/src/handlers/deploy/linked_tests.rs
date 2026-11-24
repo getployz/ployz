@@ -102,11 +102,18 @@ fn an_approved_link_hands_back_the_deployment_it_admitted() {
 
 #[test]
 fn a_denied_link_ends_with_the_denial_and_deploys_nothing() {
-    let cloud = fake_cloud(|route, _| match route {
-        route if route == format!("GET /api/cli/proposals/{PROPOSAL}") => (
-            200,
-            json!({ "proposal": { "status": "denied", "reason": "Not during the sale" } }),
-        ),
+    let reads = AtomicUsize::new(0);
+    // A second look means the denial read as waiting: it fails at once rather than waiting.
+    let cloud = fake_cloud(move |route, _| match route {
+        route if route == format!("GET /api/cli/proposals/{PROPOSAL}") => {
+            match reads.fetch_add(1, Ordering::SeqCst) {
+                0 => (
+                    200,
+                    json!({ "proposal": { "status": "denied", "reason": "Not during the sale" } }),
+                ),
+                _ => (400, json!({})),
+            }
+        }
         other => panic!("a denied proposal read {other}"),
     });
     let matches = deploy_matches();
@@ -124,7 +131,44 @@ fn a_denied_link_ends_with_the_denial_and_deploys_nothing() {
 }
 
 #[test]
-fn json_detach_or_a_signed_deploy_gets_cloud_s_answer_without_following_it() {
+fn an_approval_denied_when_its_deploy_couldn_t_start_ends_with_the_denial() {
+    let reads = AtomicUsize::new(0);
+    let cloud = fake_cloud(move |route, _| match route {
+        route if route == format!("GET /api/cli/proposals/{PROPOSAL}") => {
+            match reads.fetch_add(1, Ordering::SeqCst) {
+                0 => (
+                    200,
+                    json!({ "proposal": { "status": "approved", "reason": null } }),
+                ),
+                1 => (
+                    200,
+                    json!({ "proposal": { "status": "denied", "reason": "The token that asked for it is gone." } }),
+                ),
+                _ => (400, json!({})),
+            }
+        }
+        "POST /api/config/read" => (
+            404,
+            json!({ "error": { "code": "not_found", "message": "No such Deployment.", "details": null } }),
+        ),
+        other => panic!("unexpected {other}"),
+    });
+    let matches = deploy_matches();
+    let store = cloud_store(&cloud, &matches);
+    let id = DeploymentId::parse(mint()).unwrap();
+    let Err(StoreCallError::Stopped(failure)) =
+        admitted(&store, link_answer(&cloud), &id, Approval::Waits)
+    else {
+        panic!("a denied proposal admitted a Deployment");
+    };
+    assert_eq!(
+        failure.to_string(),
+        "Denied: The token that asked for it is gone. Nothing deployed."
+    );
+}
+
+#[test]
+fn json_detach_or_a_keyed_cli_gets_cloud_s_answer_without_following_it() {
     let reads = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&reads);
     let cloud = fake_cloud(move |_, _| {
@@ -134,12 +178,12 @@ fn json_detach_or_a_signed_deploy_gets_cloud_s_answer_without_following_it() {
     let matches = deploy_matches();
     let store = cloud_store(&cloud, &matches);
     let id = DeploymentId::parse(mint()).unwrap();
-    for (json, detach, signed) in [
+    for (json, detach, keyed) in [
         (true, false, false),
         (false, true, false),
         (false, false, true),
     ] {
-        let approval = Approval::of(json, detach, signed);
+        let approval = Approval::of(json, detach, keyed);
         let Err(StoreCallError::Stopped(failure)) =
             admitted(&store, link_answer(&cloud), &id, approval)
         else {
@@ -151,41 +195,162 @@ fn json_detach_or_a_signed_deploy_gets_cloud_s_answer_without_following_it() {
     assert_eq!(reads.load(Ordering::SeqCst), 0);
 }
 
+fn unavailable() -> StoreCallError {
+    StoreCallError::Refused(RpcError::new(
+        RpcErrorCode::Unavailable,
+        "Cloud is restarting.",
+    ))
+}
+
+fn said(answer: Result<DeploymentSummary, StoreCallError>) -> String {
+    let Err(StoreCallError::Stopped(failure)) = answer else {
+        panic!("the wait admitted a Deployment");
+    };
+    failure.to_string()
+}
+
 #[tokio::test(start_paused = true)]
-async fn a_waiting_link_is_followed_until_its_deployment_is_admitted() {
+async fn a_waiting_link_is_followed_through_cloud_s_blips_until_its_deployment_is_admitted() {
     let (deployment, _) = admitted_view();
-    let mut looks = 0;
-    let stand = settled(WAIT, async || {
-        looks += 1;
-        Ok(if looks < 3 {
-            Stand::Waiting
-        } else {
-            Stand::Admitted(Box::new(deployment.clone()))
-        })
+    let mut looks = Vec::new();
+    let mut answers = vec![
+        Err(unavailable()),
+        Ok(Stand::Waiting),
+        Ok(Stand::Approved),
+        Err(unavailable()),
+        Ok(Stand::Approved),
+        Ok(Stand::Admitted(Box::new(deployment.clone()))),
+    ]
+    .into_iter();
+    let mut last = Stand::Waiting;
+    let lost = settled(WAIT, &mut last, async |last| {
+        looks.push(matches!(last, Stand::Approved));
+        answers.next().unwrap()
     })
-    .await
-    .unwrap();
-    assert!(matches!(stand, Stand::Admitted(admitted) if admitted.id == deployment.id));
-    assert_eq!(looks, 3);
+    .await;
+    assert!(lost.is_none());
+    assert!(matches!(last, Stand::Admitted(admitted) if admitted.id == deployment.id));
+    // Once approved, each look reads the Deployment.
+    assert_eq!(looks, [false, false, false, true, true, true]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn nobody_approving_ends_the_wait_with_nothing_deployed_yet() {
     let started = tokio::time::Instant::now();
-    let stand = settled(WAIT, async || Ok(Stand::Waiting)).await.unwrap();
-    assert!(matches!(stand, Stand::Waiting));
-    let waited = started.elapsed();
-    assert!(waited >= WAIT && waited <= WAIT + FOLLOW_POLL, "{waited:?}");
+    let mut last = Stand::Waiting;
+    let lost = settled(WAIT, &mut last, async |_| Ok(Stand::Waiting)).await;
+    assert!(lost.is_none());
+    assert_eq!(started.elapsed(), WAIT);
     let linked = Linked::of(&link_answer("https://cloud.test")).unwrap();
-    let StoreCallError::Stopped(failure) = linked.not_yet(Error::conflict(linked.waiting())) else {
-        unreachable!()
-    };
     assert_eq!(
-        failure.to_string(),
+        said(linked.ended(last, lost)),
         format!(
             "Nothing deployed yet. It waits for approval at https://cloud.test/cloud/acme/approve/{PROPOSAL}."
         )
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_look_cloud_holds_past_the_deadline_ends_the_wait_on_time() {
+    let (deployment, _) = admitted_view();
+    let started = tokio::time::Instant::now();
+    let mut last = Stand::Waiting;
+    let lost = settled(WAIT, &mut last, async |_| {
+        tokio::time::sleep(2 * WAIT).await;
+        Ok(Stand::Admitted(Box::new(deployment.clone())))
+    })
+    .await;
+    assert!(lost.is_none());
+    assert!(matches!(last, Stand::Waiting));
+    assert_eq!(started.elapsed(), WAIT);
+}
+
+#[tokio::test(start_paused = true)]
+async fn losing_cloud_after_the_approval_says_it_was_approved_with_the_link() {
+    let mut approved = false;
+    let mut last = Stand::Waiting;
+    let lost = settled(WAIT, &mut last, async |_| {
+        if std::mem::replace(&mut approved, true) {
+            Err(unavailable())
+        } else {
+            Ok(Stand::Approved)
+        }
+    })
+    .await;
+    assert!(lost.is_some());
+    let linked = Linked::of(&link_answer("https://cloud.test")).unwrap();
+    let Err(StoreCallError::Stopped(failure)) = linked.ended(last, lost) else {
+        panic!("the wait admitted a Deployment");
+    };
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "Approved at https://cloud.test/cloud/acme/approve/{PROPOSAL}, but not started yet."
+        )
+    );
+    let answer = failure.json();
+    assert_eq!(answer.get("code"), Some(&json!("unavailable")));
+    assert_eq!(
+        answer.get("details").and_then(|details| details.get("url")),
+        Some(&json!(format!(
+            "https://cloud.test/cloud/acme/approve/{PROPOSAL}"
+        )))
+    );
+}
+
+#[test]
+fn a_keyed_up_that_cloud_answers_with_a_link_returns_it_without_waiting() {
+    let config = tempfile::tempdir().unwrap();
+    let config = config.path().join("config.toml");
+    crate::device::key::store(
+        &crate::device::key::path(&config),
+        &crate::device::key::generate(),
+    )
+    .unwrap();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("index.html"), "hello").unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&reads);
+    let cloud = fake_cloud(move |route, _| {
+        if route.starts_with("POST /api/config/upload/") {
+            return (200, json!({}));
+        }
+        if route.starts_with("GET /api/cli/proposals/") {
+            counted.fetch_add(1, Ordering::SeqCst);
+            return (
+                200,
+                json!({ "proposal": { "status": "denied", "reason": null } }),
+            );
+        }
+        let StoreCallError::Refused(refused) = link_answer("https://cloud.test") else {
+            unreachable!()
+        };
+        (409, json!({ "error": refused }))
+    });
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "--ployz-config", config.to_str().unwrap(), "up"])
+        .unwrap();
+    let matches = crate::cli::leaf_matches(&root);
+    let store = cloud_store(&cloud, matches);
+    let request = super::super::Request {
+        environment: ployz_store::EnvironmentRef::default(),
+        services: Vec::new(),
+        version: None,
+        source: Some(source.path().to_owned()),
+        accept: Vec::new(),
+        message: None,
+        no_prune: false,
+    };
+    let Err(failure) = super::super::upload_and_ship(matches, &store, request, None) else {
+        panic!("a link admitted a Deployment");
+    };
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "a keyed CLI followed the link"
+    );
+    let details = failure.json().get("details").cloned().unwrap_or_default();
+    assert_eq!(details.get("proposal_id"), Some(&json!(PROPOSAL)));
 }
 
 #[test]

@@ -64,6 +64,15 @@ pub(in crate::handlers) struct Behind {
     pub(in crate::handlers) unverified: Vec<String>,
 }
 
+/// Whether this CLI holds a key that signs: `PLOYZ_KEY`, or this computer's Device key.
+/// A deploy from one never waits on a person's passkey, even one it left unsigned, as an
+/// upload or an unanswered probe leaves it.
+pub(in crate::handlers) fn keyed(matches: &ArgMatches) -> bool {
+    std::env::var_os(crate::env::KEY).is_some()
+        || super::super::config_path(matches)
+            .is_ok_and(|config| crate::device::key::path(&config).exists())
+}
+
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 

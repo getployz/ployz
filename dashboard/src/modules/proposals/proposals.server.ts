@@ -334,6 +334,23 @@ export const proposalStatus = Effect.fn("Proposals.status")(function* (caller: P
   return { ok: true as const, value: { ...view, steps: progress } };
 });
 
+/** Where a Deploy the CLI asked for stands, for the credential that asked and no other: its status, why it was denied, and the Deployment it admits. */
+export const askedDeploy = Effect.fn("Proposals.askedDeploy")(function* (caller: Caller, id: string) {
+  if (!Schema.is(Uuid)(id)) return undefined;
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ status: operationProposals.status, reason: operationProposals.reason, steps: operationProposals.steps })
+    .from(operationProposals)
+    .where(and(
+      eq(operationProposals.id, id),
+      eq(operationProposals.organizationId, caller.organization.id),
+      eq(operationProposals.requestedByUserId, caller.userId),
+      eq(operationProposals.credentialKind, caller.credential.kind),
+      eq(operationProposals.credentialId, caller.credential.id),
+    ));
+  const deploy = row?.steps.find(isDeploy);
+  return row === undefined || deploy === undefined ? undefined : { status: row.status, reason: row.reason, deployment_id: deploy.deploy.command.id };
+});
+
 /** Every proposal waiting on a person in the Organization, newest first. */
 export const pendingProposals = Effect.fn("Proposals.pending")(function* (organizationId: string) {
   const { drizzle } = yield* Database;

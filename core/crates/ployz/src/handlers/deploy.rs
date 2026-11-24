@@ -378,11 +378,7 @@ pub(super) fn upload_and_ship(
             .upload(&id, dir, listing)
             .map_err(|error| staged.unstage(store, error))?;
     }
-    // A deploy this Device signed for no Service waits on a person's passkey at a link.
-    let signed = device
-        .as_ref()
-        .is_some_and(|device| !device.versions.is_empty());
-    let approval = linked::Approval::of(ui::json(), detaches(matches), signed);
+    let approval = linked::Approval::of(ui::json(), detaches(matches), approve::keyed(matches));
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
             id: id.clone(),

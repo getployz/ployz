@@ -14,6 +14,7 @@ use super::super::store::{Backend, Store};
 use super::{Error, FOLLOW_POLL};
 use crate::cloud::account::{self, Credential, StoreCallError, StoreClient};
 use crate::cloud::http::Via;
+use crate::coded::Coded;
 
 /// How long a deploy at a terminal waits for someone to approve it.
 const WAIT: Duration = Duration::from_secs(10 * 60);
@@ -22,13 +23,13 @@ const WAIT: Duration = Duration::from_secs(10 * 60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Approval {
     Waits,
-    /// Under `--json` or `--detach`, or for a deploy this CLI signed: Cloud's answer as it is.
+    /// Under `--json` or `--detach`, or from a CLI that holds a key: Cloud's answer as it is.
     AtOnce,
 }
 
 impl Approval {
-    pub(super) const fn of(json: bool, detach: bool, signed: bool) -> Self {
-        if json || detach || signed {
+    pub(super) const fn of(json: bool, detach: bool, keyed: bool) -> Self {
+        if json || detach || keyed {
             Self::AtOnce
         } else {
             Self::Waits
@@ -60,20 +61,48 @@ impl Linked {
         StoreCallError::Stopped(error)
     }
 
-    fn waiting(&self) -> String {
-        format!(
-            "Nothing deployed yet. It waits for approval at {}.",
-            self.url
-        )
+    /// What the command answers once the wait ends with `last`, and `lost` when Cloud
+    /// stopped answering first.
+    fn ended(
+        &self,
+        last: Stand,
+        lost: Option<StoreCallError>,
+    ) -> Result<DeploymentSummary, StoreCallError> {
+        let left = self.left(&last);
+        match (last, lost) {
+            (Stand::Admitted(deployment), _) => Ok(*deployment),
+            (Stand::Denied(reason), _) => Err(StoreCallError::Stopped(denied(reason))),
+            (_, None) => Err(self.not_yet(Error::conflict(left))),
+            (_, Some(error)) => Err(self.not_yet(Error::from(error).context(left))),
+        }
+    }
+
+    /// Where a deploy the wait left behind stands, and its link.
+    fn left(&self, last: &Stand) -> String {
+        match last {
+            Stand::Approved => format!("Approved at {}, but not started yet.", self.url),
+            Stand::Waiting | Stand::Denied(_) | Stand::Admitted(_) => format!(
+                "Nothing deployed yet. It waits for approval at {}.",
+                self.url
+            ),
+        }
     }
 }
 
-/// Where a proposal stands, as one look reads it.
+/// Where a proposal stands, as the last look Cloud answered read it.
 #[derive(Debug)]
 enum Stand {
     Waiting,
+    /// Approved, and the Store hasn't admitted its Deployment yet.
+    Approved,
     Denied(Option<String>),
     Admitted(Box<DeploymentSummary>),
+}
+
+impl Stand {
+    const fn open(&self) -> bool {
+        matches!(self, Self::Waiting | Self::Approved)
+    }
 }
 
 /// The Deployment `id` once someone approves the proposal Cloud answered `refused` with.
@@ -95,23 +124,21 @@ pub(super) fn admitted(
     crate::ui::note_inline("Waiting for approval… ");
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Error::from(error)))?;
+    let mut last = Stand::Waiting;
     let ended = runtime.block_on(async {
         tokio::select! {
             () = interrupted.cancelled() => None,
-            ended = settled(WAIT, async || stand(credential, &linked, id).await) => Some(ended),
+            lost = settled(WAIT, &mut last, async |last| stand(credential, &linked, id, last).await) => Some(lost),
         }
     });
-    crate::ui::note(match &ended {
-        Some(Ok(Stand::Admitted(_))) => "approved.",
-        Some(Ok(Stand::Denied(_))) => "denied.",
-        _ => "",
+    crate::ui::note(match &last {
+        Stand::Admitted(_) => "approved.",
+        Stand::Denied(_) => "denied.",
+        Stand::Waiting | Stand::Approved => "",
     });
     match ended {
-        Some(Ok(Stand::Admitted(deployment))) => Ok(*deployment),
-        Some(Ok(Stand::Denied(reason))) => Err(StoreCallError::Stopped(denied(reason))),
-        Some(Ok(Stand::Waiting)) => Err(linked.not_yet(Error::conflict(linked.waiting()))),
-        Some(Err(error)) => Err(linked.not_yet(Error::from(error).context(linked.waiting()))),
-        None => Err(linked.not_yet(Error::conflict(linked.waiting()).interrupted())),
+        Some(lost) => linked.ended(last, lost),
+        None => Err(linked.not_yet(Error::conflict(linked.left(&last)).interrupted())),
     }
 }
 
@@ -126,26 +153,58 @@ fn denied(reason: Option<String>) -> Error {
     Error::conflict(message)
 }
 
-/// Look until the proposal is no longer waiting, or `within` passes.
+/// Look until the proposal is admitted or denied, or `within` passes, keeping in `last`
+/// what the last answered look read. A look Cloud can't answer for now is tried again,
+/// and the deadline cuts a look short as it does the pause between looks. Returns the
+/// failure that ended the wait, or the last one when Cloud stopped answering.
 async fn settled(
     within: Duration,
-    mut look: impl AsyncFnMut() -> Result<Stand, StoreCallError>,
-) -> Result<Stand, StoreCallError> {
+    last: &mut Stand,
+    mut look: impl AsyncFnMut(&Stand) -> Result<Stand, StoreCallError>,
+) -> Option<StoreCallError> {
     let until = tokio::time::Instant::now() + within;
-    loop {
-        let stand = look().await?;
-        if !matches!(stand, Stand::Waiting) || tokio::time::Instant::now() >= until {
-            return Ok(stand);
+    let mut lost = None;
+    while tokio::time::Instant::now() < until {
+        let Ok(looked) = tokio::time::timeout_at(until, look(last)).await else {
+            break;
+        };
+        match looked {
+            Ok(stand) => {
+                // An approval is followed at once by a read of its Deployment.
+                let approved = matches!(stand, Stand::Approved) && !matches!(last, Stand::Approved);
+                *last = stand;
+                lost = None;
+                if !last.open() {
+                    return None;
+                }
+                if approved {
+                    continue;
+                }
+            }
+            Err(error) if temporary(&error) => lost = Some(error),
+            Err(error) => return Some(error),
         }
-        tokio::time::sleep(FOLLOW_POLL).await;
+        tokio::time::sleep_until(until.min(tokio::time::Instant::now() + FOLLOW_POLL)).await;
+    }
+    lost
+}
+
+/// Whether Cloud may answer the same look if asked again: it was unreachable, slow or busy.
+fn temporary(error: &StoreCallError) -> bool {
+    match error {
+        StoreCallError::Refused(refused) => refused.code == RpcErrorCode::Unavailable,
+        StoreCallError::Cloud(error) => error.code() == RpcErrorCode::Unavailable,
+        StoreCallError::Stopped(_) => false,
     }
 }
 
-/// The proposal as Cloud has it now, and once approved, its Deployment if the Store admitted it.
+/// One look past `last`: the proposal's decision, and once it is approved, first its
+/// Deployment, which the Store admits.
 async fn stand(
     credential: &Credential,
     linked: &Linked,
     id: &DeploymentId,
+    last: &Stand,
 ) -> Result<Stand, StoreCallError> {
     #[derive(Deserialize)]
     struct Read {
@@ -164,25 +223,25 @@ async fn stand(
         #[serde(other)]
         Waiting,
     }
-    let path = format!("proposals/{}", linked.proposal_id);
-    let read: Read = account::refusable(credential, Method::GET, &path, None).await?;
-    match read.proposal.status {
-        Status::Waiting => Ok(Stand::Waiting),
-        Status::Denied => Ok(Stand::Denied(read.proposal.reason)),
-        Status::Approved => {
-            let query = DeploymentQuery { id: id.clone() };
-            match StoreClient::Cloud(credential, Via::Cli)
-                .read(&query, &Trusted::default())
-                .await
-            {
-                Ok(view) => Ok(Stand::Admitted(Box::new(view.deployment))),
-                Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::NotFound => {
-                    Ok(Stand::Waiting)
-                }
-                Err(error) => Err(error),
-            }
+    if matches!(last, Stand::Approved) {
+        let query = DeploymentQuery { id: id.clone() };
+        match StoreClient::Cloud(credential, Via::Cli)
+            .read(&query, &Trusted::default())
+            .await
+        {
+            Ok(view) => return Ok(Stand::Admitted(Box::new(view.deployment))),
+            // Not admitted yet, or denied when its step couldn't start: the proposal says.
+            Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
+    let path = format!("proposals/{}", linked.proposal_id);
+    let read: Read = account::refusable(credential, Method::GET, &path, None).await?;
+    Ok(match read.proposal.status {
+        Status::Waiting => Stand::Waiting,
+        Status::Denied => Stand::Denied(read.proposal.reason),
+        Status::Approved => Stand::Approved,
+    })
 }
 
 #[cfg(test)]
