@@ -119,6 +119,9 @@ signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule afte
 signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
 for.
 
+A deploy builds each service the rule covers on GitHub Actions, as a push does. A new service
+from a repository deploys in one prompt, and one the rule already approves asks nothing.
+
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.
 
@@ -359,8 +362,8 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
-- **Your servers deploy a push only under a rule.** Without one, the
-  deployment fails at its build and nothing changes. See
+- **Your servers build from GitHub only under a rule.** A push or deploy of a service no rule
+  covers fails at its build and nothing changes. See
   [Approve a rule for deploys on push](#approve-a-rule-for-deploys-on-push).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own

@@ -37,6 +37,29 @@ describe("prepareDeploy", () => {
     });
   });
 
+  it("signs only the rule for a new Git Service that reaches data, and no version of it", async () => {
+    const read = async () => ({
+      kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [{ service: "web", needs: "rule" }], target: view().target }),
+      tap: ready, source: { kind: "sign" as const, view: view(), unchecked: false },
+    });
+
+    expect(await prepareDeploy(admitDeploy(here, "d7"), read, async () => ({ ownerId: 7 }))).toMatchObject({
+      kind: "ask", ask: { services: [], draft: { steps: [], source: { summary: { branch: "main" } } } },
+    });
+  });
+
+  it("deploys a Git Service its kept rule approves with no tap, and refuses one whose rule was ended", async () => {
+    const read = (unsigned: PlanView["unsigned"]) => async () => ({
+      kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned }), tap: ready,
+    });
+    const command = admitDeploy(here, "d8");
+
+    expect(await prepareDeploy(command, read([{ service: "web", needs: "rebuild" }]))).toEqual({ kind: "admit", command: { ...command, version: "v1" }, held: null });
+    expect(await prepareDeploy(command, read([{ service: "web", needs: "rule", ended: true }]))).toEqual({
+      kind: "refused", message: "Automatic deploys are off for web. Turn on Deploy every push to deploy it.",
+    });
+  });
+
   it("deploys without the rule and says why when GitHub can't name its owner", async () => {
     const read = async () => ({ kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [] }), tap: ready, source: { kind: "sign" as const, view: view(), unchecked: false } });
     const command = admitDeploy(here, "d5");

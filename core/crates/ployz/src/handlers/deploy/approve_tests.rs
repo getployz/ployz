@@ -5,7 +5,8 @@ use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
 use super::{
-    Behind, Enforcing, Needs, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable,
+    Behind, Enforcing, Needs, Probe, Ruled, consent, enforced, outdated, pin_tags, signable,
+    unpinnable,
 };
 use crate::image::PinError;
 
@@ -192,6 +193,109 @@ fn a_built_service_is_refused_plainly_with_no_pin_hint() {
          yet. Deploy it from an image pinned by digest."
     );
     assert!(next_hints(&error).is_empty(), "{:?}", error.hints());
+}
+
+/// The kept automatic deploy rule over web, ended or not.
+fn kept_over_web(ended: bool) -> Ruled {
+    use ployz_core::authority::rule::{
+        BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner,
+    };
+    use ployz_core::authority::{AutoDeployRule, RuleId, RuleService, SignerKey, Timestamp};
+    Ruled {
+        kept: Some(AutoDeployRule {
+            proposal: None,
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            rule: RuleId::from_bytes([0x11; 16]),
+            generation: 1,
+            namespace: Namespace::parse("app").unwrap(),
+            machines: Vec::new(),
+            source: RuleSource {
+                repository_id: 1,
+                owner_id: 1,
+                repository: "acme/web".to_owned(),
+                branch: "main".to_owned(),
+                workflow: ".github/workflows/ployz-build.yml".to_owned(),
+                events: vec![RuleEvent::Push],
+                builder: Builder::pinned(),
+                runner: Runner::GithubHosted,
+            },
+            services: vec![RuleService {
+                name: ServiceName::parse("web").unwrap(),
+                template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
+                policy: BuildPolicy {
+                    method: PolicyMethod::Dockerfile {
+                        path: "Dockerfile".to_owned(),
+                    },
+                    context: ".".to_owned(),
+                    target: None,
+                    args: BTreeMap::new(),
+                    secrets: Default::default(),
+                    platforms: ["linux/amd64".to_owned()].into(),
+                    cache: PolicyCache::Off,
+                },
+                secrets: None,
+            }],
+            issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+            ended,
+            signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes([7; 32])),
+        }),
+        drafted: None,
+    }
+}
+
+/// web built from source beside api, an image by digest.
+fn web_and_api() -> Option<Vec<RequestedServiceSpec>> {
+    let mut api = spec(PINNED);
+    api.name = ServiceName::parse("api").unwrap();
+    Some(vec![spec("ployz-build/web:pending"), api])
+}
+
+fn web_needs(needs: ployz_store::Needs) -> Vec<ployz_store::Unsigned> {
+    vec![ployz_store::Unsigned {
+        service: ServiceName::parse("web").unwrap(),
+        needs,
+        ended: false,
+    }]
+}
+
+#[test]
+fn a_built_service_the_kept_rule_approves_builds_under_it_and_only_the_rest_is_signed() {
+    let signed = kept_over_web(false)
+        .building(web_and_api(), &web_needs(ployz_store::Needs::Rebuild))
+        .unwrap()
+        .unwrap();
+
+    let names: Vec<&str> = signed.iter().map(|spec| spec.name.as_str()).collect();
+    assert_eq!(names, ["api"]);
+}
+
+#[test]
+fn a_built_service_no_rule_approves_as_it_stands_is_refused_before_signing() {
+    for (ruled, unsigned) in [
+        (kept_over_web(false), web_needs(ployz_store::Needs::Rule)),
+        (Ruled::default(), Vec::new()),
+    ] {
+        let error = ruled.building(web_and_api(), &unsigned).unwrap_err();
+        let rpc = error.report();
+        assert_eq!(rpc.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            rpc.message,
+            "No automatic deploy rule covers web as it stands, so your servers won't build it. \
+             Turn on Deploy every push, then deploy again."
+        );
+    }
+}
+
+#[test]
+fn a_built_service_whose_rule_was_ended_is_refused_until_the_switch_turns_it_on() {
+    let error = kept_over_web(true)
+        .building(web_and_api(), &Vec::new())
+        .unwrap_err();
+
+    assert_eq!(
+        error.report().message,
+        "Automatic deploys are off for web. Turn on Deploy every push to deploy it."
+    );
 }
 
 #[test]

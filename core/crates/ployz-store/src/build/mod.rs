@@ -9,7 +9,7 @@ mod sources;
 
 pub use github::{
     GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
-    GithubReport, GithubRun, RunEnd,
+    GithubReport, GithubRule, GithubRun, RunEnd,
 };
 pub(crate) use github::{
     github_authorize, github_build, github_by_run, github_check_in, github_dispatched, github_end,

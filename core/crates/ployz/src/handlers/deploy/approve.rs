@@ -23,7 +23,7 @@ use ployz_core::{
 };
 use ployz_store::{
     EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, RulePrior, RuleQuery,
-    SavedRule, TagPin,
+    SavedRule, TagPin, Unsigned,
 };
 use serde_json::json;
 
@@ -95,7 +95,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// # Errors
 /// Refuses before admission when the person declines the lines it shows, or no terminal
-/// can ask, when a Service it ships builds from source, when a tag image can't be pinned
+/// can ask, when a Service it ships builds from source and no automatic deploy rule
+/// builds it, when a tag image can't be pinned
 /// (its registry wants credentials, can't be reached, or has no such tag), when a Server
 /// enforces but none reports the Cluster's key or can't check what this CLI signs, and
 /// when the Store can't lower the plan; returns the plan's or the key's error.
@@ -188,11 +189,19 @@ pub(in crate::handlers) fn sign(
     if silent {
         return silent::sign(matches, store, (environment, plan), edits, &signing).map(Some);
     }
-    let mut target = signable(plan.target)?;
-    let pins = pin_tags(matches, &target)?;
-    let namespace = plan.namespace;
     let now = Timestamp::now();
     let seed = birth::seed();
+    let signer = SignerKey::Device(signing.device_key());
+    let ruled = source(
+        matches,
+        store,
+        (environment, &plan.version),
+        &enforcing,
+        (signer, &seed, now),
+    );
+    let mut target = signable(ruled.building(plan.target, &plan.unsigned)?)?;
+    let pins = pin_tags(matches, &target)?;
+    let namespace = plan.namespace;
     let minted = birth::mint(&mut target, (&namespace, &plan.volumes), now, |name| {
         birth::nonce(&seed, name)
     })
@@ -248,14 +257,15 @@ pub(in crate::handlers) fn sign(
     if forget_older {
         crate::ui::note(forgetting(&approved));
     }
-    let signer = SignerKey::Device(signing.device_key());
-    let source = source(
-        matches,
-        store,
-        (environment, &plan.version),
-        &enforcing,
-        (signer, &seed, now),
-    );
+    let source = ruled.drafted;
+    if approved.is_empty() && source.is_none() {
+        return Ok(Some(DeviceApproval {
+            versions: Vec::new(),
+            version: plan.version,
+            approved,
+            rule: None,
+        }));
+    }
     if let Some(drafted) = &source {
         super::super::github_rule::show(plan.environment.name.as_str(), &drafted.summary);
     }
@@ -321,18 +331,74 @@ struct Drafted {
     summary: RuleSummary,
 }
 
-/// The automatic deploy rule a Deploy at review `version` signs with its versions, when
-/// what it saves isn't what the kept rule approves, drafted as the dashboard's Deploy tap
-/// drafts it. None when it needs none, or after a warning when it can't be read or
-/// drafted: the Deploy goes on without it, and pushes wait. A rule the person ended stays
-/// ended.
+/// The automatic deploy rule a Deploy's Git Services build under: the one the Environment
+/// keeps, and the one this Device signs with the versions, which replaces it.
+#[derive(Default)]
+struct Ruled {
+    kept: Option<AutoDeployRule>,
+    drafted: Option<Drafted>,
+}
+
+impl Ruled {
+    /// The specs of `target` this Device signs a version of: all but the Git Services that
+    /// build under the rule. A Git Service builds under the rule this Device signs, or under
+    /// the kept one while it is on and, as `unsigned` says, approves what the Service runs.
+    /// Any other is refused before anything is signed: no Server would build it.
+    fn building(
+        &self,
+        target: Option<Vec<RequestedServiceSpec>>,
+        unsigned: &[Unsigned],
+    ) -> Result<Option<Vec<RequestedServiceSpec>>, Error> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let (built, signed): (Vec<_>, Vec<_>) = target.into_iter().partition(built);
+        for spec in &built {
+            let drafted = (self.drafted.as_ref())
+                .is_some_and(|drafted| drafted.rule.service(&spec.name).is_some());
+            let kept = self
+                .kept
+                .as_ref()
+                .filter(|kept| kept.service(&spec.name).is_some());
+            let approved = !unsigned
+                .iter()
+                .any(|entry| entry.service == spec.name && entry.needs == ployz_store::Needs::Rule);
+            if drafted || kept.is_some_and(|kept| !kept.ended && approved) {
+                continue;
+            }
+            let message = match kept {
+                Some(kept) if kept.ended => format!(
+                    "Automatic deploys are off for {}. Turn on Deploy every push to deploy it.",
+                    spec.name
+                ),
+                Some(_) | None => format!(
+                    "No automatic deploy rule covers {} as it stands, so your servers won't \
+                     build it. Turn on Deploy every push, then deploy again.",
+                    spec.name
+                ),
+            };
+            return Err(Error::detailed(
+                RpcErrorCode::InvalidArgument,
+                message,
+                json!({ "service": spec.name }),
+            ));
+        }
+        Ok(Some(signed))
+    }
+}
+
+/// The rule the Environment keeps, and the one a Deploy at review `version` signs with its
+/// versions when what it saves isn't what the kept rule approves, drafted as the
+/// dashboard's Deploy tap drafts it. No draft when it needs none, or after a warning when
+/// it can't be read or drafted: the Deploy goes on without it, and pushes wait. A rule the
+/// person ended stays ended.
 fn source(
     matches: &ArgMatches,
     store: &Store,
     (environment, version): (&EnvironmentRef, &str),
     enforcing: &Enforcing,
     (signer, seed, issued_at): (SignerKey, &[u8; 16], Timestamp),
-) -> Option<Drafted> {
+) -> Ruled {
     let without = |error: &(dyn std::error::Error + 'static)| {
         crate::ui::warn_cause(
             "Didn't sign automatic deploys, so pushes may wait for approval",
@@ -346,26 +412,30 @@ fn source(
         Ok(view) => view,
         Err(error) => {
             without(&error);
-            return None;
+            return Ruled::default();
         }
     };
     // Another review: the Store refuses this Deploy as stale.
     if view.version.as_deref() != Some(version) {
-        return None;
+        return Ruled::default();
     }
+    let mut basis = view.basis();
+    let kept = basis.kept();
+    let ruled = |drafted| Ruled {
+        kept: kept.clone(),
+        drafted,
+    };
     // An owner or admin decides this Deploy and approves no rule with it, so this Device
     // signs none. An older Store says only whether the Environment is Protected.
     if view
         .protector_decides
         .unwrap_or(view.protected != Some(false))
     {
-        return None;
+        return ruled(None);
     }
-    let mut basis = view.basis();
     if source_need(&basis) == SourceNeed::None {
-        return None;
+        return ruled(None);
     }
-    let kept = basis.kept();
     let terms = RuleTerms {
         cluster: enforcing.cluster,
         machines: enforcing.machines.clone(),
@@ -380,10 +450,10 @@ fn source(
     };
     let mut rule = match source_rule(&mut basis, terms) {
         Ok(Some(rule)) => rule,
-        Ok(None) => return None,
+        Ok(None) => return ruled(None),
         Err(error) => {
             without(&error);
-            return None;
+            return ruled(None);
         }
     };
     match super::super::github_rule::owner(
@@ -394,19 +464,19 @@ fn source(
         Ok(owner) => rule.source.owner_id = owner,
         Err(error) => {
             without(&error);
-            return None;
+            return ruled(None);
         }
     }
     let summary = rule.summary(&basis);
-    Some(Drafted {
-        prior: kept.map(|kept| RulePrior {
+    ruled(Some(Drafted {
+        prior: kept.as_ref().map(|kept| RulePrior {
             rule: kept.rule,
             generation: kept.generation,
         }),
         births: basis.minted,
         rule,
         summary,
-    })
+    }))
 }
 
 /// Whether `name`, a switch some commands that sign lack, was given.
@@ -446,10 +516,15 @@ fn consent(
     (namespace, approved, rule): (&Namespace, &[ApprovedChange], Option<&RuleSummary>),
     mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
-    let services: Vec<&str> = approved
-        .iter()
-        .map(|change| change.service.as_str())
-        .collect();
+    // A Deploy whose only signature is the rule asks about the Services it builds.
+    let services: Vec<&str> = match (approved, rule) {
+        ([], Some(rule)) => (rule.services.iter())
+            .map(|service| service.name.as_str())
+            .collect(),
+        _ => (approved.iter())
+            .map(|change| change.service.as_str())
+            .collect(),
+    };
     let mut marked: Vec<String> = approved
         .iter()
         .flat_map(|change| {

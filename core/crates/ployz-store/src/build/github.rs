@@ -419,30 +419,59 @@ pub(crate) fn github_authorize(
     }
     // A rule's build of a push runs on the run GitHub started, which Cloud followed. Any
     // other build runs only on the dispatch Cloud sent.
-    let pushed = github_rule(tx, id)?.is_some();
-    let event = if pushed { "push" } else { "workflow_dispatch" };
+    let event = match github_rule(tx, id)? {
+        Some(GithubRule::Push(_)) => "push",
+        Some(GithubRule::Dispatch(_)) | None => "workflow_dispatch",
+    };
     if claims.event_name != event {
         return refused("The run was not dispatched by Ployz");
     }
     Ok(build)
 }
 
-/// The automatic deploy rule GitHub build `id` builds under, ended or not, when the rule
-/// covers the Service and the Store's automation admitted the Deployment for a push. Its
-/// run is then the push's own, which Cloud follows. Cloud relays the rule; the builder and
-/// the grant Machine check it.
+/// The automatic deploy rule a GitHub build builds under, and how its run starts. Cloud
+/// relays the rule; the builder and the grant Machine check it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GithubRule {
+    /// The Store's automation admitted the Deployment for a push: its run is the push's
+    /// own, which Cloud follows. The rule may be ended, which the grant Machine refuses.
+    Push(Signed<AutoDeployRule>),
+    /// A person admitted it while the rule was on: Cloud dispatches the rule's workflow on
+    /// its branch, and the grant Machine builds only that branch's head.
+    Dispatch(Signed<AutoDeployRule>),
+}
+
+impl GithubRule {
+    #[must_use]
+    pub fn signed(&self) -> &Signed<AutoDeployRule> {
+        match self {
+            Self::Push(signed) | Self::Dispatch(signed) => signed,
+        }
+    }
+}
+
+/// The automatic deploy rule GitHub build `id` builds under, when the rule covers the
+/// Service. A person's Deploy builds under it only while it is on, so a Deploy after the
+/// person ended it builds as any other.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
-) -> Result<Option<Signed<AutoDeployRule>>, RpcError> {
+) -> Result<Option<GithubRule>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
-    if stored.summary.admitted_by.is_some() {
+    let Some(signed) = crate::auto_rule::stored(tx, &stored.summary.environment_id)? else {
+        return Ok(None);
+    };
+    let Some(rule) = crate::auto_rule::opened(&signed) else {
+        return Ok(None);
+    };
+    if rule.service(&id.service).is_none() {
         return Ok(None);
     }
-    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
-    Ok(rule.filter(|signed| {
-        crate::auto_rule::opened(signed).is_some_and(|rule| rule.service(&id.service).is_some())
-    }))
+    Ok(match stored.summary.admitted_by {
+        None => Some(GithubRule::Push(signed)),
+        Some(_) if rule.ended => None,
+        Some(_) => Some(GithubRule::Dispatch(signed)),
+    })
 }
 
 /// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner
@@ -728,7 +757,7 @@ fn built_token(
     };
     let Some(rule) = github_rule(tx, id)?
         .as_ref()
-        .and_then(crate::auto_rule::opened)
+        .and_then(|rule| crate::auto_rule::opened(rule.signed()))
     else {
         return Ok(None);
     };

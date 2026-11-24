@@ -65,8 +65,8 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
 });
 
 /**
- * Dispatch the rule's build workflow on `branch` to build `commit`, a commit a person approved or reviewed under the
- * rule. Its only input from Cloud is `commit`: a rule's file declares no `build`.
+ * Dispatch the rule's build workflow on `branch` to build `commit`, the commit a person's Deploy under the rule pinned.
+ * Its only input from Cloud is `commit`: a rule's file declares no `build`.
  */
 export const dispatchApprovedGithubBuild = Effect.fn("Github.dispatchApprovedBuild")(function* (input: {
   access: GithubAccess; repositoryId: number; branch: string; workflow: string; commit: string;

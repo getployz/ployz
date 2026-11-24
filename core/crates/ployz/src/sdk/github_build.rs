@@ -21,7 +21,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubReport, RunEnd,
+    GithubReport, GithubRule, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,12 +52,23 @@ pub enum GithubStart {
         /// The pushed commit the build pins.
         commit: String,
     },
+    /// It builds under an automatic deploy rule for a person's Deploy: dispatch
+    /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
+    /// names `workflow_ref`.
+    Approved {
+        workflow: String,
+        workflow_ref: String,
+        branch: String,
+        commit: String,
+    },
 }
 
 /// Decide how GitHub build `id` starts: reuse the Service's latest image when a
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
-/// skips GitHub. With `expect`, it reads only an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
+/// skips GitHub. A push under an automatic deploy rule follows the push's own run, and a
+/// person's Deploy under it that can't reuse an image dispatches the rule's workflow.
+/// With `expect`, it reads only an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
 /// Machines it left.
 ///
 /// # Errors
@@ -80,16 +91,23 @@ pub async fn github_start(
         move |store| store.github_input(&id)
     })
     .await?;
-    if let Some(rule) = rule.as_ref().and_then(|signed| signed.open().ok()) {
-        return Ok(Dialed {
-            outcome: GithubStart::Follow {
-                workflow: rule.source.workflow,
-                workflow_ref: rule.source.builder.r#ref,
-                commit: built.commit.to_string(),
-            },
-            foreign: Vec::new(),
-        });
-    }
+    let approved = match rule {
+        Some(GithubRule::Push(signed)) => {
+            if let Ok(rule) = signed.open() {
+                return Ok(Dialed {
+                    outcome: GithubStart::Follow {
+                        workflow: rule.source.workflow,
+                        workflow_ref: rule.source.builder.r#ref,
+                        commit: built.commit.to_string(),
+                    },
+                    foreign: Vec::new(),
+                });
+            }
+            None
+        }
+        Some(GithubRule::Dispatch(signed)) => signed.open().ok(),
+        None => None,
+    };
     let deployment = only(&built.input, &id.service)?;
     let commit = built.commit;
     let receipt = built
@@ -105,6 +123,20 @@ pub async fn github_start(
         }
         Err(error) => Err(error),
     };
+    // An image no Machine holds builds under the rule, on its one platform.
+    if let Some(rule) = approved
+        && !matches!(outside, Ok(OutsideBuild::Reuse { .. }))
+    {
+        return Ok(Dialed {
+            outcome: GithubStart::Approved {
+                workflow: rule.source.workflow,
+                workflow_ref: rule.source.builder.r#ref,
+                branch: rule.source.branch,
+                commit: commit.to_string(),
+            },
+            foreign,
+        });
+    }
     let end = match outside {
         Ok(OutsideBuild::Reuse { receipt, .. }) => GithubEnd::Built {
             receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
@@ -512,6 +544,7 @@ async fn rule_build(
         let rule = store.github_rule(&id)?.ok_or_else(|| {
             ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
         })?;
+        let rule = rule.signed().clone();
         let built = store.github_input(&id)?;
         if built.commit.as_str() != commit {
             return Err(ployz_core::RpcError::conflict(

@@ -873,7 +873,7 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 ///
 /// A built Service is left to its automatic deploy rule while the rule is live, tracks
 /// the Service's branch and approves its spec. Its first Deploy still needs a build under
-/// the rule, which a push to its branch makes; once a Server verified that build under
+/// the rule, which a push or the Deploy makes; once a Server verified that build under
 /// the rule's current generation, a Deploy reuses its image while only run fields
 /// change, and carries its proof.
 ///

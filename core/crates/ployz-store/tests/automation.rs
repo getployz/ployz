@@ -2319,7 +2319,7 @@ fn deploy_with_rule(
     version: &str,
     (rule, prior): (SignedRule, Option<(u8, u64)>),
 ) -> Result<ployz_store::DeploymentSummary, ployz_core::RpcError> {
-    store.write(
+    store.write_trusted(
         who,
         &ployz_store::Admit::Deploy(ployz_store::Deploy {
             id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000141").unwrap(),
@@ -2343,6 +2343,7 @@ fn deploy_with_rule(
                 }),
             })),
         }),
+        &permitted(),
     )
 }
 
@@ -2358,6 +2359,43 @@ fn a_deploy_keeps_the_rule_its_tap_signed_and_the_next_push_deploys() {
     assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
     let pushed = system(&store, &push(None, Some(H1), None));
     assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn a_persons_deploy_builds_under_the_rule_on_a_run_cloud_dispatches_until_the_rule_ends() {
+    use ployz_store::GithubRule;
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let deployed = deploy_with_rule(&store, &person(), &version, (rule, None)).unwrap();
+    let pushed = system(&store, &push(None, Some(H1), None));
+    let (deployed, pushed) = (
+        build_id(&deployed.id, "web"),
+        build_id(&pushed.admitted[0].deployment.id, "web"),
+    );
+
+    assert!(
+        matches!(
+            store.github_rule(&deployed).unwrap(),
+            Some(GithubRule::Dispatch(_))
+        ),
+        "a person's Deploy builds under the rule it signed"
+    );
+    assert!(matches!(
+        store.github_rule(&pushed).unwrap(),
+        Some(GithubRule::Push(_))
+    ));
+
+    end_rule(&store, &who, 2);
+    assert_eq!(store.github_rule(&deployed).unwrap(), None);
+    assert!(
+        matches!(
+            store.github_rule(&pushed).unwrap(),
+            Some(GithubRule::Push(_))
+        ),
+        "a push's build still names the rule, which the grant Machine refuses once ended"
+    );
 }
 
 #[test]
