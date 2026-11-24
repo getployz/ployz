@@ -48,7 +48,7 @@ const release = Effect.fn("VolumePlacement.release")(function* (organizationId: 
   yield* drizzle.update(volumePlacement).set({
     deploymentId: null,
     staged: failed ? sql`${volumePlacement.staged} || '{"unreached":true}'::jsonb` : sql`${volumePlacement.staged}`,
-    updatedAt: new Date(),
+    updatedAt: sql`now()`,
   }).where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
 });
 
@@ -129,7 +129,7 @@ export const discardFailedRestore = Effect.fn("VolumePlacement.discardFailedRest
 
 const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, values: Partial<typeof volumePlacement.$inferInsert>) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: new Date() }).where(eq(volumePlacement.volumeId, volumeId));
+  yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: sql`now()` }).where(eq(volumePlacement.volumeId, volumeId));
 });
 
 /**
@@ -140,7 +140,7 @@ const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
   volumeId: string, deploymentId: string, values: Partial<typeof volumePlacement.$inferInsert>,
 ) {
   const { drizzle } = yield* Database;
-  const updated = yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: new Date() })
+  const updated = yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: sql`now()` })
     .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)))
     .returning({ volumeId: volumePlacement.volumeId });
   return updated.length > 0;
