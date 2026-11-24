@@ -2189,11 +2189,7 @@ async fn a_published_signed_copy_keeps_its_name_after_it_is_removed() {
         .await
         .unwrap();
     publication
-        .apply_container_rows(
-            &machine,
-            &[db.container_id, web.container_id],
-            &[],
-        )
+        .apply_container_rows(&machine, &[db.container_id, web.container_id], &[])
         .await
         .unwrap();
 
