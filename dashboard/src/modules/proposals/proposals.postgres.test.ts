@@ -232,7 +232,7 @@ it.live("a step whose Environment was protected after a member approved halts fo
     yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
     expect(yield* acts).toHaveLength(1);
     expect(yield* provided(proposalStatus(agent, id))).toMatchObject({ ok: true, value: {
-      steps: [{ state: "done" }, { state: "failed", reason: "production is Protected now. An owner or admin approves this." }],
+      steps: [{ state: "done" }, { state: "failed", reason: "production is Protected now. An owner or admin must approve it." }],
     } });
   }));
 

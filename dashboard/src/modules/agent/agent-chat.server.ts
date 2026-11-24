@@ -72,7 +72,7 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
 };
 
 /** What a call that waited on an approval card from before answers once that card is approved: Ployz keeps no approvals now. */
-export const REISSUE = "This waited on an approval Ployz no longer keeps. Nothing ran. Make the call again.";
+export const REISSUE = "This approval expired. Nothing ran. Make the call again.";
 
 /**
  * Before each tool phase: where the member is now, and one staged step at a time, so a proposal's steps stay in the

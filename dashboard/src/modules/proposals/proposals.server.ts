@@ -503,7 +503,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
       return "refusal" in ran ? yield* halt(ran.refusal) : ran;
     }
     // An Environment protected since the approval takes an owner's or admin's: a stop or restart runs only while whoever approved it still could.
-    if (step.verb !== "start" && !(yield* protects(row.decidedByUserId, row))) return yield* halt(`${row.environment} is Protected now. An owner or admin approves this.`);
+    if (step.verb !== "start" && !(yield* protects(row.decidedByUserId, row))) return yield* halt(`${row.environment} is Protected now. An owner or admin must approve it.`);
     const checked = yield* checkedService(row, step);
     if (checked.found === undefined) return yield* halt(checked.refusal);
     const { found } = checked;

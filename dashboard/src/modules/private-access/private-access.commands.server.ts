@@ -16,7 +16,7 @@ export const privateAccessUse = defineCommand({
   name: "private_access_use",
   requires: use.requires,
   path: ["cluster", "private-access"],
-  about: `Private Access isn't turned on or off here. ${IN_CLOUD}`,
+  about: IN_CLOUD,
   title: "Turn Private Access on or off",
   examples: ["ployz cluster private-access off"],
   kind: "read",
