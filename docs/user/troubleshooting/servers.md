@@ -353,56 +353,7 @@ The server has joined and stays joined. To finish:
 
 1. Update `ployz` where the join ran to the release your other servers run, 0.3.4 or later. For
    the new server, [upgrade Ployz on it](../servers/manage-servers.md#upgrade-ployz-on-a-server).
-2. Run the `retry:` command the error printed, so the new server gets the web traffic and
-   Private Access that every server runs.
-
-## A new server joined, but runs no copy of a global service
-
-```text
-Joined Server MY-SERVER.
-warning: MY-SERVER runs no copy of `shop-production/metrics`: only Ployz's own Services run on every Server. Give it a replica count and deploy it again.
-```
-
-That service was deployed from a Compose file with `deploy.mode: global` before 0.1.2-beta.42.
-Servers no longer start a service of yours on every server, so the new one starts none of it.
-The server has joined, and the service keeps running where it ran. With `--json`, the join's
-result lists the service under `skipped_globals`.
-
-A `ployz` older than this release says instead
-`Server joined, but Global catch-up is incomplete; it remains a Cluster member. To finish, redeploy Namespace Service`
-and names the service. The server has joined there too.
-
-Either way, [give the service a replica count](#move-a-service-off-deploymode-global).
-
-## Move a service off `deploy.mode: global`
-
-A service deployed with `deploy.mode: global` before 0.1.2-beta.42 keeps running on the servers
-it ran on, but a new server starts none of it, and draining a server that runs it stops before
-it changes anything. To run it like your other services:
-
-1. If its image keeps data in a volume, find that volume first. `ployz ps SERVICE` lists each of
-   its containers and the server it runs on. On that server, this prints each volume's name and
-   the path it holds in the container:
-
-   ```sh
-   docker inspect --format '{{range .Mounts}}{{.Name}} {{.Destination}}{{println}}{{end}}' CONTAINER
-   ```
-
-2. Replace `deploy.mode: global` with `deploy.replicas` and run `ployz deploy`. Ployz stops and
-   removes each old container first, then starts the new ones, so the service is down until they
-   are healthy. The volumes from step 1 stay on their servers. The new containers start with
-   empty ones.
-3. To carry the data over, copy it from the old volume into a new container. On the old server
-   the files are in `/var/lib/docker/volumes/NAME/_data`. Copy them to the server `ployz ps`
-   now shows for the new container, then copy them in and restart the service:
-
-   ```sh
-   docker cp ./data/. CONTAINER:/path/in/the/container
-   ```
-
-   Data in a volume Ployz doesn't name goes when a later deploy replaces the container. To keep
-   it, [add a volume](../services/volumes.md#add-a-volume) at that path and copy into it instead.
-4. Once the data is safe, remove each old volume on its server with `docker volume rm NAME`.
+2. Redeploy, so its global services start on it.
 
 ## A server waits for approval and never shows up
 

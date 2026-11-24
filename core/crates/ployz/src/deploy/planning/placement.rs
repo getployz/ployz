@@ -161,16 +161,6 @@ impl PlacementState {
     pub(super) fn release_hooks(&mut self, hooks: &[HookContainer]) {
         release_hooks(&mut self.capacity, hooks);
     }
-
-    /// Plan as if `containers` are gone: their bridge endpoints and host ports are free.
-    pub(super) fn release_containers(&mut self, containers: &[ServiceContainer]) {
-        for container in containers {
-            let observation = container.as_observation();
-            self.capacity.release(&observation.machine_id);
-            self.sockets
-                .release(observation.machine_id, observation.container_id);
-        }
-    }
 }
 
 /// Snapshot-local claims, retained per owner so releasing one Container never

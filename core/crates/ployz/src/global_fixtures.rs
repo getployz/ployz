@@ -89,9 +89,20 @@ pub(crate) fn global_service(
     placement: Placement,
     container: ContainerObservation,
 ) -> ServiceObservation {
+    global_service_with_image(identity, id, placement, container, "ghcr.io/getployz/api:1")
+}
+
+pub(crate) fn global_service_with_image(
+    identity: QualifiedService,
+    id: char,
+    placement: Placement,
+    container: ContainerObservation,
+    image: &str,
+) -> ServiceObservation {
     let mut spec = requested(ServiceMode::Global);
     spec.name = identity.name.clone();
     spec.placement = placement;
+    spec.container.image = image.into();
     grouped(
         identity,
         spec.to_resolved(service_id(id), ResolvedUpdateConfig::default())
@@ -127,6 +138,10 @@ pub(crate) fn running_on(machine: &Machine, hex: char) -> ContainerObservation {
             health: HealthObservation::Healthy,
         },
     )
+}
+
+pub(crate) fn created_on(machine: &Machine, hex: char) -> ContainerObservation {
+    container_on(machine, hex, ContainerRuntimeObservation::Created)
 }
 
 fn container_on(

@@ -2,9 +2,22 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::MachineId;
+use ployz_core::{BridgeEndpointCapacity, MachineId};
 
 use super::{DeploySnapshot, PlanError};
+
+pub(crate) fn endpoint_capacity_error(
+    required: usize,
+    capacity: Option<&BridgeEndpointCapacity>,
+) -> Option<PlanError> {
+    match capacity {
+        None if required > 0 => Some(PlanError::CapacityUnknown),
+        Some(capacity) if capacity.free_endpoints() < required as u64 => {
+            Some(PlanError::InsufficientCapacity)
+        }
+        None | Some(_) => None,
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct EndpointDemand {

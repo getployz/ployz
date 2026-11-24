@@ -1091,6 +1091,21 @@ impl Client {
         .map_err(|error| answered_by(machine_id, error))
     }
 
+    /// Converge one Container as a joiner's catch-up does, which carries no Deploy's
+    /// approvals and resends the keyed call until it answers.
+    pub(crate) async fn ensure_retried(
+        &mut self,
+        target: &MachineTarget,
+        want: ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        let request = self
+            .ensure_request(target, want, async |_| Carried::default())
+            .await?;
+        self.call::<op::EnsureContainer>(request, Call::keyed().to(target))
+            .await
+            .map_err(RpcError::from)
+    }
+
     /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
     /// value reaches a Machine that can't keep it sealed, and only then asks `carry`.
     async fn ensure_request(

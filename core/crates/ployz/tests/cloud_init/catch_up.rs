@@ -37,27 +37,24 @@ fn with_faults(daemon: JoinDaemon, target: Fault, ensure: Fault) -> JoinDaemon {
 
 #[tokio::test]
 async fn cloud_join_finishes_rpc_work_before_publishing_the_rotated_capability() {
-    let (output, daemon) = cloud_join(Fault::Healthy, Fault::Healthy).await;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-    // A user Global from before 0.1.2-beta.42 is named, and the join goes on without it.
+    let (output, _) = cloud_join(Fault::Healthy, Fault::Healthy).await;
     assert!(
-        stderr.contains("joiner runs no copy of `shop/worker`"),
-        "{stderr}"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(daemon.ensure_requests().is_empty());
 }
 
 #[tokio::test]
 async fn cloud_join_retries_target_readiness_and_reports_failure() {
     let (recovered, daemon) = cloud_join(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    // The Ingress Proxy reads only the role, once more after the transient failure.
-    assert_eq!(daemon.target_inspect_attempts(), 2);
+    // The worker reads eligibility and capacity, and the Ingress Proxy only the role.
+    assert_eq!(daemon.target_inspect_attempts(), 4);
 
     let (failed, daemon) = cloud_join(Fault::Permanent, Fault::Healthy).await;
     assert!(!failed.status.success());
-    assert_eq!(daemon.target_inspect_attempts(), 1);
+    assert_eq!(daemon.target_inspect_attempts(), 2);
     assert_eq!(daemon.ensure_attempts(), 0);
     assert_joined_with_incomplete_catch_up(&failed);
     daemon.join_request();
@@ -67,13 +64,13 @@ async fn cloud_join_retries_target_readiness_and_reports_failure() {
 async fn machine_add_retries_target_readiness_and_reports_failure() {
     let (recovered, entry, target) = machine_add(Fault::Transient, Fault::Healthy).await;
     assert!(recovered.status.success());
-    // The Ingress Proxy reads only the role, once more after the transient failure.
-    assert_eq!(entry.target_inspect_attempts(), 2);
+    // The worker reads eligibility and capacity, and the Ingress Proxy only the role.
+    assert_eq!(entry.target_inspect_attempts(), 4);
     target.join_request();
 
     let (failed, entry, target) = machine_add(Fault::Permanent, Fault::Healthy).await;
     assert!(!failed.status.success());
-    assert_eq!(entry.target_inspect_attempts(), 1);
+    assert_eq!(entry.target_inspect_attempts(), 2);
     assert_eq!(entry.ensure_attempts(), 0);
     assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
@@ -81,19 +78,28 @@ async fn machine_add_retries_target_readiness_and_reports_failure() {
 }
 
 #[tokio::test]
-async fn cloud_join_reports_a_failed_catch_up() {
+async fn cloud_join_retries_catch_up_and_reports_failure() {
+    let (recovered, daemon) = cloud_join(Fault::Healthy, Fault::Transient).await;
+    assert!(recovered.status.success());
+    assert_eq!(daemon.ensure_attempts(), 3);
+
     let (failed, daemon) = cloud_join(Fault::Healthy, Fault::Permanent).await;
     assert!(!failed.status.success());
-    assert_eq!(daemon.ensure_attempts(), 1);
+    assert_eq!(daemon.ensure_attempts(), 2);
     assert_joined_with_incomplete_catch_up(&failed);
     daemon.join_request();
 }
 
 #[tokio::test]
-async fn machine_add_reports_a_failed_catch_up() {
+async fn machine_add_retries_catch_up_and_reports_failure() {
+    let (recovered, entry, target) = machine_add(Fault::Healthy, Fault::Transient).await;
+    assert!(recovered.status.success());
+    assert_eq!(entry.ensure_attempts(), 3);
+    target.join_request();
+
     let (failed, entry, target) = machine_add(Fault::Healthy, Fault::Permanent).await;
     assert!(!failed.status.success());
-    assert_eq!(entry.ensure_attempts(), 1);
+    assert_eq!(entry.ensure_attempts(), 2);
     assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
     target.join_request();
@@ -166,8 +172,6 @@ async fn cloud_join_reports_an_unarrived_registration_in_its_result() {
     .await;
     assert!(output.status.success());
     assert_unarrived_in_result(&output);
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result.get("skipped_globals"), Some(&json!(["shop/worker"])));
 }
 
 /// A real Down member, or a failed start, still fails catch-up after it skipped the
@@ -428,8 +432,22 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
         "stderr: {stderr}"
     );
     assert_ingress_retry(&stderr);
-    // No redeploy brings a user Global back, so the failure never asks for one.
-    assert!(!stderr.contains("redeploy"), "stderr: {stderr}");
+    assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
+    assert_eq!(
+        stderr
+            .matches("redeploy Namespace Service `shop/worker`")
+            .count(),
+        1,
+        "stderr: {stderr}"
+    );
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("inspect: ")
+                && line.contains("logs shop/worker --machine "))
+            .count(),
+        1
+    );
 }
 
 pub(super) fn assert_ingress_retry(stderr: &str) {

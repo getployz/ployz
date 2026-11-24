@@ -13,14 +13,20 @@ pub(crate) fn joined_catch_up_error(
     server: &Machine,
     command: impl Fn(&[&str]) -> String,
 ) -> Failure {
-    let message = if error.cause.is_interrupted() {
+    let mut message = if error.cause.is_interrupted() {
         "Server joined; Global catch-up was interrupted. It remains a Cluster member."
     } else {
         "Server joined, but Global catch-up is incomplete; it remains a Cluster member."
     }
     .to_owned();
+    for identity in &error.unresolved {
+        if *identity != QualifiedService::system_ingress() && !identity.is_private_access_router() {
+            message.push_str(&format!(
+                " To finish, redeploy Namespace Service `{identity}`."
+            ));
+        }
+    }
     let mut failure = error.cause.context(message);
-    // Catch-up places only the Ingress Proxy and the Private Access router.
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
             Hint::Retry(command(&[
@@ -29,53 +35,32 @@ pub(crate) fn joined_catch_up_error(
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
-        } else {
+        } else if identity.is_private_access_router() {
             Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
+        } else {
+            Hint::Inspect(command(&[
+                "logs",
+                &identity.to_string(),
+                "--machine",
+                &server.id.to_string(),
+            ]))
         };
         failure = failure.hint(hint);
     }
     failure
 }
 
-/// What catch-up left out and reported, for the join's result.
-#[derive(Default)]
-pub(crate) struct Skipped {
-    unarrived: Vec<serde_json::Value>,
-    legacy: Vec<QualifiedService>,
-}
-
-impl Skipped {
-    /// Add the Unarrived Servers and user Globals catch-up skipped to a join result, when
-    /// there are any.
-    pub(crate) fn add_to(&self, mut result: serde_json::Value) -> serde_json::Value {
-        if let Some(fields) = result.as_object_mut() {
-            if !self.unarrived.is_empty() {
-                fields.insert("unarrived".into(), self.unarrived.clone().into());
-            }
-            if !self.legacy.is_empty() {
-                fields.insert("skipped_globals".into(), serde_json::json!(self.legacy));
-            }
-        }
-        result
-    }
-}
-
-/// Follow target-only catch-up with the shared progress block. Returns what it skipped
-/// and reported, whether or not catch-up then succeeded.
+/// Follow target-only catch-up with the shared progress block. Returns the Unarrived
+/// Servers it reported, whether or not catch-up then succeeded.
 pub(crate) async fn follow_globals(
     client: &mut Client,
     assigned: &Machine,
     command: impl Fn(&[&str]) -> String,
-) -> (Skipped, Result<(), CatchUpError>) {
+) -> (Vec<serde_json::Value>, Result<(), CatchUpError>) {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
     let signal = match crate::cancellation::interrupted() {
         Ok(signal) => signal,
-        Err(error) => {
-            return (
-                Skipped::default(),
-                Err(CatchUpError::new(error.into(), Vec::new())),
-            );
-        }
+        Err(error) => return (Vec::new(), Err(CatchUpError::new(error.into(), Vec::new()))),
     };
     let mut frame = Frame {
         run: Run::CatchUp(assigned.id),
@@ -86,15 +71,10 @@ pub(crate) async fn follow_globals(
     };
     let mut progress = Progress::start(frame.clone());
     let mut not_arrived = ServerNames::default();
-    let mut legacy = Vec::new();
     let result = catch_up_globals(client, assigned, &signal, |fact| {
         let (identity, state) = match fact {
             CatchUpFact::NotArrived(names) => {
                 not_arrived = names;
-                return;
-            }
-            CatchUpFact::Legacy(services) => {
-                legacy = services;
                 return;
             }
             CatchUpFact::Identified(services) => {
@@ -171,12 +151,18 @@ pub(crate) async fn follow_globals(
     if !unarrived.is_empty() {
         crate::ui::hint(&Hint::Inspect(list));
     }
-    for service in &legacy {
-        crate::ui::warn(format!(
-            "{} runs no copy of `{service}`: only Ployz's own Services run on every Server. \
-             Give it a replica count and deploy it again.",
-            assigned.name
-        ));
+    (unarrived, result)
+}
+
+/// Add the Unarrived Servers catch-up skipped to a join result, when there are any.
+pub(crate) fn with_unarrived(
+    mut result: serde_json::Value,
+    unarrived: &[serde_json::Value],
+) -> serde_json::Value {
+    if !unarrived.is_empty()
+        && let Some(fields) = result.as_object_mut()
+    {
+        fields.insert("unarrived".into(), unarrived.into());
     }
-    (Skipped { unarrived, legacy }, result)
+    result
 }
