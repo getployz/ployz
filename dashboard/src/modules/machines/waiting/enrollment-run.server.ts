@@ -250,10 +250,13 @@ export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStal
       eq(serverEnrollment.state, "joined"),
       lt(serverEnrollment.endedAt, sql`${checkedNow()} - make_interval(secs => ${JOINED_WAITING_KEEP_MS / 1000})`),
     )));
-    const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(keptLongEnough).orderBy(waitingServer.id).for("update");
-    if (locked.length === 0) return [];
+    const due = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(keptLongEnough);
+    if (due.length === 0) return [];
+    const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
+      .where(inArray(waitingServer.id, due.map((row) => row.id))).orderBy(waitingServer.id).for("update");
     return yield* drizzle.delete(waitingServer).where(and(
       inArray(waitingServer.id, locked.map((row) => row.id)),
+      keptLongEnough,
       notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
         eq(serverEnrollment.waitingServerId, waitingServer.id),
         open,

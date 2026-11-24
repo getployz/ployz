@@ -53,9 +53,9 @@ export const linkConsentSession = Effect.fn("Identity.linkConsentSession")(funct
   if (consent === undefined) return false;
   const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
   yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
+  yield* drizzle.select({ id: session.id }).from(session).where(eq(session.id, sessionId)).for("share");
   const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())))
-    .for("share");
+    .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())));
   if (live !== undefined) return true;
   yield* drizzle.update(oauthConsentSession).set({ signedOutAt: sql`now()` }).where(link);
   return false;

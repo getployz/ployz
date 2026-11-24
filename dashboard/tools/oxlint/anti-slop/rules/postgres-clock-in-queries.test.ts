@@ -60,6 +60,16 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       await drizzle.select().from(invitation).where(and(eq(invitation.id, id), gt(invitation.expiresAt, checkedNow())));
       await drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql\`\${sweepCutoff()} - make_interval(secs => 86400)\`));`,
     },
+    // A lock by id, then the time check in the next statement; a plain range read and a prune on sweepCutoff().
+    {
+      filename,
+      code: `import { and, eq, gt, lt } from "drizzle-orm";
+      await drizzle.select({ id: fleetToken.id }).from(fleetToken).where(eq(fleetToken.id, id)).for("no key update");
+      const [live] = await drizzle.select({ id: fleetToken.id }).from(fleetToken).where(and(eq(fleetToken.id, id), gt(fleetToken.expiresAt, checkedNow())));
+      await drizzle.update(fleetToken).set({ usedAt: sql\`now()\` }).where(and(eq(fleetToken.id, id), gt(fleetToken.expiresAt, checkedNow())));
+      const recent = await drizzle.select().from(rateLimitEvent).where(gt(rateLimitEvent.at, sql\`\${sweepCutoff()} - make_interval(secs => 60)\`));
+      await database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql\`\${sweepCutoff()} - make_interval(secs => 86400)\`)).pipe(Effect.ignore);`,
+    },
     { filename: "feature.postgres.test.ts", code: `yield* drizzle.update(session).set({ expiresAt: new Date(Date.now() - 1_000) });` },
   ],
   invalid: [
@@ -195,6 +205,31 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       yield* drizzle.update(serviceAct).set({ endedAt: new Date() } as Patch).where(eq(serviceAct.id, id));
       yield* drizzle.update(serviceAct).set({ startedAt: new Date() satisfies Date }).where(eq(serviceAct.id, id));`,
       errors: Array.from({ length: 3 }, () => ({ messageId: "webClock" })),
+    },
+    // The Fleet Token arrival before round 6: a lock-only holder let an expired token through, since a locking read
+    // checks before it waits. Also through a const, a projection, and a query a const holds.
+    {
+      filename,
+      code: `import { and, eq, gt } from "drizzle-orm";
+      const [live] = await drizzle.select({ max: fleetToken.autoEnrollMax }).from(fleetToken)
+        .where(and(eq(fleetToken.id, id), gt(fleetToken.expiresAt, checkedNow()))).for("no key update");
+      const expired = sql<boolean>\`\${invitation.expiresAt} <= \${checkedNow()}\`;
+      const [row] = await drizzle.select({ id: invitation.id, expired }).from(invitation).where(byToken(token)).for("update").limit(1);
+      const query = drizzle.select({ left: sql<number>\`\${drain.deadline} - \${checkedNow()}\` }).from(drain).where(eq(drain.id, id));
+      const [held] = lock ? await query.for("update") : await query;
+      await drizzle.execute(sql\`select id from session where expires_at > \${checkedNow()} for share\`);`,
+      errors: Array.from({ length: 4 }, () => ({ messageId: "lockedCheck" })),
+    },
+    // sweepCutoff() where a statement locks, updates, or returns the rows it deletes.
+    {
+      filename,
+      code: `import { gt, lt } from "drizzle-orm";
+      await drizzle.select({ id: invite.id }).from(invite).where(gt(invite.expiresAt, sweepCutoff())).for("update");
+      await drizzle.update(session).set({ revoked: true }).where(lt(session.expiresAt, sweepCutoff()));
+      const gone = await drizzle.delete(claim).where(lt(claim.expiresAt, sweepCutoff())).returning({ id: claim.id });
+      await drizzle.insert(lease).values(row).onConflictDoUpdate({ target: lease.id, set: { holder }, setWhere: lt(lease.renewedAt, sweepCutoff()) });
+      await drizzle.execute(sql\`update lease set holder = null where renewed_at < \${sweepCutoff()}\`);`,
+      errors: Array.from({ length: 5 }, () => ({ messageId: "sweepActs" })),
     },
   ],
 });

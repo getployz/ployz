@@ -11,6 +11,8 @@ const conflictClauses = new Set(["onConflictDoUpdate", "onConflictDoNothing"]);
 const conflictFilters = new Set(["set", "where", "setWhere", "targetWhere"]);
 const checks = new Set(["where", "having"]);
 const conflictChecks = new Set(["where", "setWhere", "targetWhere"]);
+const clockHelpers = new Set(["checkedNow", "sweepCutoff"]);
+const lockingRead = /\bfor\s+(?:no\s+key\s+update|update|key\s+share|share)\b/iu;
 const comparisons = new Set(["eq", "ne", "gt", "gte", "lt", "lte", "between", "notBetween", "inArray", "notInArray"]);
 
 function isMember(node: ESTree.Node, object: string, property: string): boolean {
@@ -91,6 +93,50 @@ function queryChecks(call: ESTree.CallExpression): Array<ESTree.Node> {
   return [];
 }
 
+function methodOf(call: ESTree.CallExpression): string | null {
+  return call.callee.type === "MemberExpression" && !call.callee.computed ? propertyName(call.callee.property) : null;
+}
+
+/**
+ * The calls of a method chain, outermost first, when `call` ends it: `drizzle.select().from(t).for("update")` gives the
+ * `for`, `from` and `select` calls, and `select.for(...)` continues into the chain the `const select` holds. Null for a
+ * call further down a chain, which its outermost call stands for.
+ */
+function chainCalls(call: ESTree.CallExpression, resolve: (node: ESTree.Node) => ESTree.Node): Array<ESTree.CallExpression> | null {
+  const parent = call.parent;
+  if (parent?.type === "MemberExpression" && parent.object === call && parent.parent?.type === "CallExpression"
+    && parent.parent.callee === parent) return null;
+  const calls: Array<ESTree.CallExpression> = [];
+  const seen = new Set<ESTree.Node>();
+  for (let current: ESTree.Node = call; current.type === "CallExpression" && methodOf(current) !== null && !seen.has(current);) {
+    seen.add(current);
+    calls.push(current);
+    current = resolve(unwrapped((current.callee as ESTree.MemberExpression).object));
+  }
+  return calls;
+}
+
+/**
+ * What a statement does with the rows its time check lets through. A locking read checks them before it waits for the
+ * lock; an UPDATE, an upsert's update and a DELETE that returns rows act on them. A plain read and a DELETE that
+ * returns nothing, a prune, only see or drop them, so a cutoff from when the transaction began costs a run's delay.
+ */
+function rowUse(calls: ReadonlyArray<ESTree.CallExpression>): "locks" | "writes" | null {
+  const methods = calls.map(methodOf);
+  if (methods.includes("for")) return "locks";
+  const first = methods.at(-1);
+  if (first === "update" || methods.includes("onConflictDoUpdate")) return "writes";
+  if (first === "delete" && methods.includes("returning")) return "writes";
+  return null;
+}
+
+/** The same for raw SQL text. */
+function textRowUse(text: string): "locks" | "writes" | null {
+  if (lockingRead.test(text)) return "locks";
+  if (/\bupdate\b/iu.test(text) || (/\bdelete\b/iu.test(text) && /\breturning\b/iu.test(text))) return "writes";
+  return null;
+}
+
 function enclosingFunction(node: ESTree.Node): ESTree.Node | null {
   for (let current = node.parent; current !== null; current = current.parent) {
     if (current.type === "ArrowFunctionExpression" || current.type === "FunctionExpression" || current.type === "FunctionDeclaration") {
@@ -131,6 +177,11 @@ export const postgresClockInQueriesRule = defineRule({
       rawClock:
         "A check names its clock through a helper. Use checkedNow() for clock_timestamp(). "
         + "Use sweepCutoff() only in a sweep that needs an index on the time column and can act on a just-expired row one run late.",
+      lockedCheck:
+        "A locking read evaluates this before it waits for the lock. Lock the row by id first, then check checkedNow() in the next statement.",
+      sweepActs:
+        "sweepCutoff() is when the transaction began, so a row that expired since still passes, and this statement locks or changes the rows it lets through. "
+        + "Only a plain range read, or a prune that returns nothing, may use it. Check against checkedNow(), after the lock when the read locks.",
       webClock:
         "Postgres stamps and checks stored times on its own clock; a web instance's clock drifts from it. Write sql`now()` (plus an interval), and check against checkedNow().",
     },
@@ -334,11 +385,42 @@ export const postgresClockInQueriesRule = defineRule({
       }
     }
 
+    /** Every checkedNow() and sweepCutoff() a statement's part reads, through consts, sql templates and subqueries. */
+    function helperCalls(wrapped: ESTree.Node, seen: Set<ESTree.Node>): Array<ESTree.CallExpression> {
+      const node = constValue(unwrapped(wrapped));
+      if (seen.has(node)) return [];
+      seen.add(node);
+      if (node.type === "CallExpression" && node.callee.type === "Identifier" && clockHelpers.has(node.callee.name)) return [node];
+      if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression" || node.type === "AwaitExpression"
+        || node.type === "YieldExpression") return [];
+      return childNodes(node, visitorKeys).flatMap((child) => {
+        if (node.type === "MemberExpression" && child === node.property && !node.computed) return [];
+        if (node.type === "Property" && child === node.key && !node.computed) return [];
+        return helperCalls(child, seen);
+      });
+    }
+
+    function checkRowUse(use: "locks" | "writes" | null, parts: ReadonlyArray<ESTree.Node>) {
+      if (use === null) return;
+      const seen = new Set<ESTree.Node>();
+      for (const call of parts.flatMap((part) => helperCalls(part, seen))) {
+        const sweep = (call.callee as ESTree.IdentifierReference).name === "sweepCutoff";
+        if ((!sweep && use !== "locks") || reported.has(call)) continue;
+        reported.add(call);
+        context.report({ node: call, messageId: sweep ? "sweepActs" : "lockedCheck" });
+      }
+    }
+
     return {
       TaggedTemplateExpression(node) {
-        if (isSqlTemplate(node) && compares(quasiText(node.quasi), isWritten(node))) checkClocks(node, new Set());
+        if (!isSqlTemplate(node)) return;
+        const text = quasiText(node.quasi);
+        if (compares(text, isWritten(node))) checkClocks(node, new Set());
+        checkRowUse(textRowUse(text), node.quasi.expressions);
       },
       CallExpression(node) {
+        const calls = chainCalls(node, constValue);
+        if (calls !== null) checkRowUse(rowUse(calls), calls.flatMap((call) => call.arguments));
         const raw = isSqlRaw(node) ? sqlText(node) : null;
         if (raw !== null && compares(raw, isWritten(node))) checkClocks(node, new Set());
         for (const condition of queryChecks(node)) checkClocks(condition, new Set());

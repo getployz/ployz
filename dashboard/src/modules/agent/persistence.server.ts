@@ -260,8 +260,10 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
   const { drizzle } = database;
   return yield* database.transaction(Effect.gen(function* () {
     const ids = [...new Set(interruptIds)];
+    const asked = and(ownedBy(agentInterrupts, scope), inArray(agentInterrupts.interruptId, ids));
+    yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts).where(asked).for("update");
     const rows = yield* drizzle.select({ status: agentInterrupts.status, claim: agentInterrupts.claim, live: claimLive })
-      .from(agentInterrupts).where(and(ownedBy(agentInterrupts, scope), inArray(agentInterrupts.interruptId, ids))).for("update");
+      .from(agentInterrupts).where(asked);
     if (rows.length < ids.length) return "unchecked" as const;
     if (rows.every((row) => row.status !== "pending")) return "settled" as const;
     if (rows.some((row) => row.claim !== null && row.claim !== claim && row.live)) return "busy" as const;

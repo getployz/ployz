@@ -18,21 +18,25 @@ export type EncryptedSecretValue = {
 };
 
 /**
- * The time a check compares stored times against: Postgres's clock as it checks each row. `clock_timestamp()` is
- * volatile, so when an update or a `for update` waits on a row's lock and Postgres rechecks the row after the wait, it
- * reads the clock again: a deadline that passed during the wait fails. `now()` is when the transaction began, and a
- * `(select clock_timestamp())` is read once before any wait, so both pass it (measured on Postgres 16). A volatile
- * value is no index key, so the time column narrows nothing; use {@link sweepCutoff} where that index matters.
+ * The time a check compares stored times against: `clock_timestamp()`, Postgres's clock each time it is read.
+ * `now()` is when the transaction began. What a statement that waits on a row lock sees, measured on Postgres 16.16:
+ * - An UPDATE or DELETE rechecks its WHERE after the wait, reading the clock again, only when the holder changed the
+ *   row and committed. Then a deadline that passed during the wait refuses the row.
+ * - When the holder only locked the row (`for update`, then commit or rollback), the row is unchanged, Postgres skips
+ *   the recheck, and the UPDATE or DELETE keeps the check it made before the wait: an expired row still passes.
+ * - A `select … for update` or `for share` evaluates its WHERE and columns before it waits, so its check is from before.
+ * In a transaction, lock the row by id in one statement and check against this in the next: that check follows every wait.
+ * A volatile value is no index key, so the time column narrows nothing; a plain range read or prune that needs that
+ * index reads {@link sweepCutoff}.
  */
 export function checkedNow() {
   return sql<Date>`clock_timestamp()`;
 }
 
 /**
- * The cutoff for a sweep that needs an index on the time column: `now()`, one value for the statement, so Postgres scans
- * the index range. It is when the transaction began and a lock-wait recheck reuses it, so a row that expires meanwhile
- * goes on the next run. Only for sweeps where acting on a just-expired row one run late is harmless; a check that
- * grants or refuses reads {@link checkedNow}.
+ * The cutoff for a plain range read or a prune that needs an index on the time column: `now()`, one value for the
+ * statement, so Postgres scans the index range. It is when the transaction began, so a row that expires meanwhile goes
+ * on the next run. A statement that locks, updates, or returns the rows it deletes checks against {@link checkedNow}.
  */
 export function sweepCutoff() {
   return sql<Date>`now()`;

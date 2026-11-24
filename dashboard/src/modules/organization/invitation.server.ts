@@ -145,7 +145,6 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
       slug: organization.slug,
       role: invitation.role,
       status: invitation.status,
-      expired,
     }).from(invitation)
       .innerJoin(organization, eq(organization.id, invitation.organizationId))
       .where(byToken(token)).for("update", { of: invitation }).limit(1);
@@ -155,12 +154,11 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     if (already !== undefined) return { slug: row.slug };
     const [manager] = yield* drizzle.select({ id: member.id }).from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING_ROLES]))).for("share");
-    const state = stateOf({ ...row, fromManager: manager !== undefined });
+    // The reads above may have waited on locks: the expiry is read once they are all held.
+    const [lapse] = yield* drizzle.select({ expired }).from(invitation).where(eq(invitation.id, row.id));
+    const state = stateOf({ ...row, expired: lapse?.expired ?? true, fromManager: manager !== undefined });
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
-    // The member and manager reads above may have waited on locks: spend the invite only if it is still live once they are held.
-    const [spent] = yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId })
-      .where(and(eq(invitation.id, row.id), sql`${invitation.expiresAt} > ${checkedNow()}`)).returning({ id: invitation.id });
-    if (spent === undefined) return yield* new Conflict({ message: UNUSABLE.expired, userFacing: true });
+    yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     return { slug: row.slug };
   }));

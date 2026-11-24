@@ -196,7 +196,9 @@ export function planServerEnrollment(
 
 const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organizationId: string, ids: ReadonlyArray<string>, lock: boolean) {
   const { drizzle } = yield* Database;
-  const select = drizzle
+  const chosen = and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids]));
+  if (lock) yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(chosen).orderBy(waitingServer.id).for("update");
+  return yield* drizzle
     .select({
       id: waitingServer.id,
       fleetTokenId: waitingServer.fleetTokenId,
@@ -210,9 +212,8 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
-    .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])))
+    .where(chosen)
     .orderBy(waitingServer.id);
-  return lock ? yield* select.for("update", { of: waitingServer }) : yield* select;
 });
 
 const WAITING_SERVER_ID = /^[0-9a-f-]{36}$/u;
@@ -445,8 +446,9 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     const [pairing] = yield* drizzle.select({ founder: organizationPairing.founderMachineId, removal: organizationPairing.removalEndpoints })
       .from(organizationPairing).where(eq(organizationPairing.organizationId, token.organizationId));
     if (pairing === undefined || pairing.founder === null || pairing.removal !== null) return false;
+    yield* drizzle.select({ id: fleetToken.id }).from(fleetToken).where(eq(fleetToken.id, token.id)).for("no key update");
     const [live] = yield* drizzle.select({ max: fleetToken.autoEnrollMax, userId: fleetToken.createdByUserId })
-      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, checkedNow()))).for("no key update");
+      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, checkedNow())));
     if (live === undefined || live.max === null) return false;
     const [host] = yield* drizzle.select({
       id: waitingServer.id, report: waitingServer.report, observedIp: waitingServer.observedIp,

@@ -233,12 +233,12 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
   const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= ${checkedNow()} - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const hosts = yield* drizzle
+    const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(selected).orderBy(waitingServer.id).for("update");
+    const hosts = locked.length === 0 ? [] : yield* drizzle
       .select({ id: waitingServer.id, observedIp: waitingServer.observedIp, reopenable })
       .from(waitingServer)
-      .where(selected)
-      .orderBy(waitingServer.id)
-      .for("update");
+      .where(inArray(waitingServer.id, locked.map((host) => host.id)))
+      .orderBy(waitingServer.id);
     if (hosts.length === 0 || hosts.some((host) => !host.reopenable)) return { probing: 0 };
     const nonce = randomBytes(16).toString("base64url");
     const pending: TcpObservation = { seen: "pending" };

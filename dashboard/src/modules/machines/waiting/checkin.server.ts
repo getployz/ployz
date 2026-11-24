@@ -86,14 +86,14 @@ function claimedKey(body: Uint8Array) {
 
 const lockTokenAgainstRevoke = Effect.fn("Checkin.lockToken")(function* (id: string, mode: "share" | "update") {
   const { drizzle } = yield* Database;
+  yield* drizzle.select({ id: fleetToken.id }).from(fleetToken).where(eq(fleetToken.id, id)).for(mode);
   const [live] = yield* drizzle
     .select({
       revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
       expired: sql<boolean>`${fleetToken.expiresAt} <= ${checkedNow()}`,
     })
     .from(fleetToken)
-    .where(eq(fleetToken.id, id))
-    .for(mode);
+    .where(eq(fleetToken.id, id));
   return live;
 });
 
