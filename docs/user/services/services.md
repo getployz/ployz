@@ -71,8 +71,10 @@ Deleting a database's service also deletes its volume and data, unless another s
 it. The deploy asks you to confirm first: see
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 Anonymous volumes the service's image created, which no volume in Ployz names, stay on the
-server after the service is deleted, after a drain moves it off that server, and after you remove
-one of its containers.
+server whenever a container leaves it with no new container in its place: after the service is
+deleted, after you lower its replicas, after a deploy's placement stops allowing that server, after
+a drain moves it off that server, and after you remove one of its containers. A deploy that
+replaces a container on the same server deletes the old container's anonymous volumes.
 
 ## Restart, stop or open a shell
 
