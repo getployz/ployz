@@ -5,7 +5,6 @@ import { approvalAsks, asksApproval } from "#/modules/config-store/store-asks";
 import { APPROVAL_HEADER, askedOfCli, gateOperation, hasApprover, needsPerson, olderApproval, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { callStore } from "#/modules/config-store/config-store.server";
-import { asRecord, asString } from "#/lib/json";
 import { refusal } from "#/lib/refusal";
 import { cliRefusalResponse } from "#/server/public-error";
 import { protector, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
@@ -106,14 +105,15 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     protector: protector(caller), environments: callerEnvironments(caller), from_cli: true,
   } as const);
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
-  let result = yield* callStore(caller.organization.id, caller.userId, sent, gate(approval));
-  // The Store asks again for the plan as it stands now. A yes runs only that plan, and never a member's own yes to an ask
-  // a Protected Environment makes of an owner or admin, which the Store would take.
+  // A person's yes goes into the write itself: the Store weighs it against the plan as it stands inside the write, so a
+  // plan that changed since the ask, even to one that destroys nothing, asks again and writes nothing. The Store never
+  // takes a member's own yes for what a Protected Environment asks of an owner or admin. An unprotect's yes is Cloud's
+  // own operation digest, which its gate above already weighed.
+  const yes = named === null || unprotect?.asked ? approval : { approved: named };
+  const result = yield* callStore(caller.organization.id, caller.userId, sent, gate(yes));
   if (!result.ok && result.refusal.code === "approval_required") {
     if (byAgent && call.operation === "write") return cliRefusalResponse(needsPerson(call.command, result.refusal));
     if (isProtectedAsk(result.refusal)) return cliRefusalResponse(refusal("forbidden", OWNER_OR_ADMIN, { protected: true }));
-    const asked = asString(asRecord(result.refusal.details)?.["approval"] ?? null);
-    if (named !== null && named === asked) result = yield* callStore(caller.organization.id, caller.userId, sent, gate({ approved: named }));
   }
   if (result.ok) {
     const answer = sealing === undefined ? result.value : { state: "ready", publicKey: sealing.publicKey, targets: result.value };

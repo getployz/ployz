@@ -707,6 +707,13 @@ fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothi
 
     let refused = publish(&store, &who, "production", false).unwrap_err();
     let approved = admin_approved(refused, "deploy");
+    // The member's own CLI carrying the same digest is not an admin's yes.
+    let own = Trusted {
+        from_cli: true,
+        ..approved.clone()
+    };
+    let asked = publish_as(&store, &who, "production", &own).unwrap_err();
+    assert_eq!(asked.details["protected"], json!(true), "{asked:?}");
     assert!(
         publish_as(&store, &who, "production", &approved)
             .unwrap()

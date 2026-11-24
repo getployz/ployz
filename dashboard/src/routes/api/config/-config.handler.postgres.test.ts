@@ -38,6 +38,7 @@ const Answer = Schema.Union([
   }),
   Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String, details: Schema.Unknown }) }),
   Schema.Struct({ written: Schema.String, staged: Schema.Array(Schema.String) }),
+  Schema.Struct({ created: Schema.Boolean }),
 ]);
 /** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
 const decodeAnswer = (text: string) => Schema.decodeUnknownSync(Answer)(JSON.parse(text), { onExcessProperty: "preserve" });
@@ -96,7 +97,9 @@ const shop = Effect.fn(function* (kind: "cli" | "agent" = "cli") {
       where s.environment_id = ${ENVIRONMENT} and s.revision = (select max(revision) from config_saved where environment_id = ${ENVIRONMENT})`, "objects");
     return rows.map((row) => row.id);
   });
-  return { send, serverReported, settings, webDeployedThenRemoved, saved, userId };
+  /** Put `web` back as Head has it, so the next Save stops nothing. */
+  const webKept = Effect.promise(() => store.write(ORGANIZATION, { command: "discard", environment: here, path: "web", target: "head", version: null }));
+  return { send, serverReported, settings, webDeployedThenRemoved, webKept, saved, userId };
 });
 
 const cloud = storeTestCloudWith(AuthLive);
@@ -194,5 +197,30 @@ it.live("an agent's Save that stops a Service is refused with where a person doe
       const yes = yield* person(digest);
       assert.strictEqual(yes.status, 200, yes.text);
       assert.deepStrictEqual(yield* saved, [], "the person's yes saves it");
+    }).pipe(Effect.provide(yield* cloud));
+  }), 60_000);
+
+// Catches a yes to stopping web publishing whatever was staged after the ask, once that plan stops nothing.
+it.live("a person's yes to a Save that has changed since the ask asks again and saves nothing", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const { send, webDeployedThenRemoved, webKept, saved } = yield* shop();
+      yield* webDeployedThenRemoved;
+      const ask = yield* send("write", save);
+      if (!("error" in ask.json) || ask.json.error.code !== "approval_required") assert.fail(`no ask: ${JSON.stringify(ask.json)}`);
+      const digest = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String }))(ask.json.error.details).approval;
+
+      yield* webKept;
+      const staged = yield* send("write", set("MODE", "fast"));
+      assert.strictEqual(staged.status, 200);
+      const stale = yield* send("write", save, digest);
+      if (!("error" in stale.json) || stale.json.error.code !== "approval_required") assert.fail(`no new ask: ${JSON.stringify(stale.json)}`);
+      const fresh = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String, effects: Schema.Array(Schema.Unknown) }))(stale.json.error.details);
+      assert.notStrictEqual(fresh.approval, digest);
+      assert.deepStrictEqual(fresh.effects, []);
+      assert.deepStrictEqual(yield* saved, [SERVICE], "the changed plan was not saved");
+
+      const yes = yield* send("write", save, fresh.approval);
+      assert.deepStrictEqual([yes.status, "created" in yes.json && yes.json.created], [200, true]);
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);

@@ -453,6 +453,12 @@ impl<'a> Gate<'a> {
         Self { protection, ..self }
     }
 
+    /// Whether this is a member's CLI write that a Protected Environment asks of an
+    /// owner or admin.
+    fn asks_cli_member(&self) -> bool {
+        self.protection == Protection::Asks && self.trusted.from_cli
+    }
+
     /// Whether a retry asks a human at all.
     pub(crate) fn asks_retry(&self) -> bool {
         self.protected()
@@ -486,7 +492,11 @@ impl<'a> Gate<'a> {
         let digest = ApprovalDigest::bind(&diff.version, &bound);
         match &self.trusted.approval {
             Approval::NotRequired if !self.protected() => Ok(()),
-            Approval::Approved(approved) if *approved == digest => Ok(()),
+            // A member's own yes over the CLI never answers what a Protected
+            // Environment asks of an owner or admin; only the proposal decision does.
+            Approval::Approved(approved) if *approved == digest && !self.asks_cli_member() => {
+                Ok(())
+            }
             Approval::NotRequired | Approval::Required | Approval::Approved(_) => Err(Asking {
                 message,
                 required: Box::new(ApprovalRequired {
@@ -583,7 +593,11 @@ pub(crate) fn approve(
         refuse_destroying(gate, effects, what, then)?;
     }
     // A prune's removals, named or not, are new to every Deploy, even one that resaves.
+    // A yes is always weighed against the plan as it stands, so a yes to a plan that
+    // has since changed asks again even when the plan now destroys nothing.
+    let carried = matches!(gate.trusted.approval, Approval::Approved(_));
     if asks == Asks::Destroys
+        && !carried
         && (diff.effects.is_empty() || resaves)
         && pruned.is_empty()
         && !pruning.unseen()
