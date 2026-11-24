@@ -266,6 +266,67 @@ async fn a_release_after_the_cut_routes_the_kept_copy_again() {
     assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
 }
 
+/// A Container `docker run` made on the Volume, with no Ployz labels, beside the
+/// Service on Machine 0.
+fn add_stray(fleet: &Fleet, status: &str) {
+    let mut named = fleet
+        .node(0)
+        .fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap();
+    let mut stray = named.values().next().unwrap().clone();
+    stray["Id"] = json!(format!("{}{}", MachineId::random(), MachineId::random()));
+    stray["Name"] = json!("/stray");
+    stray["Config"]["Labels"] = json!({});
+    stray["State"] = json!({"Status":status});
+    named.insert("stray".into(), stray);
+}
+
+fn cut_naming(holder: ContainerId) -> Value {
+    json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+        "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0, "holder":holder}})
+}
+
+/// A stopped Container Ployz didn't make, left on the Volume, neither blocks the cut
+/// nor is stopped by it.
+#[tokio::test]
+async fn a_cut_naming_its_holder_passes_a_stopped_stray() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    add_stray(&fleet, "exited");
+    let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
+    let machine = fleet.with_plugin(0, &plugin);
+
+    let cut = set_copy(&machine, cut_naming(source)).await;
+
+    assert!(
+        matches!(cut.copy, Some(ployz_core::VolumeCopy::Slot { .. })),
+        "{cut:?}"
+    );
+    assert!(!fleet.node(0).running(source));
+}
+
+/// A running Container Ployz didn't make refuses the cut before the Service stops.
+#[tokio::test]
+async fn a_cut_naming_its_holder_refuses_a_running_stray() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    add_stray(&fleet, "running");
+    let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
+    let machine = fleet.with_plugin(0, &plugin);
+
+    let refused = try_set_copy(&machine, cut_naming(source))
+        .await
+        .expect_err("a running stray refuses the cut");
+
+    assert!(refused.contains("stray"), "{refused}");
+    assert!(refused.contains("\"held\""), "{refused}");
+    assert!(fleet.node(0).running(source), "the cut stopped nothing");
+}
+
 /// A Move's cut names the Service it counted. Another Container running on the Volume,
 /// one Cloud's frame never showed, refuses the cut before anything stops.
 #[tokio::test]

@@ -579,8 +579,10 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
-    /// With `only`, another running holder, a hook's included, refuses the cut `Held`
-    /// before it stops anything, so a Move never interrupts a Container it didn't count.
+    /// With `only`, another running holder, a hook's or one Ployz didn't make included,
+    /// refuses the cut `Held` before it stops anything, so a Move never interrupts a
+    /// Container it didn't count, and only `only` is stopped: a stopped holder beside it
+    /// stays as it is.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
@@ -599,11 +601,16 @@ impl LocalMachine {
         self.finish_installed(move |local| async move {
             let containers = local.docker()?;
             let stop = StopOptions::default();
-            let holders = containers.volumes().volume_holder_ids(&name).await?;
-            if let Some(only) = &only
-                && let Some(other) = containers.volumes().running_beside(&name, only).await?
-            {
-                return Ok(Err(CutRefusal::Held(other)));
+            let mut holders = containers.volumes().volume_holder_ids(&name).await?;
+            if let Some(only) = &only {
+                if let Some(other) = containers
+                    .volumes()
+                    .running_beside(&name, Some(only))
+                    .await?
+                {
+                    return Ok(Err(CutRefusal::Held(other)));
+                }
+                holders.retain(|holder| holder == only);
             }
             for holder in holders {
                 if let Err(floor) = containers
@@ -680,26 +687,18 @@ impl LocalMachine {
         ))
     }
 
-    /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
-    /// between the list and its inspect does not run.
+    /// Whether Docker runs any Container that mounts the Volume `name`, whatever made
+    /// it. A holder gone between the list and its inspect does not run.
     pub(crate) async fn volume_holder_running(
         &self,
         name: &DockerVolumeName,
     ) -> Result<bool, Error> {
-        let containers = self.docker()?;
-        let machine_id = self.record().id();
-        for holder in containers.volumes().volume_holder_ids(name).await? {
-            match containers
-                .observation()
-                .inspect_managed(&holder, &machine_id)
-                .await
-            {
-                Ok(observed) if is_running(&observed.runtime) => return Ok(true),
-                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(false)
+        Ok(self
+            .docker()?
+            .volumes()
+            .running_beside(name, None)
+            .await?
+            .is_some())
     }
 
     /// Refuse to create a Service Container on a Provisioned Volume root another

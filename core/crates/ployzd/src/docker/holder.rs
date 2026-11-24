@@ -127,14 +127,14 @@ pub(crate) async fn refuse_beside(
     Ok(())
 }
 
-/// The Docker name of a Container other than `me` that runs on Docker Volume `volume`:
+/// The Docker name of a Container other than `me`, when given, that runs on Docker Volume `volume`:
 /// running, restarting or paused, a hook or the Ingress Proxy included.
 ///
 /// # Errors
 /// The error of a read that failed.
 pub(crate) async fn running_beside(
     client: &Docker,
-    me: &str,
+    me: Option<&str>,
     volume: &str,
 ) -> Result<Option<String>, Error> {
     let filters = std::collections::HashMap::from([("volume", vec![volume])]);
@@ -147,7 +147,7 @@ pub(crate) async fn running_beside(
         ))
         .await?;
     for id in listed.into_iter().filter_map(|container| container.id) {
-        if id == me {
+        if Some(id.as_str()) == me {
             continue;
         }
         let Some(holder) = inspect(client, &id).await.map_err(inspect::failed)? else {
