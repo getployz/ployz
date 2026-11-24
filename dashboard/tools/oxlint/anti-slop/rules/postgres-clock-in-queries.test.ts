@@ -98,5 +98,14 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
         .where(and(eq(serviceAct.state, "running"), lt(serviceAct.startedAt, new Date(now - SERVICE_ACT_RUNNING_LIMIT_MS))));`,
       errors: [{ messageId: "webClock" }],
     },
+    // A typed patch: \`satisfies\` and \`as\` wrap the object the write takes.
+    {
+      filename,
+      code: `const patch = { updatedAt: new Date() } satisfies Patch;
+      yield* drizzle.update(serviceAct).set(patch).where(eq(serviceAct.id, id));
+      yield* drizzle.update(serviceAct).set({ endedAt: new Date() } as Patch).where(eq(serviceAct.id, id));
+      yield* drizzle.update(serviceAct).set({ startedAt: new Date() satisfies Date }).where(eq(serviceAct.id, id));`,
+      errors: Array.from({ length: 3 }, () => ({ messageId: "webClock" })),
+    },
   ],
 });

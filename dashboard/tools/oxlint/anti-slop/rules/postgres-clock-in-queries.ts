@@ -21,6 +21,14 @@ function isMember(node: ESTree.Node, object: string, property: string): boolean 
   );
 }
 
+/** The expression under `as`, `satisfies`, `!` and parentheses, which leave the value a query gets as it is. */
+function unwrapped(node: ESTree.Node): ESTree.Node {
+  let current = node;
+  while (current.type === "TSAsExpression" || current.type === "TSSatisfiesExpression" || current.type === "TSNonNullExpression"
+    || current.type === "ParenthesizedExpression") current = current.expression;
+  return current;
+}
+
 function enclosingFunction(node: ESTree.Node): ESTree.Node | null {
   for (let current = node.parent; current !== null; current = current.parent) {
     if (current.type === "ArrowFunctionExpression" || current.type === "FunctionExpression" || current.type === "FunctionDeclaration") {
@@ -56,7 +64,7 @@ export const postgresClockInQueriesRule = defineRule({
     docs: { description: "Disallow the web instance's clock as a value written to or compared in Postgres." },
     messages: {
       webClock:
-        "Readers compare this against Postgres's now(); a web instance's clock drifts from it. Use sql`now()` (plus an interval) instead.",
+        "Readers compare this against Postgres's now(); a web instance's clock drifts from it. Use sql`now()` (plus an interval) instead, or sql`clock_timestamp()` for a check made after a lock: now() is when the transaction began, before any wait.",
     },
   },
   create(context) {
@@ -77,14 +85,15 @@ export const postgresClockInQueriesRule = defineRule({
     }
 
     /** A `const` declared in the same function stands for what it was built as: `.set(set)` checks `set`'s object. */
-    function resolveConst(node: ESTree.Node): ESTree.Node {
+    function resolveConst(wrapped: ESTree.Node): ESTree.Node {
+      const node = unwrapped(wrapped);
       if (node.type !== "Identifier") return node;
       const definition = resolveVariable(sourceCode, node as ESTree.IdentifierReference)?.defs[0];
       const declarator = definition?.node;
       if (declarator?.type !== "VariableDeclarator" || declarator.init === null) return node;
       const declaration = definition?.parent;
       if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") return node;
-      return enclosingFunction(declarator) === enclosingFunction(node) ? declarator.init : node;
+      return enclosingFunction(declarator) === enclosingFunction(node) ? unwrapped(declarator.init) : node;
     }
 
     function report(value: ESTree.Node) {
@@ -128,6 +137,7 @@ export const postgresClockInQueriesRule = defineRule({
         case "YieldExpression":
           return node.argument !== null && node.argument !== undefined && isClockValue(node.argument);
         case "TSAsExpression":
+        case "TSSatisfiesExpression":
         case "TSNonNullExpression":
         case "ParenthesizedExpression":
           return isClockValue(node.expression);
