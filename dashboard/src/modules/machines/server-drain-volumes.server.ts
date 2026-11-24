@@ -70,15 +70,18 @@ const ownedReport = Effect.fn("ServerDrain.ownedReport")(function* (request: Req
 /** Writes `notes` onto the report's entries, while this run still owns the row running. */
 const noteReport = Effect.fn("ServerDrain.noteReport")(function* (request: Request, runId: string, notes: ReadonlyMap<QualifiedService, Note>) {
   if (notes.size === 0) return;
-  const { drizzle } = yield* Database;
-  const row = yield* ownedReport(request, runId, true);
-  if (row === null) return;
-  const services = row.report.services.map((entry) => {
-    const note = notes.get(entry.service);
-    return note === undefined ? entry : { ...entry, ...note };
-  });
-  yield* drizzle.update(serverDrainAttempt).set({ report: { ...row.report, services } })
-    .where(and(rows.owned(request.attemptId, runId), eq(serverDrainAttempt.state, "running")));
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const row = yield* ownedReport(request, runId, true);
+    if (row === null) return;
+    const services = row.report.services.map((entry) => {
+      const note = notes.get(entry.service);
+      return note === undefined ? entry : { ...entry, ...note };
+    });
+    yield* drizzle.update(serverDrainAttempt).set({ report: { ...row.report, services } })
+      .where(and(rows.owned(request.attemptId, runId), eq(serverDrainAttempt.state, "running")));
+  }));
 });
 
 const stay = (volume: string | undefined, detail: string): Note => ({ volume, detail, run: undefined });

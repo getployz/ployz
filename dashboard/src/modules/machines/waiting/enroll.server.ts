@@ -447,13 +447,13 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
       .from(organizationPairing).where(eq(organizationPairing.organizationId, token.organizationId));
     if (pairing === undefined || pairing.founder === null || pairing.removal !== null) return false;
     yield* drizzle.select({ id: fleetToken.id }).from(fleetToken).where(eq(fleetToken.id, token.id)).for("no key update");
-    const [live] = yield* drizzle.select({ max: fleetToken.autoEnrollMax, userId: fleetToken.createdByUserId })
-      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, checkedNow())));
-    if (live === undefined || live.max === null) return false;
     const [host] = yield* drizzle.select({
       id: waitingServer.id, report: waitingServer.report, observedIp: waitingServer.observedIp,
       unavailable: arrivalSpent(token.id), used: usedOf(token.id),
     }).from(waitingServer).where(arrivingHost(token, checkinKey)).for("update");
+    const [live] = yield* drizzle.select({ max: fleetToken.autoEnrollMax, userId: fleetToken.createdByUserId })
+      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, checkedNow())));
+    if (live === undefined || live.max === null) return false;
     if (host === undefined || host.unavailable || host.used >= live.max) return false;
     const { report } = host;
     if (report.blockers.length > 0 || (report.prep !== undefined && (report.prep.docker !== "ready" || report.prep.zfs === "installing"))) return false;

@@ -261,7 +261,8 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
   return yield* database.transaction(Effect.gen(function* () {
     const ids = [...new Set(interruptIds)];
     const asked = and(ownedBy(agentInterrupts, scope), inArray(agentInterrupts.interruptId, ids));
-    yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts).where(asked).for("update");
+    const locked = yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts).where(asked).for("update");
+    if (locked.length < ids.length) return "unchecked" as const;
     const rows = yield* drizzle.select({ status: agentInterrupts.status, claim: agentInterrupts.claim, live: claimLive })
       .from(agentInterrupts).where(asked);
     if (rows.length < ids.length) return "unchecked" as const;

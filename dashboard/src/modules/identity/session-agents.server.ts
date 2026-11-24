@@ -44,21 +44,24 @@ export const linkConsentSession = Effect.fn("Identity.linkConsentSession")(funct
   grant: { readonly clientId: string; readonly userId: string; readonly organizationId: string },
   sessionId: string,
 ) {
-  const { drizzle } = yield* Database;
-  const [consent] = yield* drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(and(
-    eq(oauthConsent.clientId, grant.clientId),
-    eq(oauthConsent.userId, grant.userId),
-    eq(oauthConsent.referenceId, grant.organizationId),
-  )).limit(1);
-  if (consent === undefined) return false;
-  const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
-  yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
-  yield* drizzle.select({ id: session.id }).from(session).where(eq(session.id, sessionId)).for("share");
-  const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())));
-  if (live !== undefined) return true;
-  yield* drizzle.update(oauthConsentSession).set({ signedOutAt: sql`now()` }).where(link);
-  return false;
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [consent] = yield* drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(and(
+      eq(oauthConsent.clientId, grant.clientId),
+      eq(oauthConsent.userId, grant.userId),
+      eq(oauthConsent.referenceId, grant.organizationId),
+    )).limit(1);
+    if (consent === undefined) return false;
+    const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
+    yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
+    yield* drizzle.select({ id: session.id }).from(session).where(eq(session.id, sessionId)).for("share");
+    const [live] = yield* drizzle.select({ id: session.id }).from(session)
+      .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())));
+    if (live !== undefined) return true;
+    yield* drizzle.update(oauthConsentSession).set({ signedOutAt: sql`now()` }).where(link);
+    return false;
+  }));
 });
 
 /**
