@@ -237,9 +237,11 @@ export const admitDrainVolume = Effect.fn("ServerDrain.admitVolume")(function* (
   }
   if (to === null) return yield* named(last);
   const target = to;
+  // Only a Server that answers it takes services gets the move: B starts the Service without asking.
   const frame: RuntimeWatchView | null = yield* firstRuntimeFrame(request.organizationId).pipe(Effect.orElseSucceed(() => null));
-  const listed = frame?.machines.find(({ machine }) => machine.id === target.id)?.machine;
-  if (listed !== undefined && !listed.accepts_services) return yield* named(`${target.name} stopped taking services`);
+  const listed = frame?.unanswered.includes(target.id) === false ? frame.machines.find(({ machine }) => machine.id === target.id)?.machine : undefined;
+  if (listed === undefined) return yield* named(`${target.name} didn't answer whether it takes services`);
+  if (!listed.accepts_services) return yield* named(`${target.name} stopped taking services`);
   const admitted = yield* admitGuardedRun(
     { userId: row.requestedByUserId, organizationId: request.organizationId },
     { volumeId: item.volumeId, kind: "move", args: { to: target.name, machine: target.id, holder: { machine: from.id, container: item.holder } } },

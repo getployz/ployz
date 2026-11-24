@@ -2086,6 +2086,21 @@ describe("volume runs", () => {
       expect(row.report.services[0].detail).toBe(why);
     });
 
+    // Catches a move onto a Server whose services role Cloud couldn't read again right before the move.
+    it("admits no move when the Server it picked doesn't answer whether it takes services", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      // Every frame read after fsn-2 checked the start goes unanswered.
+      frameFault = () => checks.length > 0;
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect(await rows()).toEqual([]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0].detail).toBe("fsn-2 didn't answer whether it takes services");
+    });
+
     // Catches turning services off, or draining, the Server a Volume is moving to, which would strand the moved Service.
     it("refuses to drain or turn services off for the Server a move targets", async () => {
       machines = machines.filter((fake) => fake.name !== "ams-1");
