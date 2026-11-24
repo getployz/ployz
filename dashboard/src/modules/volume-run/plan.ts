@@ -22,6 +22,7 @@ export type RefusalCode =
   | "another_copy"
   | "confirm_required"
   | "role_changed"
+  | "written_here"
   | "deploying";
 
 /**
@@ -261,6 +262,11 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
     const [mirror, second] = mirrors;
     if (mirror === undefined) return refuse("no_mirror", `${name} has no mirror; volume mirror ${name} --to <server>`);
     if (second !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(mirror)}`);
+    const copy = mirror.view.copy;
+    // A full sync forgets the slot first, so it never takes one that may hold the only copy of some writes.
+    if (input.args.full && copy?.kind === "slot" && (copy.role === "old_copy" || copy.written_here === true)) {
+      return refuse("written_here", `${named(mirror)} may hold writes no other Server has, so sync --full keeps it`, `ployz volume mirror rm ${named(mirror)}${ifOldCopy(copy.role)}`);
+    }
     return { ok: true, phase: { kind: "sync", writer: root, mirror, full: input.args.full } };
   }
 

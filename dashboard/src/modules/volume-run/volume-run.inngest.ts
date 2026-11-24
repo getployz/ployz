@@ -276,7 +276,8 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   let copy = target.view.copy;
   try {
     if (phase.kind === "sync") {
-      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
+      // The Mirror's Server keeps a copy that may hold writes no other Server has.
+      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget", keep_written: true }, `${B.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }

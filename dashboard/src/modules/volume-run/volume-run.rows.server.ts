@@ -373,6 +373,7 @@ const refusalCode = {
   no_copy: "conflict",
   another_copy: "conflict",
   role_changed: "conflict",
+  written_here: "conflict",
   deploying: "conflict",
   server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;

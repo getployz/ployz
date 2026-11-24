@@ -188,6 +188,9 @@ async fn copy_cut_marks_the_root_cut_before_it_parks_it_as_an_old_copy() {
             "zfs set ployz:role=old_copy tank/ployz-mirror/data",
             "zfs rename tank/ployz/data tank/ployz-mirror/data/fs",
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:promote tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:pull tank/ployz-mirror/data",
             "zfs get -H -o value ployz:role tank/ployz-mirror/data",
         ],
@@ -196,8 +199,9 @@ async fn copy_cut_marks_the_root_cut_before_it_parks_it_as_an_old_copy() {
 }
 
 /// A pull that lands a snapshot the slot did not hold clears every mark that describes the
-/// slot's own past, then records the guid it received. The parent's role and pull target
-/// are set before the receive and the pull target is cleared once the slot is pruned.
+/// slot's own past, then records the guid it received. The parent's pull target is set
+/// before the receive, its role after the mark, and the pull target is cleared once the
+/// slot is pruned.
 #[tokio::test]
 async fn a_landed_pull_marks_the_slot_in_this_order() {
     let source = Source::start(Some(1_073_741_824), "snapshot w-1-2 12\n").await;
@@ -224,21 +228,23 @@ async fn a_landed_pull_marks_the_slot_in_this_order() {
     assert_eq!(
         writes,
         [
-            "zfs set ployz:role=mirror tank/ployz-mirror/data",
             "zfs set ployz:pull=w-1-2 tank/ployz-mirror/data",
             "zfs inherit ployz:cut tank/ployz-mirror/data/fs",
             "zfs inherit ployz:epoch tank/ployz-mirror/data/fs",
             "zfs inherit ployz:promote tank/ployz-mirror/data/fs",
             "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
             "zfs set ployz:pulled=12 tank/ployz-mirror/data/fs",
+            "zfs set ployz:role=mirror tank/ployz-mirror/data",
             "zfs inherit ployz:pull tank/ployz-mirror/data",
         ]
     );
     server.abort();
 }
 
+/// A cut slot a released version's same-newest resend left naming its pull: the writer
+/// sends that newest as the slot's guid, so the slot is marked pulled like any receive.
 #[tokio::test]
-async fn a_pull_of_the_slots_own_newest_sets_only_the_role_and_clears_the_pull() {
+async fn a_resent_pull_of_the_slots_own_newest_its_writer_proves_marks_it_pulled() {
     let source = Source::start(Some(1_073_741_824), "snapshot w-1-1 11\n").await;
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
@@ -256,6 +262,11 @@ async fn a_pull_of_the_slots_own_newest_sets_only_the_role_and_clears_the_pull()
     assert_eq!(
         writes,
         [
+            "zfs inherit ployz:cut tank/ployz-mirror/data/fs",
+            "zfs inherit ployz:epoch tank/ployz-mirror/data/fs",
+            "zfs inherit ployz:promote tank/ployz-mirror/data/fs",
+            "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
+            "zfs set ployz:pulled=11 tank/ployz-mirror/data/fs",
             "zfs set ployz:role=mirror tank/ployz-mirror/data",
             "zfs inherit ployz:pull tank/ployz-mirror/data",
         ]
@@ -669,7 +680,7 @@ async fn inspect_of_an_unmarked_root_reads_promote_alone() {
 }
 
 #[tokio::test]
-async fn inspect_of_a_slot_reads_its_role_pull_and_resume_token() {
+async fn inspect_of_a_slot_reads_its_marks_pull_role_and_resume_token() {
     let test = test_dir();
     let (socket, server) = slot_copy(&test, &[("f-1", 13)]);
 
@@ -678,6 +689,11 @@ async fn inspect_of_a_slot_reads_its_role_pull_and_resume_token() {
         trace(&commands(&test)),
         [
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:promote tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:epoch tank/ployz-mirror/data/fs",
+            "zfs get -H -s local -o value ployz:pulled tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:pull tank/ployz-mirror/data",
             "zfs get -H -o value ployz:role tank/ployz-mirror/data",
         ]

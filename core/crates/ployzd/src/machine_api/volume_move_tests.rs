@@ -1,6 +1,6 @@
 use super::*;
 use crate::storage::test_support::FakePlugin;
-use crate::volume_copy::{CUT_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
+use crate::volume_copy::{CUT_ROUTE, DESTROY_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
 use ployz_core::{Gen, SetVolumeCopyReply};
 
 const VOLUME: &str = "app_data";
@@ -264,6 +264,47 @@ async fn a_release_after_the_cut_routes_the_kept_copy_again() {
 
     assert!(fleet.node(0).running(source));
     assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
+}
+
+/// A `ployz volume sync --full` forgets the mirror before it copies the Volume again, and
+/// asks to keep a slot written here. The slot here is the copy a departure parked, with
+/// writes no other Machine has, so the sync's Forget keeps it and `ployz volume mirror rm`
+/// deletes it.
+#[tokio::test]
+async fn a_full_syncs_forget_keeps_a_parked_copy_that_mirror_rm_deletes() {
+    let fleet = Fleet::start().await;
+    let parked = json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
+        "newest":snapshot(), "resume_token":null, "pull":null, "role":"old_copy",
+        "written_here":true}});
+    let plugin = plugin(parked, DESTROY_ROUTE, json!({"Ok": null}));
+    let machine = fleet.with_plugin(0, &plugin);
+    let forget = |want: Value| json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"}, "want":want});
+
+    let refused = try_set_copy(
+        &machine,
+        forget(json!({"kind":"forget", "keep_written":true})),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("written_here"), "{refused}");
+    assert!(
+        !plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == DESTROY_ROUTE),
+        "{:?}",
+        plugin.routes_called()
+    );
+
+    set_copy(&machine, forget(json!({"kind":"forget"}))).await;
+    assert!(
+        plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == DESTROY_ROUTE),
+        "{:?}",
+        plugin.routes_called()
+    );
 }
 
 /// A Container `docker run` made on the Volume, with no Ployz labels, on Machine

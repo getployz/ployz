@@ -15,8 +15,8 @@ use std::{
 use crate::faults::{Identity, Point, Want};
 use futures_util::{FutureExt as _, StreamExt as _};
 use ployz_core::{
-    CopyTransition, ManagementAddress, SendSource, SendStream, SnapshotName, VolumeGen,
-    error_chain::inline,
+    CopyTransition, ManagementAddress, SendSource, SendStream, SnapshotGuid, SnapshotName,
+    VolumeGen, error_chain::inline,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -508,6 +508,28 @@ impl VolumeStorage {
             ))),
             opened = self.request_stream(from, stream) => opened,
         }
+    }
+
+    /// Whether `from` sends `stream`'s target as the snapshot `guid`. A send opens with a
+    /// BEGIN record naming the snapshot it builds, and a receive keeps the sender's guid,
+    /// so a match proves `from` holds the point this Machine holds as `guid`. Only that
+    /// record is read: dropping the response stops the send.
+    pub(super) async fn sends_as(
+        &self,
+        from: ManagementAddress,
+        stream: &SendStream,
+        guid: SnapshotGuid,
+    ) -> Result<(), ReceiveFailure> {
+        let OpenedStream { shown, response } = self.request_stream(from, stream).await?;
+        let mut body = tokio_util::io::StreamReader::new(
+            response
+                .bytes_stream()
+                .map(|chunk| chunk.map_err(std::io::Error::other)),
+        );
+        crate::volume_send::begin::read(&mut body, guid.get(), self.receive_stall)
+            .await
+            .map(drop)
+            .map_err(|error| ReceiveFailure::Failed(format!("{shown}: {error}")))
     }
 
     async fn request_stream(

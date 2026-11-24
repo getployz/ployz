@@ -277,14 +277,15 @@ async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
 }
 
 /// What the daemon does for a `SetVolumeCopy` Forget want against a slot: plan against
-/// the inspected copy, and call the Destroy route only on `MirrorToForget`.
-async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
+/// the inspected copy, and call the Destroy route only on `MirrorToForget`. `ployz volume
+/// mirror rm` keeps nothing; a full sync keeps a slot written here.
+async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy, keep_written: bool) -> Value {
     let copy = parsed_copy(&post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await);
     let plan = ployz_core::plan(
         copy.as_ref(),
         false,
         expect,
-        &ployz_core::WantedCopy::Forget,
+        &ployz_core::WantedCopy::Forget { keep_written },
     );
     if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
         return json!({"Planned": format!("{plan:?}")});
@@ -321,7 +322,7 @@ async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
     assert_eq!(late.pointer("/Ok/role"), Some(&json!("mirror")), "{late}");
 
     assert_eq!(
-        set_forget(&socket, &delete).await,
+        set_forget(&socket, &delete, false).await,
         json!({"Planned": "Refuse(Mismatch)"})
     );
     assert_eq!(
@@ -773,13 +774,25 @@ enum Mode {
     Silent,
 }
 
+/// A writer's stream: its BEGIN record names the guid the fake receive makes of `text`'s
+/// `snapshot <name> <guid>` line, as a real send's names the snapshot it builds.
+fn sent(text: &str) -> Vec<u8> {
+    let guid = text
+        .lines()
+        .find_map(|line| line.strip_prefix("snapshot "))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|guid| guid.parse().ok())
+        .unwrap_or(0);
+    begun(guid, text)
+}
+
 impl Source {
     pub(super) async fn start(bound: Option<u64>, stream: &str) -> Self {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let answers = Arc::new(StdMutex::new(vec![Answer {
             key: String::new(),
             status: StatusCode::OK,
-            stream: begun(0, stream),
+            stream: sent(stream),
             mode: Mode::Now,
         }]));
         let gate = Arc::new(Semaphore::new(0));
@@ -867,7 +880,7 @@ impl Source {
 
     fn push(&self, key: &str, status: StatusCode, stream: &str, mode: Mode) {
         let stream = if status == StatusCode::OK {
-            begun(0, stream)
+            sent(stream)
         } else {
             stream.as_bytes().to_vec()
         };
@@ -1410,6 +1423,89 @@ async fn a_pull_keeps_an_old_copy_written_here_that_the_writer_cannot_send_onto(
             "/volume-send/data?target=w-6-1&base=11",
         ]
     );
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy")),
+        "the refused pull left the parked copy a mirror, which mirror rm --if-old-copy refuses and the mirror sync refreshes"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/written_here"),
+        Some(&json!(true)),
+        "{copy}"
+    );
+
+    // A `ployz volume sync --full` forgets the mirror first; the parked copy refuses it.
+    let full = mirror_expect(&copy);
+    assert_eq!(
+        set_forget(&socket, &full, true).await,
+        json!({"Planned": "Refuse(WrittenHere)"})
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["dep-1700000000"]);
+    assert!(
+        set_forget(&socket, &full, false).await.get("Ok").is_some(),
+        "mirror rm deletes it"
+    );
+    assert!(!test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// A daemon that stopped between landing a pull and marking it leaves the target its slot's
+/// newest snapshot, unmarked. The resend proves the writer sends that snapshot as the slot's
+/// guid and marks it, so a later pull whose base the writer pruned starts over from a full
+/// send instead of keeping the slot forever.
+#[tokio::test]
+async fn a_resend_marks_a_landed_pull_its_writer_proves() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    source.answer("target=w-1-3", StatusCode::OK, "snapshot w-1-3 13\n");
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 12 is not on tank/ployz/data",
+    );
+    let copy = finished(&socket, "w-1-3").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("13")),
+        "{copy}"
+    );
+    assert_eq!(copy.pointer("/Ok/written_here"), None, "{copy}");
+    server.abort();
+}
+
+/// The same resend from a writer that sends the target as another snapshot proves
+/// nothing, so the slot stays unmarked and a departure keeps it.
+#[tokio::test]
+async fn a_resend_leaves_a_landed_pull_unmarked_when_its_writer_sends_another_snapshot() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 99\n").await;
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        reply.pointer("/Ok/written_here"),
+        Some(&json!(true)),
+        "{reply}"
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:pulled").as_deref(),
+        Some("11")
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
     server.abort();
 }
 
@@ -3330,7 +3426,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 )
                 .await
         }
-        (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+        (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
             machine
                 .call("/Volume.Copy.Forget", json!({"name": "data"}))
                 .await
@@ -3343,7 +3439,10 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+        (
+            CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+            WantedCopy::Forget { .. },
+        ) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await
@@ -3553,7 +3652,9 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::A,
             expect: mirror_expect(&a),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget {
+                keep_written: false,
+            },
             run: None,
         })
         .await;
@@ -3591,7 +3692,9 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget {
+                keep_written: false,
+            },
             run: None,
         })
         .await;
@@ -3615,7 +3718,9 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget {
+                keep_written: false,
+            },
             run: None,
         })
         .await;
@@ -3977,9 +4082,10 @@ impl Writing {
         }
     }
 
-    /// Whether the finished path leaves a slot a writer elsewhere holds the point of.
+    /// Whether the finished path leaves a slot a writer elsewhere holds the point of. A
+    /// resend receives nothing: its writer proves it sends the slot's newest guid.
     fn received(self) -> bool {
-        matches!(self, Self::FirstPull | Self::IncrementalPull)
+        matches!(self, Self::FirstPull | Self::IncrementalPull | Self::Resend)
     }
 
     /// Whether the fixture is such a slot before the path changes anything.
@@ -4068,14 +4174,19 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
         if let Some(marked) = marked {
             let received = steps
                 .iter()
-                .position(|step| step.starts_with("zfs receive"))
-                .unwrap();
+                .position(|step| step.starts_with("zfs receive"));
+            assert_eq!(
+                received.is_some(),
+                !matches!(writing, Writing::Resend),
+                "{writing:?}: {steps:?}"
+            );
+            let received = received.unwrap_or(0);
             assert!(received < marked, "{writing:?}: {steps:?}");
             for mark in ["ployz:cut", "ployz:epoch", "ployz:promote", "ployz:seed"] {
                 let inherit = format!("zfs inherit {mark} {SLOT_FS}");
                 let dropped = steps.iter().position(|step| *step == inherit);
                 assert!(
-                    dropped.is_some_and(|dropped| received < dropped && dropped < marked),
+                    dropped.is_some_and(|dropped| received <= dropped && dropped < marked),
                     "{writing:?}: {mark} is not dropped between the receive and the mark: {steps:?}"
                 );
             }

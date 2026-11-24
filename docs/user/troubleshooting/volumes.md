@@ -307,3 +307,20 @@ other server has, such as the copy a server parks when it learns it was removed 
 the writer can't send changes on top of it. Ployz keeps that copy and stops instead of replacing
 it. Delete it with `ployz volume mirror rm` only once you no longer need what it holds. The next
 move or mirror then copies the volume in full.
+
+A mirror last refreshed by a Ployz before 0.3.0, such as a 0.3.0 beta, has no record of what it
+received, so Ployz counts it as a copy that may hold such writes. Once its writer drops that
+mirror's newest snapshot, every refresh stops with this message. Ployz before 0.3.0 is outside the
+stable promise: delete the mirror with `ployz volume mirror rm`, then mirror again.
+
+## A full sync says the copy may hold writes no other server has
+
+```
+error: data-web-1 may hold writes no other Server has, so sync --full keeps it
+next: ployz volume mirror rm data-web-1 --if-old-copy
+```
+
+`ployz volume sync --full` deletes the mirror's copy before it copies the volume again, so it
+won't run on an old copy or on a copy that may hold writes no other server has. Nothing was
+deleted. Run the `next:` line only once you no longer need what that copy holds, then mirror again.
+If the copy is a mirror, the line has no `--if-old-copy`.

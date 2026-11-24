@@ -18,6 +18,7 @@ export const COPIES = {
   mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null, role: "mirror" },
   final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "mirror" },
   old: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "old_copy" },
+  writtenHere: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null, role: "mirror", written_here: true },
   behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null, role: "mirror" },
   pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null }, role: "mirror" },
   failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" }, role: "mirror" },

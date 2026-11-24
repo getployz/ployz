@@ -199,13 +199,14 @@ impl VolumeStorage {
             return Ok(None);
         };
         let fs = Self::slot_fs(datasets, pool, name);
-        let (readonly, newest, resume_token) = match fs {
+        let (readonly, newest, resume_token, written_here) = match fs {
             Some(fs) => (
                 fs.readonly,
                 self.newest_snapshot(&fs.name).await?,
                 self.marks(&fs.name).get(Mark::ResumeToken).await?,
+                self.written_here(&fs.name).await?,
             ),
-            None => (slot.readonly, None, None),
+            None => (slot.readonly, None, None, false),
         };
         let (pull, pull_state) = self
             .pull(slot, name, newest.as_ref(), resume_token.is_some())
@@ -226,6 +227,7 @@ impl VolumeStorage {
             role: Some(self.marks(&slot.name).role().await?),
             pull_state,
             origin,
+            written_here,
         }))
     }
 

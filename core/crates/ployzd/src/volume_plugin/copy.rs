@@ -617,8 +617,13 @@ impl VolumeStorage {
             Some(_) => self.snapshots(&fs).await?.into_iter().next(),
             None => None,
         };
-        let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
-        if newest_name == Some(target.as_str()) {
+        if let Some(newest) = &newest
+            && newest.name == request.target
+        {
+            if pulling.as_deref() == Some(target.as_str()) && self.written_here(&fs).await? {
+                self.mark_proven_pull(request, (&parent, &fs), newest.guid)
+                    .await?;
+            }
             // An old copy already holding the target receives nothing, and is the mirror now.
             if self.marks(&parent).role().await? != SlotRole::Mirror {
                 self.marks(&parent).set_role(SlotRole::Mirror).await?;
@@ -635,9 +640,6 @@ impl VolumeStorage {
             return self.copy_now(&scope).await;
         }
         let retarget = pulling.as_deref() != Some(target.as_str());
-        if retarget {
-            self.marks(&parent).set_role(SlotRole::Mirror).await?;
-        }
         let bound = if fresh {
             bound
         } else {
@@ -679,7 +681,7 @@ impl VolumeStorage {
                     .pull_stream(from, stream, (&parent, &fs), bound, r#gen, &stop)
                     .await
                 {
-                    Ok(()) => match storage.mark_pulled(&fs).await {
+                    Ok(()) => match storage.mark_pulled(&parent, &fs).await {
                         Ok(()) => storage
                             .complete(&parent, &fs)
                             .await
@@ -772,23 +774,55 @@ impl VolumeStorage {
             .map_err(|failure| failure.to_string())
     }
 
-    /// Marks the slot received from a writer elsewhere. A receive that exits 0 made the
-    /// stream's snapshot, and a pull of the slot's own newest never starts one, so the
-    /// newest snapshot is the one a writer elsewhere sent. Any cut, restore, promote or
-    /// seed mark describes a point that writer has since built on, so each goes first: a
-    /// crash between leaves a slot with neither, which the departure keeps.
-    async fn mark_pulled(&self, fs: &str) -> Result<(), String> {
-        let Some(newest) = self
-            .newest_guid(fs)
+    /// A resend of a pull whose target landed, on a slot not marked pulled: a daemon that
+    /// stopped between the receive and [`Self::mark_pulled`]. A slot a released version
+    /// wrote can carry the same marks with no receive, so the writer must send the target
+    /// as the slot's newest guid before the slot is marked. A writer that can't leaves the
+    /// slot as it is, kept by a departure.
+    async fn mark_proven_pull(
+        &self,
+        request: &PullRequest,
+        (parent, fs): (&str, &str),
+        guid: ployz_core::SnapshotGuid,
+    ) -> Result<(), RpcError> {
+        let stream = SendStream {
+            name: request.name.clone(),
+            source: SendSource::Full {
+                target: request.target.clone(),
+            },
+        };
+        if let Err(failure) = self.sends_as(request.from, &stream, guid).await {
+            tracing::warn!(%fs, %failure, "left a landed pull unmarked: its writer did not send its snapshot");
+            return Ok(());
+        }
+        self.mark_pulled(parent, fs)
             .await
-            .map_err(|error| error.to_string())?
-        else {
+            .map_err(RpcError::internal)
+    }
+
+    /// Marks the slot received from a writer elsewhere, and that writer's Mirror. A
+    /// receive that exits 0 made the stream's snapshot, and a pull of the slot's own newest
+    /// never starts one, so the newest snapshot is the one a writer elsewhere sent, with
+    /// that writer's guid. Any cut, restore, promote or seed mark describes a point that
+    /// writer has since built on, so each goes first: a crash between leaves a slot with
+    /// neither, which the departure keeps. The role goes last, so an old copy a refused
+    /// pull leaves stays an old copy.
+    async fn mark_pulled(&self, parent: &str, fs: &str) -> Result<(), String> {
+        let failed = |error: super::PluginError| error.to_string();
+        let Some(newest) = self.newest_guid(fs).await.map_err(failed)? else {
             return Ok(());
         };
         self.marks(fs)
             .apply(&Marks::received(newest))
             .await
-            .map_err(|error| error.to_string())
+            .map_err(failed)?;
+        if self.marks(parent).role().await.map_err(failed)? != SlotRole::Mirror {
+            self.marks(parent)
+                .set_role(SlotRole::Mirror)
+                .await
+                .map_err(failed)?;
+        }
+        Ok(())
     }
 
     /// The slot's bound raised to the writer's, when the writer's Volume grew since the

@@ -3143,7 +3143,9 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[0]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" }, want: { kind: "forget" } });
+      expect(sent[0]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" } });
+      // The Machine refuses it on a slot that may hold the only copy of some writes.
+      expect(sent[0]?.want).toEqual({ kind: "forget", keep_written: true });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget" } });
     });
 
@@ -3178,6 +3180,8 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
+      // A removal deletes even a slot that may hold the only copy of some writes.
+      expect(sent[0]?.want).toEqual({ kind: "forget" });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget" } });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null, message: "Deleted data-fsn-2; fsn-2 and fsn-1 recorded the removal" }]);

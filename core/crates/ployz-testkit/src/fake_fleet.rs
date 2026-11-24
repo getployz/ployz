@@ -931,6 +931,7 @@ impl Fleet {
                             role: Some(SlotRole::Mirror),
                             pull_state: None,
                             origin: None,
+                            written_here: false,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,

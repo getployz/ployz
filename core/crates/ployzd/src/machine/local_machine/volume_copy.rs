@@ -57,7 +57,7 @@ impl LocalMachine {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
+            | WantedCopy::Forget { .. }
             | WantedCopy::Floor => None,
         };
         if let WantedCopy::Writer {
@@ -246,7 +246,7 @@ impl LocalMachine {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
+            | WantedCopy::Forget { .. }
             | WantedCopy::Floor => None,
         };
         let start_running = start == Some(StartState::Running);
@@ -407,7 +407,7 @@ impl LocalMachine {
                 )
                 .await
             }
-            (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+            (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
                 self.plugin_copy(FORGET_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }
@@ -431,7 +431,10 @@ impl LocalMachine {
                 )
                 .await
             }
-            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+            (
+                CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                WantedCopy::Forget { .. },
+            ) => {
                 // Recorded before the destroy, so no restart after it loses the record.
                 if let Some(VolumeCopy::Slot { origin, .. } | VolumeCopy::Root { origin, .. }) =
                     &copy
@@ -735,6 +738,9 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
                 "the Container the cut would stop no longer runs on Volume {name}, so the cut stopped nothing"
             )
         }
+        CopyRefusal::WrittenHere => format!(
+            "Volume {name} here may hold writes no other Machine has; only `ployz volume mirror rm` deletes it"
+        ),
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",

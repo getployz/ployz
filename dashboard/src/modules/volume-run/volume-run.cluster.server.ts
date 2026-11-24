@@ -229,6 +229,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
   "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held", "stopped",
+  "written_here",
 ] as const satisfies readonly SwitchReason[];
 
 /** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
@@ -281,6 +282,8 @@ export function switchFailureMessage(
       return heldMessage(name, machine, null);
     case "stopped":
       return `${name}'s Service no longer runs on ${machine.name}, so the move stopped nothing`;
+    case "written_here":
+      return `${name}'s copy on ${machine.name} may hold writes no other Server has; only ployz volume mirror rm deletes it`;
     case "busy":
       return undefined;
   }

@@ -71,6 +71,11 @@ describe("a born Volume's copies", () => {
     expect(outcome(mirror("db-2"), [born("db-1", "writer", true), born("db-2", "empty", true)])).toBe("mirror db-1->db-2");
   });
 
+  it("names the mirror rm that removes an old copy a full sync keeps", () => {
+    const refused = planFromCopies(sync(true), [member("a", "writer"), member("b", "old")]);
+    expect(refused.ok === false && refused.refusal.next).toBe("ployz volume mirror rm data-b --if-old-copy");
+  });
+
   it("refuses a full sync to a Mirror whose Server can't check origins, so the run forgets nothing", () => {
     expect(outcome(sync(true), [born("db-1", "writer", true), born("db-2", "mirror", false)])).toBe("refuse server_lacks");
   });
@@ -132,6 +137,9 @@ describe("plan_from_copies_table", () => {
 
     ["sync onto its mirror", sync(), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "sync a->b"],
     ["sync --full onto its mirror", sync(true), [member("a", "writer"), member("b", "mirror")], "sync a->b full"],
+    ["sync --full onto an old copy", sync(true), [member("a", "writer"), member("b", "old")], "refuse written_here"],
+    ["sync --full onto a mirror written here", sync(true), [member("a", "writer"), member("b", "writtenHere")], "refuse written_here"],
+    ["sync onto an old copy", sync(), [member("a", "writer"), member("b", "old")], "sync a->b"],
     ["sync onto a mirror mid-pull", sync(), [member("a", "writer"), member("b", "pulling")], "sync a->b"],
     ["sync with no mirror", sync(), [member("a", "writer"), member("b", "empty")], "refuse no_mirror"],
     ["sync with two mirrors", sync(), [member("a", "writer"), member("b", "mirror"), member("c", "behind")], "refuse second_mirror"],
@@ -634,10 +642,10 @@ describe("follow every next step a refusal names", () => {
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
   const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
-  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier, pull: { target: earlier.name, failure: null }, pull_state: { kind: "landed", target: earlier.name }, origin: "sha256:a" });
+  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier, pull: { target: earlier.name, failure: null }, pull_state: { kind: "landed", target: earlier.name }, origin: "sha256:a", written_here: false });
   const slotB = twin("b", true, {
     ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy",
-    pull_state: { kind: "failed", target: newest.name, failure: "no space" }, origin: "sha256:b",
+    pull_state: { kind: "failed", target: newest.name, failure: "no space" }, origin: "sha256:b", written_here: true,
   });
   const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut", origin: "sha256:c" });
   const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote", origin: "sha256:d" });
