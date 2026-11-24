@@ -385,7 +385,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
     flip: () => database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(request.organizationId);
       const { drizzle } = yield* Database;
-      const [flipped] = yield* drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
+      const [flipped] = yield* drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: sql`now()` })
         .where(and(
           eq(organizationCloudflareIngress.organizationId, request.organizationId),
           exists(drizzle.select({ one: sql`1` }).from(ingressDoorsAttempt).where(and(owned, eq(ingressDoorsAttempt.state, "running")))),
@@ -416,7 +416,7 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
   const [row] = yield* drizzle.select({ want: ingressDoorsAttempt.want }).from(ingressDoorsAttempt).where(eq(ingressDoorsAttempt.id, request.attemptId));
   if (row === undefined) return yield* new NotFound({ message: "The switch was not found." });
   const session = yield* openSession(request.organizationId);
-  const [claimed] = yield* drizzle.update(ingressDoorsAttempt).set({ state: "running", startedAt: new Date() })
+  const [claimed] = yield* drizzle.update(ingressDoorsAttempt).set({ state: "running", startedAt: sql`now()` })
     .where(and(owned, eq(ingressDoorsAttempt.state, "pending"))).returning({ id: ingressDoorsAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
   const end = session === null
@@ -450,7 +450,7 @@ export const closeDoorsRun = Effect.fn("IngressDoors.closeRun")(function* (runId
   const rows = yield* drizzle.update(ingressDoorsAttempt).set({
     state: "failed",
     failure: sql<string>`case when ${ingressDoorsAttempt.state} = 'pending' then ${pending} else ${running} end`,
-    endedAt: new Date(),
+    endedAt: sql`now()`,
   }).where(or(and(eq(ingressDoorsAttempt.inngestRunId, runId), inArray(ingressDoorsAttempt.state, ACTIVE_STATES)), unbound))
     .returning({ id: ingressDoorsAttempt.id });
   return rows.length;
@@ -459,12 +459,11 @@ export const closeDoorsRun = Effect.fn("IngressDoors.closeRun")(function* (runId
 /** The hourly sweep: a request no run picked up in time never starts; a switch running past its limit lost its run. */
 export const closeStaleDoors = Effect.fn("IngressDoors.closeStale")(function* () {
   const { drizzle } = yield* Database;
-  const now = Date.now();
   const lost = yield* drizzle.update(ingressDoorsAttempt).set(failed(RUN_ENDS.failure.running))
-    .where(and(eq(ingressDoorsAttempt.state, "running"), lt(ingressDoorsAttempt.startedAt, new Date(now - 2 * DOORS_RUNNING_LIMIT_MS))))
+    .where(and(eq(ingressDoorsAttempt.state, "running"), lt(ingressDoorsAttempt.startedAt, sql`now() - make_interval(secs => ${2 * DOORS_RUNNING_LIMIT_MS / 1000})`)))
     .returning({ id: ingressDoorsAttempt.id });
   const unstarted = yield* drizzle.update(ingressDoorsAttempt).set(failed(RUN_ENDS.failure.pending))
-    .where(and(eq(ingressDoorsAttempt.state, "pending"), lt(ingressDoorsAttempt.requestedAt, new Date(now - DOORS_PENDING_LIMIT_MS))))
+    .where(and(eq(ingressDoorsAttempt.state, "pending"), lt(ingressDoorsAttempt.requestedAt, sql`now() - make_interval(secs => ${DOORS_PENDING_LIMIT_MS / 1000})`)))
     .returning({ id: ingressDoorsAttempt.id });
   return { unstarted: unstarted.length, lost: lost.length };
 });
