@@ -259,6 +259,37 @@ it.live("a member's stop in a Protected Environment is presented, and only someo
     expect(yield* cluster(decideProposal(owner, adaId, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
   }));
 
+// Catches another member ending a protected member's ask for good, before an owner or admin could decide it.
+it.live("only someone who could protect a Protected Environment rejects a member's stop there, though the asker may withdraw it", () =>
+  Effect.gen(function* () {
+    const { provided, cluster, agent, owner, protect } = yield* shop();
+    const memberOf = (email: string) => provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email, name: email }).returning();
+      yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "member" });
+      return { ...agent, userId: person?.id ?? "", credential: { kind: "session", id: `${email}-session` }, role: "member" } satisfies AgentCaller;
+    }));
+    const ada = yield* memberOf("ada.member@example.test");
+    const bo = yield* memberOf("bo.member@example.test");
+    yield* protect;
+    const asked = Effect.gen(function* () {
+      const created = yield* provided(createProposal(ada, production));
+      const id = created.ok && "value" in created ? created.value.proposal_id : expect.fail("no proposal");
+      expect(yield* provided(stageStep(ada, id, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: true });
+      expect(yield* provided(presentProposal(ada, id))).toMatchObject({ ok: true });
+      return id;
+    });
+    const reject = { reject: { reason: "not now" } };
+
+    const first = yield* asked;
+    expect(yield* cluster(decideProposal(bo, first, reject))).toEqual({ ok: false, message: "An owner or admin does this." });
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id: first, status: "presented" }]);
+    expect(yield* cluster(decideProposal(owner, first, reject))).toMatchObject({ ok: true, proposal: { status: "denied", reason: "not now" } });
+
+    const second = yield* asked;
+    expect(yield* cluster(decideProposal(ada, second, reject))).toMatchObject({ ok: true, proposal: { status: "denied" } });
+  }));
+
 it.live("steps staged at once all land, each at its own index, and the plan holds ten at most", () =>
   Effect.gen(function* () {
     const { provided, call, agent } = yield* shop();

@@ -583,6 +583,15 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   return { step: { ...step, deploy: { ...step.deploy, command: { ...command, versions: [...kept, ...versions] } } } satisfies DeployStep };
 });
 
+/** Whether `decider` may decide `row` as its Environment stands now: anyone outside a Protected one, else an owner or admin. */
+const protects = Effect.fn("Proposals.protects")(function* (decider: Decider, row: ProposalRow) {
+  const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
+  return !isProtected || (yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy").pipe(
+    Effect.map((access) => access.kind === "member" && protector(access)),
+    Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, () => Effect.succeed(false)),
+  ));
+});
+
 /**
  * Approve every step, which starts the first, or deny with a reason.
  * Only the decision that approved it starts anything, so approving twice never runs a step twice. When the first step
@@ -597,21 +606,21 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
   const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
+  // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
+  // or restart: approves it, or rejects it, which ends the ask for good. The asker may still withdraw their own.
+  const guarded = row.steps.some((step) => isDeploy(step) || step.verb !== "start");
+  const withdrawn = "reject" in decision && decider.userId === row.requestedByUserId;
+  if (guarded && !withdrawn && !(yield* protects(decider, row))) {
+    // A Deploy's approval says it in the Deploy's own words.
+    const [first] = row.steps;
+    if ("reject" in decision || first === undefined || !isDeploy(first)) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;
+  }
   if ("reject" in decision) {
     const [denied] = yield* deny(decision.reject.reason?.trim() || null);
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
   const [first] = row.steps;
   let steps = row.steps;
-  // Each step runs as the asker, so in a Protected Environment only someone who can protect it approves a stop or restart.
-  if (row.steps.some((step) => !isDeploy(step) && step.verb !== "start")) {
-    const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
-    const protects = !isProtected || (yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy").pipe(
-      Effect.map((access) => access.kind === "member" && protector(access)),
-      Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, () => Effect.succeed(false)),
-    ));
-    if (!protects) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;
-  }
   if (first !== undefined && isDeploy(first)) {
     const checked = yield* approvedDeploy(decider, row, first, decision.approve.versions ?? []);
     if ("moved" in checked) {
