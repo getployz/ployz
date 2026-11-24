@@ -1373,6 +1373,45 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     server.abort();
 }
 
+/// A departure parked this Machine's root here, with writes no other Machine has. A Move
+/// back from the Writer a Restore made elsewhere pulls onto it, and that Writer never
+/// held the departure snapshot, so the incremental finds no base.
+#[tokio::test]
+async fn a_pull_keeps_an_old_copy_written_here_that_the_writer_cannot_send_onto() {
+    let source = Source::start(Some(BOUND), "snapshot w-6-1 12\n").await;
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("dep-1700000000", 11)]);
+    set_property(&test, SLOT, "ployz:role", "old_copy");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-6-1")).await;
+    let copy = landed(&socket, "w-6-1").await;
+    assert!(
+        copy.pointer("/Ok/pull/failure")
+            .is_some_and(|failure| !failure.is_null()),
+        "{copy}"
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["dep-1700000000"]);
+    assert!(
+        !commands(&test).contains("destroy -r"),
+        "{}",
+        commands(&test)
+    );
+    assert_eq!(
+        source.requests(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-6-1&base=11",
+        ]
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
