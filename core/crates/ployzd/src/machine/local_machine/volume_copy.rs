@@ -6,9 +6,12 @@ use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
     EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
-    SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply,
-    SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
+    SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
+    SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen,
+    WantedCopy,
 };
+
+use ployz_core::authority::{AuthorityRefusal, CopyFacts, CopyWindow, Purpose, Timestamp, copy};
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
 use crate::{
@@ -16,9 +19,10 @@ use crate::{
     faults::{Identity, Point, Want},
     machine::has_cluster_identity,
     volume_copy::{
-        CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
-        INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, VOLUME_SEED_ROUTE,
-        VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
+        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE,
+        ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SeedCopy,
+        SnapshotRequest, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE,
+        WRITER_ROUTE, WriterRequest,
     },
 };
 
@@ -111,6 +115,70 @@ impl LocalMachine {
         }
         self.volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
             .await
+    }
+
+    /// SeedCopy: a Volume.Seed an Operator sends under a person's Copy step, under the
+    /// switch lock. The step must open here for exactly this seed. It is taken in the
+    /// approvals record before the plugin may start a copy, and the plugin starts one, or
+    /// starts it over, only while the step's window holds; once one may have begun, a
+    /// resend only finishes it and never makes a deleted new Volume again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CopyRefused`] for a step that does not open here, a Stale refusal
+    /// for a gen below the floor of `into`, or the plugin's error.
+    pub(crate) async fn seed_copy(
+        &self,
+        request: SeedCopyRequest,
+    ) -> Result<VolumeCopyView, Error> {
+        let _guard = self.lock_switch().await;
+        if let Some(r#gen) = request.seed.r#gen {
+            self.check_gen(&request.seed.into, r#gen).await?;
+        }
+        let record = self.record();
+        if !record.has_cluster_identity() {
+            return Err(Error::NotParticipating);
+        }
+        let trusted = record.trusted_keys();
+        let facts = CopyFacts {
+            trusted: &trusted,
+            cluster: self.cluster_key(record.phase()),
+            machine: record.id(),
+            now: self.approvals.observed_now(Timestamp::now())?,
+        };
+        let verified =
+            copy::verify(&request.step, &request.seed, &facts).map_err(Error::CopyRefused)?;
+        let birth = verified.origin().map_err(|error| {
+            Error::CopyRefused(AuthorityRefusal::Malformed {
+                purpose: Purpose::Workflow,
+                problem: error.to_string(),
+            })
+        })?;
+        let began = self.approvals.take_copy(&verified)?;
+        let step = &verified.step;
+        let seed = SeedCopy {
+            seed: request.seed,
+            copy: CopyBinding {
+                birth,
+                source: step.origin,
+                taken_at: step.taken_at,
+                open: verified.window == CopyWindow::Open,
+                began,
+            },
+        };
+        // A call that may begin the copy records that it began first, so a restart while
+        // the plugin works never forgets it. Only a refusal the plugin gave before any
+        // effect takes it back; a call that failed on the way may have begun the copy.
+        if !began {
+            self.approvals.copy_began(step.proposal, true)?;
+        }
+        let view = self
+            .volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
+            .await;
+        if !began && view.as_ref().is_err_and(began_nothing) {
+            self.approvals.copy_began(step.proposal, false)?;
+        }
+        view
     }
 
     /// SetVolumeSize, under the switch lock.
@@ -659,4 +727,19 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
 
 fn not_routed(message: String) -> RpcError {
     RpcError::conflict(message)
+}
+
+/// Whether `error` is a refusal the plugin's seed gives before it changes anything: a
+/// switch refusal, which names its reason, or a capacity it knows is short. A capacity it
+/// could not read is also how a call that never came back reads.
+fn began_nothing(error: &Error) -> bool {
+    let Error::StoragePreparation(error) = error else {
+        return true;
+    };
+    error.details.get("reason").is_some()
+        || error
+            .details
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|code| code != "storage_capacity_unknown")
 }

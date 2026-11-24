@@ -1,6 +1,6 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
-//! GitHub tokens, rule marks, the hook each rule's Service last ran, and each Service's
-//! floor.
+//! GitHub tokens, rule marks, the hook each rule's Service last ran, each Service's
+//! floor, and each Copy step taken.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -16,8 +16,8 @@ use std::{
 use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, RuleId, RuleIdentity, Signed, Timestamp,
-        version::Forget,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, CopyVerified, CopyWindow, ProposalRef,
+        RuleId, RuleIdentity, Signed, StepDigest, Timestamp, version::Forget,
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};
@@ -57,6 +57,23 @@ struct Consumption {
     /// Machine. It only rises.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     floors: BTreeMap<String, Timestamp>,
+    /// Each Copy step taken here, by its operation and index.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    copies: BTreeMap<String, CopyTaken>,
+}
+
+/// A Copy step this Machine took: the step as its bundle listed it, and whether a copy
+/// began under it. Once one began, the new Volume being gone means it was deleted.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CopyTaken {
+    digest: StepDigest,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    began: bool,
+}
+
+/// Where a Copy step is kept: the operation and index its bundle lists it at.
+fn copy_key(place: ProposalRef) -> String {
+    format!("{}/{}", place.operation, place.index)
 }
 
 /// Where a Service's floor is kept: its Cluster's Sealing public key and the Service, so a
@@ -489,6 +506,55 @@ impl ConsumptionLog {
                     Ok(Edit::Write(()))
                 }
                 _ => Err(Error::JoinConsumed(machine)),
+            }
+        })
+    }
+
+    /// Take `copy`, a Copy step verified at the floored clock, and answer whether a copy
+    /// already began under it here. A step taken before is taken again whatever its window,
+    /// so a resend finishes the copy it started; a step not taken yet is taken only while its
+    /// window holds. Written before the plugin may start a copy, so a restart never forgets
+    /// a step whose copy began.
+    ///
+    /// # Errors
+    /// Returns [`Error::CopyRefused`] for a step past its window that was never taken, or
+    /// for another step at the same place, and [`Error::ApprovalRecord`] when the record
+    /// cannot be read or written.
+    pub(crate) fn take_copy(&self, copy: &CopyVerified) -> Result<bool, Error> {
+        let key = copy_key(copy.step.proposal);
+        self.transact(Error::ApprovalRecord, |log| match log.copies.get(&key) {
+            Some(taken) if taken.digest == copy.digest => Ok(Edit::Keep(taken.began)),
+            Some(_) => Err(Error::CopyRefused(AuthorityRefusal::Mismatch {
+                field: MismatchField::Step,
+            })),
+            None if copy.window == CopyWindow::Closed => {
+                Err(Error::CopyRefused(AuthorityRefusal::Expired))
+            }
+            None => {
+                log.copies.insert(
+                    key,
+                    CopyTaken {
+                        digest: copy.digest,
+                        began: false,
+                    },
+                );
+                Ok(Edit::Write(false))
+            }
+        })
+    }
+
+    /// Record whether a copy may have begun under the Copy step at `place`.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn copy_began(&self, place: ProposalRef, began: bool) -> Result<(), Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            match log.copies.get_mut(&copy_key(place)) {
+                Some(taken) if taken.began != began => {
+                    taken.began = began;
+                    Ok(Edit::Write(()))
+                }
+                _ => Ok(Edit::Keep(())),
             }
         })
     }

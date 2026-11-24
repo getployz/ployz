@@ -539,6 +539,10 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SEED_VOLUME_CAPABILITY, _) => unary::<op::SeedVolume>(json!({
             "name": "app_data", "into": "app_restore", "guid": "7",
         })),
+        (ployz_core::SEED_COPY_CAPABILITY, _) => unary::<op::SeedCopy>(json!({
+            "seed": {"name": "app_data", "into": "app_restore", "guid": "7"},
+            "step": unsigned_copy(machine),
+        })),
         (ployz_core::SET_VOLUME_COPY_CAPABILITY, branch) => {
             let want = match branch {
                 "a Writer want with a start" => json!({
@@ -666,6 +670,58 @@ fn stranger_removal(machine: &Enforcing) -> Value {
         proposal: None,
     };
     serde_json::to_value(Signed::sign(&step, &stranger).unwrap()).unwrap()
+}
+
+/// A Copy of `app_data` into `app_restore` in a bundle nobody signed.
+fn unsigned_copy(machine: &Enforcing) -> Value {
+    use ployz_core::authority::{
+        CopyStep, ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind, Timestamp,
+    };
+    let stranger = Signer::from_seed(&[42; 32]);
+    let cluster = SealingKey::load(&machine.data_dir)
+        .unwrap()
+        .unwrap()
+        .public_key();
+    let app = ployz_core::Namespace::parse("app").unwrap();
+    let operation = ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
+    let volume = |name: &str| ployz_core::DockerVolumeName::parse(name).unwrap();
+    let step = CopyStep {
+        cluster,
+        namespace: app.clone(),
+        proposal: ProposalRef {
+            operation,
+            index: 0,
+        },
+        signer: DeviceKey::from(stranger.public()).into(),
+        machine: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+        source: volume("app_data"),
+        origin: ployz_core::VolumeOrigin::legacy(&volume("app_data")),
+        point: ployz_core::SnapshotGuid::new(7),
+        taken_at: Timestamp::now(),
+        into: volume("app_restore"),
+        birth: ployz_core::VolumeBirth {
+            namespace: app.clone(),
+            name: "restore".to_owned(),
+            made_at: Timestamp::now(),
+            nonce: ployz_core::BirthNonce::from_bytes([3; 16]),
+        },
+    };
+    let body = Signed::unsigned(&step).unwrap().body;
+    let bundle = ProposalApproval {
+        cluster,
+        environment: app,
+        operation,
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Copy,
+            digest: StepDigest::of(&body),
+        }],
+        issued_at: Timestamp::now(),
+        expires_at: Timestamp::now().plus(60_000),
+        signer: step.signer,
+    };
+    let signed = Signed::proposed(&step, Signed::unsigned(&bundle).unwrap()).unwrap();
+    serde_json::to_value(signed).unwrap()
 }
 
 /// A forget of `app/web`, signed by a key this Machine does not trust.

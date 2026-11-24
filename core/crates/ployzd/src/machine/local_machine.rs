@@ -142,6 +142,10 @@ pub enum Error {
     KeyIsClient(DeviceCode),
     #[error("This Server refused the key change: {0}")]
     KeyRefused(ployz_core::authority::AuthorityRefusal),
+    /// A SeedCopy's Copy step did not open here. The refusal names
+    /// [`ployz_core::SEED_COPY_CAPABILITY`] in its details.
+    #[error("This Server refused the copy of a Volume: {0}")]
+    CopyRefused(ployz_core::authority::AuthorityRefusal),
     /// No version of a forget opened here. The refusal names
     /// [`ployz_core::FORGET_VERSIONS_CAPABILITY`] in its details.
     #[error("This Server refused to forget older versions: {}", forget::refusal_text(.0))]

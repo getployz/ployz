@@ -573,6 +573,11 @@ impl MachineRpc for MachineService {
         finish(self.local.seed_volume(&request).await)
     }
 
+    async fn seed_copy(&self, request: Request<OpaquePayload>) -> Answer {
+        let request = expect::<op::SeedCopy>(request)?;
+        finish(self.local.seed_copy(request).await)
+    }
+
     async fn set_volume_size(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::SetVolumeSize>(request)?;
         finish(self.local.set_volume_size(&request).await)
@@ -1102,6 +1107,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::KEY_STEP_CAPABILITY),
+        )),
+        LocalMachineError::CopyRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::SEED_COPY_CAPABILITY),
         )),
         LocalMachineError::ForgetRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,

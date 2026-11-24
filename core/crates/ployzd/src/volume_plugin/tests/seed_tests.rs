@@ -976,3 +976,172 @@ async fn a_seed_of_a_received_origin_refuses_and_keeps_the_mirror_in_its_slot() 
         Some(BORN)
     );
 }
+
+/// The origin a Copy step's birth gives the new Volume, distinct from any source's.
+const BIRTH: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+/// `data`'s origin: it carries none, so it is Legacy.
+fn legacy_data() -> String {
+    ployz_core::VolumeOrigin::legacy(&ployz_core::DockerVolumeName::parse("data").unwrap())
+        .to_string()
+}
+
+/// A SeedCopy of `data`'s point 77 into `seed`, bound to [`BIRTH`]. `open` says whether the
+/// step's window holds and `began` whether a copy began under it.
+fn copy(open: bool, began: bool) -> Value {
+    copy_of(&legacy_data(), 1_700_000_000, (open, began))
+}
+
+fn copy_of(source: &str, taken_seconds: u64, (open, began): (bool, bool)) -> Value {
+    json!({
+        "seed": seed(77),
+        "copy": {
+            "birth": BIRTH, "source": source, "taken_at": taken_seconds * 1000,
+            "open": open, "began": began,
+        },
+    })
+}
+
+/// Resends `request` until its reply stops showing a copy in flight.
+async fn copy_settled(socket: &Path, request: &Value) -> Value {
+    poll(async || {
+        let reply = post(socket, "/Volume.SeedCopy", request.clone()).await;
+        let copy = reply.pointer("/Ok/copy")?;
+        let copying = copy.get("kind").is_some_and(|kind| kind == "slot")
+            && copy.pointer("/pull/failure").is_none_or(Value::is_null);
+        (!copying).then_some(reply)
+    })
+    .await
+    .expect("seed copy never settled")
+}
+
+fn refused(reply: &Value, reason: &str) {
+    assert_eq!(
+        reply.pointer("/Err/details/reason"),
+        Some(&json!(reason)),
+        "{reply}"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_lands_carrying_its_birth_not_the_sources_origin() {
+    let test = test_dir();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+
+    let landed = copy_settled(&socket, &copy(true, false)).await;
+
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_landed(&test);
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "ployz:origin").as_deref(),
+        Some(BIRTH)
+    );
+}
+
+#[tokio::test]
+async fn a_copy_of_a_point_the_step_did_not_approve_is_refused_before_any_effect() {
+    let test = test_dir();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let log = commands(&test);
+
+    let foreign = post(
+        &socket,
+        "/Volume.SeedCopy",
+        copy_of(BORN, 1_700_000_000, (true, false)),
+    )
+    .await;
+    let other_time = post(
+        &socket,
+        "/Volume.SeedCopy",
+        copy_of(&legacy_data(), 1_700_000_001, (true, false)),
+    )
+    .await;
+
+    refused(&foreign, "precondition");
+    refused(&other_time, "precondition");
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
+    let fresh = test_dir();
+    let (socket, _server) = start(&fresh, USABLE_POOL, &["root", "volume"]);
+    set_property(&fresh, "tank/ployz/data", "snapshots", POINT);
+    let log = commands(&fresh);
+    refused(
+        &post(&socket, "/Volume.SeedCopy", copy(false, false)).await,
+        "expired",
+    );
+    assert_eq!(effects_since(&fresh, &log), Vec::<String>::new());
+
+    let underway = test_dir();
+    let (socket, _server) = start(&underway, USABLE_POOL, &["root", "volume"]);
+    set_property(&underway, "tank/ployz/data", "snapshots", POINT);
+    let started = post(&socket, "/Volume.SeedCopy", copy(true, false)).await;
+    assert_eq!(
+        started.pointer("/Ok/copy/kind").unwrap(),
+        "slot",
+        "{started}"
+    );
+
+    let landed = copy_settled(&socket, &copy(false, true)).await;
+
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_eq!(
+        property(&underway, "tank/ployz/seed", "ployz:origin").as_deref(),
+        Some(BIRTH)
+    );
+}
+
+#[tokio::test]
+async fn a_copy_never_makes_its_deleted_volume_again() {
+    let test = test_dir();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let log = commands(&test);
+
+    let reply = post(&socket, "/Volume.SeedCopy", copy(true, true)).await;
+
+    refused(&reply, "precondition");
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+/// A slot holding the point under another origin, and a root holding it under another
+/// origin, are other copies of `seed`: a copy refuses both and leaves them as they are.
+#[tokio::test]
+async fn a_copy_never_adopts_another_copy_of_its_volume() {
+    let slot = test_dir();
+    let (socket, _server) = start(
+        &slot,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&slot, "tank/ployz/data", "snapshots", POINT);
+    set_property(
+        &slot,
+        "tank/ployz-mirror/seed/fs",
+        "snapshots",
+        "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+    );
+    set_property(&slot, "tank/ployz-mirror/seed", "ployz:pull-origin", BORN);
+    let log = commands(&slot);
+    refused(
+        &post(&socket, "/Volume.SeedCopy", copy(true, false)).await,
+        "precondition",
+    );
+    assert_eq!(effects_since(&slot, &log), Vec::<String>::new());
+
+    let root = test_dir();
+    let (socket, _server) = start(&root, USABLE_POOL, &["root", "volume", "seed-volume"]);
+    set_property(&root, "tank/ployz/data", "snapshots", POINT);
+    set_property(&root, "tank/ployz/seed", "ployz:seed", "77");
+    set_property(&root, "tank/ployz/seed", "ployz:origin", BORN);
+    let log = commands(&root);
+    refused(
+        &post(&socket, "/Volume.SeedCopy", copy(true, false)).await,
+        "precondition",
+    );
+    assert_eq!(effects_since(&root, &log), Vec::<String>::new());
+}
