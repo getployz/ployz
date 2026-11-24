@@ -395,9 +395,10 @@ a person deploys from a terminal again.
 
 On servers that enforce device approval, a deploy from a computer with no device key or
 `PLOYZ_KEY` doesn't queue unsigned. When your passkey can sign every service it leaves unsigned,
-`ployz deploy` stops with a link to an approval page, and so does a coding agent's deploy. Open
-it, check what it destroys and the lines your passkey signs, and tap once. The deploy then starts
-as whoever asked.
+`ployz deploy` and `ployz up` print a link to an approval page, and so does a coding agent's
+deploy. Open it, check what it destroys and the lines your passkey signs, and tap once. The
+deploy then starts as whoever asked. See [Deploy without a key](../cli/overview.md#deploy-without-a-key)
+for how the CLI waits.
 
 Otherwise it's refused with what to do. A service built from source, as `ployz up` builds one,
 needs an automatic deploy rule, and a private tag needs its image written by digest. When Ployz

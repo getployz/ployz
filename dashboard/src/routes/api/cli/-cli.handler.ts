@@ -9,6 +9,7 @@ import { enrollCliRoutes } from "#/modules/machines/waiting/enroll.cli.server";
 import { fleetTokenCliRoutes } from "#/modules/machines/waiting/fleet-token.cli.server";
 import { organizationCliRoutes } from "#/modules/organization/organization.cli.server";
 import { passkeysCliRoutes } from "#/modules/passkeys/passkeys.cli.server";
+import { proposalsCliRoutes } from "#/modules/proposals/proposals.cli.server";
 import { serverUpgradeCliRoutes } from "#/modules/server-upgrade/server-upgrade.cli.server";
 import { volumeRunCliRoutes } from "#/modules/volume-run/volume-run.cli.server";
 import { mirrorSyncCliRoutes } from "#/modules/volume-copies/mirror-sync/mirror-sync.cli.server";
@@ -25,6 +26,7 @@ const CLI_ROUTES = {
   ...serversCliRoutes,
   ...serverUpgradeCliRoutes,
   ...approvalsCliRoutes,
+  ...proposalsCliRoutes,
   ...deviceRequestCliRoutes,
   ...passkeysCliRoutes,
   ...volumeRunCliRoutes,
@@ -36,7 +38,7 @@ const isCliRoute = (route: string): route is keyof typeof CLI_ROUTES => Object.h
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
- * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), reading or deciding an approval a destructive write waits on, and following a Deploy's proposal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const cliReply = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
