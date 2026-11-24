@@ -183,7 +183,7 @@ export const stageStep = Effect.fn("Proposals.stage")(function* (
   const { drizzle } = yield* Database;
   // Appended in the database, so steps staged at once all land, each at its own index.
   const [staged] = yield* drizzle.update(operationProposals)
-    .set({ steps: sql`${operationProposals.steps} || ${JSON.stringify(step)}::jsonb`, updatedAt: new Date() })
+    .set({ steps: sql`${operationProposals.steps} || ${JSON.stringify(step)}::jsonb`, updatedAt: sql`now()` })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"), sql`jsonb_array_length(${operationProposals.steps}) < ${PROPOSAL_STEP_LIMIT}`))
     .returning({ count: sql<number>`jsonb_array_length(${operationProposals.steps})` });
   if (staged === undefined) {
@@ -209,7 +209,7 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   const { row } = draft;
   if (row.steps.length === 0) return refused("invalid_argument", "This proposal has no steps. Stage one first.");
   const { drizzle } = yield* Database;
-  const [presented] = yield* drizzle.update(operationProposals).set({ status: "presented", updatedAt: new Date() })
+  const [presented] = yield* drizzle.update(operationProposals).set({ status: "presented", updatedAt: sql`now()` })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"))).returning({ id: operationProposals.id });
   if (presented === undefined) return refused("conflict", "This proposal was already presented.");
   return {
@@ -396,7 +396,7 @@ export const getProposal = Effect.fn("Proposals.get")(function* (organizationId:
 
 const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index: number, reason: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(operationProposals).set({ halt: { index, reason }, updatedAt: new Date() }).where(eq(operationProposals.id, row.id));
+  yield* drizzle.update(operationProposals).set({ halt: { index, reason }, updatedAt: sql`now()` }).where(eq(operationProposals.id, row.id));
   return { index, reason } satisfies ProposalHalt;
 });
 
@@ -407,7 +407,7 @@ const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row
 const deniedDeploy = Effect.fn("Proposals.deniedDeploy")(function* (row: ProposalRow, index: number, reason: string) {
   const { drizzle } = yield* Database;
   const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { ...step.deploy, command: { ...step.deploy.command, versions: [] } } } : step);
-  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), steps: cleared, halt: null, updatedAt: new Date() })
+  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), steps: cleared, halt: null, updatedAt: sql`now()` })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { index, reason } satisfies ProposalHalt;
 });
@@ -433,7 +433,7 @@ const liveCredential = Effect.fn("Proposals.liveCredential")(function* (row: Pro
     return live?.credential ?? null;
   }
   const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, row.credentialId), eq(session.userId, asker), gt(session.expiresAt, new Date()))).limit(1);
+    .where(and(eq(session.id, row.credentialId), eq(session.userId, asker), gt(session.expiresAt, sql`now()`))).limit(1);
   return live === undefined ? null : { kind: "session", id: live.id } satisfies Credential;
 });
 
@@ -643,8 +643,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   if (row === undefined) return yield* new NotFound({ message: "No such proposal." });
   if (row.status !== "presented") return settled(row);
   const { drizzle } = yield* Database;
-  const now = new Date();
-  const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
+  const decided = { decidedByUserId: decider.userId, decidedAt: sql`now()`, updatedAt: sql`now()` };
   const deny = (reason: string | null, withdrawn = false) => drizzle.update(operationProposals).set({ status: "denied", reason, withdrawn, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
@@ -679,7 +678,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   // A Deploy that can't go is denied, not left waiting: its signed versions would outlive the plan they signed.
   if (first !== undefined && isDeploy(first)) return { ok: false, message: `It didn't run: ${start.halt.reason}` } satisfies Decided;
   yield* drizzle.update(operationProposals)
-    .set({ status: "presented", halt: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
+    .set({ status: "presented", halt: null, decidedByUserId: null, decidedAt: null, updatedAt: sql`now()` })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { ok: false, message: `It didn't run: ${start.halt.reason} It's still waiting for approval.` } satisfies Decided;
 });
@@ -687,8 +686,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
 /** Deny a waiting Deploy for `reason`, unless it moved past `version` or was decided meanwhile. */
 const denyWaiting = Effect.fn("Proposals.denyWaiting")(function* (decider: Decider, row: ProposalRow, version: string | null | undefined, reason: string) {
   const { drizzle } = yield* Database;
-  const now = new Date();
-  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), decidedByUserId: decider.userId, decidedAt: now, updatedAt: now }).where(and(
+  yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), decidedByUserId: decider.userId, decidedAt: sql`now()`, updatedAt: sql`now()` }).where(and(
     eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
     sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${version ?? ""}`,
   ));
@@ -716,7 +714,7 @@ export const fillDeploy = Effect.fn("Proposals.fillDeploy")(function* (decider: 
   const { drizzle } = yield* Database;
   if (written.ok && written.value.written === "edited") {
     const revision = written.value.environment.revision;
-    const [recorded] = yield* drizzle.update(operationProposals).set({ steps: sql`jsonb_set(${operationProposals.steps}, '{0,deploy,filled}', to_jsonb(${revision}::int))`, updatedAt: new Date() }).where(and(
+    const [recorded] = yield* drizzle.update(operationProposals).set({ steps: sql`jsonb_set(${operationProposals.steps}, '{0,deploy,filled}', to_jsonb(${revision}::int))`, updatedAt: sql`now()` }).where(and(
       eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
       sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${seen}`, sql`${operationProposals.steps}->0->'deploy'->'filled' is null`,
     )).returning();
@@ -746,7 +744,7 @@ const rebindFill = Effect.fn("Proposals.rebindFill")(function* (decider: Decider
   if (reviewed === null || reviewed.refused !== undefined) return yield* denyWaiting(decider, row, command.version, reviewed?.refused?.message ?? DEPLOY_MOVED);
   const next: DeployStep = { ...step, deploy: { ...step.deploy, command: reviewed.command, review: reviewed.review, filled: revision } };
   const { drizzle } = yield* Database;
-  const [saved] = yield* drizzle.update(operationProposals).set({ steps: [next], updatedAt: new Date() }).where(and(
+  const [saved] = yield* drizzle.update(operationProposals).set({ steps: [next], updatedAt: sql`now()` }).where(and(
     eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
     sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${command.version ?? ""}`,
   )).returning({ id: operationProposals.id });
