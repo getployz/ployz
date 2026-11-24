@@ -133,9 +133,9 @@ pub(crate) async fn running_beside(
 }
 
 /// Whether a Service Container of `service`, other than `me`, runs on Docker Volume
-/// `volume`: running, restarting or paused. With no `service`, a Service Container of
-/// any Service but the Ingress Proxy. A hook, or a Container Ployz didn't make, is
-/// no Service.
+/// `volume`. Only Docker's `running` counts: a paused or restarting replacement serves
+/// nothing. With no `service`, a Service Container of any Service but the Ingress
+/// Proxy. A hook, or a Container Ployz didn't make, is no Service.
 ///
 /// # Errors
 /// The error of a read that failed.
@@ -148,6 +148,7 @@ pub(crate) async fn service_beside(
     Ok(active_beside(client, me, volume)
         .await?
         .iter()
+        .filter(|(_, holder)| holder.is_running())
         .filter_map(|(_, holder)| holder.labels().map(ServiceLabels::parse)?.ok())
         .any(|labels| {
             labels.kind == ContainerKind::ServiceContainer

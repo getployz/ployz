@@ -403,6 +403,53 @@ async fn a_start_resent_beside_a_running_stray_is_no_success() {
     );
 }
 
+/// A start resent after B became the Writer, its Container not yet made, while a
+/// paused replacement of the same Service sits on the Volume: a paused Service serves
+/// nothing, so the start is no success, and Cloud keeps A's Container for the retry.
+#[tokio::test]
+async fn a_start_resent_beside_a_paused_replacement_is_no_success() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    cut(&fleet, 0).await;
+    let mut replacement = fleet.node(0).container(source).unwrap();
+    replacement["Id"] = json!(format!("{}{}", MachineId::random(), MachineId::random()));
+    replacement["Name"] = json!("/api-paused");
+    replacement["State"] = json!({"Status":"paused"});
+    fleet
+        .node(1)
+        .fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .insert("api-paused".into(), replacement);
+    let destination = fleet.with_plugin(
+        1,
+        &plugin(
+            writer_root(1, Some(snapshot())),
+            WRITER_ROUTE,
+            writer_root(1, Some(snapshot())),
+        ),
+    );
+
+    try_set_copy(
+        &destination,
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":on_volume("api"),
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}}),
+    )
+    .await
+    .expect_err("a paused replacement is not the Service running");
+
+    assert!(
+        fleet.node(0).container(source).is_some(),
+        "the source is kept"
+    );
+}
+
 /// A Move's cut names the Service it counted. Another Container running on the Volume,
 /// one Cloud's frame never showed, refuses the cut before anything stops.
 #[tokio::test]
