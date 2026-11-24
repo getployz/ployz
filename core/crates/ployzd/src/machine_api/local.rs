@@ -601,8 +601,9 @@ impl MachineRpc for MachineService {
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
+        let bound = self.at(&request).bind_full().map_err(local_status)?;
         containers
-            .exec(request.into_inner())
+            .exec(request.into_inner(), bound)
             .await
             .map(Response::new)
     }
@@ -755,7 +756,12 @@ impl MachineRpc for MachineService {
                     capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
                 });
             }
-            (None, Scope::Full(full)) => Minter::Full(full),
+            // Bound before ingest opens, so a key change while it opens leaves the grant
+            // serving nothing.
+            (None, Scope::Full(_)) => match local.bind_full() {
+                Ok(bound) => Minter::Full(bound.into_tie()),
+                Err(error) => return local_error(error),
+            },
             (Some(grant), _) => {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
@@ -1024,6 +1030,15 @@ fn pinned_refusal(message: &str) -> RpcError {
 
 fn local_error(error: LocalMachineError) -> Answer {
     respond(local_failure(error)?)
+}
+
+/// The status a stream fails with when its caller may not open it: a key this Machine no
+/// longer accepts, or one short of Full scope.
+fn local_status(error: LocalMachineError) -> Status {
+    match local_failure(error) {
+        Ok(error) => Status::internal(error.message),
+        Err(status) => status,
+    }
 }
 
 /// `error` as the [`RpcError`] it answers, or the [`Status`] it fails the call with.

@@ -17,6 +17,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::{ContainerRuntime, docker_error};
+use crate::machine::Bound;
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
@@ -27,13 +28,25 @@ const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
 /// How long the command of an exec whose client went away has to exit after
 /// SIGTERM before SIGKILL, as `docker stop` gives a container.
 const ABANDONED_EXEC_GRACE: Duration = Duration::from_secs(10);
+/// How often a detached exec a management key started is checked for having exited, so its
+/// watch ends with it.
+const DETACHED_EXEC_POLL: Duration = Duration::from_secs(1);
+const EXEC_ENDED: &str =
+    "This exec stopped: this Server no longer gives this device Full access.";
 
 impl ContainerRuntime {
-    pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
-        let first = requests
-            .message()
-            .await?
-            .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
+    /// Run an exec for the caller `bound` ties it to. A key change that ends `bound` closes
+    /// the stream and stops the command, attached or detached, before the change returns.
+    pub async fn exec(
+        &self,
+        mut requests: Streaming<OpaquePayload>,
+        bound: Bound,
+    ) -> Result<RpcStream, Status> {
+        let first = tokio::select! {
+            first = requests.message() => first?,
+            () = bound.ended() => return Err(exec_ended()),
+        }
+        .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
         let ExecRequestFrame::Config(config) =
             ExecRequestFrame::decode(&first).map_err(|error| {
                 ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
@@ -81,6 +94,15 @@ impl ContainerRuntime {
         send_exec(&sender, ExecResponseFrame::ExecId(created.id.clone())).await?;
         match started {
             StartExecResults::Detached => {
+                if bound.may_end() {
+                    let docker = self.docker.client.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            () = detached_exec_exit(&docker, &created.id) => {}
+                            () = bound.ended() => stop_abandoned_exec(&docker, &created.id).await,
+                        }
+                    });
+                }
                 return Ok(tokio_stream::wrappers::ReceiverStream::new(receiver));
             }
             StartExecResults::Attached {
@@ -133,16 +155,30 @@ impl ContainerRuntime {
                 let docker = self.docker.client.clone();
                 let exec_id = created.id;
                 let tty = config.options.tty;
+                let stdin = stdin_task
+                    .as_ref()
+                    .map(tokio::task::JoinHandle::abort_handle);
                 tokio::spawn(async move {
-                    let _ = forward_attached_exec(
-                        &docker,
-                        &exec_id,
-                        &mut output,
-                        tty,
-                        &sender,
-                        stdin_task,
-                    )
-                    .await;
+                    tokio::select! {
+                        _ = forward_attached_exec(
+                            &docker,
+                            &exec_id,
+                            &mut output,
+                            tty,
+                            &sender,
+                            stdin_task,
+                        ) => {}
+                        () = bound.ended() => {
+                            if let Some(stdin) = stdin {
+                                stdin.abort();
+                            }
+                            if let Ok(frame) = ExecResponseFrame::Error(exec_ended_error()).encode() {
+                                let _ = sender.try_send(Ok(frame));
+                            }
+                            drop(sender);
+                            stop_abandoned_exec(&docker, &exec_id).await;
+                        }
+                    }
                 });
             }
         }
@@ -341,9 +377,31 @@ async fn wait_for_exec_exit(
     docker: &bollard::Docker,
     exec_id: &str,
 ) -> Result<Option<i64>, bollard::errors::Error> {
+    poll_exec_exit(docker, exec_id, Duration::from_millis(100)).await
+}
+
+/// Completes once a detached exec's command has exited, or Docker no longer knows the exec
+/// because its Container went.
+async fn detached_exec_exit(docker: &bollard::Docker, exec_id: &str) {
     loop {
-        // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        match poll_exec_exit(docker, exec_id, DETACHED_EXEC_POLL).await {
+            Ok(_)
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return,
+            Err(_) => {}
+        }
+    }
+}
+
+async fn poll_exec_exit(
+    docker: &bollard::Docker,
+    exec_id: &str,
+    every: Duration,
+) -> Result<Option<i64>, bollard::errors::Error> {
+    loop {
+        // ponytail: one inspect per `every`; use a Docker exec wait API if one appears.
+        tokio::time::sleep(every).await;
         let inspected = docker.inspect_exec(exec_id).await?;
         if inspected.running == Some(false) {
             return Ok(inspected.exit_code);
@@ -372,6 +430,15 @@ async fn send_exec(
         .send(Ok(payload))
         .await
         .map_err(|_| Status::cancelled("exec client disconnected"))
+}
+
+/// Why an exec a key change ended stopped, said to the client that opened it.
+fn exec_ended_error() -> RpcError {
+    RpcError::new(RpcErrorCode::Unauthenticated, EXEC_ENDED)
+}
+
+fn exec_ended() -> Status {
+    Status::unauthenticated(EXEC_ENDED)
 }
 
 async fn send_exec_error(

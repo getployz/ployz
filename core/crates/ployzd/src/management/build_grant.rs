@@ -10,7 +10,8 @@
 //! [`BuildGrants::inspect`].
 //!
 //! Only a [`Minter`] mints: a Full caller, or a rule build every `rule_grant` check
-//! passed. An Operator is neither.
+//! passed. An Operator is neither. A Full caller's grant ends with its key's Full scope:
+//! once a key change that took it returns, the grant serves nothing more.
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
@@ -47,7 +48,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::machine::{FullCaller, local_machine::rule_grant::AdmittedRule};
+use crate::machine::{Tie, local_machine::rule_grant::AdmittedRule};
 use crate::sealed_env::SealingKeyStore;
 
 /// How long a grant lives. Ployz Cloud mints it at
@@ -72,6 +73,8 @@ struct Grant {
     push: Mutex<Push>,
     /// Locked only under `push`.
     sealed: Mutex<Sealing>,
+    /// The key of the Full caller that minted it; `None` for a rule build's.
+    tie: Option<Tie>,
 }
 
 enum Sealing {
@@ -110,13 +113,7 @@ enum Push {
 /// Who a mint is for: a caller at Full access, or a rule build that passed every
 /// `rule_grant` check. An Operator is neither, so no Operator reaches a mint.
 pub(crate) enum Minter {
-    Full(
-        #[expect(
-            dead_code,
-            reason = "held as proof: only a Full call makes a FullCaller"
-        )]
-        FullCaller,
-    ),
+    Full(Tie),
     Rule(AdmittedRule),
 }
 
@@ -125,6 +122,7 @@ pub struct Mint {
     repository: BuildGrantRepository,
     key: Key,
     release: Option<Release>,
+    tie: Option<Tie>,
 }
 
 enum Key {
@@ -144,7 +142,7 @@ impl Mint {
     pub fn check(
         request: MintBuildGrantRequest,
         sealing: Option<&SealingKeyStore>,
-        full: FullCaller,
+        full: Tie,
     ) -> Result<Mint, RpcError> {
         Self::check_admitted(request, sealing, Minter::Full(full))
     }
@@ -195,23 +193,30 @@ impl Mint {
                 .open_for_build(record)
                 .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
-        let release = match (minter, request.sealed) {
-            (Minter::Full(_), None) => None,
-            (Minter::Full(_), Some(record)) => Some(Release::Plain {
-                record,
-                sealing: sealing()?.clone(),
-            }),
-            (Minter::Rule(admitted), record) => Some(Release::Attested {
-                record,
-                sealing: sealing()?.clone(),
-                recipient: admitted.recipient,
-                audience: admitted.audience,
-            }),
+        let (release, tie) = match (minter, request.sealed) {
+            (Minter::Full(tie), None) => (None, Some(tie)),
+            (Minter::Full(tie), Some(record)) => (
+                Some(Release::Plain {
+                    record,
+                    sealing: sealing()?.clone(),
+                }),
+                Some(tie),
+            ),
+            (Minter::Rule(admitted), record) => (
+                Some(Release::Attested {
+                    record,
+                    sealing: sealing()?.clone(),
+                    recipient: admitted.recipient,
+                    audience: admitted.audience,
+                }),
+                None,
+            ),
         };
         Ok(Mint {
             repository: request.repository,
             key,
             release,
+            tie,
         })
     }
 }
@@ -243,9 +248,10 @@ impl BuildGrants {
             expires: Instant::now() + GRANT_LIFETIME,
             push: Mutex::new(Push::Open),
             sealed: Mutex::new(mint.release.map_or(Sealing::None, Sealing::Ready)),
+            tie: mint.tie,
         });
         let mut grants = self.grants.lock().expect("grant registry lock");
-        grants.retain(|_, grant| grant.expires > Instant::now());
+        grants.retain(|_, grant| grant.live());
         if grants.contains_key(&id) {
             return Err(RpcError::new(
                 RpcErrorCode::Conflict,
@@ -294,7 +300,7 @@ impl BuildGrants {
                 .expect("grant registry lock")
                 .get(&grant_id(key))?,
         );
-        (grant.expires > Instant::now() && !grant.pushed()).then_some(grant)
+        (grant.live() && !grant.pushed()).then_some(grant)
     }
 }
 
@@ -335,6 +341,19 @@ impl Grant {
     fn pushed(&self) -> bool {
         matches!(*self.push.lock().expect("grant push lock"), Push::Pushed(_))
     }
+
+    /// Unexpired, and not ended by a key change that left its minter short of Full scope.
+    fn live(&self) -> bool {
+        self.expires > Instant::now() && !self.tie.as_ref().is_some_and(Tie::is_ended)
+    }
+
+    /// Completes once a key change ended the grant; never for a rule build's.
+    async fn ended(&self) {
+        match &self.tie {
+            Some(tie) => tie.ended().await,
+            None => std::future::pending().await,
+        }
+    }
 }
 
 /// Serve one connection on the grant ALPN until its grant ends. Each bidirectional
@@ -356,6 +375,7 @@ pub(super) async fn serve(
     loop {
         let (send, recv) = tokio::select! {
             () = tokio::time::sleep_until(grant.expires) => break,
+            () = grant.ended() => break,
             () = shutdown.cancelled() => break,
             _ = streams.join_next(), if !streams.is_empty() => continue,
             accepted = connection.accept_bi() => match accepted {
@@ -475,6 +495,9 @@ where
     if grant.pushed() {
         return denied(StatusCode::FORBIDDEN, "the Build Grant was already used");
     }
+    if !grant.live() {
+        return denied(StatusCode::FORBIDDEN, "the Build Grant has ended");
+    }
     let (parts, body) = request.into_parts();
     let (digest, tagged) = match route {
         Route::Sealed => return sealed(grant),
@@ -541,7 +564,7 @@ where
 fn sealed(grant: &Grant) -> Response<Body> {
     let sealed = {
         let push = grant.push.lock().expect("grant push lock");
-        if !matches!(*push, Push::Open) || grant.expires <= Instant::now() {
+        if !matches!(*push, Push::Open) || !grant.live() {
             return denied(StatusCode::FORBIDDEN, "the Build Grant has ended");
         }
         let mut sealing = grant.sealed.lock().expect("grant sealed lock");
@@ -562,9 +585,16 @@ fn sealed(grant: &Grant) -> Response<Body> {
             }
         }
     };
-    let (body, content_type) = match release(sealed) {
-        Ok(released) => released,
-        Err(message) => return denied(StatusCode::PRECONDITION_FAILED, &message),
+    // Opened only while its minter still holds Full scope, under the lock a key change
+    // ends grants under.
+    let released = match &grant.tie {
+        Some(tie) => tie.read(|| release(sealed)),
+        None => Ok(release(sealed)),
+    };
+    let (body, content_type) = match released {
+        Ok(Ok(released)) => released,
+        Ok(Err(message)) => return denied(StatusCode::PRECONDITION_FAILED, &message),
+        Err(_) => return denied(StatusCode::FORBIDDEN, "the Build Grant has ended"),
     };
     Response::builder()
         .status(StatusCode::OK)
@@ -699,7 +729,7 @@ mod tests {
         grants
             .mint(
                 machine,
-                Mint::check(request, None, FullCaller::for_test()).unwrap(),
+                Mint::check(request, None, Tie::for_test()).unwrap(),
                 ingest,
             )
             .unwrap()
@@ -727,7 +757,7 @@ mod tests {
         let mint = Mint::check(
             sealed_request(cluster),
             Some(&cluster.store()),
-            FullCaller::for_test(),
+            Tie::for_test(),
         )
         .unwrap();
         grants
@@ -773,6 +803,7 @@ mod tests {
                 record: sealed_request(&cluster).sealed.unwrap(),
                 sealing: cluster.store(),
             })),
+            tie: None,
         };
         for grant in [&*pushing, &*pushed, &expired] {
             let (status, body) = read(sealed(grant)).await;
@@ -787,7 +818,7 @@ mod tests {
         let mint = Mint::check(
             sealed_request(cluster),
             Some(&cluster.store()),
-            FullCaller::for_test(),
+            Tie::for_test(),
         )
         .unwrap();
         grants
@@ -865,7 +896,7 @@ mod tests {
         let mint = Mint::check(
             sealed_request(&cluster),
             Some(&cluster.store()),
-            from_device.full_now().unwrap(),
+            from_device.bind_full().unwrap().into_tie(),
         )
         .unwrap();
         grants
@@ -899,7 +930,7 @@ mod tests {
         let first = mint(&grants, request(Some(&holder)));
         let Err(refused) = grants.mint(
             ManagementIdentity::from_bytes([7; 32]),
-            Mint::check(request(Some(&holder)), None, FullCaller::for_test()).unwrap(),
+            Mint::check(request(Some(&holder)), None, Tie::for_test()).unwrap(),
             SocketAddr::from(([127, 0, 0, 1], 5000)),
         ) else {
             panic!("a second mint would replace the live grant");
@@ -923,7 +954,7 @@ mod tests {
             holder: None,
             ..sealed_request(&cluster)
         };
-        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), FullCaller::for_test())
+        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), Tie::for_test())
         else {
             panic!("a holderless grant would return its key to Cloud");
         };
@@ -934,7 +965,7 @@ mod tests {
             let Err(refused) = Mint::check(
                 sealed_request(&cluster),
                 sealing.as_ref(),
-                FullCaller::for_test(),
+                Tie::for_test(),
             ) else {
                 panic!("another Cluster's key opens nothing");
             };
@@ -978,7 +1009,7 @@ mod tests {
         let Err(refused) = Mint::check(
             request(Some(&hex::encode(point))),
             None,
-            FullCaller::for_test(),
+            Tie::for_test(),
         ) else {
             panic!("y = 2 is not on the curve");
         };

@@ -19,6 +19,8 @@ use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
 
+const BUILD_ENDED: &str = "Build stopped: this Server no longer gives this device Full access";
+
 #[derive(Default)]
 struct AttemptState {
     evidence: Mutex<ployz_build::WorkEvidence>,
@@ -192,10 +194,15 @@ async fn attempt(
         }
     };
     // Only a Full caller builds, and a Build opens Sealed build values: a key that lost its
-    // Device slot while this Build queued builds nothing.
-    if let Err(error) = local.scope_now().and_then(crate::machine::Scope::full) {
-        return failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work);
-    }
+    // Device slot while this Build queued builds nothing, and one that loses it later stops
+    // the Build before its removal returns.
+    let bound = match local.bind_full() {
+        Ok(bound) => bound,
+        Err(error) => {
+            return failed(Stage::Admission, ployz_core::error_chain::inline(&error))
+                .with_work(work);
+        }
+    };
     // Acceptance may have been revoked while this Build waited in the queue.
     let (machine_id, concurrency) = match require_build_acceptance(&local) {
         Ok(accepted) => accepted,
@@ -221,14 +228,18 @@ async fn attempt(
         active_timeout: policy.active_timeout,
     })
     .expect("bounded admission frame");
-    if events.send(Ok(admitted)).await.is_err() {
-        return failed(Stage::Admission, "Build client disconnected");
+    tokio::select! {
+        sent = events.send(Ok(admitted)) => if sent.is_err() {
+            return failed(Stage::Admission, "Build client disconnected");
+        },
+        () = bound.ended() => return failed(Stage::Admission, BUILD_ENDED),
     }
     if matches!(request, Input::Start(_)) {
         permit.count_as_build(&runner);
     }
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
+    let tie = bound.tie().clone();
     let mut execution = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         match request {
@@ -242,6 +253,7 @@ async fn attempt(
                 },
                 policy,
                 &sealing,
+                &tie,
                 &output,
                 &observed,
             ),
@@ -270,6 +282,7 @@ async fn attempt(
             () = runner.shutdown.cancelled() => "Build daemon stopped".to_owned(),
             () = events.closed() => "Build client disconnected".to_owned(),
             () = tokio::time::sleep_until(deadline) => "Build active timeout expired".to_owned(),
+            () = bound.ended() => BUILD_ENDED.to_owned(),
         }
     };
     cancellation.cancel();
@@ -336,6 +349,7 @@ fn receive_and_execute(
     admission: ExecutionAdmission,
     policy: HostPolicy,
     sealing: &SealingKeyStore,
+    tie: &crate::machine::Tie,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
@@ -370,12 +384,13 @@ fn receive_and_execute(
     }
     let sealed = match upload.private_file(ployz_build::capture::SEALED_RECORD) {
         Ok(None) => None,
-        Ok(Some(record)) => match open_sealed(&record, sealing) {
-            Ok(opened) => {
+        Ok(Some(record)) => match tie.read(|| open_sealed(&record, sealing)) {
+            Ok(Ok(opened)) => {
                 let scrub = ployz_build::OutputScrub::new(&opened);
                 Some((opened, scrub))
             }
-            Err(message) => return failed(Stage::Preparation, message),
+            Ok(Err(message)) => return failed(Stage::Preparation, message),
+            Err(_) => return failed(Stage::Preparation, BUILD_ENDED),
         },
         Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
     };

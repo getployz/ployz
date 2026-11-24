@@ -4,12 +4,16 @@
 //! A tunnel is Machine RPC power, not more: only a `Full` slot's accepted key, proven
 //! on the tunnel's first stream, opens one, the
 //! target must be an IPv4 address in this Machine's Cluster network (never loopback or
-//! the internet), and revoking the key or stopping the daemon ends it at once.
+//! the internet), and revoking the key or stopping the daemon ends it at once. So does a
+//! key change that leaves the key short of Full, such as removing its Device while it keeps
+//! another slot: that change returns only once the tunnel has closed.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use iroh::endpoint::{Connection, VarInt};
 use ployz_core::{ManagementScope, TUNNEL_FAILED, TUNNEL_NEEDS_FULL, TUNNEL_OPEN};
+
+use crate::machine::{Call, Caller, LocalMachineError};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -46,16 +50,31 @@ pub(super) async fn serve(
         connection.close(code, b"management access refused");
         return;
     }
-    if record.management_scope(&remote) < Some(ManagementScope::Full) {
-        return connection.close(
-            VarInt::from_u32(TUNNEL_FAILED),
-            TUNNEL_NEEDS_FULL.as_bytes(),
-        );
-    }
+    let bound = match local
+        .clone()
+        .at(Call::new(
+            Caller::Management(remote),
+            ManagementScope::Full,
+            false,
+        ))
+        .bind_full()
+    {
+        Ok(bound) => bound,
+        Err(LocalMachineError::ManagementRevoked) => {
+            return connection.close(REVOKED, b"revoked");
+        }
+        Err(_) => {
+            return connection.close(
+                VarInt::from_u32(TUNNEL_FAILED),
+                TUNNEL_NEEDS_FULL.as_bytes(),
+            );
+        }
+    };
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);
     let opened = tokio::select! {
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
+        () = bound.ended() => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
         opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record, &local)) => opened
             .unwrap_or(Err(TunnelError::Timeout)),
@@ -69,6 +88,7 @@ pub(super) async fn serve(
     };
     tokio::select! {
         () = &mut revoked => connection.close(REVOKED, b"revoked"),
+        () = bound.ended() => connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => connection.close(VarInt::from_u32(0), b"shutdown"),
         copied = tokio::io::copy_bidirectional(&mut tcp, &mut stream) => {
             if let Err(error) = copied {

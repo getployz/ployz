@@ -38,7 +38,7 @@ pub(crate) use local_machine::{
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
-pub use local_machine::{Error as LocalMachineError, FullCaller, LocalMachine};
+pub use local_machine::{Bound, Error as LocalMachineError, LocalMachine, Tie};
 
 /// [`LocalMachineRecord::has_cluster_identity`] for a phase read on its own.
 pub(crate) fn has_cluster_identity(phase: &LocalMachinePhase) -> bool {
