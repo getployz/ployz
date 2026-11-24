@@ -320,7 +320,7 @@ pub enum DraftError {
     Birth(#[from] BirthError),
     #[error("A version has no canonical form. Nothing signed.")]
     Canonical(#[from] CanonicalError),
-    #[error("{0} Nothing signed.")]
+    #[error(transparent)]
     Rule(#[from] RuleDraftError),
 }
 
