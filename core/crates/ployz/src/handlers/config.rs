@@ -24,7 +24,7 @@ use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
 use super::store::{Store, environment, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{Withheld, positional, switch, value, withheld};
+use crate::cli::{Shown, Withheld, positional, switch, value, withheld};
 
 mod typed_address;
 
@@ -78,30 +78,58 @@ pub(super) fn set_command(command: Command) -> Command {
         .arg(expect())
 }
 
-/// A `PATH=VALUE` as a hint repeats it: a variable's or registry credential's value, which
-/// may be a secret, as `VALUE`.
-fn shown_assignment(typed: &str) -> String {
-    match typed.split_once('=') {
-        Some((path, _)) if may_hold_secret(path) => format!("{path}=VALUE"),
-        Some(_) | None => typed.to_owned(),
+/// A `PATH=VALUE` as output repeats it: the path when it parses, and the value only when
+/// it is Ployz references alone or the Setting's kind is never a secret, else `VALUE`.
+fn shown_assignment(typed: &str) -> Shown {
+    let (path, value) = match typed.split_once('=') {
+        Some((path, value)) => (path, Some(value)),
+        None => (typed, None),
+    };
+    let Ok(path) = SettingPath::parse(path) else {
+        return Shown::placeholder("PATH=VALUE");
+    };
+    #[expect(clippy::disallowed_methods, reason = "a path that parsed names a Setting")]
+    let named = Shown::verbatim(&path.to_string());
+    let Some(value) = value else {
+        return named;
+    };
+    let value = match Shown::references(value) {
+        Some(references) => references,
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the Setting holds a number, a choice, a name or a path"
+        )]
+        None if path.shows_its_value() => Shown::verbatim(value),
+        None => Shown::placeholder("VALUE"),
+    };
+    Shown::assignment(named, value)
+}
+
+/// A `--patch` as output repeats it: `-` for stdin, whole when each Setting it sets holds
+/// a number, a choice, a name or a path, as one, else `JSON`.
+fn shown_patch(typed: &str) -> Shown {
+    if typed == "-" {
+        return Shown::placeholder("-");
     }
-}
-
-fn may_hold_secret(path: &str) -> bool {
-    matches!(
-        path.split('.').collect::<Vec<_>>()[..],
-        [_, "env", _] | [_, "registryCredential"]
-    )
-}
-
-/// A `--patch` as a hint repeats it, unless it sets variables or a registry token.
-fn shown_patch(typed: &str) -> String {
-    let settings = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(typed);
-    let shown = typed == "-"
-        || settings.is_ok_and(|settings| {
-            !settings.contains_key("env") && !settings.contains_key("registryCredential")
-        });
-    if shown { typed } else { "JSON" }.to_owned()
+    let plain = |value: &Value| !matches!(value, Value::Object(_) | Value::Array(_));
+    let shows = serde_json::from_str::<serde_json::Map<String, Value>>(typed).is_ok_and(|settings| {
+        settings.iter().all(|(setting, value)| {
+            let shown = |path: SettingPath| path.shows_its_value();
+            SettingPath::parse(&format!("web.{setting}")).is_ok_and(shown)
+                && match value {
+                    Value::Array(items) => items.iter().all(plain),
+                    value => plain(value),
+                }
+        })
+    });
+    match shows {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "each Setting it sets holds a number, a choice, a name or a path"
+        )]
+        true => Shown::verbatim(typed),
+        false => Shown::placeholder("JSON"),
+    }
 }
 
 pub(super) fn unset_command(command: Command) -> Command {
@@ -653,7 +681,7 @@ pub(super) fn edit_or_discard(
     } else {
         ("Staged", Then::Deploy)
     };
-    let shown = typed_address::Shown::of(&edited);
+    let shown = typed_address::Reported::of(&edited);
     let followed = StagedReport::of(
         matches,
         &edited,

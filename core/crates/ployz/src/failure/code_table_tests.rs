@@ -100,7 +100,7 @@ fn connect_rows() -> Vec<Row> {
         row("connect/ssh-client-missing", ConnectError::SshClientMissing),
         row(
             "connect/proxy-unsupported",
-            ConnectError::ProxyUnsupported("p".into()),
+            ConnectError::ProxyUnsupported(crate::cli::Shown::placeholder("p")),
         ),
         row(
             "connect/unsupported-network",
@@ -771,7 +771,7 @@ fn provision_and_publish_rows() -> Vec<Row> {
         ),
         row(
             "provision/remote-transport",
-            ProvisionError::RemoteTransport("t".into()),
+            ProvisionError::RemoteTransport(crate::cli::Shown::placeholder("t")),
         ),
         row(
             "provision/connection",

@@ -10,6 +10,7 @@ use ts_rs::TS;
 use super::ServiceSetting;
 use crate::error;
 use crate::followup::FollowUp;
+use crate::git::GitSetting;
 use crate::id::{ConfigRef, VolumeName};
 use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
@@ -373,6 +374,58 @@ impl SettingPath {
             | Addressed::Volume(..)
             | Addressed::Config(..)
             | Addressed::Environment(_) => None,
+        }
+    }
+
+    /// Whether a value set here may show again in a hint: a number, a choice, a name or a
+    /// path. A variable, a command, a credential, a repository URL, a healthcheck and a
+    /// Config file are text that may hold a secret, and never show.
+    #[must_use]
+    pub const fn shows_its_value(&self) -> bool {
+        match &self.0 {
+            Addressed::Service(_, Some(Target::Setting(setting))) => match setting {
+                ServiceSetting::CpuLimit
+                | ServiceSetting::Image
+                | ServiceSetting::MaxRetries
+                | ServiceSetting::MemLimit
+                | ServiceSetting::PrivateDns
+                | ServiceSetting::Replicas
+                | ServiceSetting::RestartPolicy
+                | ServiceSetting::Template
+                | ServiceSetting::UpdateOrder
+                | ServiceSetting::Git(
+                    GitSetting::Branch
+                    | GitSetting::RootDir
+                    | GitSetting::BuildMethod
+                    | GitSetting::DockerfilePath,
+                )
+                | ServiceSetting::Policy(_) => true,
+                ServiceSetting::Healthcheck
+                | ServiceSetting::PreDeployCommand
+                | ServiceSetting::RegistryCredential
+                | ServiceSetting::StartCommand
+                | ServiceSetting::Git(GitSetting::Repository | GitSetting::BuildCommand) => false,
+            },
+            Addressed::Service(
+                _,
+                Some(Target::Exported(_) | Target::Mount(_) | Target::ConfigMount(_)),
+            )
+            | Addressed::Volume(_, Some(_))
+            | Addressed::Config(_, Some(ConfigField::Name))
+            | Addressed::Environment(EnvironmentSetting::Region) => true,
+            Addressed::Service(
+                _,
+                None
+                | Some(
+                    Target::Source
+                    | Target::Variable(_)
+                    | Target::Description(_)
+                    | Target::Domains
+                    | Target::Setup,
+                ),
+            )
+            | Addressed::Volume(_, None)
+            | Addressed::Config(_, None | Some(ConfigField::File(_))) => false,
         }
     }
 

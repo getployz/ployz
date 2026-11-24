@@ -2154,7 +2154,7 @@ async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
     let refused_key = crate::cluster::answered_by(&machine, {
         use std::os::unix::process::ExitStatusExt;
         crate::connect::ConnectError::SshProbe {
-            target: "host".to_owned(),
+            target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: crate::connect::SshFailure::Auth,
             detail: "Permission denied (publickey)".into(),

@@ -163,9 +163,10 @@ fn a_connection_that_doesnt_parse_prints_no_part_that_may_be_a_secret() {
             "x-SENTINEL://203.0.113.7/?q=SENTINEL",
             "unsupported connection scheme: \"SCHEME://203.0.113.7\"",
         ),
+        // A password that holds a `/`: what reads as the host may be part of it.
         (
             "root:SENTINEL/SENTINEL@203.0.113.7",
-            "invalid SSH destination \"USER:PASSWORD@203.0.113.7\"",
+            "invalid SSH destination \"HOST\"",
         ),
     ] {
         let refused = typed.parse::<super::Connection>().unwrap_err();

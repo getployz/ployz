@@ -477,17 +477,19 @@ mod tests {
             .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
     }
 
+    /// An approval's retry is the command again with its yes: every argument it names
+    /// something by, and the flags of the run, as typed; free text, such as a reason, as
+    /// its placeholder.
     #[test]
-    fn an_approval_retry_parses_with_every_argument_typed() {
+    fn an_approval_retry_keeps_what_names_and_withholds_free_text() {
         let published = gated();
-        for (path, argv) in [
+        for (argv, line) in [
             (
-                "org member role",
-                vec!["ployz", "org", "member", "role", "Linus Torvalds", "admin"],
+                &["ployz", "org", "member", "role", "Linus Torvalds", "admin"][..],
+                "ployz org member role 'Linus Torvalds' admin --approval a7e572f3",
             ),
             (
-                "org member invite",
-                vec![
+                &[
                     "ployz",
                     "--ployz-config",
                     "/tmp/ployz config.toml",
@@ -498,36 +500,29 @@ mod tests {
                     "--role",
                     "admin",
                 ],
+                "ployz --ployz-config '/tmp/ployz config.toml' org member invite \
+                 linus@example.com --role admin --approval a7e572f3",
             ),
             (
-                "org member role",
-                vec![
-                    "ployz",
-                    "--json",
-                    "org",
-                    "member",
-                    "role",
-                    "Linus Torvalds",
-                    "admin",
-                ],
+                &["ployz", "--json", "org", "member", "role", "Linus", "admin"],
+                "ployz --json org member role Linus admin --approval a7e572f3",
             ),
             (
-                "org member role",
-                vec![
+                &[
                     "ployz", "org", "member", "role", "Linus", "admin", "--color", "always",
                 ],
+                "ployz --color always org member role Linus admin --approval a7e572f3",
             ),
             (
-                "org member rm",
-                vec!["ployz", "org", "member", "rm", "--", "--json"],
+                &["ployz", "org", "member", "rm", "--", "--json"],
+                "ployz org member rm --approval a7e572f3 -- --json",
             ),
             (
-                "uptime show",
-                vec!["ployz", "uptime", "show", "web", "--env", "staging"],
+                &["ployz", "uptime", "show", "web", "--env", "staging"],
+                "ployz uptime show web --env staging --approval a7e572f3",
             ),
             (
-                "org approval deny",
-                vec![
+                &[
                     "ployz",
                     "org",
                     "approval",
@@ -536,34 +531,16 @@ mod tests {
                     "--",
                     "-a7",
                 ],
+                "ployz org approval deny --reason REASON --approval a7e572f3 -- -a7",
             ),
         ] {
-            let command = published.find(path).unwrap();
-            let root = parsed(&published, &argv);
+            let root = parsed(&published, argv);
             let tree = crate::published::attach(crate::cli::compiled(), &published);
             let again = again(tree, &root, "a7e572f3").line();
+            assert_eq!(again, line, "{argv:?}");
             let words = shell_words::split(&again).unwrap();
             let words: Vec<&str> = words.iter().map(String::as_str).collect();
-            let again = parsed(&published, &words);
-            assert_eq!(
-                input(leaf_matches(&again), command),
-                input(leaf_matches(&root), command),
-                "{path}"
-            );
-            assert_eq!(
-                leaf_matches(&again)
-                    .get_one::<String>("approval")
-                    .map(String::as_str),
-                Some("a7e572f3")
-            );
-            for flag in ["ployz-config", "json", "color"] {
-                assert_eq!(again.value_source(flag), root.value_source(flag), "{flag}");
-                assert_eq!(
-                    again.get_raw(flag).map(Iterator::collect::<Vec<_>>),
-                    root.get_raw(flag).map(Iterator::collect::<Vec<_>>),
-                    "{flag}"
-                );
-            }
+            parsed(&published, &words);
         }
     }
 

@@ -896,7 +896,7 @@ mod tests {
                 leaf.get_one::<String>("ployz-config").map(String::as_str),
                 Some("/tmp/a config.yaml")
             );
-            assert_eq!(crate::cli::connection(leaf), Some("ssh://root@entry"));
+            assert_eq!(crate::cli::connection(leaf), Some("ssh://USER@entry"));
             assert_eq!(
                 leaf.get_one::<String>("context").map(String::as_str),
                 Some("staging")
@@ -1146,7 +1146,7 @@ mod tests {
         assert!(add.get_flag("reset"));
         assert_eq!(add.get_one::<u32>("wg-mtu").copied(), Some(1400));
         assert_eq!(
-            add.get_one::<String>("cloud-url").map(String::as_str),
+            crate::cli::cloud_url_of(add),
             Some("example.test")
         );
     }

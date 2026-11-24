@@ -416,8 +416,8 @@ async fn machine_add_with(
         );
         assert_eq!(leaf.get_one::<String>("context").unwrap(), "staging");
         assert_eq!(
-            leaf.get_one::<String>("connect").unwrap(),
-            &format!("ssh://root@{entry_address}")
+            leaf.get_raw("connect").unwrap().collect::<Vec<_>>(),
+            [format!("ssh://USER@{entry_address}").as_str()]
         );
     }
     fs::remove_dir_all(root).unwrap();

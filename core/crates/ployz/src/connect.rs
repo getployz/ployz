@@ -233,7 +233,7 @@ impl Connector for SystemConnector {
             )
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "tunnel open timed out"))?,
-            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.shown())),
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
@@ -421,10 +421,17 @@ async fn connect_ssh(
         .map_err(ConnectError::from_ssh_spawn)?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let failure = SshFailure::of(&detail);
+        // ssh names the destination as typed, `USER@HOST: Permission denied`, and the user
+        // may be a token.
+        let detail = match destination.target().split_once('@') {
+            Some((user, _)) => detail.replace(&format!("{user}@"), "USER@"),
+            None => detail,
+        };
         return Err(ConnectError::SshProbe {
-            target: destination.target().to_owned(),
+            target: crate::context::shown(destination.target()),
             status: output.status,
-            failure: SshFailure::of(&detail),
+            failure,
             detail,
         });
     }
@@ -1277,7 +1284,7 @@ pub enum ConnectError {
     SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
     SshProbe {
-        target: String,
+        target: crate::cli::Shown,
         status: std::process::ExitStatus,
         failure: SshFailure,
         detail: String,
@@ -1287,7 +1294,7 @@ pub enum ConnectError {
     #[error("The connection task failed.")]
     Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
-    ProxyUnsupported(String),
+    ProxyUnsupported(crate::cli::Shown),
     #[error("proxy dialing does not support network {0}")]
     UnsupportedNetwork(String),
     #[error(transparent)]

@@ -1,15 +1,19 @@
 //! The commands a hint tells the reader to run, rebuilt from the command line clap parsed.
 //! A rerun keeps every argument the command line gave, in the order given, spelled as the
 //! command tree spells it; a hint adds, replaces or drops arguments by their id, never by
-//! text. An argument whose values parse to [`Withheld`] shows its placeholder instead of
-//! what was typed, and a trailing command line shows as its name (`COMMAND`), so no hint
-//! repeats a secret.
+//! text. Each value shows as a [`Shown`]: whole when its argument's kind is never a secret
+//! (a choice, a number, a path, or one of the [`NAMED`] arguments), as its [`Withheld`]
+//! view, or else as the placeholder its argument declares, so no hint repeats a secret.
 
+use std::any::TypeId;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use clap::parser::ValueSource;
-use clap::{ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{Hint, RetryCommand};
+
+use super::Shown;
 
 /// A command line to run: this one again, or another one that keeps this one's connection.
 #[derive(Clone, Debug)]
@@ -29,7 +33,7 @@ struct Given {
 #[derive(Clone, Debug)]
 enum Values {
     Switch,
-    Text(Vec<String>),
+    Text(Vec<Shown>),
 }
 
 impl Rerun {
@@ -72,9 +76,9 @@ impl Rerun {
     /// `words` with `config`, on this host's daemon at `connect`, as the check-in loop
     /// names a command: it has no command line of its own to carry.
     pub(crate) fn for_this_host(config: &std::path::Path, connect: &str, words: &[&str]) -> Self {
-        Self::parsed(super::command(), words)
-            .set("ployz-config", &config.to_string_lossy())
-            .set("connect", connect)
+        let config = config.to_string_lossy();
+        let carried = ["--ployz-config", config.as_ref(), "--connect", connect];
+        Self::parsed(super::command(), &[&carried[..], words].concat())
     }
 
     /// `words` alone, as a command line with nothing of its own to carry.
@@ -101,7 +105,8 @@ impl Rerun {
         }
     }
 
-    /// With `value` as the one value of `id`, in place of any it was given.
+    /// With `value` as the one value of `id`, in place of any it was given, shown as the
+    /// command line would show it.
     #[must_use]
     pub(crate) fn set(self, id: &str, value: &str) -> Self {
         self.set_all(id, [value])
@@ -109,12 +114,21 @@ impl Rerun {
 
     /// With `values` as the values of `id`, in place of any it was given; none drops it.
     #[must_use]
-    pub(crate) fn set_all<'a>(
-        mut self,
-        id: &str,
-        values: impl IntoIterator<Item = &'a str>,
-    ) -> Self {
-        let values: Vec<String> = values.into_iter().map(str::to_owned).collect();
+    pub(crate) fn set_all<'a>(self, id: &str, values: impl IntoIterator<Item = &'a str>) -> Self {
+        let values: Vec<Shown> = values
+            .into_iter()
+            .map(|value| self.shown(id, value))
+            .collect();
+        self.replaced(id, values)
+    }
+
+    /// With `placeholder` as the one value of `id`: what the reader types in its place.
+    #[must_use]
+    pub(crate) fn placeholder(self, id: &str, placeholder: &'static str) -> Self {
+        self.replaced(id, vec![Shown::placeholder(placeholder)])
+    }
+
+    fn replaced(mut self, id: &str, values: Vec<Shown>) -> Self {
         if values.is_empty() {
             return self.without(id);
         }
@@ -131,18 +145,47 @@ impl Rerun {
     /// With `value` added to the values of `id`, after any it was given.
     #[must_use]
     pub(crate) fn add(mut self, id: &str, value: &str) -> Self {
+        let value = self.shown(id, value);
         match self.given.iter_mut().find(|given| given.id == id) {
             Some(Given {
                 values: Values::Text(values),
                 ..
-            }) => values.push(value.to_owned()),
-            Some(given) => given.values = Values::Text(vec![value.to_owned()]),
+            }) => values.push(value),
+            Some(given) => given.values = Values::Text(vec![value]),
             None => self.given.push(Given {
                 id: id.to_owned(),
-                values: Values::Text(vec![value.to_owned()]),
+                values: Values::Text(vec![value]),
             }),
         }
         self
+    }
+
+    /// `value` given to `id`, as the command line would show it.
+    fn shown(&self, id: &str, value: &str) -> Shown {
+        let levels = self.levels();
+        match levels
+            .iter()
+            .rev()
+            .find_map(|level| level.get_arguments().find(|arg| arg.get_id() == id))
+        {
+            Some(arg) => shown(arg, value),
+            None => {
+                debug_assert!(false, "a rerun names {id:?}, which its command lacks");
+                Shown::placeholder("VALUE")
+            }
+        }
+    }
+
+    /// The command and each subcommand of the path, root first.
+    fn levels(&self) -> Vec<&Command> {
+        let mut levels = vec![&self.tree];
+        for word in &self.path {
+            let Some(child) = levels.last().and_then(|at| at.find_subcommand(word)) else {
+                break;
+            };
+            levels.push(child);
+        }
+        levels
     }
 
     /// With the switch `id` on.
@@ -181,13 +224,7 @@ impl Rerun {
     }
 
     fn words(&self) -> Vec<String> {
-        let mut levels = vec![&self.tree];
-        for word in &self.path {
-            let Some(child) = levels.last().and_then(|at| at.find_subcommand(word)) else {
-                break;
-            };
-            levels.push(child);
-        }
+        let levels = self.levels();
         debug_assert_eq!(levels.len(), self.path.len() + 1, "{:?}", self.path);
         let declared = |depth: usize, id: &str| {
             levels
@@ -216,7 +253,7 @@ impl Rerun {
                     && (arg.is_trailing_var_arg_set()
                         || arg.is_last_set()
                         || matches!(&given.values, Values::Text(values)
-                            if values.iter().any(|value| value.starts_with('-'))))
+                            if values.iter().any(|value| value.as_str().starts_with('-'))))
             })
         });
         // What each level is given, typed after its subcommand's name.
@@ -242,17 +279,17 @@ impl Rerun {
             };
             match (flag, &given.values) {
                 (None, Values::Text(values)) if tail_from.is_some_and(|from| index >= from) => {
-                    tail.extend(values.iter().cloned());
+                    tail.extend(values.iter().map(ToString::to_string));
                 }
-                (None, Values::Text(values)) => into.extend(values.iter().cloned()),
+                (None, Values::Text(values)) => into.extend(values.iter().map(ToString::to_string)),
                 (Some(flag), Values::Switch) => into.push(flag),
                 (Some(flag), Values::Text(values)) if values.is_empty() => bare.push(flag),
                 (Some(flag), Values::Text(values)) => {
                     for value in values {
-                        if value.starts_with('-') || arg.is_require_equals_set() {
+                        if value.as_str().starts_with('-') || arg.is_require_equals_set() {
                             into.push(format!("{flag}={value}"));
                         } else {
-                            into.extend([flag.clone(), value.clone()]);
+                            into.extend([flag.clone(), value.to_string()]);
                         }
                     }
                 }
@@ -363,7 +400,7 @@ impl Given {
     /// What the command line gave `arg`. A default holds for the next command too, and so
     /// does a variable, except one that says where the command runs: it may have been set
     /// for this one command (`PLOYZ_ENV=staging ployz …`), so a rerun spells it out.
-    fn read(arg: &clap::Arg, matches: &ArgMatches) -> Option<Self> {
+    fn read(arg: &Arg, matches: &ArgMatches) -> Option<Self> {
         let id = arg.get_id().as_str();
         if !matches!(matches.try_contains_id(id), Ok(true)) {
             return None;
@@ -386,7 +423,7 @@ impl Given {
             let typed = matches
                 .get_raw(id)
                 .is_some_and(|mut raw| raw.next().is_some());
-            Values::Text(typed.then(|| id.to_ascii_uppercase()).into_iter().collect())
+            Values::Text(typed.then(|| Shown::declared(arg)).into_iter().collect())
         } else if action.takes_values() {
             Values::Text(match matches.try_get_many::<Withheld>(id) {
                 Ok(Some(withheld)) => withheld.map(|value| value.shown.clone()).collect(),
@@ -394,7 +431,7 @@ impl Given {
                     .get_raw(id)
                     .into_iter()
                     .flatten()
-                    .map(|raw| raw.to_string_lossy().into_owned())
+                    .map(|raw| shown(arg, &raw.to_string_lossy()))
                     .collect(),
             })
         } else {
@@ -413,14 +450,142 @@ const CARRIED: [&str; 3] = ["ployz-config", "connect", "context"];
 /// The arguments that choose where a command runs.
 const WHERE_IT_RUNS: [&str; 4] = ["context", "connect", "project", "env"];
 
-/// A value that may hold a secret: what was typed, and what a rerun shows in its place.
+/// What a rerun shows of `typed`, given to `arg`, which doesn't parse to [`Withheld`]:
+/// all of it when the argument's kind is never a secret, else the placeholder it declares.
+fn shown(arg: &Arg, typed: &str) -> Shown {
+    let parser = arg.get_value_parser().type_id();
+    let known = !arg.get_possible_values().is_empty()
+        || closed().into_iter().any(|kind| parser == kind)
+        || (parser == TypeId::of::<String>() && NAMED.contains(&arg.get_id().as_str()));
+    match known {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a choice, a number, a path or a name, none of which is a secret"
+        )]
+        true => Shown::verbatim(typed),
+        false => Shown::declared(arg),
+    }
+}
+
+/// The parsed kinds no value of which is a secret: numbers, switches, paths and addresses.
+fn closed() -> [TypeId; 14] {
+    [
+        TypeId::of::<bool>(),
+        TypeId::of::<u16>(),
+        TypeId::of::<u32>(),
+        TypeId::of::<u64>(),
+        TypeId::of::<usize>(),
+        TypeId::of::<i64>(),
+        TypeId::of::<PathBuf>(),
+        TypeId::of::<ipnet::Ipv4Net>(),
+        TypeId::of::<ployz_core::config::FileMode>(),
+        TypeId::of::<ployz_core::ProvisionedVolumeMaximumBytes>(),
+        TypeId::of::<ployz_core::StorageChoice>(),
+        TypeId::of::<ployz_core::StoragePreparation>(),
+        TypeId::of::<ployz_core::MachineRelease>(),
+        TypeId::of::<ployz_core::ReleaseChannel>(),
+    ]
+}
+
+/// The text arguments whose every value names something Ployz shows anyway, such as a
+/// Project, a Service, a Server, a Deployment, a member, a version, a file or a domain,
+/// compiled or published by Cloud. Any other text argument, such as a message, a reason,
+/// a command, a key or a URL, shows as its placeholder.
+const NAMED: [&str; 82] = [
+    "accept-volume-loss",
+    "account",
+    "approval",
+    "build-concurrency",
+    "builder",
+    "builder-sha",
+    "cluster-name",
+    "code",
+    "commit",
+    "config",
+    "confirm",
+    "container",
+    "context",
+    "context-name",
+    "copy",
+    "cursor",
+    "deployment",
+    "dir",
+    "domain",
+    "email",
+    "env",
+    "environment",
+    "events",
+    "expect",
+    "expect-version",
+    "file",
+    "fingerprint",
+    "first",
+    "fix",
+    "from",
+    "from-env-file",
+    "host",
+    "id",
+    "image",
+    "label-add",
+    "label-rm",
+    "live",
+    "machine",
+    "match",
+    "member",
+    "mirror",
+    "mount",
+    "name",
+    "namespace",
+    "node",
+    "only",
+    "organization",
+    "path",
+    "pattern",
+    "platform",
+    "ployz-config",
+    "port",
+    "prefix",
+    "project",
+    "public-ip",
+    "ref",
+    "region",
+    "rename",
+    "repo",
+    "repository",
+    "run",
+    "server",
+    "service",
+    "service-or-container",
+    "signal",
+    "since",
+    "skip",
+    "slug",
+    "source",
+    "ssh-key",
+    "tail",
+    "take",
+    "timeout",
+    "to",
+    "undo",
+    "until",
+    "upload",
+    "value",
+    "version",
+    "volume",
+    "wait",
+    "wg-endpoint",
+];
+
+/// A value whose kind may hold a secret: what was typed, which only the command reads, and
+/// what output shows in its place.
 #[derive(Clone)]
 pub(crate) struct Withheld {
     typed: String,
-    shown: String,
+    shown: Shown,
 }
 
 impl Withheld {
+    /// What was typed, for the command to run with; output shows [`Self::shown`].
     pub(crate) fn typed(&self) -> &str {
         &self.typed
     }
@@ -428,13 +593,14 @@ impl Withheld {
 
 impl std::fmt::Debug for Withheld {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.shown)
+        std::fmt::Debug::fmt(&self.shown, formatter)
     }
 }
 
-/// The parser of an argument that may hold a secret: `shown` gives what a rerun repeats.
+/// The parser of an argument whose values may hold a secret: `shown` gives what output
+/// repeats of one.
 pub(crate) fn withheld(
-    shown: fn(&str) -> String,
+    shown: fn(&str) -> Shown,
 ) -> impl clap::builder::TypedValueParser<Value = Withheld> {
     clap::builder::TypedValueParser::map(clap::builder::StringValueParser::new(), move |typed| {
         Withheld {
@@ -442,38 +608,6 @@ pub(crate) fn withheld(
             typed,
         }
     })
-}
-
-/// `text` with the password of each URL in it, the `:SECRET` of `scheme://user:SECRET@host`,
-/// replaced by `with`; none when no URL in it carries one.
-pub(crate) fn without_passwords(text: &str, with: &str) -> Option<String> {
-    let mut kept = String::with_capacity(text.len());
-    let mut from = 0;
-    for (scheme_end, _) in text.match_indices("://") {
-        let start = scheme_end + 3;
-        if start < from {
-            continue;
-        }
-        let Some(authority) = text.get(start..) else {
-            continue;
-        };
-        if let Some(password) = password_in(authority) {
-            kept.push_str(text.get(from..start + password.start).unwrap_or_default());
-            kept.push_str(with);
-            from = start + password.end;
-        }
-    }
-    (from > 0).then(|| kept + text.get(from..).unwrap_or_default())
-}
-
-/// Where the authority that starts `text` holds a password: the `:SECRET` of
-/// `user:SECRET@host`, up to the `@`.
-pub(crate) fn password_in(text: &str) -> Option<std::ops::Range<usize>> {
-    let end = text
-        .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
-        .unwrap_or(text.len());
-    let userinfo = text.get(..end)?.rsplit_once('@')?.0;
-    userinfo.find(':').map(|colon| colon..userinfo.len())
 }
 
 /// The retry hint `line` renders as, to compare a hint against in tests.

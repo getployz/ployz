@@ -349,7 +349,7 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     assert_eq!(
         next_hints(&refused),
         [format!(
-            "ployz --connect ssh://root@entry server upgrade {channel} machine-1 --context prod"
+            "ployz --connect ssh://USER@entry server upgrade {channel} machine-1 --context prod"
         )]
     );
 }

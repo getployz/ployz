@@ -4,10 +4,12 @@ use ployz_store::ReviewVersion;
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 mod rerun;
+mod shown;
 
 #[cfg(test)]
 pub(crate) use rerun::retry_hint;
-pub(crate) use rerun::{Rerun, Withheld, password_in, withheld, without_passwords};
+pub(crate) use rerun::{Rerun, Withheld, withheld};
+pub(crate) use shown::Shown;
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -62,7 +64,7 @@ fn connection_args() -> [Arg; 4] {
         value("connect", None)
             .env(env::CONNECT)
             .hide_env_values(true)
-            .value_parser(withheld(|typed| crate::context::Shown::of(typed).into_string()))
+            .value_parser(withheld(crate::context::shown))
             .help("Reach the Servers through this connection instead of Cloud or a context")
             .global(true),
         value("ssh-timeout", None)
@@ -84,6 +86,24 @@ fn connection_args() -> [Arg; 4] {
             .env(env::CONTEXT)
             .help("Act through this local context instead of the current one"),
     ]
+}
+
+/// `--cloud-url`, or `PLOYZ_CLOUD_URL`: output shows its scheme, host and port alone, and
+/// `--help` the variable's name without its value.
+pub(crate) fn cloud_url() -> Arg {
+    value("cloud-url", None)
+        .env(env::CLOUD_URL)
+        .hide_env_values(true)
+        .value_parser(withheld(|typed| Shown::url(typed, &["http", "https"])))
+}
+
+/// The Cloud `--cloud-url` or `PLOYZ_CLOUD_URL` names, as typed.
+pub(crate) fn cloud_url_of(matches: &clap::ArgMatches) -> Option<&str> {
+    matches
+        .try_get_one::<Withheld>("cloud-url")
+        .ok()
+        .flatten()
+        .map(Withheld::typed)
 }
 
 /// The connection `--connect` or `PLOYZ_CONNECT` names, as typed.

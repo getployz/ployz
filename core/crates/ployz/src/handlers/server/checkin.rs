@@ -43,8 +43,7 @@ pub(crate) fn command(command: Command) -> Command {
                 .help("Trust this key, from your install command, when this Server joins or founds a Cluster"),
         )
         .arg(
-            value("cloud-url", None)
-                .env(env::CLOUD_URL)
+            crate::cli::cloud_url()
                 .help("Cloud to check in with [default: ployz.dev]"),
         )
         .arg(
@@ -69,9 +68,8 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
             error,
         )
     })?;
-    let cloud_url = matches
-        .get_one::<String>("cloud-url")
-        .map_or(DEFAULT_CLOUD, String::as_str)
+    let cloud_url = crate::cli::cloud_url_of(matches)
+        .unwrap_or(DEFAULT_CLOUD)
         .to_owned();
     let paths = Paths::system(token_file);
     if !crate::checkin::process_is_root() {

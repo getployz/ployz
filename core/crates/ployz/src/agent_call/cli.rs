@@ -71,7 +71,8 @@ impl Run {
         if !self.required || self.why.is_some() {
             return None;
         }
-        let again = crate::cli::Rerun::again_in(command.clone(), matches).set(WHY, PLACEHOLDER);
+        let again =
+            crate::cli::Rerun::again_in(command.clone(), matches).placeholder(WHY, PLACEHOLDER);
         Some(Failure::usage(REASON_REQUIRED).hint(Hint::Next(again.line())))
     }
 
@@ -171,7 +172,8 @@ mod tests {
         );
         assert_eq!(
             refused(&["--connect", "ssh://root:hunter2@203.0.113.7", "status"]),
-            "ployz --connect ssh://root@203.0.113.7 --why '<the goal this command serves>' status"
+            "ployz --connect ssh://USER:PASSWORD@203.0.113.7 --why '<the goal this command serves>' \
+             status"
         );
         assert_eq!(
             refused(&[
@@ -217,7 +219,7 @@ mod tests {
                     "https://SENTINEL:SENTINEL@cloud.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
                 ],
                 "ployz --why '<the goal this command serves>' login \
-                 --cloud-url 'https://USER:PASSWORD@cloud.example:8443'",
+                 --cloud-url https://USER:PASSWORD@cloud.example:8443",
             ),
         ] {
             assert_eq!(refused(words), line, "{words:?}");

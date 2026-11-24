@@ -110,7 +110,7 @@ pub(super) async fn connect_each(
                 Ok::<_, ConnectError>((client, machine))
             };
             let (client, machine) = dial.await.map_err(|error| {
-                Error::from(error).context(format!("No Server answered at {connection}."))
+                Error::from(error).context(format!("No Server answered at {}.", connection.shown()))
             })?;
             Ok::<_, Error>((client, connection.with_machine_id(machine)))
         }
@@ -123,7 +123,9 @@ pub(super) async fn connect_each(
             .find(|route| route.machine_id() == connection.machine_id())
         {
             return Err(Error::usage(format!(
-                "{twice} and {connection} reach the same Server. Give each Server's connection once."
+                "{} and {} reach the same Server. Give each Server's connection once.",
+                twice.shown(),
+                connection.shown()
             )));
         }
         routes.push(connection.clone());

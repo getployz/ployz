@@ -22,7 +22,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         ),
     ] {
         let ssh_error = ConnectError::SshProbe {
-            target: "host".to_owned(),
+            target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: SshFailure::of(detail),
             detail: detail.to_owned(),
@@ -1260,7 +1260,7 @@ fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() 
     let refused_key = {
         use std::os::unix::process::ExitStatusExt;
         ConnectError::SshProbe {
-            target: "host".to_owned(),
+            target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: SshFailure::Auth,
             detail: "Permission denied (publickey)".into(),
@@ -2442,7 +2442,7 @@ fn every_other_connect_error_keeps_its_facts() {
     use ployz_core::Retry::{AfterRestart, Never, Now};
     use std::os::unix::process::ExitStatusExt as _;
     let ssh = |failure| ConnectError::SshProbe {
-        target: "host".into(),
+        target: crate::cli::Shown::placeholder("host"),
         status: std::process::ExitStatus::from_raw(255 << 8),
         failure,
         detail: String::new(),
@@ -2478,7 +2478,7 @@ fn every_other_connect_error_keeps_its_facts() {
         (all_failed(true), Now, true, false),
         (ConnectError::SshClientMissing, Never, false, true),
         (
-            ConnectError::ProxyUnsupported("x".into()),
+            ConnectError::ProxyUnsupported(crate::cli::Shown::placeholder("x")),
             Never,
             false,
             true,

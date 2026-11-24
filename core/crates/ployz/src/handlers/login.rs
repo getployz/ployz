@@ -4,7 +4,7 @@ use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{switch, value};
+use crate::cli::switch;
 use crate::cloud;
 use crate::cloud::login::{
     Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
@@ -17,8 +17,7 @@ pub(super) fn login_command(command: Command) -> Command {
         .about("Sign this device in to Ployz Cloud")
         .long_about("Sign this device in to Ployz Cloud. Opens the approval page and waits; with --json, prints the page and code at once unless --wait is given. Run again, or with --wait, to finish a pending sign-in.")
         .arg(
-            value("cloud-url", None)
-                .env(env::CLOUD_URL)
+            crate::cli::cloud_url()
                 .help("Cloud to sign in to [default: the pending or signed-in Cloud, else ployz.dev]"),
         )
         .arg(switch("wait", None).help("Wait for approval, also with --json"))
@@ -61,12 +60,12 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let stored = readable_cloud(&store, "Replacing it.")?;
-    let cloud = matches
-        .get_one::<String>("cloud-url")
-        .cloned()
+    let cloud = crate::cli::cloud_url_of(matches)
+        .map(str::to_owned)
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
     if let Err(NotWebUrl { given }) = CloudOrigin::checked(&cloud) {
+        let given = crate::cli::Shown::url(&given, &["http", "https"]);
         let named = match matches.value_source("cloud-url") {
             Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
             Some(_) => "--cloud-url",

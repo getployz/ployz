@@ -285,7 +285,7 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     assert_eq!(
         listed["next"],
         format!(
-            "ployz --connect tcp://{address} --json --why test server clean \
+            "ployz --connect tcp://{address} --json --why REASON server clean \
              --namespace left-over --confirm left-over"
         )
     );
@@ -418,16 +418,13 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         &connect,
         "--ployz-config",
         selected.to_str().unwrap(),
+        "--json",
+        "--color",
+        "never",
+        "--why",
+        "REASON",
     ];
-    let retry = [
-        "deploy",
-        "--project",
-        "shop",
-        "--env",
-        "production",
-        "--context",
-        "staging",
-    ];
+    let retry = ["deploy", "--context", "staging"];
     let expected = prefix.iter().copied().chain(retry).collect::<Vec<_>>();
     assert_eq!(hints, [expected], "{stderr}");
 }

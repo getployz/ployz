@@ -73,8 +73,7 @@ pub(crate) fn command(command: Command) -> Command {
             .conflicts_with_all(["destination", "standalone"]),
     )
     .arg(
-        value("cloud-url", None)
-            .env(env::CLOUD_URL)
+        crate::cli::cloud_url()
             .help("Cloud that issued the enrollment token [default: ployz.dev]"),
     )
     .arg(
@@ -113,9 +112,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(destination) = matches.get_one::<String>("destination") {
         destination.parse::<crate::context::Connection>()?;
     }
-    let cloud = matches
-        .get_one::<String>("cloud-url")
-        .map_or(DEFAULT_CLOUD, String::as_str);
+    let cloud = crate::cli::cloud_url_of(matches).unwrap_or(DEFAULT_CLOUD);
     if let Some(token) = enroll_token(matches)? {
         return enroll(root, token, cloud);
     }
@@ -203,9 +200,7 @@ where
             "Pass the enrollment token with --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN",
         )
     })?;
-    let cloud_url = matches
-        .get_one::<String>("cloud-url")
-        .map_or(DEFAULT_CLOUD, String::as_str);
+    let cloud_url = crate::cli::cloud_url_of(matches).unwrap_or(DEFAULT_CLOUD);
     enroll_as_add(&EnrollPlan::from_matches(root), &token, cloud_url, install)
 }
 
