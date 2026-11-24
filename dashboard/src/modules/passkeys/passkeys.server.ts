@@ -61,7 +61,7 @@ export const beginPasskeyRegistration = Effect.fn("Passkeys.begin")(function* (a
   yield* drizzle.insert(verification).values({
     identifier: challengeKey(actor.userId),
     value: options.challenge,
-    expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
+    expiresAt: sql`now() + make_interval(secs => ${CHALLENGE_TTL_MS / 1000})`,
   });
   return options;
 });
